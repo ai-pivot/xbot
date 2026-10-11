@@ -5,11 +5,28 @@ import '@testing-library/jest-dom'
 import { renderWithProviders } from '@/test-utils'
 import { I18nProvider } from '@/providers/i18n'
 import { UserMessage } from './UserMessage'
+import { formatAnnotatedMessage } from '@/lib/messageAnnotations'
 
 // Use the i18n key directly — the test environment may be zh-CN or en,
 // so we query by title attribute instead of localized label text.
 
 describe('UserMessage — inline edit mode (Spec C §2)', () => {
+  it('keeps the full XML prompt available when editing a displayed annotation message', () => {
+    const content = formatAnnotatedMessage('正文', [{ id: 'one', quote: '原文', comment: '评论', source: { turnID: 7, iteration: 1 } }], (key) => key)
+    const { container } = renderWithProviders(<UserMessage content={content} isEditing onRewind={vi.fn()} />)
+    expect(screen.getByRole('textbox')).toHaveValue(content)
+    expect(container.querySelector('textarea')!.value).toContain('<response-annotations>')
+  })
+
+  it('copies the actual submitted XML prompt rather than only the visible quote/comment', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const content = formatAnnotatedMessage('正文', [{ id: 'one', quote: '原文', comment: '评论', source: { turnID: 7, iteration: 1 } }], (key) => key)
+    renderWithProviders(<UserMessage content={content} />)
+    const button = screen.getAllByRole('button').find((item) => item.querySelector('svg.lucide-copy') && !item.closest('pre, .group\\/code'))!
+    fireEvent.click(button)
+    expect(writeText).toHaveBeenCalledWith(content)
+  })
   it('renders plain content with markdown', () => {
     renderWithProviders(
       <UserMessage content="Hello world" />,

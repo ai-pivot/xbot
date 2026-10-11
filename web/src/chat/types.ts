@@ -88,6 +88,12 @@ export interface LiveSnapshot {
   readonly tokenUsage: { readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number } | null
   /** 实时流式时序（iteration 事件携带 stream_stats，TTFT/tokens-per-sec）。 */
   readonly streamStats: { readonly ttftMs: number; readonly tpotMs: number; readonly tokensPerSec: number; readonly totalMs: number; readonly chunks: number } | null
+  /** 该 live turn 更早未下发的展示区域数（busy 快照折叠视图的声明，经
+   * snapshotToLive 从 ProgressSnapshot.iterationRegionsBefore 透传）。
+   * >0 ⇒ live/frozen 行顶部渲染「更早区域」分隔条（与 committed 的
+   * payload.regionsBefore 同语义、同一 IO 哨兵路径）；提交时随 commitViaFold
+   * 第 5 参带进 committed payload（提交瞬间分隔条不消失）。 */
+  readonly regionsBefore?: number
 }
 
 export const EMPTY_LIVE: LiveSnapshot = {
@@ -129,16 +135,17 @@ export type TurnPhase =
  * 不存在 { content:"", iterations:[] } 的组合 —— 构造函数签名不接受。
  */
 export type CommittedPayload =
-  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[]; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[] }
-  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[] }
+  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[]; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[]; readonly regionsBefore?: number }
+  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[]; readonly regionsBefore?: number }
 
 /** 唯一合法的 committed 构造入口（reducer 内使用）。 */
 export function commitViaText(
   content: NonEmptyS,
   iterations: readonly WebIteration[],
   compactions?: readonly WebCompaction[],
+  regionsBefore?: number,
 ): CommittedPayload {
-  return { via: 'text', content, iterations, compactions }
+  return { via: 'text', content, iterations, compactions, regionsBefore }
 }
 
 /** fold 构造：iterations 必须非空（类型强制）；content 可为空字符串。 */
@@ -147,8 +154,9 @@ export function commitViaFold(
   content: string,
   iterationsTruncated = 0,
   compactions?: readonly WebCompaction[],
+  regionsBefore?: number,
 ): CommittedPayload {
-  return { via: 'fold', iterations, content, iterationsTruncated, compactions }
+  return { via: 'fold', iterations, content, iterationsTruncated, compactions, regionsBefore }
 }
 
 // ─── Turn / ChatState ─────────────────────────────────────────
@@ -180,6 +188,13 @@ export interface Turn {
 export interface LegacyRow {
   /** 后端按 turn 尾部截断迭代上报的丢弃数量（传入渲染层显示"更早的 N 个迭代"）。 */
   readonly iterationsTruncated?: number
+  /**
+   * 该行（turn）**更早未下发的展示区域数**（后端 `regions_before`）—— D1 线从
+   * Row 消费：>0 时行顶渲染「更早区域」分隔条（+ IO 哨兵，`POST /api/regions` 取回）。
+   * 展示区域 = `mergeToolRuns` 输出块（折叠的工具组算 1 个）；它是可取回窗口的显式
+   * 声明，**不是洞**。缺省/0 = 该 turn 已完整下发。
+   */
+  readonly regionsBefore?: number
   readonly id: string
   readonly role: 'user' | 'assistant'
   readonly content: string
@@ -268,10 +283,25 @@ export interface ChatState {
   readonly gapReloadToken: number
   /** 当前"无法追赶的缺口形状"签名（'' = 无）。形状不变 ⇒ 不重复触发重载。 */
   readonly unreachableGapSig: string
+  /**
+   * SSE **增量路径**（`iteration` / `stream` case）发现的「迭代丢失洞」签名（'' = 无）。
+   *
+   * 判据：到达的迭代号没有接上已持有窗口（`evNumber > maxHeld + 1`）⇒ 中间迭代的
+   * 完成 delta 已在链路上丢失。iterationHistory 是增量 feed，**没有任何后续事件会
+   * 回头补洞**（progressStore canonical 注释："a reload is required to restore the
+   * missing iterations"）—— 本字段就是那个"该 reload 了"的信号载体：跳变时若签名
+   * 变化则 `gapReloadToken` 自增（面板 reset + 权威 reload 补洞）。
+   *
+   * 与 `unreachableGapSig` 的分工：那个判「reload **之后**仍修不好的洞」（洞在
+   * 权威窗口之外）；本字段判「增量路径上**正在产生**的洞」——DB 里一切都在，只需
+   * 触发一次 reload。同一签名只自增一次（防重载风暴）；AgentPanel 的 reset 会把
+   * 本字段连同本地带洞窗口一起清零。
+   */
+  readonly lostIterGapSig: string
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], standalone: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, gapReloadToken: 0, unreachableGapSig: '' }
+  return { chatID, turns: new Map(), legacy: [], standalone: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, gapReloadToken: 0, unreachableGapSig: '', lostIterGapSig: '' }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────
@@ -426,6 +456,30 @@ export type DomainEvent =
       /** 会话级 todos（active_progress 快照携带 —— 含 phase=done 的快照，
        *  turn 已结束但 todos 存活渲染）。 */
       readonly todos: readonly TodoItem[]
+    }
+  | {
+      /**
+       * 服务端**区域段 / 迭代详情**到达（`POST /api/regions`、`POST /api/iteration_detail`
+       * 的响应归一）。两条端点**共用**本事件：
+       *
+       * - 区域段（/api/regions）：`iterations` = 更旧方向的整段（轻字段形态，段边界
+       *   对齐展示区域 ⇒ 永不劈开工具组），`regionsBefore` = 仍剩更早区域数（必给，
+       *   0 = 该 turn 到顶，分隔条消失）。
+       * - 迭代详情（/api/iteration_detail）：`iterations` = 单个**完整**迭代（详情字段
+       *   齐全，`toolsFolded=false`），`regionsBefore` **缺省 = 不变**（详情 hydrate
+       *   不动区域计数、不动迭代号）。
+       *
+       * `iterations` 与本地 `mergeIterations` union 合并（同号：完整数据覆盖轻字段
+       * 数据；轻字段**永不**覆盖已加载的完整数据）—— 迭代号不变、不产生新洞。
+       * 与 `text_final` 的 committed 增量分支同族：不触碰 `activeTurn` / `lastSeq` /
+       * `gapReloadToken`（区域段是「显式可取回窗口」，不是 gap）。
+       */
+      readonly type: 'iterations_loaded'
+      /** 目标 turn。缺失/0 = 事件无归属 ⇒ reduce 回退 `activeTurn`（与 stream/iteration 一致）。 */
+      readonly turnID: number
+      readonly iterations: readonly WebIteration[]
+      /** 缺省 = 不变（详情端点）；给定 = 权威覆盖区域计数（区域段端点）。 */
+      readonly regionsBefore?: number
     }
   | {
       /** 乐观 user 创建（本地事件，非 SSE）。 */

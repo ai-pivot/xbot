@@ -639,14 +639,24 @@ func (a *Agent) buildSubAgentRunConfig(
 	roleName string,
 	interactive bool,
 	instance string,
-	model string, // 可选：角色指定的模型，为空时继承主 Agent
-) RunConfig {
+	model string, // 可选：角色指定的模型（等级名 vanguard/balance/swift 或 "subID|model"），为空时继承主会话
+) (RunConfig, error) {
 	parentAgentID := parentCtx.AgentID
 
 	// Extract UserContext from context — set by SpawnAgent callback.
 	// This is the SINGLE source of user info for SubAgent construction.
 	// No direct access to LLMFactory/SettingsService/IdentityResolver below.
 	userCtx := UserContextFromContext(ctx)
+	// ⛔ nil = 显式报错，绝不 panic（2026-09-30 生产 50/50 根治，cli-panic.log
+	// 自 09-17 起 50 条同栈空指针）：UserContextFromContext 的文档就标注了 nil 可能
+	//（cron 等无 processMessage 的路径），而下游 ResolveLLMForModel 的接收者
+	// 不是 nil 安全的 —— 曾经交互式会话的 Run ctx 派生丢过它（已修：会话现在
+	// 存储并在 Run ctx 携带 userCtx），这里再兜住**其余**入口的 nil。子代理的
+	// 模型解析（等级查表 + 主会话回落）都以 UserContext 为前提：没有它就没有
+	// 主会话模型可继承、没有用户级 tier 配置可查 —— 明确失败优于空指针崩溃。
+	if userCtx == nil {
+		return RunConfig{}, fmt.Errorf("SubAgent spawn requires user context: the spawning context carries no UserContext (等级查表与主会话模型回落都以它为前提; e.g. cron path without processMessage)")
+	}
 
 	// Interactive SubAgent 默认拥有 send_message 能力（群聊/agent 间通信必需）
 	if interactive {
@@ -1048,7 +1058,7 @@ func (a *Agent) buildSubAgentRunConfig(
 		},
 	}
 
-	return cfg
+	return cfg, nil
 }
 
 // buildToolExecutor 构建主 Agent 的工具执行器。
@@ -1531,7 +1541,10 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		subModel = msg.Metadata["model"]
 	}
 
-	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, subModel)
+	cfg, err := a.buildSubAgentRunConfig(ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, subModel)
+	if err != nil {
+		return nil, err
+	}
 
 	// SubAgent 进度上报：统一走穿透回调模式。
 	// 顶层 agent（无 parent callback）创建 root callback，只渲染 depth=1（直接子 agent）的进度。

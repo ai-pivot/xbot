@@ -91,7 +91,10 @@ func TestSubAgentRunConfig_DropsTuiControl(t *testing.T) {
 		ChatID:   "/repo",
 		SenderID: "cli_user",
 	}
-	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, "task", "", nil, tools.SubAgentCapabilities{}, "reviewer", false, "inst-1", "")
+	cfg, err := a.buildSubAgentRunConfig(ctx, parentCtx, "task", "", nil, tools.SubAgentCapabilities{}, "reviewer", false, "inst-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// 前提：父会话（cli）确实看得到 —— 否则这条测试证明不了"移除"生效。
 	if !hasToolDef(a.tools, "cli:/repo", "tui_control") {

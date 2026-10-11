@@ -249,7 +249,13 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 		return usage, nil
 	}
 
-	promptTokens, err := sqlite.NewSessionService(db).GetLastUserMessageContextTokens(tenantID)
+	// v71（每会话一个 DB）：session_messages.context_tokens 在会话库 —— 经
+	// SessionServiceFor（tenantID → 会话库）读取，绝不再 NewSessionService(主库)。
+	sessionSvc, err := h.Ag.MultiSession().SessionServiceFor(tenantID)
+	if err != nil {
+		return usage, err
+	}
+	promptTokens, err := sessionSvc.GetLastUserMessageContextTokens(tenantID)
 	if err != nil {
 		return usage, err
 	}
@@ -1347,7 +1353,10 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 					}
 				}
 				if len(turnSet) > 0 {
-					svc := sqlite.NewSessionService(ms.DB())
+					// v71（每会话一个 DB）：iteration_history 在会话库 —— 经
+					// TenantSession.SessionService()（绑定会话库）查询，绝不再
+					// NewSessionService(主库)（那会读主库的旧数据）。
+					svc := sess.SessionService()
 					// 批量查询所有 turn 的 iteration_history —— 一次 IN 查询替代
 					// 循环单查（每 turn 一次 DB 查询是 history 接口慢的主要根源：
 					// 100 条消息可能 10-30 个 turn → 10-30 次 SQLite 查询）。
@@ -1512,12 +1521,13 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		// Complete append-only history → Records (lossless restore).
 		if tenantID > 0 {
-			if db := ms.DB(); db != nil {
-				if records, err := sqlite.NewSessionService(db).GetFullHistory(tenantID); err == nil {
-					session.Records = make([]protocol.ExportedRecord, 0, len(records))
-					for _, r := range records {
-						session.Records = append(session.Records, historyRecordToExported(r))
-					}
+			// v71（每会话一个 DB）：session_messages 在会话库 —— 经
+			// TenantSession.SessionService()（绑定会话库）查询，绝不再
+			// NewSessionService(主库)（那会读主库的旧数据）。
+			if records, err := sess.SessionService().GetFullHistory(tenantID); err == nil {
+				session.Records = make([]protocol.ExportedRecord, 0, len(records))
+				for _, r := range records {
+					session.Records = append(session.Records, historyRecordToExported(r))
 				}
 			}
 		}

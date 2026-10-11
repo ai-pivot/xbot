@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { selectModel } from '@/components/agent/api'
+import { useIsTouch } from '@/hooks/useIsMobile'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useI18n } from '@/providers/i18n'
 import type { ModelEntry, Subscription } from '@/types/shared'
@@ -39,6 +40,7 @@ export function ModelSelector({
 }: ModelSelectorProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
+  const isTouch = useIsTouch()
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [selecting, setSelecting] = useState(false)
@@ -94,7 +96,19 @@ export function ModelSelector({
           <ChevronDown className="size-3 shrink-0 text-text-muted" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 max-h-[60vh] p-0 flex flex-col" align="end" sideOffset={6} collisionPadding={8}>
+      <PopoverContent
+        className="w-80 max-h-[60vh] p-0 flex flex-col"
+        align="end"
+        sideOffset={6}
+        collisionPadding={8}
+        // ⛔ 触屏：打开选择器不得聚焦搜索框（2026-09-30 用户报告「手机端切换模型
+        // 就会弹出键盘」根因）。Radix Popover 的 FocusScope 默认聚焦内容里第一个
+        // 可聚焦元素 = 搜索输入框（react-focus-scope 源码：focusFirst(
+        // getTabbableCandidates(container))）⇒ 触屏上聚焦可编辑元素 = 弹软键盘，
+        // 盖住半个模型列表。preventDefault 掉默认聚焦 —— 搜索是用户显式点击搜索框
+        // 才该发生的事；桌面（hover 键盘）保持默认聚焦（键入即筛选的既有 UX）。
+        onOpenAutoFocus={isTouch ? (event) => event.preventDefault() : undefined}
+      >
         <div className="border-b border-border p-2 shrink-0">
           <div className="relative">
             <Search className="absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />

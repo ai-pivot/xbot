@@ -274,8 +274,15 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return ag.IsProcessing(senderID)
 	}
 	// Wire GetActiveProgress
+	// 折叠视图（2026-09-30 收尾）：本回调的**全部消费方都是 Web SSE/WS 推送**（web_sse.go:266
+	// SSE fallback 发布 / :756 心跳快照入 ring（断线重连重放）/ web.go:1477 重连 replay 补发）——
+	// FetchAll 全量快照会把 busy 大 turn 的全部已完成迭代（1,661 迭代 ≈ MB 级）经 SSE 推给
+	// 浏览器。改走 GetActiveProgressFolded：尾部 HistoryRegionWindow 个展示区域 + tools_folded
+	// 轻字段 + iteration_regions_before 声明（前端消费链已闭环：normalize → snapshotToLive →
+	// live/frozen 行顶「更早区域」分隔条）。CLI 零影响：CLI 走 RPC get_active_progress
+	// （rpc_table.go:1662 直接调 Ag.GetActiveProgress 原方法，不经此回调）。
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
-		return ag.GetActiveProgress(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
+		return ag.GetActiveProgressFolded(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
 	}
 	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetPendingAskUser(channel, chatID)
@@ -330,7 +337,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// hasn't changed and we don't want to re-trigger progress restoration.
 		var progress *protocol.ProgressEvent
 		if beforeID == 0 {
-			progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll())
+			progress = ag.GetActiveProgressFolded(sel.Channel, sel.ChatID, protocol.FetchAll())
 			// Keep the done event even with an empty Todos list. The frontend
 			// hydrates from active_progress to restore todos on refresh;
 			// dropping `done + todos:[]` made the client unable to learn that
@@ -352,7 +359,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				}
 			}
 			if len(turnSet) > 0 {
-				svc := sqlite.NewSessionService(ag.MultiSession().DB())
+				// v71（每会话一个 DB）：iteration_history 在会话库 —— 经
+				// TenantSession.SessionService()（绑定会话库）查询，绝不再
+				// NewSessionService(主库)（那会读主库的旧数据）。
+				svc := sess.SessionService()
 				// 批量查询所有 turn 的 iteration_history —— 一次 IN 查询替代
 				// 循环单查（每 turn 一次 DB 查询是 history 接口慢的主要根源：
 				// 100 条消息可能 10-30 个 turn → 10-30 次 SQLite 查询）。
@@ -372,7 +382,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			}
 		}
 		return web.HistorySnapshot{
-			Messages:       channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap),
+			// REST 历史走**折叠视图**（区域窗口 + 工具轻字段化，方案 §3.2/§3.3）：
+			// 每个 turn 只下发尾部 HistoryRegionWindow 个区域 + RegionsBefore 声明，
+			// 详情经 /api/iteration_detail 按需取回。CLI/RPC（get_history）仍走
+			// ConvertMessagesToHistoryWithIterations（foldView=false，零变化）。
+			Messages:       channel.ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, true),
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,
@@ -380,6 +394,67 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			HasMore:        hasMore,
 			OldestID:       oldestID,
 		}, nil
+	}
+	// POST /api/regions —— 内层区域分页取回（方案 §3.2 D2）：返回 `iteration < beforeIter`
+	// 的记录中**尾部 regionLimit 个展示区域**组成的段（区域原子 ⇒ 段边界永不对齐到
+	// 工具组中间），以及段外更早的区域数（0 = 已经到该 turn 头部）。
+	//
+	// 属主校验与 HistorySnapshot 同款：REST 入口已过 resolveAPISession → canAccessSession；
+	// 这里只做会话解析 + **会话库收口**（TenantSession.SessionService()，绝不用
+	// NewSessionService(主库) —— 那会读到主库的旧数据）。READ 路径不 touch tenant
+	// （与 HistorySnapshot 同一纪律：读不能改 last_active_at）。
+	callbacks.HistoryRegions = func(senderID string, sel web.SessionSelector, turnID uint64, beforeIter, regionLimit int) ([]protocol.HistoryIteration, int, error) {
+		if ag.MultiSession() == nil {
+			return nil, 0, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
+		if err != nil {
+			return nil, 0, err
+		}
+		tenantID := sess.TenantID()
+		if tenantID <= 0 {
+			return nil, 0, nil
+		}
+		recs, err := sess.SessionService().GetIterationHistoryBeforeRange(tenantID, turnID, beforeIter)
+		if err != nil {
+			return nil, 0, err
+		}
+		// 旧数据修复（2026-09-30 事故）：注入型工具对合并回段内迭代记录 —— 与
+		// 主历史快照（View 路径）同一锚定/去重实现，段边界与 pill 渲染两侧一致。
+		recs, err = legacySyntheticPairRepair(sess.SessionService(), tenantID, turnID, recs)
+		if err != nil {
+			return nil, 0, err
+		}
+		iterations, regionsBefore := historyRegionSegment(recs, regionLimit)
+		return iterations, regionsBefore, nil
+	}
+	// POST /api/iteration_detail —— 折叠视图的按需详情（方案 §3.3 D3）：一条迭代的
+	// **完整**工具详情（不折叠）。未命中返回 (zero, false, nil) —— 「不存在」是正常
+	// 业务结果，handler 据此 404（与属主校验失败同状态码，防探测）。
+	callbacks.IterationDetail = func(senderID string, sel web.SessionSelector, turnID uint64, iteration int) (protocol.HistoryIteration, bool, error) {
+		if ag.MultiSession() == nil {
+			return protocol.HistoryIteration{}, false, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
+		if err != nil {
+			return protocol.HistoryIteration{}, false, err
+		}
+		tenantID := sess.TenantID()
+		if tenantID <= 0 {
+			return protocol.HistoryIteration{}, false, nil
+		}
+		rec, found, err := sess.SessionService().GetIterationHistoryByNumber(tenantID, turnID, iteration)
+		if err != nil || !found {
+			return protocol.HistoryIteration{}, false, err
+		}
+		// 旧数据修复（2026-09-30 事故）：锚定到该迭代的注入型工具对补进详情
+		//（新数据由 Fix A 持久化，去重短路）。foldTools=false ⇒ 完整字段（这是
+		//「完整覆盖轻字段」的唯一来源）。
+		recs, err := legacySyntheticPairRepair(sess.SessionService(), tenantID, turnID, []sqlite.IterationRecord{rec})
+		if err != nil {
+			return protocol.HistoryIteration{}, false, err
+		}
+		return channel.MapIterationRecord(recs[0], false), true, nil
 	}
 	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, historyID int64) (web.RewindHistoryResult, error) {
 		return rewindWebHistory(ag, sel.Channel, sel.ChatID, historyID)
@@ -1072,25 +1147,27 @@ func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, erro
 // listTenantsByChannel lists all tenants for a given channel (e.g. "cli", "feishu").
 // Used by admin to browse sessions from other channels in the Web UI.
 // Returns the last user/assistant message as preview.
+// v71（每会话一个 DB）：preview 改读 tenants.preview 列（写入路径维护 ——
+// TenantSession 的 append 钩子 / 迁移回填 / rewind/clear 重算都写这一列）。
+// 旧子查询 JOIN session_messages（拆库后主库没有消息数据 —— 消息在每会话
+// 独立库里，跨库 JOIN 不可能）。
 func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
 	// Single query with correlated subquery for preview — avoids N+1 pattern.
 	rows, err := db.Query(`
-		SELECT t.id, t.chat_id, t.created_at, t.last_active_at,
-									COALESCE((SELECT uc.label FROM user_chats uc
-										WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
-										ORDER BY uc.rowid DESC LIMIT 1),
-										(SELECT uc.label FROM user_chats uc
-										WHERE uc.chat_id = t.chat_id AND uc.label != ''
-										ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
-		       COALESCE((SELECT uc.sort_order FROM user_chats uc
-		                 WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
-		                 ORDER BY uc.rowid DESC LIMIT 1), 0) AS sort_order,
-		       (SELECT sm.content FROM session_messages sm
-		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
-		        ORDER BY sm.id DESC LIMIT 1) AS preview
-		FROM tenants t
-		WHERE t.channel = ? AND t.chat_id != '_shared'
-		ORDER BY t.last_active_at DESC`, channel)
+  SELECT t.id, t.chat_id, t.created_at, t.last_active_at,
+          COALESCE((SELECT uc.label FROM user_chats uc
+           WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
+           ORDER BY uc.rowid DESC LIMIT 1),
+           (SELECT uc.label FROM user_chats uc
+           WHERE uc.chat_id = t.chat_id AND uc.label != ''
+           ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
+         COALESCE((SELECT uc.sort_order FROM user_chats uc
+                  WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
+                  ORDER BY uc.rowid DESC LIMIT 1), 0) AS sort_order,
+         COALESCE(t.preview, '') AS preview
+  FROM tenants t
+  WHERE t.channel = ? AND t.chat_id != '_shared'
+  ORDER BY t.last_active_at DESC`, channel)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants by channel: %w", err)
 	}
@@ -1169,15 +1246,17 @@ func listDistinctChannels(db *sql.DB) ([]string, error) {
 // channels they have interacted with (e.g. feishu, qq).
 // Joins with user_chats to filter by sender_id since tenants table does
 // not have a sender_id column.
+// v71（每会话一个 DB）：preview 改读 tenants.preview 列（写入路径维护 ——
+// TenantSession 的 append 钩子 / 迁移回填 / rewind/clear 重算都写这一列）。
+// 旧子查询 JOIN session_messages（拆库后主库没有消息数据 —— 消息在每会话
+// 独立库里，跨库 JOIN 不可能）。
 func listTenantsForSender(db *sql.DB, senderID, currentChatID string) ([]web.UserChatWithPreview, error) {
 	rows, err := db.Query(`
 		SELECT DISTINCT t.id, t.chat_id, t.channel, t.last_active_at,
 		       COALESCE((SELECT uc2.label FROM user_chats uc2
 			         WHERE uc2.channel = t.channel AND uc2.chat_id = t.chat_id AND uc2.label != ''
 			         ORDER BY uc2.rowid DESC LIMIT 1), '') AS label,
-		       (SELECT sm.content FROM session_messages sm
-		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
-		        ORDER BY sm.id DESC LIMIT 1) AS preview
+		       COALESCE(t.preview, '') AS preview
 		FROM tenants t
 		INNER JOIN user_chats uc ON t.channel = uc.channel AND t.chat_id = uc.chat_id
 		WHERE uc.sender_id = ? AND t.channel != 'web' AND t.chat_id != '_shared'
@@ -2186,4 +2265,91 @@ func shareToProtocol(a *sqlite.SharedArtifact) *protocol.SharedArtifact {
 		ExpiresAt:   a.ExpiresAt,
 		RevokedAt:   a.RevokedAt,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Fold view（docs/plan-history-fold-windowing.md §3.2 D2）：区域段取回
+// ---------------------------------------------------------------------------
+
+const (
+	// DefaultHistoryRegionRequest = POST /api/regions 未指定 region_limit 时
+	// 单次返回的区域数（= 与初始窗口 HistoryRegionWindow 同量级）。
+	DefaultHistoryRegionRequest = 100
+	// MaxHistoryRegionRequest = 单次请求服务端返回的区域数**硬上限**（R3：巨型
+	// 区域段单次过大）。客户端传多大都被钳到这里。
+	MaxHistoryRegionRequest = 100
+)
+
+// legacySyntheticPairRepair 为折叠视图的按需取回端点（/api/regions、
+// /api/iteration_detail）补 Fix A 之前旧数据缺的注入型工具：pre_turn_end /
+// bg task / cron 这类工具对落进了 session_messages，但旧代码下
+// iteration_history 的 tools JSON 永远缺它（注入发生在迭代快照落库之后，
+// 2026-09-30 chat_D3D0 turn 19 事故）。从 session_messages 的工具对按注入
+// 时间戳锚定补回 —— 锚定/去重与 View 主路径（channel.MergeSyntheticToolPairs）
+// 同一实现：主快照与本段对同一 recs 合并出同一 tools JSON ⇒ 区域边界与
+// pill 详情两侧渲染一致。
+//
+// 新数据（Fix A 已把工具持久化进 tools JSON）经 (name, detail) 去重自动
+// 短路 —— 零合并零改动，copy-on-write 返回原切片。
+//
+// 错误冒泡（绝不静默降级）：修复查询失败让端点显式失败，而不是返回与主
+// 快照不一致的未修复段。
+func legacySyntheticPairRepair(svc *sqlite.SessionService, tenantID int64, turnID uint64, recs []sqlite.IterationRecord) ([]sqlite.IterationRecord, error) {
+	rows, err := svc.GetSyntheticPairRowsByTurn(tenantID, turnID)
+	if err != nil {
+		return nil, err
+	}
+	pairs := channel.CollectSyntheticToolPairs(rows, channel.BuildToolResults(rows))
+	if len(pairs) == 0 {
+		return recs, nil
+	}
+	anchors, err := svc.GetIterationAnchorsByTurn(tenantID, turnID)
+	if err != nil {
+		return nil, err
+	}
+	return channel.MergeSyntheticPairsIntoSegment(recs, pairs, anchors), nil
+}
+
+// historyRegionSegment 从「严格早于 beforeIter 的迭代记录（升序）」中取**尾部**
+// regionLimit 个展示区域组成的段，返回 (段内迭代, 段外更早区域数)。
+//
+// 语义（方案 §3.2）：
+//   - 区域总数 ≤ regionLimit ⇒ 全部返回 + regionsBefore=0（已到该 turn 头部）；
+//   - 否则取尾部 regionLimit 个区域，regionsBefore = 总数 - regionLimit。
+//
+// 区域原子：切分按**区域覆盖的迭代个数之和**取下标（与 channel.RegionWindow 同一
+// 手法），任何输入下都严格落在区域边界上 —— 绝不从折叠工具组中间切开。
+// 段内迭代为**轻字段形态**（MapIterationRecord(rec, true)，ToolsFolded 标记），
+// 详情由 /api/iteration_detail 按需补齐。
+//
+// regionLimit <= 0 ⇒ DefaultHistoryRegionRequest；> MaxHistoryRegionRequest ⇒ 钳到上限。
+func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]protocol.HistoryIteration, int) {
+	limit := regionLimit
+	if limit <= 0 {
+		limit = DefaultHistoryRegionRequest
+	}
+	if limit > MaxHistoryRegionRequest {
+		limit = MaxHistoryRegionRequest
+	}
+	if len(recs) == 0 {
+		return nil, 0
+	}
+	runs := channel.RegionRuns(recs)
+	if len(runs) <= limit {
+		return foldHistoryIterations(recs), 0
+	}
+	start := 0
+	for _, run := range runs[:len(runs)-limit] {
+		start += run.IterationCount
+	}
+	return foldHistoryIterations(recs[start:]), len(runs) - limit
+}
+
+// foldHistoryIterations 把一段记录映射为折叠视图的迭代形态（轻字段 + ToolsFolded）。
+func foldHistoryIterations(recs []sqlite.IterationRecord) []protocol.HistoryIteration {
+	out := make([]protocol.HistoryIteration, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, channel.MapIterationRecord(rec, true))
+	}
+	return out
 }

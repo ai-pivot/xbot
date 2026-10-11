@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -266,7 +265,9 @@ func (t *RemoteTransport) SendMessage(msg protocol.InboundMessage) error {
 	t.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	defer t.conn.SetWriteDeadline(time.Time{})
 	msgType := "message"
-	if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
+	// /stop 是 /cancel 的别名（飞书 CoT「停止生成」按钮发 "/Stop" 消息）——
+	// 与 agent.Run 的入站拦截用同一谓词，见 isCancelCommand。
+	if isCancelCommand(msg.Content) {
 		msgType = "cancel"
 	}
 	outMsg := protocol.WSClientMessage{

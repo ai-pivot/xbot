@@ -135,6 +135,15 @@ type MultiTenantSession struct {
 	toolIndexFingerprints map[int64]string          // per-tenant catalog fingerprint (guarded by mu)
 	toolIndexPrevNames    map[int64]map[string]bool // per-tenant previous tool name set (guarded by mu)
 	onSessionEvict        func(sessionKey string)   // 会话被清理时的回调
+
+	// ── 每会话一个 DB（one session, one DB，v71）──────────────────────────────
+	// sessionDBs 是打开的会话库池（tenantID → 会话库）。**无 LRU 上限** —— 活跃
+	// 会话的库永不关闭（用户要求支持任意数量并发会话）；生命周期 = TenantSession
+	// 缓存生命周期（驱逐/销毁/停机关库）+ 孤儿清扫（无缓存 TenantSession 且 1h
+	// 无访问的直连打开）。见 sessiondb.go。
+	sessionDBs   map[int64]*sessionDBEntry // tenantID → open session DB
+	sessionDBMu  sync.Mutex                // guards sessionDBs（锁序：m.mu → sessionDBMu，绝不反向）
+	sessionDBDir string                    // 会话库根目录（= 主库所在目录；db_path 相对此解析）
 }
 
 // NewMultiTenant creates a new multi-tenant session manager
@@ -165,6 +174,12 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		cleanupStopCh:         make(chan struct{}),
 		shutdownCtx:           shutdownCtx,
 		shutdownCancel:        shutdownCancel,
+		// 每会话一个 DB（v71）：会话库池 + 根目录（db_path 相对主库目录解析）。
+		// sessionSvc 仍指向主库 —— 它只服务**未拆分**的遗留路径（storage/migrate.go
+		// 的旧文件迁移工具）；会话数据的读写全部经 TenantSession.sessionSvc（会话库，
+		// GetOrCreateSession 里绑定）与 SessionServiceFor（直接构造点收口）。
+		sessionDBs:   make(map[int64]*sessionDBEntry),
+		sessionDBDir: filepath.Dir(dbPath),
 	}
 
 	// 应用配置选项
@@ -351,17 +366,28 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 			memProvider = flat.New(tenantID, memDir)
 		}
 	}
+	// 每会话一个 DB（v71）：打开（含惰性迁移）该会话的独立库，TenantSession 的
+	// 消息读写（sessionSvc）全部落到会话库 —— 与其他会话的写真正并行（独立
+	// writeMu + WAL）。打开+迁移在 sessionDBMu 下串行（每会话一次的低频操作；
+	// 本慢路径本就持有 m.mu 全局串行，不引入新的阻塞面）。锁序：m.mu →
+	// sessionDBMu（DestroySession 同序，绝不反向）。
+	sessionDB, err := m.sessionDB(tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("open session db for tenant %d: %w", tenantID, err)
+	}
+
 	// Create tenant session
 	sess = &TenantSession{
 		tenantID:   tenantID,
 		channel:    channel,
 		chatID:     chatID,
-		sessionSvc: m.sessionSvc,
-		memorySvc:  m.memorySvc,
+		sessionSvc: sqlite.NewSessionService(sessionDB), // 会话库（消息/迭代数据）
+		tenantSvc:  m.tenantSvc,                         // 主库（tenants 注册表：CWD/preview）
+		memorySvc:  m.memorySvc,                         // 主库（tenant_state/long_term/event_history）
 		memory:     memProvider,
 		mcpManager: mcpManager,
 		lastActive: time.Now(),
-		cwd:        loadPersistedCWD(m.sessionSvc, tenantID),
+		cwd:        loadPersistedCWD(m.tenantSvc, tenantID),
 	}
 
 	m.tenantCache[key] = sess
@@ -575,6 +601,11 @@ func (m *MultiTenantSession) IndexToolsForTenant(ctx context.Context, tenantID i
 func (m *MultiTenantSession) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// 每会话一个 DB（v71）：停机先关全部会话库（checkpoint WAL 已提交内容进
+	// 主文件 —— gotcha「停机必须 checkpoint」对每个会话库同样成立），再关主库。
+	// closeAllSessionDBs 自带 sessionDBMu（锁序 m.mu → sessionDBMu，与
+	// GetOrCreateSession/DestroySession 一致，无反向获取）。
+	m.closeAllSessionDBs()
 	if m.db != nil {
 		return m.db.Close()
 	}
@@ -712,18 +743,55 @@ func (m *MultiTenantSession) cleanupInactiveResources() {
 		// CleanupInactiveMCPs 和 Close 都包含 I/O，在锁外执行
 		item.sess.CleanupInactiveMCPs()
 		item.sess.Close()
+		// 每会话一个 DB（v71）：TenantSession 驱逐 = 其会话库关闭（checkpoint +
+		// close + 出池）。活跃会话的库永不关闭（无 LRU 上限 —— 用户要求支持任意
+		// 数量并发会话）；只有 24h 空闲驱逐 / 显式销毁 / 停机才关库。下次
+		// GetOrCreateSession / SessionServiceFor 会重新打开（惰性迁移幂等，migrated=1
+		// 直接跳过复制）。
+		m.evictSessionDB(item.key, item.sess.TenantID())
 		log.WithField("session", item.key).Info("Removed session from cache due to inactivity")
 		// 通知 Registry 清理该会话的激活状态
 		if onEvict != nil {
 			onEvict(item.key)
 		}
 	}
+
+	// 孤儿清扫：不经 TenantSession 打开的会话库（SessionServiceFor 直连路径，如
+	// usage 查询）超过 1h 无访问且无缓存 TenantSession → 关闭（fd 卫生；活跃
+	// 会话不受影响 —— 它们的库由上面的驱逐路径管理，且任何访问都刷新 lastAccess）。
+	// ⛔ 锁序：sweepIdleSessionDBs 内部绝不持 sessionDBMu 获取 m.mu（AB-BA 死锁，
+	// 见其注释）。
+	m.sweepIdleSessionDBs()
+}
+
+// evictSessionDB 在 TenantSession 驱逐后关闭其会话库，带「重建守卫」。
+//
+// ⛔ 竞态修复：缓存移除（cleanupInactiveResources 的 m.mu.Lock 段）与本调用
+// 之间，GetOrCreateSession 可能重建该会话（慢路径持 m.mu 全程 → sessionDB()
+// map 命中 → 新 TenantSession 复用池里的库）—— 无守卫地关库 = 新会话永久绑在
+// 已关的库上（sessionSvc 持有已 close 的 *sqlite.DB，直到下次驱逐才恢复）。
+// 守卫：持 m.mu.RLock 跨「重查 + 关库」，与 GetOrCreateSession 慢路径（m.mu.Lock
+// 全程）互斥 —— 窗口关闭。锁序 m.mu → sessionDBMu（与 GetOrCreateSession 同序，
+// 绝不反向）。
+func (m *MultiTenantSession) evictSessionDB(sessionKey string, tenantID int64) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, recreated := m.tenantCache[sessionKey]; recreated {
+		// 驱逐与关库之间被 GetOrCreateSession 重建 —— 新会话拥有池里的库，
+		// 跳过关库（它自己的驱逐周期会再关）。
+		return
+	}
+	m.closeSessionDB(tenantID)
 }
 
 // DestroySession completely removes a tenant session: cache eviction, DB deletion
 // (with CASCADE to messages), and MCP cleanup. Used when SubAgent sessions end
 // their lifecycle to prevent stale data leaking into future sessions with the
 // same role/instance key.
+//
+// v71（每会话一个 DB）：先删会话库文件（checkpoint + close + 删文件 + -wal/-shm，
+// 空间立即回收 —— db_path 从注册表读，必须在删除 tenants 行**之前**），再删
+// 主库 tenants 行（CASCADE 清主库遗留的 session_messages/iteration_history 旧数据）。
 func (m *MultiTenantSession) DestroySession(channel, chatID string) error {
 	key := sessKey(channel, chatID)
 
@@ -741,12 +809,17 @@ func (m *MultiTenantSession) DestroySession(channel, chatID string) error {
 		if err != nil || tenantID == 0 {
 			return nil // doesn't exist, nothing to do
 		}
+		// 删会话库文件（读 db_path 必须在删 tenants 行之前 —— 注册表是路径唯一权威）。
+		m.deleteSessionDBFile(tenantID)
 		_ = m.tenantSvc.DeleteTenant(tenantID)
 		return nil
 	}
 
 	// Close MCP connections outside lock
 	sess.Close()
+
+	// 删会话库文件（checkpoint + close + 删文件；db_path 读注册表，先于删行）。
+	m.deleteSessionDBFile(sess.TenantID())
 
 	// Delete from DB (CASCADE removes all messages)
 	_ = m.tenantSvc.DeleteTenant(sess.TenantID())
@@ -807,7 +880,17 @@ func (m *MultiTenantSession) ClearMemory(ctx context.Context, channel, chatID, t
 
 	switch targetType {
 	case "session":
-		appendErr("session", m.sessionSvc.Clear(tenantID))
+		// 每会话一个 DB（v71）：session_messages/iteration_history 在会话库。
+		svc, err := m.SessionServiceFor(tenantID)
+		if err != nil {
+			appendErr("session", fmt.Errorf("open session db: %w", err))
+		} else {
+			appendErr("session", svc.Clear(tenantID))
+			// 清空后 preview 也清（主库 tenants.preview —— 跨会话列表读这一列）。
+			if sdb, dbErr := m.sessionDB(tenantID); dbErr == nil {
+				m.recomputeSessionPreview(sdb, tenantID)
+			}
+		}
 		// Evict cached session so next request loads fresh state
 		sessionKey := sessKey(channel, chatID)
 		m.mu.Lock()
@@ -841,7 +924,15 @@ func (m *MultiTenantSession) ClearMemory(ctx context.Context, channel, chatID, t
 			appendErr("archival", m.archivalSvc.ClearAll(ctx, tenantID))
 		}
 	case "reset_all":
-		appendErr("session", m.sessionSvc.Clear(tenantID))
+		// 每会话一个 DB（v71）：session_messages/iteration_history 在会话库。
+		if svc, err := m.SessionServiceFor(tenantID); err != nil {
+			appendErr("session", fmt.Errorf("open session db: %w", err))
+		} else {
+			appendErr("session", svc.Clear(tenantID))
+			if sdb, dbErr := m.sessionDB(tenantID); dbErr == nil {
+				m.recomputeSessionPreview(sdb, tenantID)
+			}
+		}
 		appendErr("core_all", m.coreSvc.ClearAllBlocks(tenantID, userID))
 		appendErr("long_term", m.memorySvc.ClearLongTerm(ctx, tenantID))
 		appendErr("event_history", m.memorySvc.ClearHistory(ctx, tenantID))
@@ -881,9 +972,11 @@ func (m *MultiTenantSession) GetMemoryStats(ctx context.Context, channel, chatID
 		return stats
 	}
 
-	// Session message count
-	if count, err := m.sessionSvc.GetMessagesCount(tenantID); err == nil {
-		stats["session"] = fmt.Sprintf("%d 条消息", count)
+	// Session message count（会话库 —— v71 每会话一个 DB）
+	if svc, err := m.SessionServiceFor(tenantID); err == nil {
+		if count, err := svc.GetMessagesCount(tenantID); err == nil {
+			stats["session"] = fmt.Sprintf("%d 条消息", count)
+		}
 	}
 
 	// Core memory blocks
@@ -919,6 +1012,10 @@ func (m *MultiTenantSession) GetMemoryStats(ctx context.Context, channel, chatID
 // iteration_history (v59: per-iteration input/cached tokens + model).
 // Read-only: resolves the tenant via GetTenantIDByChannelChatID (no tenant
 // creation side effect). Returns (nil, nil) when the session doesn't exist.
+//
+// v71（每会话一个 DB）：iteration_history 在会话库；tenant_state 水位 +
+// tenants 元数据（CurrentModel/SessionCreatedAt/SessionLastActive）从主库补齐
+// （GetTenantUsageStats 只查会话库的 iteration_history）。
 func (m *MultiTenantSession) GetSessionUsageStats(channel, chatID string, recentLimit int) (*sqlite.TenantUsageStats, error) {
 	tenantID, err := m.tenantSvc.GetTenantIDByChannelChatID(channel, chatID)
 	if err != nil {
@@ -927,7 +1024,32 @@ func (m *MultiTenantSession) GetSessionUsageStats(channel, chatID string, recent
 	if tenantID == 0 {
 		return nil, nil
 	}
-	return m.sessionSvc.GetTenantUsageStats(tenantID, recentLimit)
+	svc, err := m.SessionServiceFor(tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("open session db for usage stats: %w", err)
+	}
+	stats, err := svc.GetTenantUsageStats(tenantID, recentLimit)
+	if err != nil {
+		return nil, err
+	}
+	if stats != nil {
+		m.fillUsageStatsFromMainDB(tenantID, stats)
+	}
+	return stats, nil
+}
+
+// fillUsageStatsFromMainDB 补齐 GetTenantUsageStats 不再从会话库读的字段
+// （tenant_state 水位 + tenants 元数据 —— 主库表）。失败静默（这些是展示性
+// 字段，缺省零值可接受）。
+func (m *MultiTenantSession) fillUsageStatsFromMainDB(tenantID int64, stats *sqlite.TenantUsageStats) {
+	conn := m.db.Conn()
+	if conn == nil {
+		return
+	}
+	_ = conn.QueryRow(`SELECT COALESCE(last_prompt_tokens, 0), COALESCE(last_completion_tokens, 0) FROM tenant_state WHERE tenant_id = ?`, tenantID).
+		Scan(&stats.LastPromptTokens, &stats.LastCompletionTokens)
+	_ = conn.QueryRow(`SELECT COALESCE(model, ''), COALESCE(created_at, ''), COALESCE(last_active_at, '') FROM tenants WHERE id = ?`, tenantID).
+		Scan(&stats.CurrentModel, &stats.SessionCreatedAt, &stats.SessionLastActive)
 }
 
 // GetSessionUsageBuckets aggregates a session's usage into fixed-width time
@@ -945,7 +1067,11 @@ func (m *MultiTenantSession) GetSessionUsageBuckets(channel, chatID string, buck
 	if tenantID == 0 {
 		return nil, nil
 	}
-	return m.sessionSvc.GetTenantUsageBuckets(tenantID, bucketSeconds, count, tzOffsetMinutes)
+	svc, err := m.SessionServiceFor(tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("open session db for usage buckets: %w", err)
+	}
+	return svc.GetTenantUsageBuckets(tenantID, bucketSeconds, count, tzOffsetMinutes)
 }
 
 // RewindHistory truncates a session at a stable user history node.
@@ -954,9 +1080,26 @@ func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int
 	if err != nil {
 		return llm.ChatMessage{}, 0, fmt.Errorf("get tenant: %w", err)
 	}
-	target, turnIdx, err := m.sessionSvc.RewindToHistoryID(tenantID, historyID)
+	// 每会话一个 DB（v71）：rewind 操作会话库（session_messages/iteration_history
+	// 截断）。tenant_state（主库）的 token 水位恢复由 TenantSession 层完成（跨库
+	// 无法原子 —— token 水位是派生缓存，下一条用户消息的 SaveContextTokens 自愈）。
+	svc, err := m.SessionServiceFor(tenantID)
+	if err != nil {
+		return llm.ChatMessage{}, 0, fmt.Errorf("open session db for rewind: %w", err)
+	}
+	target, turnIdx, promptTokens, err := svc.RewindToHistoryID(tenantID, historyID)
 	if err != nil {
 		return llm.ChatMessage{}, 0, err
+	}
+	// tenant_state 恢复（主库，尽力而为）：截断后剩余历史的最后一条用户消息的
+	// context_tokens。失败只 Warn —— 水位是派生缓存（GetLastContextTokens 从会话库
+	// session_messages.context_tokens 读，截断已一致），不阻塞 rewind。
+	if err := m.memorySvc.SetTokenState(context.Background(), tenantID, promptTokens, 0); err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("rewind: restore tenant_state token watermark failed (derived cache; self-heals on next message)")
+	}
+	// preview 重算（主库 tenants.preview）：截断后最新一条 user/assistant 消息变化。
+	if sdb, dbErr := m.sessionDB(tenantID); dbErr == nil {
+		m.recomputeSessionPreview(sdb, tenantID)
 	}
 	return target, turnIdx, nil
 }

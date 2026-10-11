@@ -141,6 +141,117 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRegions handles POST /api/regions — the INNER (display-region) pagination
+// endpoint of the fold view (docs/plan-history-fold-windowing.md §3.2 D2).
+//
+// Body: {channel, chat_id, turn_id, before_iteration, region_limit}.
+// Response: {iterations, regions_before}. It returns the next OLDER segment of a
+// turn's regions — segment boundaries always align with display regions, so a
+// folded tool group is never split; the iterations are the light (tools_folded)
+// shape, details come from /api/iteration_detail on demand.
+//
+// Deliberately NOT an SSE envelope: per-route seq and per-Run seq must not be
+// mixed — the client unions the segment into its existing window.
+func (wc *WebChannel) handleRegions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		Channel     string `json:"channel"`
+		ChatID      string `json:"chat_id"`
+		TurnID      uint64 `json:"turn_id"`
+		BeforeIter  int    `json:"before_iteration"`
+		RegionLimit int    `json:"region_limit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// turn_id + before_iteration 是「往哪个 turn、从哪一迭代往前取」的唯一坐标，
+	// 缺一不可：没有 before_iteration 就无从判断当前窗口边界（会重复下发或劈开区域）。
+	// region_limit 可省略（0 ⇒ 服务端默认；硬上限在 serverapp 侧钳制）。
+	if body.TurnID == 0 || body.BeforeIter <= 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "turn_id and before_iteration are required")
+		return
+	}
+	sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
+	if !ok {
+		return
+	}
+	if wc.callbacks.HistoryRegions == nil {
+		jsonErrorResponse(w, http.StatusNotImplemented, "history regions not available")
+		return
+	}
+	iterations, regionsBefore, err := wc.callbacks.HistoryRegions(senderID, sel, body.TurnID, body.BeforeIter, body.RegionLimit)
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"iterations":     iterations,
+		"regions_before": regionsBefore,
+	})
+}
+
+// handleIterationDetail handles POST /api/iteration_detail — the fold view's
+// on-demand detail path (docs/plan-history-fold-windowing.md §3.3 D3).
+//
+// Body: {channel, chat_id, turn_id, iteration} → {iteration: HistoryIteration}
+// with FULL tool details (summary/args/detail). The client merges it over the
+// light shape by iteration number (同号覆盖，迭代号不变)。
+//
+// 未命中一律 404 —— 与属主校验失败（未知会话/不可访问）同状态码，防迭代号探测。
+func (wc *WebChannel) handleIterationDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		Channel   string `json:"channel"`
+		ChatID    string `json:"chat_id"`
+		TurnID    uint64 `json:"turn_id"`
+		Iteration int    `json:"iteration"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.TurnID == 0 || body.Iteration <= 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "turn_id and iteration are required")
+		return
+	}
+	sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
+	if !ok {
+		return
+	}
+	if wc.callbacks.IterationDetail == nil {
+		jsonErrorResponse(w, http.StatusNotImplemented, "iteration detail not available")
+		return
+	}
+	iteration, found, err := wc.callbacks.IterationDetail(senderID, sel, body.TurnID, body.Iteration)
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		jsonErrorResponse(w, http.StatusNotFound, "iteration not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "iteration": iteration})
+}
+
 // handleHistoryRewind handles POST /api/history/rewind.
 func (wc *WebChannel) handleHistoryRewind(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

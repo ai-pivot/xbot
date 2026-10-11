@@ -395,16 +395,22 @@ live→committed 的迁移在**单次 React 渲染提交**内对用户可见，�
 ## 7. 文件结构
 
 ```
-web/src/chat/
-├── types.ts          // §3 全部类型 + 构造函数（nonEmpty/brand）～200 行
-├── normalize.ts      // normalizeEvent（唯一 null/格式点）～250 行
-├── reduce.ts         // 状态机转移表（全部业务规则）～300 行
-├── derive.ts         // deriveRows + Row 联合 ～150 行
-├── store.ts          // ChatStore（rAF 合并通知）～80 行
-└── useChat.ts        // useSyncExternalStore 绑定 hook ～60 行
+web/src/chat/  （实测量，2026-09-30）
+├── types.ts              // §3 全部类型 + 构造函数（nonEmpty/brand）～466 行
+├── normalize.ts          // normalizeEvent（唯一 null/格式点）～472 行
+├── reduce.ts             // 状态机转移表（全部业务规则）～1726 行
+├── derive.ts             // deriveRows + Row 联合 + 行 memo ～354 行
+├── integrate.ts          // historyToReplaced / rowsToChatMessages / liveProgressFromState（新旧边界）～400 行
+├── store.ts              // ChatStore（rAF 合并通知 / pause-resume）～107 行
+├── useChat.ts            // useSyncExternalStore 绑定 hook ～48 行
+└── useAgentChatState.ts  // AgentPanel 接线（normalize→dispatch + 渲染输出）～322 行
 ```
 
-总计 ~1040 行替换 3617 行；`useProgressStream`/`progressStore`/`messageStore`/4 个 ref guard 全部删除。渲染组件（MessageList/AssistantMessage/LiveIteration/GenUIBlock）改读 `Row` 联合，props 收窄。
+（设计时预估 ~1040 行；实际随 I1–I6 不变量、append-only union、幂等重放短路、
+[unreachable gap] 重载与行 memo 等加固而增长 —— 详见各文件顶部注释。）原计划删除的
+旧三文件（`useProgressStream`/`progressStore`/`messageStore`）当前**仍保留**：渲染源
+已迁到 `chat/reduce.ts` → `derive.ts` → `integrate.ts`，但旧 `MessageStore` 仍被
+`useChatMessages` 用作 history 缓存并喂 `history_replaced`；`useProgressStream`/`progressStore`/`messageStore`/4 个 ref guard 全部删除。渲染组件（MessageList/AssistantMessage/LiveIteration/GenUIBlock）改读 `Row` 联合，props 收窄。
 
 ## 8. 迁移策略（4 步，每步全绿）
 

@@ -27,6 +27,13 @@ type LLMFactory struct {
 	tenantSvc       *sqlite.TenantService // for per-session model restoration from DB
 	settingsSvc     *SettingsService
 
+	// sessionTokenResetter（v71 每会话一个 DB）：模型切换时清零会话库
+	// session_messages.context_tokens（重置 token 基线 —— 不同模型上下文大小
+	// 不同）。由 initServices 注入 MultiTenantSession.ResetSessionContextTokens
+	// （会话库路由）；tenant_state 的清零（主库）仍由 SetTenantSubscription 完成。
+	// nil（单测等未注入场景）= 跳过（token 基线留待下一条用户消息自愈）。
+	sessionTokenResetter func(channel, chatID string)
+
 	// Global defaults (no per-user override)
 	defaultLLM          llm.LLM
 	defaultModel        string
@@ -136,6 +143,18 @@ func (f *LLMFactory) SetSubscriptionSvc(svc *sqlite.LLMSubscriptionService) {
 // tenants table when the in-memory cache is empty (e.g. after server restart).
 func (f *LLMFactory) SetTenantSvc(svc *sqlite.TenantService) {
 	f.tenantSvc = svc
+}
+
+// SetSessionTokenResetter injects the model-switch token-baseline reset hook
+// (v71 per-session DB split). On a (subscription, model) change, SetSessionLLM /
+// SelectModel call it to clear the session DB's latest user-message
+// context_tokens (different models have different context sizes — the old
+// baseline would mislead usage display and compression triggers until the next
+// user message). Wired to MultiTenantSession.ResetSessionContextTokens at init;
+// nil (unit tests without a session stack) = skip (baseline self-heals on the
+// next user message).
+func (f *LLMFactory) SetSessionTokenResetter(fn func(channel, chatID string)) {
+	f.sessionTokenResetter = fn
 }
 
 // GetTenantSvc returns the TenantService used for per-session model restoration.
@@ -411,9 +430,39 @@ func (f *LLMFactory) SetSessionLLM(senderID, chatID, channel string, sub *sqlite
 		if model == "" {
 			return fmt.Errorf("SetSessionLLM: refusing to write an empty model for chat %s (subscription %s has no resolvable model)", chatID, sub.ID)
 		}
-		return f.tenantSvc.SetTenantSubscription(channel, chatID, sub.ID, model)
+		// F1 修复：old 值在写入前读取（写入后回读到的是新值，钩子恒不触发）。
+		oldSubID, oldModel, _ := f.tenantSvc.GetTenantSubscription(channel, chatID)
+		if err := f.tenantSvc.SetTenantSubscription(channel, chatID, sub.ID, model); err != nil {
+			return err
+		}
+		f.resetSessionTokenBaseline(channel, chatID, oldSubID, oldModel, sub.ID, model)
+		return nil
 	}
 	return nil
+}
+
+// resetSessionTokenBaseline clears the session DB's latest user-message
+// context_tokens when a session's (subscription, model) binding CHANGES (v71
+// per-session DB split). Different models have different context sizes — the old
+// baseline would mislead usage display and compression triggers until the next
+// user message. The tenant_state half (main DB) is cleared inside
+// SetTenantSubscription; this is the session_messages half (session DB, routed
+// via the sessionTokenResetter hook — nil in unit tests without a session
+// stack, where the baseline self-heals on the next user message anyway).
+//
+// ⛔ F1 修复（2026-09-30 CR 探针实证）：old 值必须由调用方在
+// SetTenantSubscription **写入前**读取并显式传入 —— 旧实现在写入之后回读
+// GetTenantSubscription，读到的已是新值 ⇒ old == new 恒成立 ⇒ 钩子从不触发
+// （死代码，注释/测试还声称它在工作）。判别测试：
+// TestModelSwitchResetsSessionDBTokenBaseline（修复前红：基线保持 120000 不清）。
+func (f *LLMFactory) resetSessionTokenBaseline(channel, chatID, oldSubID, oldModel, newSubID, newModel string) {
+	if f.sessionTokenResetter == nil {
+		return
+	}
+	if oldSubID == newSubID && oldModel == newModel {
+		return // unchanged binding — keep the baseline
+	}
+	f.sessionTokenResetter(channel, chatID)
 }
 
 // SetChatLLM is a no-op: per-session (subscription, model) lives in the tenants
@@ -900,9 +949,15 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 		return fmt.Errorf("SelectModel: model %q is disabled for subscription %s", model, subID)
 	}
 	if f.tenantSvc != nil && chatID != "" {
+		// F1 修复：old 值在写入前读取（写入后回读到的是新值，钩子恒不触发）。
+		// v71（每会话一个 DB）：模型变更时清零会话库的 token 基线（见
+		// resetSessionTokenBaseline 注释 —— tenant_state 半边在主库，由
+		// SetTenantSubscription 清；session_messages 半边在会话库，经本钩子）。
+		oldSubID, oldModel, _ := f.tenantSvc.GetTenantSubscription(channel, chatID)
 		if err := f.tenantSvc.SetTenantSubscription(channel, chatID, subID, model); err != nil {
 			return fmt.Errorf("SelectModel: persist tenant: %w", err)
 		}
+		f.resetSessionTokenBaseline(channel, chatID, oldSubID, oldModel, subID, model)
 	}
 	// Update "last used model" (user_default_model repurposed) so new sessions
 	// inherit this (sub, model) pair. This is NOT "setting a default subscription" —

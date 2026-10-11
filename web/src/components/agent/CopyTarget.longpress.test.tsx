@@ -130,4 +130,42 @@ describe('CopyTarget 长按（触屏抖动容差）', () => {
     expect(menu?.textContent ?? '').toContain('打开链接')
     expect(menu?.textContent ?? '').toContain('复制链接地址')
   })
+
+  // ── 触屏泄漏守护（2026-09-30 用户报告「有些情况手机无法划动虚拟视图的历史，
+  //    打开侧边栏后恢复正常」的根因）────────────────────────────────────────
+  //
+  // 根因：copy-backdrop（fixed inset-0 z-40 透明遮罩）的关闭路径只有 mousedown /
+  // wheel / contextmenu —— 触屏一个都不触发（触摸兼容模型：滑动不合成 mousedown，
+  // Android 长按后的抬手也不合成）。遮罩一旦泄漏：新手势命中遮罩（z-40 盖全屏），
+  // 遮罩 portal 到 body ⇒ 无滚动祖先 ⇒ 历史划不动；点侧边栏按钮的 tap 合成
+  // mousedown ⇒ 命中遮罩把它点掉 ⇒ click 落到按钮上 ⇒ 「打开侧边栏后恢复正常」。
+  //
+  // 修复两层（下面两条各自守护一层）：
+  //   a) 长按已开菜单后**继续拖动** >10px ⇒ 菜单自行关闭（长按 = 误触发）；
+  //   b) 遮罩补 onTouchStart ⇒ 任何新手势（tap/划）一触即关。
+  it('长按已开菜单后继续拖动 >10px ⇒ 菜单与遮罩必须关闭（长按 = 误触发，拖走 = 用户想滚动）', () => {
+    const node = renderTarget()
+    fireEvent.pointerDown(node, { pointerType: 'touch', clientX: 100, clientY: 100 })
+    advance(520)
+    expect(menuOpen(), '长按 480ms 后菜单应打开（前置条件）').not.toBeNull()
+
+    // 同一手势继续拖动 40px（超容差）：用户其实是在滚动 —— 菜单必须自行关闭，
+    // 否则遮罩泄漏、历史划不动（正是用户报告的症状）。
+    fireEvent.pointerMove(node, { pointerType: 'touch', clientX: 100, clientY: 140 })
+    expect(menuOpen(), '拖走后菜单必须关闭 —— 否则透明遮罩泄漏并冻结历史滚动').toBeNull()
+  })
+
+  it('菜单打开时新触摸落在遮罩上 ⇒ 遮罩关闭（划动/点击的第一下 touchstart 即关）', () => {
+    const node = renderTarget()
+    fireEvent.pointerDown(node, { pointerType: 'touch', clientX: 100, clientY: 100 })
+    advance(520)
+    const backdrop = document.querySelector('[data-testid="copy-backdrop"]')
+    expect(backdrop, '前置条件：菜单打开时透明遮罩应存在').not.toBeNull()
+
+    // 新手势（抬手后重新触摸历史区域）：touchstart 命中遮罩 —— 必须立即关闭。
+    // 这正是用户「划历史没反应」的那一下：遮罩不关，本次手势的目标被锁在遮罩上（划不动）。
+    fireEvent.touchStart(backdrop as HTMLElement)
+    expect(menuOpen(), '遮罩收到触摸必须关闭（划动的第一下就是 touchstart）').toBeNull()
+    expect(document.querySelector('[data-testid="copy-backdrop"]')).toBeNull()
+  })
 })

@@ -1347,11 +1347,9 @@ func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqli
 	if err != nil {
 		return 0, "", false
 	}
-	db := a.multiSession.DB()
-	if db == nil {
-		return 0, "", false
-	}
-	id, recordType, err := sqlite.NewSessionService(db).LatestAskControlRecord(sess.TenantID())
+	// v71（每会话一个 DB）：ask 控制记录在会话库 —— 经 TenantSession.SessionService()
+	// （绑定会话库）查询，绝不再 NewSessionService(主库)（那会读主库的旧数据）。
+	id, recordType, err := sess.SessionService().LatestAskControlRecord(sess.TenantID())
 	if err != nil {
 		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
 			Warn("latestAskControlRecord: query failed, trusting in-memory AskUser state")
@@ -1500,6 +1498,23 @@ func (a *Agent) sendPendingAskUserCancelAck(msg bus.InboundMessage) {
 	}
 }
 
+// isCancelCommand 判定一条入站消息是否是取消命令（/cancel 或其别名 /stop）。
+//
+// /stop 别名（2026-09-28）：飞书原生 CoT「停止生成」按钮的平台默认行为是向机器人
+// 发一条 "/Stop" 消息（大小写不定），而非 card.action.trigger —— 不识别它时该消息
+// 会落进普通消息路径被当成用户 prompt 发给 LLM。两个拦截点（agent.Run 的入站拦截 +
+// RemoteTransport.SendMessage 的 cancel 消息类型判定）统一用本谓词，保证别名行为
+// 与 /cancel 完全一致：大小写不敏感、容忍首尾空白、整词匹配（/stopped /stopall 等
+// 前缀相似词不误判）。
+func isCancelCommand(content string) bool {
+	switch strings.TrimSpace(strings.ToLower(content)) {
+	case "/cancel", "/stop":
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	cancelKey := msg.Channel + ":" + msg.ChatID
 	log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
@@ -1623,6 +1638,43 @@ func (a *Agent) finishActiveCancelState(cancelKey string, reqCtx context.Context
 	a.chatCancelCh.Delete(cancelKey)
 	reqCancel()
 	return wasCancelled
+}
+
+// cleanupStaleCancelState —— chatProcessLoop 的「最后防线」兜底（2026-10-01 cancel 无效事故）。
+//
+// 事故形态（chat_D3D036023DB7 复盘）：turn 3 在 10:40:47 的 LLM 请求发出后 Run 无声消失
+// （goroutine dump 无其栈、无 panic 日志、无错误日志），keepRunning 的收尾 defer
+// （finishActiveCancelState）未执行 ⇒ chatCancelCh 注册残留 ⇒ IsProcessingByChannel 永真
+// ⇒ busy 卡死 + 新消息永 queue；/cancel 信号发进无人拥有的 channel：cancelListener 消费
+// 一次信号后按 reqCtx.Done() 设计退出，后续信号 buffer full —— 用户四连 cancel 全部无效。
+//
+// 挂在 chatProcessLoop 函数体顶层 defer：任何退出路径（正常 return / panic 栈展开 —— panic
+// 会被外层 clipanic.Go("agent.chatWorker.processLoop") 的 Recover 捕获，但栈展开**先**跑本
+// defer / msgCh close）都执行。正常轮次 finishActiveCancelState 已删注册 ⇒ 这里检测不到
+// 残留 ⇒ 零副作用；检测到残留 = 异常泄漏 ⇒ 自愈：删注册（busy 判定恢复 false）+ close 通知
+// 残留 listener（case <-cancelCh 命中零值 → reqCancel 幂等 → 其 reqCtx.Done 分支随后退出）
+// + pendingCancel 清理 + busy 复位 + emit idle（前端解除 busy）。
+func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, lastSenderID string) {
+	a.cancelStateMu.Lock()
+	chVal, stillRegistered := a.chatCancelCh.LoadAndDelete(chatKey)
+	a.pendingCancel.Delete(chatKey)
+	a.cancelStateMu.Unlock()
+	if !stillRegistered {
+		return // 正常路径：keepRunning 收尾已清 —— 零副作用
+	}
+	log.WithField("cancel_key", chatKey).Warn(
+		"Stale cancel state after chatProcessLoop exit — self-healing (Run vanished without teardown)")
+	if ch, ok := chVal.(chan struct{}); ok {
+		close(ch)
+	}
+	if ss != nil {
+		ss.busy.Store(false)
+	}
+	if i := strings.Index(chatKey, ":"); i > 0 {
+		a.emitSessionState(protocol.SessionEvent{
+			Channel: chatKey[:i], ChatID: chatKey[i+1:], Action: "idle", SenderID: lastSenderID,
+		})
+	}
 }
 
 // dispatchWaitingUser 把 WaitingUser 出站消息投递到 bus，返回是否真的送达。
@@ -1943,6 +1995,11 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.userSys.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
 	a.userSys.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
 	a.userSys.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
+	// v71（每会话一个 DB）：模型切换时清零会话库的 token 基线（session_messages
+	// .context_tokens —— 不同模型上下文大小不同）。tenant_state 半边（主库）由
+	// SetTenantSubscription 清；session_messages 半边（会话库）经本钩子路由。
+	// nil（单测未注入）= 跳过（基线留待下一条用户消息自愈）。
+	a.userSys.llmFactory.SetSessionTokenResetter(multiSession.ResetSessionContextTokens)
 
 	// 初始化上下文管理器
 	a.contextManagerConfig = &ContextManagerConfig{
@@ -2804,11 +2861,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			return ctx.Err()
 		case msg := <-a.bus.Inbound:
 
-			// /cancel 拦截：不进入 chatWorker 队列，直接发 cancel 信号
-			// cancel key 仅用 channel:chatID（不含 senderID），因为同一个 chat
-			// 同时只有一个活跃请求（chatQueue 串行化），且 bg task / cron 等
+			// /cancel（及其别名 /stop）拦截：不进入 chatWorker 队列，直接发 cancel 信号。
+			// /stop 是飞书 CoT「停止生成」按钮的平台默认命令（发 "/Stop" 消息），
+			// 见 isCancelCommand 注释。cancel key 仅用 channel:chatID（不含 senderID），
+			// 因为同一个 chat 同时只有一个活跃请求（chatQueue 串行化），且 bg task / cron 等
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
-			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
+			if isCancelCommand(msg.Content) {
 				a.interceptCancel(msg)
 				acknowledgeInboundDelivery(msg, bus.DeliveryResult{})
 				continue
@@ -3262,6 +3320,14 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 	}()
 
 	var lastSenderID string // 记录最后活跃的 senderID
+
+	// 最后防线（2026-10-01 cancel 无效事故）：chatProcessLoop 以任何方式退出（正常 return /
+	// panic 栈展开 / msgCh close）时检测 cancel state 残留并自愈 —— Run 无声消失时
+	// keepRunning 的收尾不会执行，注册残留会让 busy 永卡 + /cancel 永无效。
+	// 闭包捕获（defer 参数会立即求值，lastSenderID 要延迟到退出时读取）。
+	defer func() {
+		a.cleanupStaleCancelState(chatKey, ss, lastSenderID)
+	}()
 
 	for msg := range ch {
 		// Shadow-queue dequeue: pop the matching entry and broadcast the new
@@ -5007,7 +5073,10 @@ func (a *Agent) injectPeerMessage(targetSessionKey, content string) string {
 
 // allowedTools 为工具白名单，为空时使用所有工具（除 SubAgent）
 func (a *Agent) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, roleName, instance, model string) (string, error) {
-	cfg := a.buildSubAgentRunConfig(parentCtx.Ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, model)
+	cfg, err := a.buildSubAgentRunConfig(parentCtx.Ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, model)
+	if err != nil {
+		return "", err
+	}
 	out := Run(parentCtx.Ctx, cfg)
 	if out.Error != nil {
 		return out.Content, out.Error

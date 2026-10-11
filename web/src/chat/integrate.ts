@@ -143,12 +143,17 @@ export function historyToReplaced(
     // 后端按 turn 尾部截断迭代（历史响应有界化）⇒ 丢弃数量必须透传到渲染层，
     // 由 AssistantMessage 显示「更早的 N 个迭代」，绝不静默缺块。
     const itsTruncated = slot.assistants.reduce((n, a) => n + (a.iterationsTruncated ?? 0), 0)
+    // 该 turn 更早未下发的展示区域数（`regions_before`）—— 取 **max** 而非 sum：
+    // 它是**turn 级**权威计数，一个 turn 的多个 assistant 行（异常历史/压缩快照）
+    // 各自携带同一个 turn 级数字，相加会翻倍（服务端每个 turn 只算一次区域数）。
+    const regionsBeforeRaw = slot.assistants.reduce((n, a) => Math.max(n, a.regionsBefore ?? 0), 0)
+    const regionsBefore = regionsBeforeRaw > 0 ? regionsBeforeRaw : undefined
     const nonEmptyIts = nonEmptyArr(iterations)
     const payload =
       nonEmptyIts !== null
-        ? commitViaFold(nonEmptyIts, lastContent, itsTruncated, compactions)
+        ? commitViaFold(nonEmptyIts, lastContent, itsTruncated, compactions, regionsBefore)
         : nonEmptyStr(lastContent) !== null
-          ? commitViaText(nonEmptyStr(lastContent)!, [], compactions)
+          ? commitViaText(nonEmptyStr(lastContent)!, [], compactions, regionsBefore)
           : null
     turns.push({
       id,
@@ -206,6 +211,9 @@ function snapshotToLive(live: ProgressSnapshot): LiveSnapshot {
     content: live.streamContent || live.content || '',
     reasoning: live.reasoningStreamContent || '',
     iterations: live.iterationHistory ?? [],
+    // busy 快照折叠视图的区域窗口声明（live 闭环）—— live/frozen 行顶部的
+    // 「更早区域」分隔条数据源（与 committed 的 payload.regionsBefore 同语义）。
+    regionsBefore: live.iterationRegionsBefore,
     activeTools: live.activeTools ?? [],
     streamingTools: live.streamingTools ?? [],
     genui: live.genuiContent ?? '',
@@ -300,6 +308,7 @@ function rowToChatMessage(r: Row): ChatMessage {
         timestamp: '',
         isPartial: true,
         turnID: r.turnID,
+        regionsBefore: r.regionsBefore,
       }
     case 'frozen':
       return {
@@ -314,6 +323,7 @@ function rowToChatMessage(r: Row): ChatMessage {
         // 进行中信号；frozen 行不得占用 live 槽位 / 抑制 busy 占位符）。
         frozen: true,
         turnID: r.turnID,
+        regionsBefore: r.regionsBefore,
       }
     case 'committed':
       return {
@@ -328,6 +338,7 @@ function rowToChatMessage(r: Row): ChatMessage {
         isPartial: false,
         turnID: r.turnID,
         persisted: true,
+        regionsBefore: r.regionsBefore,
         // 命令回复（standalone 段）的「无 turn」标记必须透传到渲染层 ——
         // `bindTurnIDs` 据此跳过绑定，避免与 live 行撞虚拟列表 key（CI 实证尺寸缓存
         // 串味 → 总高翻倍 → 命令输出被推到可视区之上）。

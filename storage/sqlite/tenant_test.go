@@ -341,7 +341,14 @@ func TestTenantService_ListTenants_IncludesSubscription(t *testing.T) {
 	}
 }
 
-func TestTenantService_SetTenantSubscription_ClearsTokenSnapshotOnlyOnChange(t *testing.T) {
+// TestTenantService_SetTenantSubscription_ClearsTokenStateOnlyOnChange — v71
+// （每会话一个 DB）契约：模型切换时 SetTenantSubscription 只清主库 tenant_state
+// （token 水位）；session_messages.context_tokens 的清零已移出（session_messages
+// 在会话库，本方法只操作主库）—— 由 LLMFactory 的 sessionTokenResetter 钩子
+// 经 MultiTenantSession.ResetSessionContextTokens 清会话库（见 llm_factory.go
+// 的 resetSessionTokenBaseline）。本测试守护主库半边：同 (sub, model) 重复设置
+// 不清；模型变更清 tenant_state；session_messages 不被本方法触碰。
+func TestTenantService_SetTenantSubscription_ClearsTokenStateOnlyOnChange(t *testing.T) {
 	db, err := Open(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -367,28 +374,36 @@ func TestTenantService_SetTenantSubscription_ClearsTokenSnapshotOnlyOnChange(t *
 		t.Fatalf("set token state: %v", err)
 	}
 
+	// 同 (sub, model) 重复设置：不清 token_state。
 	if err := tenantSvc.SetTenantSubscription("web", "chat-1", "sub-1", "model-1"); err != nil {
 		t.Fatalf("repeat same subscription: %v", err)
 	}
-	assertTenantTokenSnapshot(t, db, tenantID, 12345, 678, 12345)
+	assertTenantTokenState(t, db, tenantID, 12345, 678)
 
+	// 模型变更：清 tenant_state（主库半边）。
 	if err := tenantSvc.SetTenantSubscription("web", "chat-1", "sub-1", "model-2"); err != nil {
 		t.Fatalf("switch model: %v", err)
 	}
-	assertTenantTokenSnapshot(t, db, tenantID, 0, 0, 0)
+	assertTenantTokenState(t, db, tenantID, 0, 0)
+
+	// session_messages.context_tokens 不被本方法触碰（v71：清零移到 LLMFactory
+	// 的 sessionTokenResetter —— 会话库半边，由 session 层测试守护）。
+	contextTokens, err := NewSessionService(db).GetLastUserMessageContextTokens(tenantID)
+	if err != nil {
+		t.Fatalf("get user context tokens: %v", err)
+	}
+	if contextTokens != 12345 {
+		t.Fatalf("context_tokens = %d, want 12345 (SetTenantSubscription must not touch session_messages — moved to the session-DB resetter)", contextTokens)
+	}
 }
 
-func assertTenantTokenSnapshot(t *testing.T, db *DB, tenantID, wantPrompt, wantCompletion, wantContext int64) {
+func assertTenantTokenState(t *testing.T, db *DB, tenantID, wantPrompt, wantCompletion int64) {
 	t.Helper()
 	prompt, completion, err := NewMemoryService(db).GetTokenState(context.Background(), tenantID)
 	if err != nil {
 		t.Fatalf("get token state: %v", err)
 	}
-	contextTokens, err := NewSessionService(db).GetLastUserMessageContextTokens(tenantID)
-	if err != nil {
-		t.Fatalf("get user context tokens: %v", err)
-	}
-	if prompt != wantPrompt || completion != wantCompletion || contextTokens != wantContext {
-		t.Fatalf("snapshot=(%d,%d,%d), want (%d,%d,%d)", prompt, completion, contextTokens, wantPrompt, wantCompletion, wantContext)
+	if prompt != wantPrompt || completion != wantCompletion {
+		t.Fatalf("token state=(%d,%d), want (%d,%d)", prompt, completion, wantPrompt, wantCompletion)
 	}
 }

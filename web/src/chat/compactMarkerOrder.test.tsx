@@ -203,3 +203,56 @@ describe('压缩点穿透历史管线', () => {
     expect(row?.compactions?.[0].afterIteration).toBe(1)
   })
 })
+
+// ─── C1：窗口外压缩点挂起（2026-10-01 用户报告「渲染很多情况都是错的」的修复守护） ───
+// 区域窗口化（regionsBefore>0 折叠）后：afterIteration 落在**已加载窗口之前**（属于
+// 未加载区域）的压缩点，anchor 扫描（it.iteration <= afterIteration）在窗口内找不到
+// 任何块 ⇒ fallback anchor=0 ⇒ 渲染在 leading（窗口顶）——冒充「turn 开头压缩」：
+// 时间线错乱（压缩点出现在比它晚 40 个迭代的内容上方）+ 与「更早区域」分隔条叠加。
+// 正确行为：挂起（不渲染）—— 段加载覆盖到 afterIteration 后 memo 重算自动归位。
+// mutation：删掉挂起分支（continue）⇒ 第一条必红（窗口顶冒出 divider）。
+describe('窗口外压缩点挂起（区域窗口化交互）', () => {
+  const win52 = Array.from({ length: 15 }, (_, i) => iter(52 + i, `w${52 + i}`))
+
+  it('★ afterIteration < 窗口起点（52）⇒ 不渲染（不能在窗口顶冒充开头压缩）', () => {
+    const compactions: WebCompaction[] = [{ afterIteration: 5, content: '[Compacted context]\n\ns' }]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={win52} compactions={compactions} turnID={7} />,
+    )
+    expect(
+      container.querySelectorAll('[data-testid="compaction-divider"]').length,
+      '窗口外压缩点必须挂起（渲染在窗口顶 = 时间线错乱，2026-10-01 用户报告的 bug）',
+    ).toBe(0)
+  })
+
+  it('段加载覆盖到 afterIteration ⇒ 归位渲染（迭代 5 所在块之后）', () => {
+    const compactions: WebCompaction[] = [{ afterIteration: 5, content: '[Compacted context]\n\ns' }]
+    // 真实段加载形态：段 [1..51] 到达后与窗口 [52..66] 拼成连续 1..66（服务端按区域
+    // 段切分，覆盖 afterIteration=5 ⇒ 窗口起点推到 1）。断号构造（如只加 iter(1)+iter(5)）
+    // 会被连续前缀守卫正确截断——那是守卫在工作，不是本用例要测的东西。
+    const withEarlier = [...Array.from({ length: 51 }, (_, i) => iter(i + 1, 'e')), ...win52]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={withEarlier} compactions={compactions} turnID={7} />,
+    )
+    const dividers = container.querySelectorAll('[data-testid="compaction-divider"]')
+    expect(dividers.length, '覆盖后必须渲染').toBe(1)
+    expect(container.querySelector('[data-iter-id="5"] [data-testid="compaction-divider"]')).toBeTruthy()
+  })
+
+  it('不回归：afterIteration=0（真·turn 开头压缩）仍渲染 leading', () => {
+    const compactions: WebCompaction[] = [{ afterIteration: 0, content: '[Compacted context]\n\ns' }]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={win52} compactions={compactions} turnID={7} />,
+    )
+    expect(container.querySelectorAll('[data-testid="compaction-divider"]').length).toBe(1)
+  })
+
+  it('不回归：afterIteration 落在窗口内 ⇒ 正常渲染在其迭代块之后', () => {
+    const compactions: WebCompaction[] = [{ afterIteration: 60, content: '[Compacted context]\n\ns' }]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={win52} compactions={compactions} turnID={7} />,
+    )
+    expect(container.querySelectorAll('[data-testid="compaction-divider"]').length).toBe(1)
+    expect(container.querySelector('[data-iter-id="60"] [data-testid="compaction-divider"]')).toBeTruthy()
+  })
+})

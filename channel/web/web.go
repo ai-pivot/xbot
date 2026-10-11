@@ -125,6 +125,21 @@ type WebCallbacks struct {
 	// limit = max user turns to return (0 = return all).
 	// beforeID = return messages with id < beforeID (0 = most recent).
 	HistorySnapshot func(senderID string, sel SessionSelector, limit int, beforeID int64) (HistorySnapshot, error)
+	// HistoryRegions returns the next OLDER segment of a turn's display regions
+	// (POST /api/regions, docs/plan-history-fold-windowing.md §3.2).
+	// beforeIter = the caller's earliest loaded iteration (strictly older records
+	// only); regionLimit = max regions to return (<=0 ⇒ server default, hard-capped
+	// server-side). Returns (iterations, regionsBefore) where regionsBefore is the
+	// number of regions still missing BEYOND this segment (0 = reached turn head).
+	// Segment boundaries always align with display regions (region atomic — a
+	// folded tool group is never split).
+	HistoryRegions func(senderID string, sel SessionSelector, turnID uint64, beforeIter, regionLimit int) ([]protocol.HistoryIteration, int, error)
+	// IterationDetail returns ONE iteration with full tool details
+	// (POST /api/iteration_detail) — the fold-view's on-demand detail path.
+	// found=false ⇒ (zero, false, nil): "not there" is a normal business result
+	// (the handler answers 404 — the same answer as an ownership failure, so ids
+	// cannot be probed).
+	IterationDetail func(senderID string, sel SessionSelector, turnID uint64, iteration int) (protocol.HistoryIteration, bool, error)
 	// RewindHistory rewinds a Web-accessible session to a selected user message.
 	RewindHistory func(senderID string, sel SessionSelector, historyID int64) (RewindHistoryResult, error)
 	// GetCWD returns the current directory for a Web-accessible session.
@@ -893,6 +908,10 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/history", wc.authenticatedPOST(wc.handleHistory))
 	mux.HandleFunc("/api/history/rewind", wc.authenticatedPOST(wc.handleHistoryRewind))
+	// Fold view（docs/plan-history-fold-windowing.md §3.2/§3.3）：内层区域分页取回 +
+	// 按需工具详情。与 /api/history 同鉴权/属主校验（resolveAPISession）。
+	mux.HandleFunc("/api/regions", wc.authenticatedPOST(wc.handleRegions))
+	mux.HandleFunc("/api/iteration_detail", wc.authenticatedPOST(wc.handleIterationDetail))
 	mux.HandleFunc("/api/search", wc.authenticatedPOST(wc.handleSearchPOST))
 
 	mux.HandleFunc("/api/settings", wc.authenticatedPOST(wc.handleSettingsPOST))

@@ -95,7 +95,7 @@ export interface UseChatMessagesResult {
    *  interrupt=true: ⚡ interject — deliver into the active turn as a synthetic
    *  tool (no new turn, no queueing). The frontend shows a toast instead of an
    *  optimistic user row; the message appears inside the turn's tool timeline. */
-  sendMessage: (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean) => void
+  sendMessage: (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean) => Promise<boolean>
   /** Cancel the running agent (sends a `cancel` WS message). */
   cancel: () => void
   /** True while cancel is in flight (shows spinner on cancel button). */
@@ -218,6 +218,11 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
       // 算出）。渲染层据此走 standalone 路径插回原位 —— 刷新后仍在、顺序一致。
       standalone: m.standalone === true,
       anchorTurnID: typeof m.anchor_turn_id === 'number' ? m.anchor_turn_id : undefined,
+      // 该行（turn）更早未下发的展示区域数（后端 `regions_before`）—— D1 线据此在
+      // turn 顶部渲染「更早区域」分隔条。0/缺省 = 该 turn 已完整下发（omitempty ⇒
+      // 后端不携带该键即 0）；>0 才透传（渲染层判 `>0`，不给 0 造键）。
+      regionsBefore:
+        typeof m.regions_before === 'number' && m.regions_before > 0 ? m.regions_before : undefined,
       // turn 内压缩点（迭代之间内联渲染）—— 后端转成 `compactions`。
       compactions: Array.isArray(m.compactions)
         ? m.compactions
@@ -557,6 +562,16 @@ export function useChatMessages({
   // Load older messages (scroll-up pagination).
   const loadMore = useCallback(async (): Promise<boolean> => {
     if (loadingMore || !hasMore || !oldestIdRef.current) return false
+    // 🔴 子代理面板（agentChatID 为空、subAgentRole 存在）的 loadMore 修复（2026-10-06 P0）：
+    // AgentPanel 传给本 hook 的 chatID = parentChatID（父会话 ID）—— reload() 走
+    // get_agent_session_dump 拉子代理专属数据，但 loadMore 的 fetchHistory(chatID)
+    // 会向 DB 请求【父会话】的历史 ⇒ 主代理的 iter 混进子代理面板（用户报告
+    // 「加载更多的时候会加载主代理的 iter」）。子代理 dump 是完整权威列表（替换
+    // 语义，不分页）⇒ 本路径根本不应该有"加载更多"。
+    if (!agentChatID && subAgentRole && parentChatID) {
+      setHasMore(false)
+      return false
+    }
     const w = wsRef.current
     if (!w) return false
     setLoadingMore(true)
@@ -611,7 +626,7 @@ export function useChatMessages({
     } finally {
       setLoadingMore(false)
     }
-  }, [loadingMore, hasMore, channel, chatID])
+  }, [loadingMore, hasMore, channel, chatID, subAgentRole, parentChatID, agentChatID])
 
   // Load history when the chatID changes (or on first enable).
   useLayoutEffect(() => {
@@ -714,9 +729,9 @@ export function useChatMessages({
   }, [ws, chatID, channel, activeMessageCacheKey, liveEventsEnabled])
 
   const sendMessage = useCallback(
-    (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean) => {
+    async (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean): Promise<boolean> => {
       const text = content.trim()
-      if (!text && !attachments?.uploadKeys.length) return
+      if (!text && !attachments?.uploadKeys.length) return false
       // 注入的 requestID（AgentPanel 经 agentChat.sendUser 生成的乐观行 ID）：
       // REST 请求 id = 状态机 pendingUser.requestID → user_echo/turn_started
       // 按 requestID 精确去重/绑定（否则两套 id 并存 → 双行）。
@@ -725,7 +740,7 @@ export function useChatMessages({
       // 不产生新的 user 消息行。REST 响应 interrupted=true 时显示 toast（后续 SSE
       // 的 user_interrupt 工具会出现在 turn 内）。
       if (interrupt) {
-        void ws.send({
+        return ws.send({
           type: 'message',
           id: rid,
           channel,
@@ -748,12 +763,13 @@ export function useChatMessages({
               // arrive via SSE to render the message normally.
               onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true, command: resp?.command === true })
             }
+            return true
           })
           .catch((error: unknown) => {
             onSendFail?.(rid)
             toast.error(error instanceof Error ? error.message : 'message send failed')
+            return false
           })
-        return
       }
       // Optimistic rendering: show the user message immediately.
       // No "sending" spinner — the REST response is typically <200ms, and
@@ -788,7 +804,7 @@ export function useChatMessages({
         // The MessageList's useEffect detects the new optimistic user row
         // (persisted=false) and calls resumeFollowing() + scheduleFollow().
       }
-      void ws.send({
+      return ws.send({
         type: 'message',
         id: rid,
         channel,
@@ -832,6 +848,7 @@ export function useChatMessages({
             })
             syncMessages()
           }
+          return true
         })
         .catch((error: unknown) => {
           // Remove the optimistic message on send failure
@@ -844,6 +861,7 @@ export function useChatMessages({
           // 状态机乐观行同步移除。
           onSendFail?.(rid)
           toast.error(error instanceof Error ? error.message : 'message send failed')
+          return false
         })
     },
     [ws, channel],

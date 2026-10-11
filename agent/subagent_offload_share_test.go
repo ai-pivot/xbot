@@ -31,7 +31,10 @@ func TestSubAgentOffloadSharesRootSessionStore(t *testing.T) {
 		ChatID:   "chat-share",
 		SenderID: "u1",
 	}
-	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, "task", "", nil, tools.SubAgentCapabilities{}, "reviewer", false, "inst-1", "")
+	cfg, err := a.buildSubAgentRunConfig(ctx, parentCtx, "task", "", nil, tools.SubAgentCapabilities{}, "reviewer", false, "inst-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cfg.SessionKey == rootKey {
 		t.Fatalf("subagent 的 SessionKey 必须与 root 隔离（得到 %q）", cfg.SessionKey)

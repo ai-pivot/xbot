@@ -179,6 +179,25 @@ type ProgressEvent struct {
 	// bg-notification-injected user messages and user-typed messages).
 	TurnID    uint64         `json:"turn_id,omitempty"`
 	TurnStart *TurnStartInfo `json:"turn_start,omitempty"` // only on turn_started events
+
+	// IterationRegionsBefore = 该快照（turn）**更早未下发**的展示区域数（0 = 已完整下发）。
+	// 区域 = 前端渲染块（与 mergeToolRuns 同构，唯一规范见 channel/region_view.go）——
+	// 折叠的工具组算 1 个区域。与 HistoryMessage.RegionsBefore 同义、同一条不变量：
+	// 它是「可取回窗口」的**显式声明**（前端经 POST /api/regions 向更旧方向整段取回，
+	// 段边界对齐区域 ⇒ 永不劈开工具组），**不是 gap** —— 窗口内迭代号连续无洞。
+	// 只有折叠视图（Agent.GetActiveProgressFolded，REST 历史路径的 active_progress）
+	// 会填该字段；GetActiveProgress 的既有调用面（SSE/CLI/RPC）恒为 0。
+	// omitempty ⇒ 旧客户端忽略、未窗口化时 JSON 里不出现该键。
+	IterationRegionsBefore int `json:"iteration_regions_before,omitempty"`
+
+	// ToolsFolded = iteration_history 元素的工具详情载荷（summary/args/detail/
+	// tool_hints）已按折叠视图省略（GenUI 工具豁免：ui_mode 非空 ⇒ 全量保留）。
+	// 与 HistoryIteration.ToolsFolded **同义、同 JSON 键**（tools_folded）：前端
+	// normalizeWebIteration（web/src/components/agent/normalize.ts:56）对历史行与
+	// active_progress 两条链路共用一份解析 ⇒ 轻字段永不冒充「完整」（D3 条件①：
+	// 折叠必须带标记，前端才知道要按 (turn_id, iteration) 拉详情）。
+	// omitempty ⇒ 未折叠路径（CLI/SSE 的 live 元素）JSON 逐字节不变。
+	ToolsFolded bool `json:"tools_folded,omitempty"`
 }
 
 // StreamStats holds timing statistics for a single LLM streaming response.
@@ -219,6 +238,12 @@ type HistoryIteration struct {
 	TTFTMs       int64 `json:"ttft_ms,omitempty"`        // time to first token
 	TokensPerSec int64 `json:"tokens_per_sec,omitempty"` // generation speed
 	TotalMs      int64 `json:"total_ms,omitempty"`       // stream duration
+	// ToolsFolded = 该迭代的工具详情载荷（summary/args/detail/tool_hints）已按折叠视图省略。
+	// pill 轻字段（name/label/status/elapsed_ms/call_id/ui_mode/ui_libs/ui_surface/iteration）
+	// 全部保留——默认渲染与现状像素级一致。浮层打开时经 POST /api/iteration_detail
+	// 按 (turn_id, iteration) 拉取完整数据，前端 mergeIterations 同号覆盖、迭代号不变。
+	// GenUI-only 迭代（所有工具 uiMode 非空）不瘦身、不打标。
+	ToolsFolded bool `json:"tools_folded,omitempty"`
 }
 
 // HistoryToolCall preserves the raw assistant tool-call relation in the
@@ -249,12 +274,17 @@ type HistoryMessage struct {
 	// cap, so load time grew linearly with the turn's iteration count. Only the
 	// TAIL is sent; this counter lets the client render "更早的 N 个迭代" (and
 	// lazy-load them) instead of the data silently disappearing.
-	IterationsTruncated int                 `json:"iterations_truncated,omitempty"`
-	RecordType          string              `json:"record_type,omitempty"`
-	TargetHistoryID     int64               `json:"target_history_id,omitempty"`
-	CompactedBy         int64               `json:"compacted_by,omitempty"`
-	Compression         *HistoryCompression `json:"compression,omitempty"`
-	DisplayOnly         bool                `json:"display_only,omitempty"`
+	IterationsTruncated int `json:"iterations_truncated,omitempty"`
+	// RegionsBefore = 该 turn 更早未下发的展示区域数（0 = 已完整下发）。
+	// 区域 = 前端渲染块（与 mergeToolRuns 同构判定；折叠的工具组算 1 个）。
+	// 这是「可取回窗口」的显式声明，绝不构成 gap：前端经 POST /api/regions
+	// 向更旧方向整段取回（段边界对齐区域，永不劈开工具组）。
+	RegionsBefore   int                 `json:"regions_before,omitempty"`
+	RecordType      string              `json:"record_type,omitempty"`
+	TargetHistoryID int64               `json:"target_history_id,omitempty"`
+	CompactedBy     int64               `json:"compacted_by,omitempty"`
+	Compression     *HistoryCompression `json:"compression,omitempty"`
+	DisplayOnly     bool                `json:"display_only,omitempty"`
 	// Standalone = 无 turn 的独立行（命令行 `!cmd` 的输入/输出）：前端跳过 bindTurnIDs
 	// 绑定，改按 AnchorTurnID 插回"它发生的那一刻"（与实时渲染同一条 standalone 路径）。
 	// 落库形态见 storage.HistoryRecordCommand（display_only=1 + record_type='command'，

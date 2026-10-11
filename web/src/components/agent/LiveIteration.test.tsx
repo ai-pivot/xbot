@@ -385,3 +385,107 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
     expect(container.textContent).not.toMatch(/思考中|thinking/)
   })
 })
+
+// ─── 已渲染迭代的重复副本守卫（2026-10-02 P0 用户截图实证）─────────────────────
+// 「一个 iter 重复渲染两次，甚至第一次渲染没 tool，一个非结尾的 iter 不可能没 tool」
+// ——迟到/重放的流式帧（stream 无状态合帧、无 seq gate）让 live 持有**更早的已提交
+// 迭代**的内容；旧判据只对比**最后一个**已完成迭代 ⇒ 比较失败 ⇒ 同一段文本在历史块
+// （带 pill）与 live 块（无 pill）各渲染一份。
+// 修复：live 的内容与**任意**已完成迭代相同 ⇒ 抑制（内容匹配，非迭代号比较——号可能
+// 滞后于内容，turnBodyLiveDedup 用例 2 钉死反例）。
+describe('LiveIteration — 已渲染迭代的重复副本守卫（内容匹配全部历史）', () => {
+  const hist = (n: number, content = '', reasoning = '') => ({
+    iteration: n, content, reasoning, tools: [], toolCount: 0,
+  })
+
+  it('★ live 持有【更早的已提交迭代】的内容（非最后一个）⇒ 抑制，整块不渲染', () => {
+    const snapshot = makeSnapshot({
+      iteration: 3,
+      streamContent: 'X 文本', // == 迭代 1 的内容（更早，不是最后一个 'Y 文本'）
+      streaming: true,
+      iterationHistory: [hist(1, 'X 文本'), hist(2, 'Y 文本')] as never,
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    // mutation：把判据改回「只对比最后一个」（lastIter.content）⇒ 本条必红（'X 文本' 重复渲染）。
+    // （占位符「思考中…」可能存在——迭代 3 确实在飞，那不是重复副本。）
+    expect(container.textContent).not.toContain('X 文本')
+  })
+
+  it('同源：live 的 reasoning 与【更早的】已提交迭代相同 ⇒ 抑制', () => {
+    const snapshot = makeSnapshot({
+      iteration: 3,
+      reasoningStreamContent: 'R-old',
+      lastReasoning: 'R-old',
+      streaming: true,
+      iterationHistory: [hist(1, '', 'R-old'), hist(2, '', 'R-new')] as never,
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    expect(container.textContent).not.toContain('R-old')
+  })
+
+  it('不误伤：live 内容与任何已提交迭代都不同 ⇒ 照常渲染（真新内容）', () => {
+    const snapshot = makeSnapshot({
+      iteration: 3,
+      streamContent: '全新内容',
+      streaming: true,
+      iterationHistory: [hist(1, 'X 文本'), hist(2, 'Y 文本')] as never,
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    expect(container.firstChild).not.toBeNull()
+  })
+
+  // ─── 正交性判别（6641c9b3 revert 事件的闭环验证）───
+  // 2026-10-02 事故链：6641c9b3（live-wins regionsBefore 传播）激活追赶填洞 →
+  // 段 union 后 contiguous 扩展 → 当时的旧判据（只比最后一个）漏杀更早历史迭代
+  // 的 live 副本 ⇒ 「一个 iter 重复渲染两次」P0 ⇒ 6641c9b3 被 revert。
+  // 本组用例钉死：传播 on + 段填洞 union 全链路下，b4f9aa10 的内容匹配判据
+  // 必须抑制旧副本 —— 修复缺失（判据退回 lastIter 单点）⇒ 必红。
+  // ⚠️ typewriter 首帧 0 字符 —— 必须 fake timers 推满帧再断言，否则
+  // not.toContain 恒过（假绿，mutation 下不红）。
+  it('★ 熄屏恢复追赶填洞后：live 停在熄屏前的旧迭代内容 ⇒ 抑制（传播+判据正交）', () => {
+    // 场景：本地 live [1..40] × incoming [52..90]+rb=6（live-wins union，6641c9b3 传播）
+    // → 段加载填洞 [41..51] → 历史完整 [1..90]。live 的 streamContent 停在熄屏前
+    // 最后看到的迭代 40 的内容 —— 它已在历史块渲染，绝不可再渲染一次。
+    const history = [
+      ...Array.from({ length: 40 }, (_, i) => hist(1 + i, `迭代${1 + i}内容`)),
+      ...Array.from({ length: 11 }, (_, i) => hist(41 + i, `迭代${41 + i}内容`)),
+      ...Array.from({ length: 39 }, (_, i) => hist(52 + i, `迭代${52 + i}内容`)),
+    ]
+    const snapshot = makeSnapshot({
+      iteration: 90,
+      streamContent: '迭代40内容', // 熄屏前最后看到的旧内容（历史里第 40 号）
+      streaming: true,
+      iterationHistory: history as never,
+    })
+    vi.useFakeTimers()
+    try {
+      const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+      // 推满 typewriter（50ms/步追赶；2000ms 必收敛）——判据失效时旧文本会打出来
+      act(() => { vi.advanceTimersByTime(2000) })
+      // 旧文本不在 live 块重复出现（历史块已渲染了它）
+      expect(container.textContent).not.toContain('迭代40内容')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('★ 同场景反例：追赶填洞后流式恢复的【真新】内容必须照常渲染（不误杀）', () => {
+    const history = [
+      ...Array.from({ length: 90 }, (_, i) => hist(1 + i, `迭代${1 + i}内容`)),
+    ]
+    const snapshot = makeSnapshot({
+      iteration: 91,
+      streamContent: '第 91 个迭代的新流式内容（任何历史迭代都没有过）',
+      streaming: true,
+      iterationHistory: history as never,
+    })
+    vi.useFakeTimers()
+    try {
+      const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+      act(() => { vi.advanceTimersByTime(2000) })
+      expect(container.textContent).toContain('第 91 个迭代的新流式内容')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

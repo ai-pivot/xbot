@@ -1023,13 +1023,25 @@ func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
 		}
 		channel := key[:idx]
 		chatID := key[idx+1:]
-		content, senderID, err := webDB.GetLastUserMessage(channel, chatID)
+		// Since v71 (one session, one DB) message content lives in the
+		// per-session DB — read it via the TenantSession, not the main DB.
+		tenant, err := ag.MultiSession().GetOrCreateSession(channel, chatID)
+		if err != nil {
+			log.WithError(err).WithField("session", key).Warn("Failed to open session for pending resume")
+			continue
+		}
+		content, err := tenant.GetLastUserMessageContent()
 		if err != nil {
 			log.WithError(err).WithField("session", key).Warn("Failed to get last user message for pending resume")
 			continue
 		}
 		if content == "" {
 			log.WithField("session", key).Warn("No user message found for pending resume, skipping")
+			continue
+		}
+		senderID, err := webDB.GetSessionSenderID(channel, chatID)
+		if err != nil {
+			log.WithError(err).WithField("session", key).Warn("Failed to get sender for pending resume")
 			continue
 		}
 		if err := webDB.AddPendingResume(channel, chatID, senderID); err != nil {
@@ -1071,7 +1083,13 @@ func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh chan os.Signal)
 	for _, pr := range pending {
 		// Skip turns that already completed naturally between shutdown
 		// collection and cancel() — the turn finished and reply was persisted.
-		hasReply, err := webDB.HasAssistantReplyAfterLastUser(pr.Channel, pr.ChatID)
+		// Since v71 the reply lives in the per-session DB (TenantSession).
+		tenant, err := ag.MultiSession().GetOrCreateSession(pr.Channel, pr.ChatID)
+		if err != nil {
+			log.WithError(err).WithField("session", pr.Channel+":"+pr.ChatID).Error("Failed to open session for resume check, keeping record for next restart")
+			continue
+		}
+		hasReply, err := tenant.HasAssistantReplyAfterLastUser()
 		if err != nil {
 			log.WithError(err).WithField("session", pr.Channel+":"+pr.ChatID).Error("Failed to check assistant reply, keeping record for next restart")
 			continue

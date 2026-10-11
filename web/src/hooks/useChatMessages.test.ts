@@ -294,8 +294,8 @@ describe('useChatMessages', () => {
     ))
     await waitFor(() => expect(result.current.loading).toBe(false))
 
-    act(() => result.current.sendMessage('first'))
-    act(() => result.current.sendMessage('second'))
+    act(() => { void result.current.sendMessage('first') })
+    act(() => { void result.current.sendMessage('second') })
     const sent = vi.mocked(ws.send).mock.calls.map(([message]) => message)
     expect(sent[0].id).toBeTruthy()
     expect(sent[1].id).toBeTruthy()
@@ -841,7 +841,7 @@ describe('useChatMessages', () => {
     await waitFor(() => expect(result.current.messages).toEqual([]))
 
     // Send message — optimistic user is added (no sending spinner)
-    act(() => result.current.sendMessage('hello'))
+    act(() => { void result.current.sendMessage('hello') })
     expect(result.current.messages).toHaveLength(1)
     expect(result.current.messages[0].content).toBe('hello')
 
@@ -861,7 +861,7 @@ describe('useChatMessages', () => {
     await waitFor(() => expect(result.current.messages).toEqual([]))
 
     // sendMessage creates optimistic, REST resolves with turnID=42
-    act(() => result.current.sendMessage('hello'))
+    act(() => { void result.current.sendMessage('hello') })
     await act(async () => { await Promise.resolve() })
     expect(result.current.messages).toHaveLength(1)
     expect(result.current.messages[0].turnID).toBe(42)

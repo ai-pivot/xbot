@@ -188,6 +188,22 @@ beforeEach(() => {
   mocks.context.sessionStore.hydrateAskUserPrompt.mockClear()
 })
 
+it('keeps the observed panel root mounted when annotation session identity changes', () => {
+  const api = {} as never
+  const containerApi = {} as never
+  const { container, rerender } = render(
+    <AgentPanel params={{ sessionId: 'chat-1' } as never} api={api} containerApi={containerApi} />,
+  )
+  const root = container.querySelector('[data-agent-chat-id]')
+  const messageList = container.querySelector('[data-testid="message-list-busy"]')
+  expect(root).not.toBeNull()
+  expect(messageList).not.toBeNull()
+  rerender(<AgentPanel params={{ sessionId: 'chat-2' } as never} api={api} containerApi={containerApi} />)
+  expect(container.querySelector('[data-agent-chat-id]')).toBe(root)
+  expect(root).toHaveAttribute('data-agent-chat-id', 'chat-2')
+  expect(container.querySelector('[data-testid="message-list-busy"]')).toBe(messageList)
+})
+
 describe('AgentPanel rewind', () => {
   beforeEach(() => {
     mocks.order.length = 0

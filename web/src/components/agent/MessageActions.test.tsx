@@ -6,6 +6,7 @@ import i18n from '@/i18n'
 import { renderWithProviders } from '@/test-utils'
 import type { ChatMessage } from '@/types/shared'
 import { CopyTarget, resolveLinkTarget, resolveOpenableHref } from './MessageActions'
+import { annotationSelection } from './MessageAnnotations'
 
 // 菜单标签走 i18n ⇒ 断言语言两侧钉死（jsdom 的 navigator.language 是 en-US）。
 beforeAll(async () => {
@@ -64,6 +65,44 @@ describe('resolveLinkTarget（落点是否命中链接）', () => {
     expect(resolveLinkTarget(p)).toBeNull()
     expect(resolveLinkTarget(appendLink('javascript:alert(1)', 'x'))).toBeNull()
     expect(resolveLinkTarget(null)).toBeNull()
+  })
+})
+
+describe('annotation selection ownership', () => {
+  it('preserves whitespace inside one body and rejects a cross-body selection', () => {
+    const body = document.createElement('div')
+    const other = document.createElement('div')
+    body.textContent = '  原文 🙂  '
+    other.textContent = '其他会话'
+    document.body.append(body, other)
+    const range = document.createRange()
+    range.selectNodeContents(body)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    expect(annotationSelection(body)).toEqual({ quote: '  原文 🙂  ', startOffset: 0, endOffset: 9 })
+    range.setEnd(other.firstChild!, 2)
+    selection.removeAllRanges()
+    selection.addRange(range)
+    expect(annotationSelection(body)).toBeNull()
+    selection.removeAllRanges()
+    body.remove()
+    other.remove()
+  })
+
+  it('captures the selected occurrence across nested nodes with UTF-16 offsets, including backwards selection', () => {
+    const body = document.createElement('div')
+    body.innerHTML = '<p>🙂前文 <strong>重复</strong> 后文 <em>重复</em></p>'
+    document.body.append(body)
+    const strong = body.querySelector('strong')!.firstChild!
+    const last = body.querySelector('em')!.firstChild!
+    const selection = document.getSelection()!
+    selection.setBaseAndExtent(last, 2, strong, 0)
+    expect(annotationSelection(body)).toEqual({ quote: '重复 后文 重复', startOffset: 5, endOffset: 13 })
+    selection.setBaseAndExtent(last, 0, last, 2)
+    expect(annotationSelection(body)).toEqual({ quote: '重复', startOffset: 11, endOffset: 13 })
+    selection.removeAllRanges()
+    body.remove()
   })
 })
 

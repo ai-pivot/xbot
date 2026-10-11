@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"database/sql"
 	"fmt"
 	"time"
 )
@@ -28,65 +27,27 @@ func (db *DB) AddPendingResume(channel, chatID, senderID string) error {
 	return nil
 }
 
-// GetLastUserMessage retrieves the last non-display-only user message
-// (content + sender_id) for a given channel:chatID session.
-// Uses a correlated subquery to deterministically pick the most recent
-// sender_id (avoids non-deterministic LEFT JOIN with multiple senders).
-func (db *DB) GetLastUserMessage(channel, chatID string) (content, senderID string, err error) {
+// GetSessionSenderID returns the most recent sender_id recorded in the
+// user_chats registry (main DB) for a channel:chatID session.
+//
+// Since v71 (one session, one DB), message content lives in the per-session
+// DB — resume flows read it via TenantSession.GetLastUserMessageContent.
+// The sender identity remains a main-DB registry concern, so it's looked up
+// here. Returns "" when the session has no user_chats row.
+func (db *DB) GetSessionSenderID(channel, chatID string) (string, error) {
 	conn := db.Conn()
-	err = conn.QueryRow(`
-		SELECT sm.content, COALESCE((
+	var senderID string
+	err := conn.QueryRow(`
+		SELECT COALESCE((
 			SELECT uc.sender_id FROM user_chats uc
-			WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
+			WHERE uc.channel = ? AND uc.chat_id = ?
 			ORDER BY uc.created_at DESC LIMIT 1
 		), '')
-		FROM session_messages sm
-		JOIN tenants t ON sm.tenant_id = t.id
-		WHERE t.channel = ? AND t.chat_id = ? AND sm.role = 'user' AND COALESCE(sm.display_only, 0) = 0
-		ORDER BY sm.id DESC LIMIT 1
-	`, channel, chatID).Scan(&content, &senderID)
-	if err == sql.ErrNoRows {
-		return "", "", nil
-	}
+	`, channel, chatID).Scan(&senderID)
 	if err != nil {
-		return "", "", fmt.Errorf("get last user message: %w", err)
+		return "", fmt.Errorf("get session sender id: %w", err)
 	}
-	return content, senderID, nil
-}
-
-// HasAssistantReplyAfterLastUser checks whether the last user message in
-// the session already has a subsequent assistant reply. Used by resume to
-// detect turns that completed naturally between shutdown collection and
-// cancel() — if so, the resume should be skipped.
-//
-// Note: The (tool_calls IS NULL OR tool_calls = ”) filter matches only
-// final text replies (no tool calls). If a provider returns content +
-// tool_calls in the same message as the final reply, this check would
-// miss it — but that's safe: the re-injected turn is idempotent (the
-// user message is already in DB, processMessage detects resume_turn and
-// skips eager-save). The worst case is a duplicate turn, not data loss.
-func (db *DB) HasAssistantReplyAfterLastUser(channel, chatID string) (bool, error) {
-	conn := db.Conn()
-	var count int
-	err := conn.QueryRow(`
-		SELECT COUNT(*) FROM session_messages sm
-		JOIN tenants t ON sm.tenant_id = t.id
-		WHERE t.channel = ? AND t.chat_id = ?
-		  AND sm.role = 'assistant'
-		  AND COALESCE(sm.display_only, 0) = 0
-		  AND (sm.tool_calls IS NULL OR sm.tool_calls = '')
-		  AND sm.id > (
-		    SELECT sm2.id FROM session_messages sm2
-		    JOIN tenants t2 ON sm2.tenant_id = t2.id
-		    WHERE t2.channel = ? AND t2.chat_id = ?
-		      AND sm2.role = 'user' AND COALESCE(sm2.display_only, 0) = 0
-		    ORDER BY sm2.id DESC LIMIT 1
-		  )
-	`, channel, chatID, channel, chatID).Scan(&count)
-	if err != nil {
-		return false, fmt.Errorf("has assistant reply after last user: %w", err)
-	}
-	return count > 0, nil
+	return senderID, nil
 }
 
 // ListPendingResumes returns all sessions marked for resumption.

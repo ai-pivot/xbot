@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -309,6 +310,83 @@ ORDER BY id DESC LIMIT 1
 	return 0, nil
 }
 
+// GetLastUserMessageContent returns the content of the most recent
+// non-display-only, non-internal user message in this tenant's session.
+// Used by /continue and shutdown-resume to verify there is a turn to resume.
+// Returns ("", nil) when the tenant has no resumable user message.
+//
+// internal_only rows are filtered: view_image follow-up injections ride the
+// user role with the triggering message's turn (v67) and must not be picked
+// as resume content.
+func (s *SessionService) GetLastUserMessageContent(tenantID int64) (string, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return "", err
+	}
+	var content string
+	err = conn.QueryRow(`
+SELECT content FROM session_messages
+WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0 AND COALESCE(internal_only, 0) = 0
+ORDER BY id DESC LIMIT 1
+`, tenantID).Scan(&content)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get last user message content: %w", err)
+	}
+	return content, nil
+}
+
+// HasAssistantReplyAfterLastUser checks whether the last user message in
+// this tenant's session already has a subsequent final assistant reply (no
+// tool calls). Used by resume flows to detect turns that completed naturally
+// between shutdown collection and cancel() — if so, the resume is skipped.
+//
+// Note: The (tool_calls IS NULL OR tool_calls = ”) filter matches only
+// final text replies. If a provider returns content + tool_calls in the
+// same message as the final reply, this check would miss it — but that's
+// safe: the re-injected turn is idempotent. The worst case is a duplicate
+// turn, not data loss.
+//
+// The anchor subquery filters internal_only the same way
+// GetLastUserMessageContent does, so both resume-flow checks anchor on the
+// same "last real user message" (view_image follow-up injections ride the
+// user role). Behavior is equivalent either way today — an injection row
+// always shares its turn and can never follow that turn's final reply — but
+// keeping one anchor definition avoids depending on that cross-function
+// invariant.
+func (s *SessionService) HasAssistantReplyAfterLastUser(tenantID int64) (bool, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return false, err
+	}
+	var count int
+	err = conn.QueryRow(`
+SELECT COUNT(*) FROM session_messages sm
+WHERE sm.tenant_id = ?
+  AND sm.role = 'assistant'
+  AND COALESCE(sm.display_only, 0) = 0
+  AND (sm.tool_calls IS NULL OR sm.tool_calls = '')
+  AND sm.id > (
+    SELECT sm2.id FROM session_messages sm2
+    WHERE sm2.tenant_id = ? AND sm2.role = 'user' AND COALESCE(sm2.display_only, 0) = 0
+		AND COALESCE(sm2.internal_only, 0) = 0
+    ORDER BY sm2.id DESC LIMIT 1
+  )
+`, tenantID, tenantID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("has assistant reply after last user: %w", err)
+	}
+	return count > 0, nil
+}
+
 // GetMaxTurnID returns the highest turn_id for a tenant across BOTH
 // session_messages and iteration_history. Used by chatProcessLoop to restore
 // the per-session turn ID counter after a server restart, ensuring turn_id
@@ -402,36 +480,60 @@ func (s *SessionService) GetMaxIterationForTurn(tenantID int64, turnID uint64) (
 	return int(maxIter.Int64), nil
 }
 
-// SetTenantCWD persists a session's current working directory in the tenants
-// table (the single authoritative store; file-based session_cwd is retired).
-func (s *SessionService) SetTenantCWD(tenantID int64, cwd string) error {
+// SetTenantCWD / GetTenantCWD 已迁移到 TenantService（v71 每会话一个 DB 拆分）：
+// tenants 是主库表，而 SessionService 现在绑定会话库 —— CWD 读写经 TenantService
+// （主库）进行。见 tenant.go 的 TenantService.SetTenantCWD / GetTenantCWD。
+
+// HasLegacyRows reports whether tenantID has ANY rows in this DB's
+// session_messages or iteration_history (existence probe — index-backed,
+// constant time per table regardless of table size).
+//
+// Used by the per-session DB split (v71) to decide whether a legacy-database
+// copy is needed at all: a BRAND-NEW session has zero rows in the main DB and
+// must never pay the ATTACH+copy cost (2026-09-30 production incident — new-
+// session creation failed with SQLITE_IOERR_SHORT_READ because the
+// unconditional ATTACH hit a broken main-DB WAL state). The probe deliberately
+// runs through this service's existing (warm) connection — the same path the
+// rest of the server uses — never through a fresh ATTACH.
+func (s *SessionService) HasLegacyRows(tenantID int64) (bool, error) {
 	conn, err := s.conn()
 	if err != nil {
-		return err
+		return false, err
 	}
-	if _, err := conn.Exec("UPDATE tenants SET cwd = ? WHERE id = ?", cwd, tenantID); err != nil {
-		return fmt.Errorf("update tenants.cwd: %w", err)
+	var n int
+	if err := conn.QueryRow(`
+		SELECT (SELECT EXISTS(SELECT 1 FROM session_messages WHERE tenant_id = ? LIMIT 1))
+		     + (SELECT EXISTS(SELECT 1 FROM iteration_history WHERE tenant_id = ? LIMIT 1))
+	`, tenantID, tenantID).Scan(&n); err != nil {
+		return false, fmt.Errorf("probe legacy rows: %w", err)
 	}
-	return nil
+	return n > 0, nil
 }
 
-// GetTenantCWD reads a session's persisted CWD from the tenants table.
-// Returns "" when the session has no persisted CWD (fresh session).
-func (s *SessionService) GetTenantCWD(tenantID int64) (string, error) {
+// LatestPreview returns the preview text for a session: the latest
+// user/assistant non-display-only message, truncated to 256 bytes in SQL —
+// the exact semantics the ListUserChats subquery used before the per-session
+// DB split (v71). The write path (TenantSession append hooks) mirrors this:
+// an eligible append IS the latest eligible row (ids are monotonic), so it
+// updates tenants.preview directly with the message content.
+func (s *SessionService) LatestPreview(tenantID int64) (string, error) {
 	conn, err := s.conn()
 	if err != nil {
 		return "", err
 	}
-	var cwd sql.NullString
-	err = conn.QueryRow("SELECT cwd FROM tenants WHERE id = ?", tenantID).Scan(&cwd)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", nil
-		}
-		return "", fmt.Errorf("get tenants.cwd: %w", err)
+	var preview sql.NullString
+	err = conn.QueryRow(`
+		SELECT substr(content, 1, 256) FROM session_messages
+		WHERE tenant_id = ? AND role IN ('user', 'assistant') AND COALESCE(display_only, 0) = 0
+		ORDER BY id DESC LIMIT 1`, tenantID).Scan(&preview)
+	if err == sql.ErrNoRows {
+		return "", nil
 	}
-	if cwd.Valid {
-		return cwd.String, nil
+	if err != nil {
+		return "", fmt.Errorf("query latest preview message: %w", err)
+	}
+	if preview.Valid {
+		return preview.String, nil
 	}
 	return "", nil
 }
@@ -487,6 +589,68 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 	return nil
 }
 
+// AppendIterationTool 把一个工具快照（序列化 JSON 对象）追加进 iteration_history
+// 中【已存在】的 (turn_id, iteration) 记录的 tools JSON 数组尾部。
+//
+// 为什么需要它（2026-09-30 pre_turn_end 合成工具丢失事故）：turn 尾部的合成工具
+// （bg task / cron / hook 的 pre_turn_end 通知）在 content-only 迭代快照落库
+// **之后**注入（handleFinalResponse → snapshotCompletedIteration 先写库，然后
+// maybeContinueTurn → injectSyntheticToolPair 才把工具塞进内存
+// structuredProgress.CompletedTools——而该内存态马上被 beginIteration 清空）。
+// 没有本方法时 iteration_history 的 tools JSON 永远缺这个工具 ⇒ 刷新/切会话后
+// 前端再也渲染不出来。
+//
+// found=false（记录不存在）是**正常业务结果**，不是错误：
+//   - 迭代中途注入（bg task / cron 在 Run 进行中投递）时该迭代的快照尚未写库，
+//     工具会随后续 snapshotCompletedIteration 正常写入——两条路径互斥，永不双写；
+//   - 无持久化配置的 Run 根本不会走到这里（调用方先判 structuredProgress）。
+//
+// toolJSON 必须是合法的 JSON 对象（单个工具快照）；存在值不是 JSON 数组时返回
+// 错误而非覆盖——绝不破坏已有数据。
+func (s *SessionService) AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error) {
+	if !json.Valid([]byte(toolJSON)) {
+		return false, fmt.Errorf("append iteration tool: toolJSON is not valid JSON")
+	}
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return false, err
+	}
+	var existing sql.NullString
+	err = conn.QueryRow(
+		"SELECT tools FROM iteration_history WHERE tenant_id = ? AND turn_id = ? AND iteration = ?",
+		tenantID, turnID, iteration,
+	).Scan(&existing)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("append iteration tool: read tools: %w", err)
+	}
+	arr := []json.RawMessage{}
+	if existing.Valid && strings.TrimSpace(existing.String) != "" {
+		if err := json.Unmarshal([]byte(existing.String), &arr); err != nil {
+			return false, fmt.Errorf("append iteration tool: existing tools is not a JSON array (turn %d iter %d): %w", turnID, iteration, err)
+		}
+	}
+	arr = append(arr, json.RawMessage(toolJSON))
+	merged, err := json.Marshal(arr)
+	if err != nil {
+		return false, fmt.Errorf("append iteration tool: marshal merged array: %w", err)
+	}
+	result, err := conn.Exec(
+		"UPDATE iteration_history SET tools = ? WHERE tenant_id = ? AND turn_id = ? AND iteration = ?",
+		string(merged), tenantID, turnID, iteration,
+	)
+	if err != nil {
+		return false, fmt.Errorf("append iteration tool: update: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
+}
+
 // GetIterationHistoryByTurn returns all iteration records for a given
 // (tenant_id, turn_id) pair, ordered by iteration number. This is the
 // ONLY query method used by ConvertMessagesToHistoryWithIterations.
@@ -506,6 +670,78 @@ func (s *SessionService) GetIterationHistoryByTurn(tenantID int64, turnID uint64
 	}
 	defer rows.Close()
 	return scanIterationRecords(rows)
+}
+
+// GetIterationHistoryBeforeRange 返回该 turn 中 **严格早于** beforeIter 的全部
+// 迭代记录（iteration < beforeIter），按 iteration 升序。
+//
+// 语义边界（存储层只负责范围，不负责区域）：
+//   - `iteration < beforeIter` 是**排他**边界 —— beforeIter 自身不在结果内
+//     （它是调用方已持有窗口的最小迭代号；重复下发同号只会多做一次无用的
+//     union，见 docs/plan-history-fold-windowing.md §3.2）。
+//   - 服务端上层（区域段取回端点）拿到这批记录后自行做区域（fold run）划分与
+//     窗口切段 —— 存储层不承担「区域原子」语义。
+//   - tenant_id / turn_id 双重过滤：每会话独立 DB 下 tenant_id 恒为该会话
+//     tenant（WHERE tenant_id=? 代码零改动的既有契约），turn_id 隔离同一会话内
+//     的不同 turn。
+//
+// SELECT 列清单与 GetIterationHistoryByTurn **逐列一致**（含
+// COALESCE(created_at, ”)：created_at 允许 NULL，直接 Scan 进 string 会报错），
+// 并复用 scanIterationRecords —— 新增列时两处必须同步，否则扫描错位。
+func (s *SessionService) GetIterationHistoryBeforeRange(tenantID int64, turnID uint64, beforeIter int) ([]IterationRecord, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, COALESCE(created_at, '')
+		FROM iteration_history
+		WHERE tenant_id = ? AND turn_id = ? AND iteration < ?
+		ORDER BY iteration ASC
+	`, tenantID, turnID, beforeIter)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration_history before range: %w", err)
+	}
+	defer rows.Close()
+	return scanIterationRecords(rows)
+}
+
+// GetIterationHistoryByNumber 按 (tenant_id, turn_id, iteration) 定位**单条**
+// 迭代记录 —— 详情端点（POST /api/iteration_detail）的取回查询。
+//
+// iteration 列是 turn 内的逻辑唯一地址（1 起单调、续跑续接，见方案 §3.6）；
+// 未命中返回 (zero, false, nil)：**「不存在」是正常业务结果**，不是错误 ——
+// 上层据此返回 404（属主/存在性判断在 serverapp 层，存储层不构造 HTTP 语义）。
+//
+// ORDER BY id ASC LIMIT 1：若历史数据里同一 (turn, iteration) 意外出现多行
+// （理论上不应发生），取最早写入的一行 —— 与 GetIterationHistoryByTurn 在
+// 复合索引 (tenant_id, turn_id, iteration) 上的同键 tie-break 顺序（rowid 升序）
+// 保持一致，避免同一数据两个查询给出不同答案。
+func (s *SessionService) GetIterationHistoryByNumber(tenantID int64, turnID uint64, iteration int) (IterationRecord, bool, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return IterationRecord{}, false, err
+	}
+	var rec IterationRecord
+	var createdAt string
+	err = conn.QueryRow(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, COALESCE(created_at, '')
+		FROM iteration_history
+		WHERE tenant_id = ? AND turn_id = ? AND iteration = ?
+		ORDER BY id ASC LIMIT 1
+	`, tenantID, turnID, iteration).Scan(
+		&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools,
+		&rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs,
+		&rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID, &createdAt,
+	)
+	if err == sql.ErrNoRows {
+		return IterationRecord{}, false, nil
+	}
+	if err != nil {
+		return IterationRecord{}, false, fmt.Errorf("get iteration_history by number: %w", err)
+	}
+	rec.CreatedAt = parseSQLiteTime(createdAt)
+	return rec, true, nil
 }
 
 // GetIterationHistoryByTurns 批量查询多个 turn 的 iteration_history —— 一次
@@ -548,6 +784,104 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 		result[rec.TurnID] = append(result[rec.TurnID], rec)
 	}
 	return result, nil
+}
+
+// GetSyntheticPairRowsByTurn 返回该 turn 的【注入型】合成工具对候选行：
+// 带 tool_calls 的 assistant 行 + tool 结果行（时间序）。
+//
+// 供 /api/regions、/api/iteration_detail 的旧数据修复（channel.
+// MergeSyntheticPairsIntoSegment/IntoRecord）使用：Fix A 之前的数据
+// iteration_history.tools 缺注入型工具，需从 session_messages 的工具对补回。
+//
+// 过滤条件：record_type='message' AND display_only=0 AND internal_only=0 ——
+// 注入型工具对是正常 LLM 上下文行；display_only（cron 结果展示行）与
+// internal_only（多模态注入载体）不参与工具对合并。assistant 行只在 SQL 层
+// 粗过滤 tool_calls 非空（大 turn 上把行数从「全部消息」压到「每迭代两行」），
+// 合成名单（恰好一个调用 + IsSyntheticToolName）由 channel 层判定 —— 名单
+// 演进不在 SQL 里重复。
+//
+// 返回行只填充合并所需字段（ID/Role/Content/ToolCallID/ToolName/ToolCalls/
+// TurnID/Timestamp），不经过 Replay 折叠 —— 工具对是 append-only 的普通
+// message 行，压缩快照不可能吞掉它们。
+func (s *SessionService) GetSyntheticPairRowsByTurn(tenantID int64, turnID uint64) ([]llm.ChatMessage, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT id, role, content, COALESCE(tool_call_id, ''), COALESCE(tool_name, ''),
+		       COALESCE(tool_calls, ''), COALESCE(turn_id, 0), COALESCE(created_at, ''),
+		       COALESCE(iteration, 0)
+		FROM session_messages
+		WHERE tenant_id = ? AND turn_id = ? AND record_type = 'message'
+		  AND display_only = 0 AND internal_only = 0
+		  AND ((role = 'assistant' AND tool_calls IS NOT NULL AND tool_calls != '' AND tool_calls != '[]')
+		    OR role = 'tool')
+		ORDER BY id ASC
+	`, tenantID, turnID)
+	if err != nil {
+		return nil, fmt.Errorf("get synthetic pair rows by turn: %w", err)
+	}
+	defer rows.Close()
+	var msgs []llm.ChatMessage
+	for rows.Next() {
+		var m llm.ChatMessage
+		var toolCalls, createdAt string
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.ToolCallID, &m.ToolName, &toolCalls, &m.TurnID, &createdAt, &m.Iteration); err != nil {
+			continue // 单行损坏跳过（与 scanIterationRecords 同纪律），不阻塞整段回放
+		}
+		m.Timestamp = parseSQLiteTime(createdAt)
+		if m.Role == "assistant" && toolCalls != "" {
+			// 与读取路径（history.go replay）同款解析；损坏 JSON 的行无法识别为
+			// 工具对候选 → 跳过（其配对 tool 行只是多一条无人引用的结果映射）。
+			if err := json.Unmarshal([]byte(toolCalls), &m.ToolCalls); err != nil {
+				continue
+			}
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate synthetic pair rows: %w", err)
+	}
+	return msgs, nil
+}
+
+// GetIterationAnchorsByTurn 返回该 turn 全部迭代的轻量锚点（iteration +
+// created_at）—— 把工具对注入时刻映射到迭代号的唯一依据（锚定规则与
+// channel.MergeSyntheticToolPairs 完全一致：channel.anchorPairRecord）。
+//
+// ⚠️ 记录只填 Iteration/CreatedAt 两字段，其余零值 —— 只作锚点，绝不能
+// 当完整迭代记录装配（content/tools 大字段正是折叠视图要省的；detail/
+// regions 端点拉全量就违背了按需取回的设计）。
+func (s *SessionService) GetIterationAnchorsByTurn(tenantID int64, turnID uint64) ([]IterationRecord, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT iteration, COALESCE(created_at, '')
+		FROM iteration_history
+		WHERE tenant_id = ? AND turn_id = ?
+		ORDER BY iteration ASC
+	`, tenantID, turnID)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration anchors by turn: %w", err)
+	}
+	defer rows.Close()
+	var anchors []IterationRecord
+	for rows.Next() {
+		var rec IterationRecord
+		var createdAt string
+		if err := rows.Scan(&rec.Iteration, &createdAt); err != nil {
+			continue
+		}
+		rec.CreatedAt = parseSQLiteTime(createdAt)
+		anchors = append(anchors, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate iteration anchors: %w", err)
+	}
+	return anchors, nil
 }
 
 func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {
@@ -736,14 +1070,11 @@ func (s *SessionService) GetTenantUsageStats(tenantID int64, recentLimit int) (*
 		}
 	}
 
-	// tenant_state watermark (current context level).
-	_ = conn.QueryRow(`SELECT COALESCE(last_prompt_tokens, 0), COALESCE(last_completion_tokens, 0) FROM tenant_state WHERE tenant_id = ?`, tenantID).
-		Scan(&stats.LastPromptTokens, &stats.LastCompletionTokens)
-
-	// tenants metadata.
-	_ = conn.QueryRow(`SELECT COALESCE(model, ''), COALESCE(created_at, ''), COALESCE(last_active_at, '') FROM tenants WHERE id = ?`, tenantID).
-		Scan(&stats.CurrentModel, &stats.SessionCreatedAt, &stats.SessionLastActive)
-
+	// tenant_state watermark + tenants metadata（CurrentModel/SessionCreatedAt/
+	// SessionLastActive/LastPromptTokens/LastCompletionTokens）由调用方填充：
+	// v71 每会话一个 DB 拆分后，tenant_state/tenants 是主库表，而 SessionService
+	// 绑定会话库 —— 这四个字段从主库读会失败。调用方（TenantSession /
+	// MultiTenantSession，持有主库 MemoryService/TenantService）负责补齐。
 	return stats, nil
 }
 

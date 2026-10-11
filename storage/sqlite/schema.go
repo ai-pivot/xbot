@@ -25,6 +25,15 @@ CREATE TABLE tenants (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     cwd TEXT DEFAULT '',
+    -- v71: 每会话一个 DB（one session, one DB）—— 会话库注册表列。
+    -- db_path: 会话库相对路径（sessions/<channel>/<bucket>/<name>.db，相对主库目录）；
+    -- migrated: 会话数据是否已惰性迁移到会话库（0=主库 session_messages 仍是权威，
+    --   首次打开会话库时按 tenant_id 拷贝并置 1；拷贝前先 DELETE，幂等）；
+    -- preview: 会话最新一条 user/assistant 消息的截断预览（跨会话列表读主库这一列，
+    --   不再 JOIN session_messages —— 拆库后主库没有消息数据，预览由写入路径维护）。
+    db_path TEXT NOT NULL DEFAULT '',
+    migrated INTEGER NOT NULL DEFAULT 0,
+    preview TEXT NOT NULL DEFAULT '',
     UNIQUE(channel, chat_id)
 );
 
@@ -43,12 +52,13 @@ CREATE TABLE session_messages (
 	    display_only INTEGER DEFAULT 0,
 	    internal_only INTEGER DEFAULT 0,
 	    context_tokens INTEGER DEFAULT 0,
-	    turn_id INTEGER DEFAULT 0,
-	    record_type TEXT NOT NULL DEFAULT 'message',
-	    target_history_id INTEGER,
-	    record_data TEXT,
+    turn_id INTEGER DEFAULT 0,
+    iteration INTEGER NOT NULL DEFAULT 0,
+    record_type TEXT NOT NULL DEFAULT 'message',
+    target_history_id INTEGER,
+    record_data TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-	    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
 );
 CREATE INDEX idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
 CREATE INDEX idx_session_messages_tenant_history ON session_messages(tenant_id, id);
@@ -128,7 +138,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (70);
+INSERT INTO schema_version (version) VALUES (73);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.

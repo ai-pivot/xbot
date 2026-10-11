@@ -94,10 +94,26 @@ func driveChatProcessLoop(t *testing.T, ag *Agent, key string, ss *bgSessionStat
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	msgCh := make(chan bus.InboundMessage, 8)
-	go ag.chatProcessLoop(ctx, key, msgCh, ss)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ag.chatProcessLoop(ctx, key, msgCh, ss)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		close(msgCh)
+		// ⛔ Windows 文件锁竞态根治（2026-09-30 CI 实测 TestNewTurnAutoCancelsStalePendingAskUser
+		// 红：TempDir RemoveAll "directory is not empty"）：cleanup 只 cancel+close 而不等
+		// goroutine 退出 ⇒ 测试通过断言返回后，chatProcessLoop 还在处理最后一条消息
+		//（processMessage 持 DB 句柄；日志实证它在 ag.Close() 之后仍在跑、撞上已关闭
+		// 的 DB 被 recover）⇒ Windows 上未释放的句柄让 t.TempDir 的 RemoveAll 失败。
+		// cleanup 顺序（LIFO）：本等待先于 ag.Close() 运行 ⇒ goroutine 完整退出后
+		// 才关 DB —— 假绿 recover 消息也一并消除。10s 是死锁保险（正常路径毫秒级退出）。
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Logf("chatProcessLoop for %s did not exit within 10s after cancel; TempDir cleanup may fail on Windows (handle leak)", key)
+		}
 	})
 	return msgCh
 }
@@ -186,7 +202,9 @@ func TestAnswerPathBroadcastsAnsweredAfterPersist(t *testing.T) {
 	if pending := ag.GetPendingAskUser("web", "chat-ans"); pending != nil {
 		t.Fatalf("pending AskUser survived the persisted answer: %+v", pending)
 	}
-	_, recordType, err := sqlite.NewSessionService(ag.MultiSession().DB()).LatestAskControlRecord(sess.TenantID())
+	// v71（每会话一个 DB）：ask 控制记录在会话库 —— 经 TenantSession.SessionService()
+	// （绑定会话库）查询，绝不再 NewSessionService(主库)（那会读主库的旧数据）。
+	_, recordType, err := sess.SessionService().LatestAskControlRecord(sess.TenantID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +295,9 @@ func TestNewTurnAutoCancelsStalePendingAskUser(t *testing.T) {
 	if pending := ag.GetPendingAskUser("web", "chat-t6"); pending != nil {
 		t.Fatalf("pending AskUser survived the new turn: %+v", pending)
 	}
-	_, recordType, err := sqlite.NewSessionService(ag.MultiSession().DB()).LatestAskControlRecord(sess.TenantID())
+	// v71（每会话一个 DB）：ask 控制记录在会话库 —— 经 TenantSession.SessionService()
+	// （绑定会话库）查询，绝不再 NewSessionService(主库)（那会读主库的旧数据）。
+	_, recordType, err := sess.SessionService().LatestAskControlRecord(sess.TenantID())
 	if err != nil {
 		t.Fatal(err)
 	}

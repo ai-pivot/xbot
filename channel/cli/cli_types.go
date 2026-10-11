@@ -337,6 +337,11 @@ type cliIterationSnapshot struct {
 	TTFTMs       int64 `json:"ttft_ms,omitempty"`
 	TokensPerSec int64 `json:"tokens_per_sec,omitempty"`
 	TotalMs      int64 `json:"total_ms,omitempty"`
+	// ToolsFolded mirrors protocol.HistoryIteration.ToolsFolded（折叠视图标记，
+	// docs/plan-history-fold-windowing.md §3.3）。CLI/RPC 路径恒为 false
+	// （foldView=false ⇒ 全量下发）；此处仅为维持 cli_update_session.go:241
+	// 的结构体转换有效 —— 本类型是 protocol.HistoryIteration 的镜像。
+	ToolsFolded bool `json:"tools_folded,omitempty"`
 }
 
 // formatElapsed formats milliseconds into a human-friendly duration string.

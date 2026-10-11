@@ -236,8 +236,14 @@ describe('PluginView 分发', () => {
       })
 
       const { rerender } = render(<PluginView pluginId="xbot.ssh-runner" view={view} />)
-      await waitFor(() => expect(screen.getByTestId('plugin-text')).toBeInTheDocument())
-      expect(mounts).toBe(1)
+      // 被动 effect（useEffect）与 DOM 出现不同步：组件经 loadViewComponent 的
+      // promise 异步加载，渲染发生在 act 边界外的微任务里 —— 元素出现时 effect
+      // 可能尚未 flush（CI 实测竞态：元素在而 mounts=0）。把 mounts 断言合并进
+      // waitFor 一起等，竞态在结构上不可能。
+      await waitFor(() => {
+        expect(screen.getByTestId('plugin-text')).toBeInTheDocument()
+        expect(mounts).toBe(1)
+      })
 
       // 普通重渲染（props 不变）不 remount
       rerender(<PluginView pluginId="xbot.ssh-runner" view={view} />)

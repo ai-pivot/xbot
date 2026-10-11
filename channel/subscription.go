@@ -62,6 +62,11 @@ type iterToolSnap struct {
 	UIMode    string              `json:"ui_mode,omitempty"`
 	UILibs    []string            `json:"ui_libs,omitempty"`
 	UISurface *protocol.UISurface `json:"ui_surface,omitempty"`
+	// ToolHints carries the persisted synthetic-tool hint payload (Fix A 回写的
+	// tool_hints 键 —— agent.IterationToolSnapshot 同名 tag）。缺了它，历史 JSON
+	// 往返会静默丢弃合成工具的结构化详情（SyntheticToolCard 全靠这个载荷），
+	// live SSE 直推不经往返 ⇒ 「live 详情正常、刷新后无结构化详情」（2026-10-02 P0）。
+	ToolHints string `json:"tool_hints,omitempty"`
 }
 
 // isDegenerateCancelDetail reports whether a Detail JSON represents a
@@ -254,7 +259,34 @@ func filterInternalMessages(msgs []llm.ChatMessage) []llm.ChatMessage {
 // iteration data attached (queried by turn_id, merging all intermediate +
 // final records into one complete list).
 // Detail JSON is only used as a fallback for old data pre-v55.
+//
+// 本函数 = ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, false)：
+// **全量视图**（零区域窗口、零工具折叠）—— CLI/RPC get_history 走的就是这一条，
+// 行为与历史上逐字节一致（R5）。
 func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord) []HistoryMessage {
+	return ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, false)
+}
+
+// HistoryRegionWindow 是内层「区域窗口」大小：每个 turn 首次只下发其**最后**
+// HistoryRegionWindow 个展示区域（docs/plan-history-fold-windowing.md §3.2 D2）。
+// 区域 = 前端渲染块（与 mergeToolRuns 同构判定，见 region_view.go）：**折叠的
+// 工具组算 1 个区域**。更早未下发的区域数由 HistoryMessage.RegionsBefore 显式
+// 声明 —— 它是「可取回窗口」，**不是 gap**（前端经 POST /api/regions 整段取回，
+// 段边界同样对齐区域，永不劈开工具组）。区域总数 ≤ 该值的 turn 全量下发、
+// RegionsBefore=0（普通 turn 完全不受影响）。
+const HistoryRegionWindow = 100
+
+// ConvertMessagesToHistoryWithIterationsView 是折叠视图变体（D2 区域窗口 + D3 工具
+// 轻字段化，方案 §3.2/§3.3）：
+//
+//	foldView=true  —— Web REST 历史路径（serverapp HistorySnapshot）：每个有结构化
+//	  迭代数据的 turn 只下发**尾部 HistoryRegionWindow 个区域**，窗口内每条工具
+//	  省略详情大字段（ToolsFolded 标记，GenUI 豁免），并把更早未下发的区域数挂到
+//	  HistoryMessage.RegionsBefore。迭代**存在性**完整且连续（窗口是区域对齐的
+//	  连续迭代号区间），未下发部分有确定取回通路 ⇒ 不构成任何 gap。
+//	foldView=false —— CLI/RPC 路径，与 ConvertMessagesToHistoryWithIterations 完全同构
+//	  （无结构化数据的 turn / Detail 回落路径在两种模式下都不窗口化、不折叠）。
+func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord, foldView bool) []HistoryMessage {
 	// Internal 消息（仅模型可见的载体）不属于用户可见历史 —— 见
 	// filterInternalMessages 的说明。
 	msgs = filterInternalMessages(msgs)
@@ -341,39 +373,13 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 			//    no final message): flushPending is the ONLY render path —
 			//    skipping it would lose ALL iterations.
 			iters := pendingIters
+			regionsBefore := 0
 			if pendingTurnID > 0 {
 				if recs, ok := turnIterMap[pendingTurnID]; ok && len(recs) > 0 {
-					iters = make([]HistoryIteration, 0, len(recs))
-					for _, rec := range recs {
-						var tools []protocol.ToolProgress
-						if rec.Tools != "" && rec.Tools != "[]" {
-							var snaps []iterToolSnap
-							if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
-								tools = make([]protocol.ToolProgress, len(snaps))
-								for i, t := range snaps {
-									label := t.Label
-									if label == "" {
-										label = t.Name
-									}
-									tools[i] = protocol.ToolProgress{
-										Name: t.Name, Label: label, Status: t.Status,
-										Elapsed: t.ElapsedMS, Iteration: rec.Iteration,
-										Summary: t.Summary, Args: t.Args, Detail: t.Detail,
-										UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
-									}
-								}
-							}
-						}
-						iters = append(iters, HistoryIteration{
-							Iteration:    rec.Iteration,
-							Content:      rec.Content,
-							Reasoning:    rec.Reasoning,
-							Tools:        tools,
-							Tokens:       rec.Tokens,
-							TTFTMs:       rec.TTFTMs,
-							TokensPerSec: rec.TokensPerSec,
-							TotalMs:      rec.TotalMs,
-						})
+					if foldView {
+						iters, regionsBefore = windowTurnIterations(recs)
+					} else {
+						iters = fullTurnIterations(recs, true)
 					}
 				}
 			}
@@ -390,18 +396,26 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 				Timestamp:  ts,
 				Iterations: iters,
 				TurnID:     pendingTurnID,
+				// 折叠视图：该 turn 更早未下发的展示区域数（0 = 已完整下发）。
+				RegionsBefore: regionsBefore,
 			})
 			pendingIters = nil
 		}
 	}
 
 	// Pre-scan tool messages for status fallback.
-	toolResults := make(map[string]string)
-	for _, m := range msgs {
-		if m.Role == "tool" && m.ToolCallID != "" {
-			toolResults[m.ToolCallID] = m.Content
-		}
-	}
+	toolResults := BuildToolResults(msgs)
+
+	// 注入型（合成）工具对回放修复（2026-09-30 chat_D3D0 turn 19 事故）：旧数据的
+	// iteration_history tools JSON 永远缺 pre_turn_end / bg task / cron 这类注入型
+	// 工具 —— 注入发生在迭代快照落库【之后】（见 agent 侧 Fix A 注释），会话内存里的
+	// 工具不会出现在任何一次快照里 ⇒ 刷新后前端永远渲染不出该工具。投影前把
+	// session_messages 里的工具对按注入时间戳合并回 turnIterMap 副本（锚定到注入
+	// 时刻所属的迭代，与 live 渲染同一迭代）；Fix A 之后的新数据已持久化该工具，
+	// 按 (name, detail) 去重防双写。copy-on-write：无合成对时返回原 map，零开销。
+	// 必须在 window/full 装配之前执行 —— MapIterationRecord 是 tools JSON 的唯一
+	// 解析入口，合并后的记录经它自然流入两条装配路径（fold 与 full）。
+	turnIterMap = MergeSyntheticToolPairs(msgs, toolResults, turnIterMap)
 
 	var cmdAnchor uint64
 	for _, m := range msgs {
@@ -478,38 +492,15 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 					finishCurIter()
 					pendingIters = nil
 
-					iters := make([]HistoryIteration, 0, len(recs))
-					for _, rec := range recs {
-						var tools []protocol.ToolProgress
-						if rec.Tools != "" && rec.Tools != "[]" {
-							var snaps []iterToolSnap
-							if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
-								tools = make([]protocol.ToolProgress, len(snaps))
-								for i, t := range snaps {
-									label := t.Label
-									if label == "" {
-										label = t.Name
-									}
-									tools[i] = protocol.ToolProgress{
-										Name:      t.Name,
-										Label:     label,
-										Status:    t.Status,
-										Elapsed:   t.ElapsedMS,
-										Iteration: rec.Iteration,
-										Summary:   t.Summary,
-										Args:      t.Args,
-										Detail:    t.Detail,
-										UIMode:    t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
-									}
-								}
-							}
-						}
-						iters = append(iters, HistoryIteration{
-							Iteration: rec.Iteration,
-							Content:   rec.Content,
-							Reasoning: rec.Reasoning,
-							Tools:     tools,
-						})
+					// 折叠视图（foldView=true）取尾部 HistoryRegionWindow 个区域 +
+					// 工具轻字段化；全量视图逐字节保留历史行为（该路径不填迭代级
+					// 指标 —— 与 flushPending 路径的历史差异，见 fullTurnIterations）。
+					var iters []HistoryIteration
+					regionsBefore := 0
+					if foldView {
+						iters, regionsBefore = windowTurnIterations(recs)
+					} else {
+						iters = fullTurnIterations(recs, false)
 					}
 
 					if len(iters) > 0 {
@@ -535,6 +526,8 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 								Timestamp:  m.Timestamp,
 								TurnID:     m.TurnID,
 								Iterations: iters,
+								// 折叠视图：更早未下发的展示区域数（0 = 已完整下发）。
+								RegionsBefore: regionsBefore,
 							})
 						} else {
 							structuredRowIdx[m.TurnID] = len(history)
@@ -545,6 +538,8 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 								Timestamp:  m.Timestamp,
 								TurnID:     m.TurnID,
 								Iterations: iters,
+								// 折叠视图：更早未下发的展示区域数（0 = 已完整下发）。
+								RegionsBefore: regionsBefore,
 							})
 						}
 					} else if m.Content != "" && !m.Interrupted {
@@ -700,6 +695,40 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 	flushPending()
 	history = attachCompactions(history, pendingCompactions)
 	return history
+}
+
+// windowTurnIterations 折叠视图（D2 区域窗口 + D3 工具轻字段化）的装配：
+// 取该 turn 尾部 HistoryRegionWindow 个区域，窗口内每条经 MapIterationRecord(rec, true)
+// 轻字段化（ToolsFolded 标记，GenUI 工具豁免）。返回 (窗口迭代, 更早未下发区域数)。
+//
+// 区域原子性由 RegionWindow 保证：窗口 = 连续迭代号区间 [a..N]，起点必是某个
+// 区域的 head ⇒ 工具组永不劈开，窗口内迭代号连续（前端 assertIterationContinuity
+// 只查内部断号，任意起点合法）。
+func windowTurnIterations(recs []sqlite.IterationRecord) ([]HistoryIteration, int) {
+	window, regionsBefore := RegionWindow(recs, HistoryRegionWindow)
+	iters := make([]HistoryIteration, 0, len(window))
+	for _, rec := range window {
+		iters = append(iters, MapIterationRecord(rec, true))
+	}
+	return iters, regionsBefore
+}
+
+// fullTurnIterations 全量装配（foldView=false = CLI/RPC 路径）。
+//
+// keepMetrics 表达两个结构化装配点的**历史差异**：flushPending（续跑/取消、
+// 无最终回复行）路径填迭代级指标（Tokens/TTFTMs/TokensPerSec/TotalMs），主装配
+// 路径不填。R5 要求 CLI/RPC（get_history）载荷零变化 ⇒ 如实保留该差异，不顺手
+// 「统一修正」（否则 View(false) 与原函数不再逐字节一致）。
+func fullTurnIterations(recs []sqlite.IterationRecord, keepMetrics bool) []HistoryIteration {
+	iters := make([]HistoryIteration, 0, len(recs))
+	for _, rec := range recs {
+		it := MapIterationRecord(rec, false)
+		if !keepMetrics {
+			it.Tokens, it.TTFTMs, it.TokensPerSec, it.TotalMs = 0, 0, 0, 0
+		}
+		iters = append(iters, it)
+	}
+	return iters
 }
 
 // attachCompactions attaches each pending in-turn compaction to its turn's
@@ -1334,7 +1363,8 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 						Name: tool.Name, Label: label, Status: tool.Status,
 						Elapsed: tool.ElapsedMS, Iteration: snapshot.Iteration,
 						Summary: tool.Summary, Args: tool.Args, Detail: tool.Detail,
-						UIMode: tool.UIMode, UILibs: tool.UILibs, UISurface: tool.UISurface,
+						ToolHints: tool.ToolHints,
+						UIMode:    tool.UIMode, UILibs: tool.UILibs, UISurface: tool.UISurface,
 					}
 				}
 				iterations[i] = HistoryIteration{
@@ -1374,11 +1404,20 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 	return []HistoryIteration{{Iteration: 1, Content: message.Content, Reasoning: message.ReasoningContent, Tools: toolEntries}}
 }
 
-// ⛔ 每 turn 的迭代**必须完整下发**（用户 2026-09-21 定稿：「不能有任何 gap，任何 gap 都是
-// 破坏线性一致性」）—— 这里**禁止**再引入任何"有界窗口/尾部截断"。
+// ⛔ 每 turn 的迭代**存在性必须完整**（用户 2026-09-21 定稿：「不能有任何 gap，任何
+// gap 都是破坏线性一致性」；2026-09-30 演进见 docs/plan-history-fold-windowing.md §0）——
+// 这里**禁止**再引入任何"有界窗口/尾部截断"。
 //
 // 历史教训：曾用 BoundHistoryIterations 把每个 turn 截到最近 60 个（2026-09-15 为压 payload
 // 体积）。截断的代价是**用户会看到迭代缺失**（turn-1-c 的 iter-range=60-119、1..59 不见），
 // 而且当时**没有取回通路**（全 history 搜索 `before_iteration` 零命中）⇒ 永久缺。
 // 体积/渲染性能归**渲染层**（TurnBody 的迭代级窗口化：只挂载视口附近的块 + contain，代价与
 // 迭代数解耦），绝不以丢数据换体积。
+//
+// 2026-09-30 起允许（且仅允许）的形态：**折叠视图**（ConvertMessagesToHistoryWithIterationsView
+// foldView=true，仅 REST 历史路径）——① 窗口=尾部 HistoryRegionWindow 个**展示区域**（区域原子，
+// 永不劈开工具组），窗口内迭代号连续；② 更早区域由 RegionsBefore **显式声明**（≠ 洞），
+// 且必须伴随取回通路（POST /api/regions / POST /api/iteration_detail）；③ 窗口内工具只带
+// pill 轻字段（ToolsFolded 标记），默认渲染与全量像素级一致。foldView=false（CLI/RPC 路径）
+// 逐字节等于演进前行为。任何「静默截断 + 无取回」的回归由 history_iterations_complete_test.go
+// 的既有用例与 T12 体积预算用例共同拦截。

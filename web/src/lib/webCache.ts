@@ -1,4 +1,5 @@
 import type { ProgressEvent, SessionInfo } from '@/types/shared'
+import { ANNOTATION_STORAGE_PREFIX } from './messageAnnotations'
 
 export const SESSION_TREE_CACHE_KEY = 'xbot_session_tree'
 
@@ -251,6 +252,10 @@ export function clearWebCaches(): void {
   webCacheEpoch += 1
   try {
     localStorage.removeItem(SESSION_TREE_CACHE_KEY)
+    for (let index = localStorage.length - 1; index >= 0; index--) {
+      const key = localStorage.key(index)
+      if (key?.startsWith(ANNOTATION_STORAGE_PREFIX)) localStorage.removeItem(key)
+    }
   } catch {
     // Memory caches still need to be cleared when storage is unavailable.
   }
