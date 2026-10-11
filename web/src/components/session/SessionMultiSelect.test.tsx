@@ -98,6 +98,11 @@ it('channel changes clear selection; collapsed groups are excluded', () => {
   mocks.store.collapsedGroups = new Set(['time:today']); view.update(); click('全选'); click('标为已读')
   expect(mocks.store.markRead).not.toHaveBeenCalled()
 })
+it('a portaled batch dialog does not select extra rows with Ctrl/Cmd+A', () => {
+  setup(); click('多选'); select('Alpha'); click('删除')
+  fireEvent.keyDown(screen.getByRole('button', { name: '确认删除' }), { key: 'a', metaKey: true })
+  expect(screen.getAllByRole('checkbox', { checked: true, hidden: true })).toHaveLength(1)
+})
 it('subagents cannot be selected or opened during multi-select', () => {
   const child = { ...sessions[0], chatID: 'child', channel: 'agent', label: 'ReviewChild', type: 'agent', parentChatID: '0', parentChannel: 'web' } as SessionInfo
   mocks.store.sessions = [{ ...sessions[0], children: [child] }]

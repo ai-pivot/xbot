@@ -56,7 +56,7 @@ export function useSessionSelection(sessions: SessionInfo[], store: SessionStore
     if (target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')) return
     const overlay = target.closest('[role="dialog"], [role="alertdialog"], [role="menu"]')
     // The mobile sidebar itself lives in a Sheet dialog. Only nested action dialogs own these keys.
-    if (overlay && event.currentTarget.contains(overlay)) return
+    if (overlay && !overlay.contains(event.currentTarget)) return
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); exit() }
     else if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'a') {
       event.preventDefault(); event.stopPropagation(); all()
