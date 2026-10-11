@@ -139,7 +139,7 @@ func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, 
 		}
 		clean = append(clean, persistMsg)
 	}
-	historyID, err := b.session.AppendContextSnapshot(sqlite.HistoryRecordCompress, clean)
+	historyID, err := b.session.AppendContextSnapshotForTurn(sqlite.HistoryRecordCompress, clean, b.turnID)
 	if err != nil {
 		log.WithError(err).Error("Failed to append compression history record")
 		return 0, err

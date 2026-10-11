@@ -7,7 +7,7 @@ import { historyToReplaced, rowsToChatMessages } from '@/chat/integrate'
 import { reduce } from '@/chat/reduce'
 import { initialChatState } from '@/chat/types'
 import { renderWithProviders } from '@/test-utils'
-import type { ChatMessage, WebCompaction, WebIteration } from '@/types/shared'
+import type { ChatMessage, WebCompaction, WebIteration, WebToolProgress } from '@/types/shared'
 
 /**
  * 重新设计（2026-09-26 用户：「如果真的是在一个 turn 中间压缩的，应该插在 Iter
@@ -254,5 +254,71 @@ describe('窗口外压缩点挂起（区域窗口化交互）', () => {
     )
     expect(container.querySelectorAll('[data-testid="compaction-divider"]').length).toBe(1)
     expect(container.querySelector('[data-iter-id="60"] [data-testid="compaction-divider"]')).toBeTruthy()
+  })
+})
+
+// ─── C2：压缩点必须「跟着它所属的迭代」走（2026-10-11 用户报告：压缩插入在了
+// 错误的位置 —— 「它本该在的迭代没加载」⇒ 前端 anchor 扫描（max 已加载迭代 ≤
+// afterIteration）找不到目标，落到**最近一个已加载迭代**，多个压缩点堆在一起。
+// 正解：压缩点的归属迭代**没加载**时绝不渲染（挂起，等它随分页到达再渲染），
+// 且**绝不**被吸收进一个"越过它"的合并工具行。 ───
+describe('压缩点跟迭代走（锚定迭代未加载 ⇒ 挂起，不许堆叠）', () => {
+  it('★ 洞的另一侧（1..5 ∪ 52..66）：afterIteration=20/30 属于未加载区 ⇒ 不得渲染', () => {
+    // 洞（6..51 未加载）⇒ contiguous 截断在 5。afterIteration=20/30 的迭代没加载。
+    // 旧行为：anchor 扫描在 [1..5] 里落到 5 ⇒ 两个 divider 叠在迭代 5 之后（错位）。
+    const iters: WebIteration[] = [
+      ...Array.from({ length: 5 }, (_, i) => iter(i + 1, `low${i + 1}`)),
+      ...Array.from({ length: 15 }, (_, i) => iter(52 + i, `high${52 + i}`)),
+    ]
+    const compactions: WebCompaction[] = [
+      { afterIteration: 20, content: '[Compacted context]\n\nA' },
+      { afterIteration: 30, content: '[Compacted context]\n\nB' },
+    ]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={iters} compactions={compactions} turnID={7} />,
+    )
+    expect(
+      container.querySelectorAll('[data-testid="compaction-divider"]').length,
+      '锚定迭代未加载的压缩点必须挂起，绝不许堆到最近的已加载迭代后面',
+    ).toBe(0)
+  })
+
+  it('★ 压缩点必须切断合并工具行：afterIteration=3 落在工具行 2..4 中 ⇒ 渲染在 3 之后、4 之前', () => {
+    const tool = (name: string): WebToolProgress => ({
+      name, label: name, status: 'done', elapsedMs: 1, summary: '', detail: '', args: '{}', toolHints: '',
+    })
+    const iters: WebIteration[] = [
+      iter(1, 'text-1'),
+      { iteration: 2, content: '', reasoning: '', toolCount: 1, tools: [tool('Shell')] },
+      { iteration: 3, content: '', reasoning: '', toolCount: 1, tools: [tool('Read')] },
+      { iteration: 4, content: '', reasoning: '', toolCount: 1, tools: [tool('Grep')] },
+      iter(5, 'text-5'),
+    ]
+    const compactions: WebCompaction[] = [{ afterIteration: 3, content: '[Compacted context]\n\ns' }]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={iters} compactions={compactions} turnID={7} />,
+    )
+    const dividers = container.querySelectorAll('[data-testid="compaction-divider"]')
+    expect(dividers.length, '压缩点必须渲染').toBe(1)
+    // 迭代 4 必须成为**独立块**（工具行在压缩点处被切断），否则压缩点会被渲染到
+    // 整条工具行（2..4）之后 —— 时间线错位。
+    expect(container.querySelector('[data-iter-id="4"]'), '压缩点必须切断合并工具行').toBeTruthy()
+    expect(container.querySelector('[data-iter-id="2"] [data-testid="compaction-divider"]')).toBeTruthy()
+    expect(container.querySelector('[data-iter-id="4"] [data-testid="compaction-divider"]')).toBeFalsy()
+  })
+
+  it('★ 压缩点随迭代下发（iteration.compaction，区域段形态）⇒ 渲染在该迭代之后', () => {
+    // 后端把压缩点挂到迭代上（初始折叠窗口与 /api/regions 段都携带）—— 前端必须
+    // 从 iteration.compaction 渲染，不再依赖 turn 级列表。
+    const iters: WebIteration[] = [
+      { ...iter(1, 'a'), compaction: { afterIteration: 1, content: '[Compacted context]\n\ns' } },
+      iter(2, 'b'),
+    ]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={iters} turnID={7} />,
+    )
+    expect(container.querySelectorAll('[data-testid="compaction-divider"]').length, '迭代级压缩点必须渲染').toBe(1)
+    expect(container.querySelector('[data-iter-id="1"] [data-testid="compaction-divider"]')).toBeTruthy()
+    expect(container.querySelector('[data-iter-id="2"] [data-testid="compaction-divider"]')).toBeFalsy()
   })
 })

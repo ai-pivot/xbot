@@ -342,6 +342,10 @@ type cliIterationSnapshot struct {
 	// （foldView=false ⇒ 全量下发）；此处仅为维持 cli_update_session.go:241
 	// 的结构体转换有效 —— 本类型是 protocol.HistoryIteration 的镜像。
 	ToolsFolded bool `json:"tools_folded,omitempty"`
+	// Compaction mirrors protocol.HistoryIteration.Compaction（压缩点随迭代下发）。
+	// CLI/RPC（foldView=false）恒为 nil；此处仅为维持本类型与
+	// protocol.HistoryIteration 的结构体转换有效（它是后者的镜像）。
+	Compaction *protocol.HistoryCompaction `json:"compaction,omitempty"`
 }
 
 // formatElapsed formats milliseconds into a human-friendly duration string.

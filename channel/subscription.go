@@ -444,15 +444,22 @@ func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIter
 			//
 			// 老数据（无结构化迭代 / 迭代无时间戳）无法定位 ⇒ 回落为独立的
 			// standalone 标记行（基本兼容，前端仍支持）。
-			if after, ok := compactionIteration(turnIterMap, cmdAnchor, m.Timestamp); ok {
+			// 归属 turn：**写入时记录**的 CompactTurnID 优先（权威 —— 与 v73 合成
+			// 工具「写入时记录，读取不猜」同一原则）；legacy 行（0）回落为「标记
+			// 在消息流中的位置」（cmdAnchor）。
+			ownerTurn := cmdAnchor
+			if m.CompactTurnID > 0 {
+				ownerTurn = m.CompactTurnID
+			}
+			if after, ok := compactionIteration(turnIterMap, ownerTurn, m.Timestamp); ok {
 				pendingCompactions = append(pendingCompactions, pendingCompaction{
-					turnID: cmdAnchor, afterIteration: after,
+					turnID: ownerTurn, afterIteration: after,
 					content: m.Content, markerID: m.ID, timestamp: m.Timestamp,
 				})
 			} else {
 				history = append(history, HistoryMessage{
 					ID: m.ID, HistoryID: m.ID, Role: m.Role, Content: m.Content,
-					Standalone: true, AnchorTurnID: cmdAnchor, Timestamp: m.Timestamp,
+					Standalone: true, AnchorTurnID: ownerTurn, Timestamp: m.Timestamp,
 				})
 			}
 			continue
@@ -693,7 +700,7 @@ func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIter
 		}
 	}
 	flushPending()
-	history = attachCompactions(history, pendingCompactions)
+	history = attachCompactions(history, pendingCompactions, foldView)
 	return history
 }
 
@@ -735,7 +742,13 @@ func fullTurnIterations(recs []sqlite.IterationRecord, keepMetrics bool) []Histo
 // assistant row (前端渲染在迭代之间 —— 与迭代同级)。该 turn 的行不在本次窗口
 // 内（分页裁剪）时回落为独立的 standalone 标记行 —— 信息绝不丢失（老数据 /
 // 边界场景的基本兼容）。
-func attachCompactions(history []HistoryMessage, pending []pendingCompaction) []HistoryMessage {
+//
+// attachToIterations=true（折叠视图 / Web）：**同时**把压缩点挂到它所属的
+// HistoryIteration 上（`Compaction`）—— 压缩点随**迭代数据**下发，前端精确渲染
+// 在「该迭代之后」，不再靠启发式锚定；区域段端点（/api/regions）走同一挂载，
+// 故分页到达的迭代自带它的压缩点。CLI/RPC（全量视图）保持 false ⇒ 载荷逐字节
+// 不变（R5）。
+func attachCompactions(history []HistoryMessage, pending []pendingCompaction, attachToIterations bool) []HistoryMessage {
 	if len(pending) == 0 {
 		return history
 	}
@@ -749,11 +762,26 @@ func attachCompactions(history []HistoryMessage, pending []pendingCompaction) []
 	}
 	for _, c := range pending {
 		if idx, ok := rowIdx[c.turnID]; ok {
-			history[idx].Compactions = append(history[idx].Compactions, protocol.HistoryCompaction{
+			hc := protocol.HistoryCompaction{
 				AfterIteration: c.afterIteration,
 				Content:        c.content,
 				Timestamp:      c.timestamp,
-			})
+			}
+			attached := false
+			if attachToIterations {
+				for k := range history[idx].Iterations {
+					if history[idx].Iterations[k].Iteration == c.afterIteration {
+						hcCopy := hc
+						history[idx].Iterations[k].Compaction = &hcCopy
+						attached = true
+					}
+				}
+			}
+			// 折叠视图：已挂到窗口内某迭代的压缩点**只随迭代下发**（turn 级列表只留
+			// 「窗口外/无法挂上」的，供段加载后回落定位）—— 单一来源，前端无需去重。
+			if !attached {
+				history[idx].Compactions = append(history[idx].Compactions, hc)
+			}
 			continue
 		}
 		history = append(history, HistoryMessage{
@@ -762,6 +790,31 @@ func attachCompactions(history []HistoryMessage, pending []pendingCompaction) []
 		})
 	}
 	return history
+}
+
+// AttachCompactionsToIterations attaches each compaction to the iteration it
+// follows (AfterIteration). Exported for the region-segment endpoint so that
+// compaction points **travel with the paginated iteration data** (a segment
+// carries the compactions that belong to it).
+func AttachCompactionsToIterations(iters []HistoryIteration, comps []protocol.HistoryCompaction) {
+	for i := range comps {
+		c := comps[i]
+		if c.AfterIteration <= 0 {
+			continue
+		}
+		for k := range iters {
+			if iters[k].Iteration == c.AfterIteration {
+				cc := c
+				iters[k].Compaction = &cc
+			}
+		}
+	}
+}
+
+// CompactionIterationFor exposes compactionIteration (timestamp → iteration
+// number) for the region-segment endpoint.
+func CompactionIterationFor(turnIterMap map[uint64][]sqlite.IterationRecord, turnID uint64, ts time.Time) (int, bool) {
+	return compactionIteration(turnIterMap, turnID, ts)
 }
 
 // deriveTurnIDs derives turn_id for legacy rows (turn_id=0).

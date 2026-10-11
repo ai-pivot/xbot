@@ -52,6 +52,11 @@ type ContextSnapshot struct {
 	Messages       []llm.ChatMessage `json:"messages"`
 	HistoryIDs     []int64           `json:"history_ids"`
 	PendingAskUser *PendingAskUser   `json:"pending_ask_user,omitempty"`
+	// TurnID = 该压缩/裁剪记录所属的 **turn**（写入时显式记录，读取不再猜 —— 与
+	// v73 合成工具「注入时记录，读取不猜」同一原则）。0 = 老数据（无归属），
+	// 读取侧回落到「压缩标记在消息流中的位置」推断。它是压缩点**随分页/区域段
+	// 下发**的锚：`GetCompactionsByTurn` 据此精确取回某 turn 的全部压缩点。
+	TurnID uint64 `json:"turn_id,omitempty"`
 }
 
 const contextSnapshotVersion = 1
@@ -525,6 +530,15 @@ func appendControlWith(store historyQueryExecer, tenantID int64, recordType Hist
 }
 
 func (s *SessionService) AppendContextSnapshot(tenantID int64, recordType HistoryRecordType, messages []llm.ChatMessage) (int64, error) {
+	return s.AppendContextSnapshotForTurn(tenantID, recordType, messages, 0)
+}
+
+// AppendContextSnapshotForTurn is AppendContextSnapshot plus the owning turn id,
+// recorded inside the snapshot at WRITE time. Read paths (the fold view's
+// per-iteration compaction attach, and the region-segment endpoint) then look
+// the turn's compactions up by that id instead of guessing from stream position
+// / timestamps. turnID=0 keeps the legacy behaviour (read-time inference).
+func (s *SessionService) AppendContextSnapshotForTurn(tenantID int64, recordType HistoryRecordType, messages []llm.ChatMessage, turnID uint64) (int64, error) {
 	lock := s.db.historyLock(tenantID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -559,6 +573,7 @@ func (s *SessionService) AppendContextSnapshot(tenantID int64, recordType Histor
 		historyID, err = appendSnapshotWith(store, tenantID, recordType, ContextSnapshot{
 			Version: contextSnapshotVersion, Messages: active, HistoryIDs: historyIDs,
 			PendingAskUser: clonePendingAskUser(replay.PendingAskUser),
+			TurnID:         turnID,
 		})
 		return err
 	})
@@ -597,6 +612,69 @@ func appendSnapshotWith(execer historyExecer, tenantID int64, recordType History
 		return 0, fmt.Errorf("read inserted history id: %w", err)
 	}
 	return historyID, nil
+}
+
+// TurnCompaction = 一个 turn 内的压缩点（供区域分页端点按 turn 取回，**随迭代段
+// 一起下发** —— 压缩点不再只挂在 turn 级列表上，区域段也能自带它）。
+type TurnCompaction struct {
+	// CreatedAt = 压缩记录时刻（用于定位「压缩发生在哪个迭代之后」）。
+	CreatedAt time.Time
+	// Content = "[Compacted context]\n\n<summary>" 摘要正文。
+	Content string
+}
+
+// GetCompactionsByTurn returns the compaction markers recorded for one turn —
+// attribution is the write-time `TurnID` stored in the snapshot (see
+// AppendContextSnapshotForTurn). Legacy rows (TurnID=0) are NOT returned here;
+// their attribution falls back to the message-stream position at the
+// conversion layer (channel.ConvertMessagesToHistoryWithIterationsView).
+func (s *SessionService) GetCompactionsByTurn(tenantID int64, turnID uint64) ([]TurnCompaction, error) {
+	if s == nil || turnID == 0 {
+		return nil, nil
+	}
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT record_data, created_at FROM session_messages
+		WHERE tenant_id = ? AND record_type IN ('compress', 'prune')
+		  AND json_extract(record_data, '$.turn_id') = ?
+		ORDER BY id`, tenantID, int64(turnID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TurnCompaction
+	for rows.Next() {
+		var raw, created string
+		if err := rows.Scan(&raw, &created); err != nil {
+			return nil, err
+		}
+		var snap ContextSnapshot
+		if json.Unmarshal([]byte(raw), &snap) != nil {
+			continue
+		}
+		content := compactedMarkerContent(snap)
+		if content == "" {
+			continue
+		}
+		ts, _ := time.Parse(time.RFC3339Nano, created)
+		out = append(out, TurnCompaction{CreatedAt: ts, Content: content})
+	}
+	return out, rows.Err()
+}
+
+// compactedMarkerContent returns the "[Compacted context]\n\n<summary>" marker
+// carried inside a context snapshot, if any (the snapshot's own messages are
+// the only place the summary body lives).
+func compactedMarkerContent(snap ContextSnapshot) string {
+	for _, m := range snap.Messages {
+		if strings.HasPrefix(m.Content, "[Compacted context]") {
+			return m.Content
+		}
+	}
+	return ""
 }
 
 func (s *SessionService) AppendAskQuestion(tenantID int64, metadata map[string]string) (int64, error) {
@@ -1175,6 +1253,9 @@ func replayDisplayRecords(records []HistoryRecord) (*ReplayResult, error) {
 					// 下游 `compactionIteration`（按 created_at 定位「压缩发生在哪个迭代
 					// 之后」）会因 ts.IsZero() 永远回落 ⇒ 内联渲染永不生效。
 					msg.Timestamp = record.CreatedAt
+					// 归属 turn（写入时记录）：转换层据此把压缩点挂到正确的
+					// turn（不再靠消息流位置推断）。0 = legacy 行。
+					msg.CompactTurnID = snapshot.TurnID
 					result.Messages = append(result.Messages, msg)
 				}
 			}

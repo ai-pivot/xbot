@@ -44,6 +44,10 @@ type ChatMessage struct {
 	// 才保留时间戳锚定）。不参与 LLM 上下文。
 	Iteration   int  `json:"-"`
 	DisplayOnly bool `json:"-"` // 仅展示消息（如 cron 结果），不参与 LLM 上下文
+	// CompactTurnID = 【压缩标记】的**归属 turn**（写入时记录 —— 与 Iteration 同一
+	// 「写入/注入时记录，读取不猜」原则）。仅 [Compacted context] 标记行非 0；
+	// 转换层据此把压缩点挂到正确的 turn（不再靠消息流位置推断）。0 = legacy 行。
+	CompactTurnID uint64 `json:"-"`
 	// CommandRow = 命令行（`!cmd` / slash）的输入/输出行：与 DisplayOnly 同为"只给 UI"，
 	// 但额外标识「无 turn 的独立命令行」—— 转换层据此写出 protocol.HistoryMessage 的
 	// Standalone/AnchorTurnID，前端按锚点把它插回原位（见 storage.HistoryRecordCommand）。
