@@ -244,6 +244,13 @@ type HistoryIteration struct {
 	// 按 (turn_id, iteration) 拉取完整数据，前端 mergeIterations 同号覆盖、迭代号不变。
 	// GenUI-only 迭代（所有工具 uiMode 非空）不瘦身、不打标。
 	ToolsFolded bool `json:"tools_folded,omitempty"`
+	// Compaction = 紧跟在该迭代**之后**发生的上下文压缩点（无则 nil）。
+	// 压缩由后端在 LLM 请求前触发 ⇒ 恒在迭代边界 ⇒ 它随**迭代数据**一起下发
+	// （初始折叠窗口与区域段 /api/regions 都携带）—— 前端据此精确渲染在
+	// 「该迭代之后、下一个迭代之前」，不再靠启发式锚定（2026-10-11 用户报告
+	// 「压缩插入在了错误的位置」的根治）。仅折叠视图（Web）填充：CLI/RPC 的
+	// 全量视图保持逐字节不变（R5）。
+	Compaction *HistoryCompaction `json:"compaction,omitempty"`
 }
 
 // HistoryToolCall preserves the raw assistant tool-call relation in the

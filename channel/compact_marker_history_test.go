@@ -91,8 +91,95 @@ func TestCompactMarker_AttachedToTurnAsInlineCompaction(t *testing.T) {
 	}
 }
 
-// 老数据（无结构化迭代 ⇒ 无法定位迭代位置）回落为独立的 standalone 标记行 ——
-// 前端仍支持该形态（基本兼容），信息不丢。
+// 折叠视图（Web）下，窗口内压缩点必须**挂到它所属的迭代**上（随迭代/区域段
+// 一起下发），turn 级列表不再重复携带它（单一来源）；全量视图（CLI/RPC）保持
+// turn 级列表、不挂迭代级压缩点（R5 零变化）。归属 turn 优先用**写入时记录**的
+// CompactTurnID（legacy 行才回落消息流位置推断）。
+func TestCompactMarker_AttachedToIterationInFoldView(t *testing.T) {
+	base := time.Date(2026, 10, 11, 5, 0, 0, 0, time.UTC)
+	markerTS := base.Add(41 * time.Minute)
+	mk := compressMarker("context compacted summary", markerTS)
+	mk.CompactTurnID = 3 // 写入时记录的归属 turn
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "turn3 的用户消息", TurnID: 3},
+		{Role: "assistant", Content: "turn3 迭代", TurnID: 3},
+		mk,
+		{Role: "assistant", Content: "turn3 继续迭代", TurnID: 3},
+	}
+	turnIterMap := map[uint64][]sqlite.IterationRecord{
+		3: {
+			{Iteration: 1, Content: "turn3 迭代", CreatedAt: base.Add(10 * time.Minute)},
+			{Iteration: 2, Content: "turn3 继续迭代", CreatedAt: base.Add(50 * time.Minute)},
+		},
+	}
+
+	// ① 折叠视图：挂到迭代 1（压缩在迭代 1 之后）；turn 级列表为空。
+	out := ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, true)
+	turn3 := findTurnRow(t, out, 3)
+	if turn3 == nil {
+		t.Fatalf("turn 3 的 assistant 行必须存在: %+v", out)
+	}
+	if len(turn3.Compactions) != 0 {
+		t.Fatalf("折叠视图：已挂到迭代的压缩点不得再出现在 turn 级列表: %+v", turn3.Compactions)
+	}
+	if len(turn3.Iterations) != 2 {
+		t.Fatalf("迭代数应为 2, got %d", len(turn3.Iterations))
+	}
+	if turn3.Iterations[0].Compaction == nil {
+		t.Fatalf("迭代 1 之后必须带压缩点（随迭代下发）: %+v", turn3.Iterations)
+	}
+	if turn3.Iterations[0].Compaction.AfterIteration != 1 {
+		t.Fatalf("AfterIteration 应为 1, got %d", turn3.Iterations[0].Compaction.AfterIteration)
+	}
+	if turn3.Iterations[1].Compaction != nil {
+		t.Fatalf("迭代 2 不应带压缩点: %+v", turn3.Iterations[1].Compaction)
+	}
+
+	// ② 全量视图（CLI/RPC）：保持 turn 级列表，迭代不挂压缩点（R5）。
+	full := ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)
+	ft3 := findTurnRow(t, full, 3)
+	if ft3 == nil || len(ft3.Compactions) != 1 {
+		t.Fatalf("全量视图必须保持 turn 级压缩点列表: %+v", ft3)
+	}
+	for _, it := range ft3.Iterations {
+		if it.Compaction != nil {
+			t.Fatalf("全量视图不得挂迭代级压缩点（R5 零变化）: %+v", it)
+		}
+	}
+}
+
+// 写入时归属（CompactTurnID）优先于消息流位置推断：标记即使出现在 turn 4 之后，
+// 也必须归属它记录的 turn 3。
+func TestCompactMarker_RecordedTurnWinsOverStreamPosition(t *testing.T) {
+	base := time.Date(2026, 10, 11, 6, 0, 0, 0, time.UTC)
+	mk := compressMarker("summary", base.Add(41*time.Minute))
+	mk.CompactTurnID = 3
+	msgs := []llm.ChatMessage{
+		{Role: "assistant", Content: "turn3 迭代", TurnID: 3},
+		{Role: "user", Content: "turn4 用户消息", TurnID: 4},
+		{Role: "assistant", Content: "turn4 迭代", TurnID: 4},
+		// 标记出现在 turn 4 之后（若按消息流位置会归到 turn 4）。
+		mk,
+	}
+	turnIterMap := map[uint64][]sqlite.IterationRecord{
+		3: {{Iteration: 1, Content: "turn3 迭代", CreatedAt: base.Add(10 * time.Minute)}},
+		4: {{Iteration: 1, Content: "turn4 迭代", CreatedAt: base.Add(90 * time.Minute)}},
+	}
+	out := ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, true)
+	turn3 := findTurnRow(t, out, 3)
+	if turn3 == nil || len(turn3.Iterations) == 0 || turn3.Iterations[0].Compaction == nil {
+		t.Fatalf("压缩点必须按写入时记录的 turn 3 归属: %+v", out)
+	}
+	turn4 := findTurnRow(t, out, 4)
+	if turn4 != nil {
+		for _, it := range turn4.Iterations {
+			if it.Compaction != nil {
+				t.Fatalf("turn 4 不得带压缩点: %+v", it)
+			}
+		}
+	}
+}
+
 func TestCompactMarker_LegacyFallbackStandaloneWhenNoIterations(t *testing.T) {
 	msgs := []llm.ChatMessage{
 		{Role: "user", Content: "turn3 的用户消息", TurnID: 3},

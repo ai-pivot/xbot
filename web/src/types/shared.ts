@@ -454,6 +454,13 @@ export interface WebIteration {
    * —— 迭代号不变（不产生新洞/新块），轻字段永不覆盖已加载的完整数据。
    */
   toolsFolded?: boolean
+  /**
+   * 紧跟在该迭代**之后**发生的上下文压缩点（后端 `compaction`）—— 压缩点随
+   * **迭代数据**一起下发（初始折叠窗口与区域段 `/api/regions` 都携带），前端
+   * 据此精确渲染在「该迭代之后、下一个迭代之前」，不靠启发式锚定。
+   * 缺省（旧后端 / 老数据）= 压缩点走 turn 级 `compactions` 列表。
+   */
+  compaction?: WebCompaction
 }
 
 /**

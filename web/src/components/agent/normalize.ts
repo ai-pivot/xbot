@@ -11,7 +11,7 @@ import {
   normalizeWebTools,
 } from '@/components/agent/progressStore'
 import type { HistProgress } from '@/components/agent/api'
-import type { WebIteration, WebToolProgress, ProgressSnapshot, TodoItem, GoalInfo } from '@/types/shared'
+import type { WebIteration, WebToolProgress, WebCompaction, ProgressSnapshot, TodoItem, GoalInfo } from '@/types/shared'
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { IterationSnapshot, IterationTool, ToolProgress } from '@/types/agent'
 
@@ -54,6 +54,24 @@ export function normalizeWebIteration(raw: unknown): WebIteration | null {
     // `tools_folded`，缺省 false = 完整）。缺省统一归一成 false（而非 undefined）：
     // 归一化产物形状稳定 ⇒ 幂等比较/引用复用不会因「有的迭代带该键、有的不带」抖动。
     toolsFolded: r.tools_folded === true,
+    // 紧跟该迭代之后的压缩点（后端把压缩点挂到迭代上 ⇒ 随分页/区域段送达）。
+    compaction: normalizeWebCompaction(r.compaction) ?? undefined,
+  }
+}
+
+/** Coerce a raw compaction entry (`{after_iteration, content, timestamp}`) into
+ *  WebCompaction (the domain shape). Returns null when the payload carries no
+ *  usable anchoring (unknown/legacy shapes are dropped — never synthesised). */
+export function normalizeWebCompaction(raw: unknown): WebCompaction | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.after_iteration !== 'number' && typeof r.afterIteration !== 'number') return null
+  return {
+    afterIteration: typeof r.after_iteration === 'number'
+      ? (r.after_iteration as number)
+      : (r.afterIteration as number),
+    content: typeof r.content === 'string' ? r.content : undefined,
+    timestamp: typeof r.timestamp === 'string' ? r.timestamp : undefined,
   }
 }
 

@@ -137,6 +137,13 @@ func (s *TenantSession) AppendContextSnapshot(recordType sqlite.HistoryRecordTyp
 	return s.sessionSvc.AppendContextSnapshot(s.tenantID, recordType, messages)
 }
 
+// AppendContextSnapshotForTurn records the owning turn id with the snapshot
+// (write-time attribution) so the turn's compaction points can be fetched by
+// turn for region pagination — see sqlite.AppendContextSnapshotForTurn.
+func (s *TenantSession) AppendContextSnapshotForTurn(recordType sqlite.HistoryRecordType, messages []llm.ChatMessage, turnID uint64) (int64, error) {
+	return s.sessionSvc.AppendContextSnapshotForTurn(s.tenantID, recordType, messages, turnID)
+}
+
 func (s *TenantSession) AppendAskQuestion(metadata map[string]string) (int64, error) {
 	return s.sessionSvc.AppendAskQuestion(s.tenantID, metadata)
 }

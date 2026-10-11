@@ -939,9 +939,10 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, compactionByIter
  *  否则头部被排除 ⇒ 它的工具单独成行（截图里"失败 chip + 失败 pill 在上、其余 pill 在下"的真因，
  *  **不是**什么置顶逻辑）。每个带文本的迭代仍是**独立块**（文本不合并、不丢）。
  */
-export function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
+export function mergeToolRuns(iters: WebIteration[], anchors?: ReadonlySet<number>): WebIteration[] {
   const hasTools = (it: WebIteration) => it.tools.length > 0
   const absorbs = (it: WebIteration) => hasTools(it) && !it.content && !it.reasoning
+  const isAnchor = (it: WebIteration) => anchors?.has(it.iteration) === true
   const out: WebIteration[] = []
   for (let i = 0; i < iters.length; i++) {
     const head = iters[i]
@@ -954,7 +955,11 @@ export function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
     // 失明（点开空详情且不触发按需拉取）。任一成员带标记 ⇒ 合并块带标记（后端打标
     // 仍是迭代级；块级聚合是纯渲染细节，不参与 Go/TS 区域边界同构契约）。
     let blockFolded = head.toolsFolded === true
-    while (j + 1 < iters.length && absorbs(iters[j + 1])) {
+    // ⛔ 压缩点边界必须切断工具行（2026-10-11 用户报告「压缩插入在了错误的位置」）：
+    // 压缩发生在**迭代边界**（在 iters[j] 之后、iters[j+1] 之前）⇒ 当 iters[j] 是某个
+    // 压缩点的锚定迭代时，run 必须**结束于 j**，绝不能再吸收 j+1（否则压缩点被渲染到
+    // 整条工具行之后 —— 越过它本该在的位置，多个压缩点还会堆在一起）。
+    while (j + 1 < iters.length && absorbs(iters[j + 1]) && !isAnchor(iters[j])) {
       j++
       tools.push(...iters[j].tools)
       if (iters[j].toolsFolded === true) blockFolded = true
@@ -980,27 +985,66 @@ export const TurnBody = memo(function TurnBody({
   const scan = extendContiguous(scanRef.current, iterations)
   scanRef.current = scan
   const contiguous = scan.out
+  // 压缩点来源（两路，按 afterIteration 去重）：
+  //   ① 迭代级 `iteration.compaction` —— 权威（随**迭代数据**下发：初始折叠窗口与
+  //      区域段 /api/regions 都携带）。后端把「已挂到窗口内某迭代」的压缩点只放
+  //      在这里，turn 级列表只剩「窗口外的」（供段加载后回落定位）。
+  //   ② turn 级 `compactions` —— 旧后端 / 老数据 / afterIteration=0 的 leading。
+  const effectiveCompactions = useMemo(() => {
+    const out: WebCompaction[] = []
+    const seen = new Set<number>()
+    for (const it of contiguous) {
+      const c = it.compaction
+      if (c && !seen.has(c.afterIteration)) {
+        seen.add(c.afterIteration)
+        out.push(c)
+      }
+    }
+    if (compactions) {
+      for (const c of compactions) {
+        if (seen.has(c.afterIteration)) continue
+        out.push(c)
+      }
+    }
+    return out
+  }, [contiguous, compactions])
+  // 已渲染（连续前缀）迭代号集合 —— 压缩点的锚定迭代**必须**在其中才允许渲染。
+  // 这是「它本该在的迭代没加载」的正解判据：锚定迭代没加载 ⇒ 挂起（等它随分页/
+  // 区域段到达再渲染），**绝不**落到最近的已加载迭代上（用户报告 2026-10-11：
+  // 多个压缩点因此堆在同一个位置）。
+  const renderedIters = useMemo(() => {
+    const s = new Set<number>()
+    for (const it of contiguous) s.add(it.iteration)
+    return s
+  }, [contiguous])
+  // 压缩点的**锚定迭代**（属于已渲染迭代的 afterIteration）：既是「哪些压缩点能渲染」
+  // 的判据，也是「合并工具行必须在何处切断」的边界集合（压缩点在迭代边界触发 ⇒
+  // 必须渲染在它之后、下一个迭代之前）。
+  const compactionAnchors = useMemo(() => {
+    const s = new Set<number>()
+    for (const c of effectiveCompactions) {
+      if (c.afterIteration > 0 && renderedIters.has(c.afterIteration)) s.add(c.afterIteration)
+    }
+    return s
+  }, [effectiveCompactions, renderedIters])
   // 跨迭代折叠（连续 tool-only 迭代共享一行）；`contiguous` 引用稳定 ⇒ 这个 memo 也稳定，
   // 不会击穿 CommittedTurn 的 memo / 迭代级窗口化。
-  const merged = useMemo(() => mergeToolRuns(contiguous), [contiguous])
+  const merged = useMemo(() => mergeToolRuns(contiguous, compactionAnchors), [contiguous, compactionAnchors])
   /**
    * 把每个压缩点解析到**实际渲染的迭代块**上：anchor = merged 中「迭代号 ≤
-   * afterIteration 的最大迭代号」（0 = 第一个迭代之前）。折叠（tool-only run 合并
-   * 后迭代号跳号）也不会让压缩点丢失 —— 找不到就落到最近的更早块之后。
-   * 引用随 [merged, compactions] 稳定 ⇒ 不击穿 chunk memo。
+   * afterIteration 的最大迭代号」（0 = 第一个迭代之前）。
+   *
+   * ⛔ 归属迭代**没加载**（窗口外 / 洞的另一侧）⇒ 挂起不渲染（旧实现会落到最近的
+   * 更早已加载块之后 ⇒ 多个压缩点堆叠、时间线错乱 —— 2026-10-11 用户报告）。段加载
+   * 覆盖到 afterIteration 后 renderedIters 更新 ⇒ 本 memo 重算 ⇒ 压缩点自动归位。
+   * afterIteration=0（真·turn 开头压缩）除外 —— 它语义上就属于窗口顶。
+   * 引用随 [merged, effectiveCompactions, renderedIters] 稳定 ⇒ 不击穿 chunk memo。
    */
   const compactionByIter = useMemo(() => {
     const map = new Map<number, WebCompaction[]>()
-    if (!compactions || compactions.length === 0) return map
-    for (const c of compactions) {
-      // 窗口外挂起（2026-10-01 修复，用户报告「上下文已压缩渲染很多情况都是错的」）：
-      // afterIteration 落在**已加载窗口之前**（区域折叠未覆盖）⇒ 压缩点属于未加载内容
-      // 之间的分隔 —— 不渲染。否则 anchor 扫描（it.iteration <= afterIteration）在窗口
-      // 内找不到任何块 ⇒ fallback anchor=0 ⇒ 渲染在 leading（窗口顶）——冒充「turn 开头
-      // 压缩」：时间线错乱（压缩点出现在比它晚几十个迭代的内容上方）+ 与「更早区域」
-      // 分隔条叠加错乱。段加载覆盖到 afterIteration 后 merged 更新 ⇒ 本 memo 重算 ⇒
-      // 压缩点自动归位。afterIteration=0（真·turn 开头压缩）除外 —— 它语义上就属于窗口顶。
-      if (c.afterIteration > 0 && merged.length > 0 && merged[0].iteration > c.afterIteration) continue
+    for (const c of effectiveCompactions) {
+      // 锚定迭代未加载 ⇒ 挂起（绝不许落到最近的已加载块之后）。
+      if (c.afterIteration > 0 && !renderedIters.has(c.afterIteration)) continue
       let anchor = 0
       for (const it of merged) {
         if (it.iteration <= c.afterIteration && it.iteration > anchor) anchor = it.iteration
@@ -1010,7 +1054,7 @@ export const TurnBody = memo(function TurnBody({
       else map.set(anchor, [c])
     }
     return map
-  }, [merged, compactions])
+  }, [merged, effectiveCompactions, renderedIters])
 
   return (
     <div

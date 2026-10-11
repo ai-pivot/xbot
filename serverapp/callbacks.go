@@ -426,6 +426,25 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			return nil, 0, err
 		}
 		iterations, regionsBefore := historyRegionSegment(recs, regionLimit)
+		// 压缩点**随迭代段一起下发**（2026-10-11 用户报告「压缩插入在了错误的
+		// 位置」的结构性修复）：按**写入时记录的归属 turn** 取回该 turn 的压缩点，
+		// 用段内迭代的 created_at 定位「压缩发生在哪个迭代之后」，再挂到那条迭代
+		// 上 —— 与初始折叠窗口（ConvertMessagesToHistoryWithIterationsView）同一
+		// 挂载规则。这样前端渲染的后端载荷里，压缩点天然跟着它所属的迭代走。
+		if comps, cerr := sess.SessionService().GetCompactionsByTurn(tenantID, turnID); cerr == nil && len(comps) > 0 {
+			turnIterMap := map[uint64][]sqlite.IterationRecord{turnID: recs}
+			hcs := make([]protocol.HistoryCompaction, 0, len(comps))
+			for _, c := range comps {
+				after, ok := channel.CompactionIterationFor(turnIterMap, turnID, c.CreatedAt)
+				if !ok {
+					continue
+				}
+				hcs = append(hcs, protocol.HistoryCompaction{
+					AfterIteration: after, Content: c.Content, Timestamp: c.CreatedAt,
+				})
+			}
+			channel.AttachCompactionsToIterations(iterations, hcs)
+		}
 		return iterations, regionsBefore, nil
 	}
 	// POST /api/iteration_detail —— 折叠视图的按需详情（方案 §3.3 D3）：一条迭代的
