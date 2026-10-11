@@ -114,6 +114,7 @@ export function SessionGroup({
               {/* Render SubAgent children (indented) for this parent session */}
               {childrenForParent(s).filter(isVisibleSubAgent).map((sa) => (
                 <SubAgentTreeItem
+                  multiSelectMode={multiSelectMode}
                   key={sessionKey(sa)}
                   session={sa}
                   activeSession={activeSession}
@@ -132,6 +133,7 @@ export function SessionGroup({
 }
 
 function SubAgentTreeItem({
+  multiSelectMode,
   session,
   activeSession,
   depth,
@@ -139,6 +141,7 @@ function SubAgentTreeItem({
   onRename,
   onDelete,
 }: {
+  multiSelectMode: boolean
   session: SessionInfo
   activeSession: SessionSelector | null
   depth: number
@@ -154,6 +157,7 @@ function SubAgentTreeItem({
         unread={false}
         active={sameSession(activeSession, session)}
         isSubAgent
+        multiSelectMode={multiSelectMode}
         depth={depth}
         onSelect={(id) => onSelect(id, session.channel)}
         onToggleStar={() => undefined}
@@ -162,6 +166,7 @@ function SubAgentTreeItem({
       />
       {childrenForParent(session).filter(isVisibleSubAgent).map((child) => (
         <SubAgentTreeItem
+                  multiSelectMode={multiSelectMode}
           key={sessionKey(child)}
           session={child}
           activeSession={activeSession}

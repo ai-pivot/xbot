@@ -243,3 +243,11 @@ When `persona_isolation` is `true`:
 - Fetch: `GET /api/files/download?key=…` (download by default; add `&inline=1` to render inline).
 - Credentials are **masked** on read (`AKID****`); echoing a masked value back never overwrites the real key. Switching to a cloud backend requires access/secret/bucket (Alibaba OSS / Tencent COS also need a region unless you provide an explicit endpoint), otherwise the save is **rejected** (a half-configured backend would break every upload).
 - For the model to actually *see* an image, also enable **Settings → LLM → model row → Vision input**.
+
+### Selecting multiple sessions
+
+Both the desktop session panel and mobile drawer offer **Multi-select**. Click or press Space/Enter to check a main session without changing the active conversation. Shift selects a range in display order. Select all includes only loaded, search-matching main sessions in expanded groups; SubAgents and synthetic placeholders are excluded. A scope hint appears when more sessions remain unloaded.
+
+Batch actions include star, unstar, mark as read, export and delete. Export chooses one xbot / OpenAI / Codex format, with one file per session in a single ZIP download. Deletion requires confirmation showing the count and session names. Partial export/deletion failures are reported and remain selected for retry.
+
+Clear selection keeps the mode active; Exit multi-select or Escape leaves it. Ctrl/Cmd+A selects all while focus is in the list, without intercepting editors or dialogs. Changing search, channel or category clears selection. Newly loaded sessions are never automatically checked.

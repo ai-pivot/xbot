@@ -132,7 +132,9 @@ export function SessionItem({
 
   const row = (
     <div
-      role="button"
+      role={multiSelectMode && !isSubAgent && !session.synthetic ? "checkbox" : "button"}
+      aria-checked={multiSelectMode && !isSubAgent && !session.synthetic ? selected : undefined}
+      aria-label={multiSelectMode ? title : undefined}
       data-session-row={key}
       tabIndex={0}
       draggable={!isSubAgent && !multiSelectMode && !session.synthetic && !!onDragStartItem}
@@ -151,8 +153,11 @@ export function SessionItem({
         e.preventDefault()
         onDropItem(key)
       }}
+      onMouseDown={(e) => {
+        if (multiSelectMode && e.shiftKey) { e.preventDefault(); e.currentTarget.focus() }
+      }}
       onClick={(e) => {
-        if (session.synthetic) return
+        if (session.synthetic || (multiSelectMode && isSubAgent)) return
         if (multiSelectMode && onToggleSelect && !isSubAgent) {
           onToggleSelect(key, e.shiftKey)
         } else {
@@ -165,7 +170,8 @@ export function SessionItem({
           e.stopPropagation()
           return
         }
-        if (session.synthetic) return
+        if (session.synthetic || (multiSelectMode && isSubAgent)) return
+        if (multiSelectMode && (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || e.repeat)) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           if (multiSelectMode && onToggleSelect && !isSubAgent) {

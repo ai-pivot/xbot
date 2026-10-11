@@ -523,7 +523,7 @@ describe('session action shortcuts', () => {
 
   it('does not apply single-session shortcuts in multi-select mode or without a target', () => {
     const { props, unmount } = setup({ multiSelectMode: true })
-    shortcut(screen.getByText('Other session').closest('[role="button"]')!, 's')
+    shortcut(screen.getByRole('checkbox', { name: 'Other session' }), 's')
     shortcut(window, 's')
     expect(props.onToggleStar).not.toHaveBeenCalled()
     unmount()

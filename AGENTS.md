@@ -40,6 +40,8 @@
 - **⚠️ 用户环境铁律：前端永远最新、后端永远最新且刚重启——用户报告 bug 时用户一定是对的。** 不要怀疑版本/缓存/部署状态（"用户用了旧代码/SW 缓存了旧 bundle/部署没生效"这类假设全部禁止——那是浪费轮次的错误方向）。每次 bug 排查都从"代码有 bug"的前提出发：前端和后端就是刚构建、刚部署、刚重启的最新 master 代码。历史上曾用裸 `http.FileServer` 导致 SW 缓存旧 bundle（已修复：`serveStaticFile` 对 `sw2.js`→`no-store`、`index.html`→`no-cache`、`assets/*`→`immutable 1y`，SW 已改名 `sw2.js` 绕开污染缓存）——该类问题已被部署管线根治，不再复现，不再作为排查方向。验证部署状态（如确需）：`curl -s --noproxy '*' -D - -o /dev/null http://127.0.0.1:16000/sw2.js`（本地 curl 必须带 `--noproxy '*'`，否则 502——本地代理拦截）。
 - Issue templates: `.github/ISSUE_TEMPLATE/` — YAML forms (`*.yml`) for web UI, Markdown templates (`*.md`) for CLI/AI use with `gh issue create --template`. AI agents MUST read and fill the `.md` templates (not `.yml`) since YAML Issue Forms are web-UI-only and cannot be submitted via `gh issue create --body`.
 
+- Session multi-select is shared by desktop/mobile (`useSessionSelection` + `SessionBatchActions`). Only loaded, expanded, search-matching main sessions participate; Shift follows display order. Filter changes discard selection. Delete/export capture confirmed rows; failures stay selected. See `docs/agent/session-multiselect.md`.
+
 ## Knowledge Files
 
 - **批注 Provider 身份边界（2026-10-10）**：`MessageAnnotationsProvider` 和 `AgentPanel` 根节点均不按会话 key 重挂载；Provider 在身份变化时只重置自己的批注状态。旧会话迟到的发送回执只清旧会话存储，不覆盖新会话草稿。守护：`AgentPanel.test.tsx` 根节点/MessageList 恒等测试 + `MessageAnnotations.test.tsx` 身份切换和迟到回执测试。

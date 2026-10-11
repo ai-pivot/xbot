@@ -38,7 +38,7 @@ import { SessionItem } from './SessionItem'
 import { SessionEmptyState } from './SessionEmptyState'
 import { collapseKey, isSubAgentSession, sortSessions } from '@/lib/session-grouping'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
-import { childrenForParent } from './session-tree'
+import { childrenForParent, matchesSelfOrDescendant, isVisibleSubAgent } from './session-tree'
 import { dispatchSessionShortcut, openSessionInBrowserTab, sessionShortcutAction } from './session-shortcuts'
 import { useSessionShortcuts } from '@/hooks/useSessionShortcuts'
 import { useIsMobile } from '@/hooks/useIsMobile'
@@ -425,13 +425,14 @@ export function SessionList({
                   onFork={onFork ? openFork : undefined}
                   onExport={onExport}
                   onExportOptions={onExport ? openExport : undefined}
-                  multiSelectMode={multiSelectMode}
+                    multiSelectMode={multiSelectMode}
                   selected={selectedIds?.has(sessionKey(s)) ?? false}
                   onToggleSelect={onToggleSelect}
                   {...dndProps}
                 />
                 {childrenForSearch(s).map((sa) => (
                   <SubAgentSearchItem
+          multiSelectMode={multiSelectMode}
                     key={sessionKey(sa)}
                     session={sa}
                     activeSession={activeSession}
@@ -612,6 +613,7 @@ export function SessionList({
 }
 
 function SubAgentSearchItem({
+  multiSelectMode,
   session,
   activeSession,
   depth,
@@ -621,6 +623,7 @@ function SubAgentSearchItem({
   onRename,
   onDelete,
 }: {
+  multiSelectMode: boolean
   session: SessionInfo
   activeSession: SessionSelector | null
   depth: number
@@ -641,6 +644,7 @@ function SubAgentSearchItem({
         unread={false}
         active={sameSession(activeSession, session)}
         isSubAgent
+        multiSelectMode={multiSelectMode}
         depth={depth}
         onSelect={(id) => onSelect(id, session.channel)}
         onToggleStar={() => undefined}
@@ -649,6 +653,7 @@ function SubAgentSearchItem({
       />
       {children.map((child) => (
         <SubAgentSearchItem
+                  multiSelectMode={multiSelectMode}
           key={sessionKey(child)}
           session={child}
           activeSession={activeSession}
@@ -662,25 +667,4 @@ function SubAgentSearchItem({
       ))}
     </>
   )
-}
-
-function matchesSelfOrDescendant(
-  session: SessionInfo,
-  matches: (s: SessionInfo) => boolean,
-  seen = new Set<string>(),
-): boolean {
-  const key = sessionKey(session)
-  if (seen.has(key)) return false
-  seen.add(key)
-  if (matches(session)) return true
-  return childrenForParent(session).filter(isVisibleSubAgent).some((child) => matchesSelfOrDescendant(child, matches, seen))
-}
-
-function isVisibleSubAgent(session: SessionInfo): boolean {
-  // Always show sub-agents (running AND completed) so users can open and review
-  // them. Previously this filtered to running/waiting_input/pending only — a
-  // completed sub-agent vanished from the sidebar immediately, and with the
-  // (now fixed) unreliable running flag even active ones could disappear.
-  // Only historical legacy rows are hidden.
-  return session.historical !== true
 }
