@@ -407,8 +407,13 @@ openAutoFocus**。守护：`ModelSelector.test.tsx`（触屏 → activeElement �
   **修法（自我校验 + DOM 真相，不是"再补一次"）**：纯函数 `isSanePrependDelta(delta, growth)`（`MessageList.tsx`，导出以便单测）—— 段恒在视口**上方**插入 ⇒ 位移必须 `> 0` 且 `≤ growth`（容差仅 0.5px 吸收亚像素）；越界 ⇒ **当场弃锚、绝不施加**。`growth` 必须取**锚所在虚拟行自身的高度增量**（⚠️ 用滚动容器的 `scrollHeight` 会被虚拟列表**总高估算的滞后**坑死：首帧 `growth=0 / delta=417` ⇒ 合法位移被误判越界 ⇒ 弃锚 ⇒ 旧用例回归红，E2E 当场抓到）。锚元素被卸载时回退到 `growth`（段在该行内部、视口上方插入 ⇒ 行高增量 == 下方内容被推下去的距离）。
   守护：`web/src/components/agent/prependAnchorSaneDelta.test.ts`（负位移/超额/零位移/负增长/亚像素 5 例）+ `web/e2e/region-window.spec.ts` 的两个锚用例（含「锚所在块被重新分组」；几何判据 `ΔscrollTop == ΔscrollHeight` 且 rAF 逐帧零漂移）。
 
-- **⛔ 运行中**必须**永远有一颗可点的「停止」—— composer 单按钮的 `hasContent ⇒ 发送/排队` 会把停止吞掉（用户 P0：2026-10-12「我 cancel 之后，会话还显示 busy」）。**
+- **⛔ 运行中**必须**永远有一颗可点的「停止」—— composer 单按钮的 `canSend ⇒ 发送/排队` 会把停止吞掉（用户 P0：2026-10-12「我 cancel 之后，会话还显示 busy」）。**
   **取证（不是推断）**：全服日志实证 —— 会话 `chat_A642B1525E87` 在 `07:39:33` 之后再**没有任何 cancel 到达**（`Received /cancel request` / `Cancelled pending AskUser` / `AskUser cancel ignored` 一条都没有），而它的 turn 637 一路跑到 `08:03` 仍在发 LLM 请求 ⇒ **会话是真在跑，用户那次「取消」根本没发出去**。
-  **根因**：`MessageInput` 只有一颗按钮，`onClick={hasContent || !busy ? submit : onCancel}` —— **只要输入框里有文字，点击就是「发送/排队」**（aria-label 变成 `agent.queuedSend`），运行中的会话**没有任何可点的停止**。用户截图里输入框恰好有文字（「你查一下最新信息」）⇒ 他点的那一下被当成排队发送 ⇒ 取消永远发不出去 ⇒ busy 一直显示，且消息被丢进队列。
-  **修法（保留"排队发送"这个有效功能）**：`busy && hasContent` 时**额外**渲染一颗独立的破坏性「停止」按钮（`data-testid="composer-cancel"`，点击只走 `onCancel`）；`busy && !hasContent` 仍是原来的单颗停止（空输入时那颗按钮本来就是停止）；非 busy 不变。**不许**把「有内容也能停止」实现成"点主按钮时猜意图"—— 单一按钮承载两种语义就是这个 bug 的来源。
-  守护：`web/src/components/agent/MessageInput.test.tsx`「运行中的停止可达性」两条（busy+有内容 ⇒ 独立停止按钮存在且点击 → `onCancel` 一次 / `onSend` **零次**；busy+无内容 ⇒ 不额外渲染）。**排查同类问题先看全服日志有没有 `Received /cancel request`**：没有 = 前端没发出去（不是状态机/后端的问题）。
+  **根因**：`MessageInput` 只有一颗按钮，`onClick={canSend || !busy ? submit : onCancel}` —— **只要输入框里有「可发送的内容」（文字 / 完成态附件 / 批注），点击就是「发送/排队」**（aria-label 变成 `agent.queuedSend`），运行中的会话**没有任何可点的停止**。用户截图里输入框恰好有文字（「你查一下最新信息」）⇒ 他点的那一下被当成排队发送 ⇒ 取消永远发不出去 ⇒ busy 一直显示，且消息被丢进队列。
+  **修法（保留"排队发送"这个有效功能）**：`busy && canSend` 时**额外**渲染一颗独立的破坏性「停止」按钮（`data-testid="composer-cancel"`，点击只走 `onCancel`）；`busy && !canSend` 仍是原来的单颗停止（空输入时那颗按钮本来就是停止）；非 busy 不变。判据必须与主按钮**同一条件**（`canSend`，含附件/批注——只要主按钮是"发送"，停止就必须另有一颗）。**不许**把「有内容也能停止」实现成"点主按钮时猜意图"—— 单一按钮承载两种语义就是这个 bug 的来源。
+  守护：`web/src/components/agent/MessageInput.test.tsx`「运行中的停止可达性」三条（busy+文字 ⇒ 独立停止按钮存在且点击 → `onCancel` 一次 / `onSend` **零次**；busy+**只有完成态附件** ⇒ 同样必须有；busy+无内容 ⇒ 不额外渲染、那颗唯一按钮仍是停止）。**排查同类问题先看全服日志有没有 `Received /cancel request`**：没有 = 前端没发出去（不是状态机/后端的问题）。
+
+- **⛔ 改文件只做定点替换（`FileReplace`），禁止整份覆盖 —— 用旧版文件覆盖会静默删掉已合并的功能（2026-10-12 事故，CI E2E 11 红）。**
+  事故：我为「加一颗停止按钮」写 `MessageInput.tsx` 时用了**旧基线**（主仓 checkout 的过期副本）整份写回 ⇒ `git show da2a81a4` 显示 **48 insertions / 95 deletions**（净 -47 行），**PR #427 的批注/附件集成被整段删掉**（`hasCompletedAttachments`、批注 draft 逻辑…），`MessageInput.test.tsx` 同时少掉 **8 条已合并用例**。症状：`web/e2e/message-annotations.spec.ts` **11 条全红**（`annotation-chip` 根本不渲染），而单元测试竟然全绿（被删的用例也一起没了 ⇒ **测试删了不会报红**）。
+  **契约**：① 改已有文件一律用定点替换（`FileReplace`，old_string 唯一且足够长）；② 万不得已要整份写入（换行/大重构）时，先 `git show HEAD:<path>` 拿到当前版本再改，并**在提交前核对变更行数是否与意图相符**（「加一个按钮」却出现 -47 行 = 立即停手自查）；③ 新增覆盖文件后立刻 `git diff --stat <file>` 复核。
+  **排查入口**：大面积（≥3 条）E2E 同文件全红 + 单元测试全绿 ⇒ 高度怀疑**功能代码被回退**，先 `git log -p <file>` 看最近一次改动是否夹带了无关删除，而不是去怀疑 E2E 环境。
