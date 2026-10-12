@@ -907,3 +907,81 @@ test.describe('区域窗口 — prepend 锚（用户视角一动不动）', () =
     )
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. prepend 锚 · 重新分组路径（2026-10-12 用户报告：「有概率加载完毕后视角变到最上方」）
+//    关键构造：**content 为空**的 tool-only 迭代 —— 只有它们才会被 `mergeToolRuns` 合并
+//    （`absorbs` 要求 `!content`；带 content 的迭代永不合并 ⇒ 旧用例从来没走到这条路）。
+//    段插入后该 run 的 head 从 21 变成 18 ⇒ 旧块被 React **卸载**、新块挂上 ⇒ 以"某个 DOM
+//    元素"为锚的实现会因 `isConnected === false` 直接丢弃锚（一个像素都不补）⇒ 内容整体
+//    位移，用户看到的就是「视角跳到最上方」。"有概率" = 取决于视口顶部那块会不会被重分组。
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('区域窗口 — prepend 锚（锚所在块被重新分组）', () => {
+  test('★ tool-only run 的 head 变化导致旧块被卸载 ⇒ 用户看到的那一行依旧一动不动', async ({ page }) => {
+    const toolOnly = (n: number): IterSpec => ({
+      iteration: n,
+      // 关键 ①：**content 为空** ⇒ 才会被 mergeToolRuns 合并（段的插入会让 head 21→18 ⇒
+      // 旧块被卸载）。关键 ②：pill 名称足够长 ⇒ 合并块换行数随工具数变化 ⇒ 高度真的会变
+      //（否则 7 pill + 溢出上限让高度恒定，位移根本不存在 ⇒ 测试假绿）。
+      tools: [{ name: `tool-${n}-${'x'.repeat(70)}` }],
+      folded: true,
+    })
+    await setupMock(page, {
+      messages: historyMessages([
+        {
+          id: 2,
+          turnID: 7,
+          iters: Array.from({ length: WINDOW_TO - WINDOW_FROM + 1 }, (_, i) => toolOnly(WINDOW_FROM + i)),
+          regionsBefore: 3,
+        },
+      ]),
+      regions: (req) =>
+        req.beforeIteration === WINDOW_FROM
+          ? { iterations: [18, 19, 20].map((n) => iterPayload(toolOnly(n))), regions_before: 1 }
+          : { iterations: [15, 16, 17].map((n) => iterPayload(toolOnly(n))), regions_before: 0 },
+    })
+    await page.route('**/api/regions', async (route) => {
+      await new Promise((r) => setTimeout(r, 600))
+      await route.fallback()
+    })
+    await openSession(page)
+    await scrollGesture(page)
+    await page.waitForTimeout(150)
+
+    // 判据（**几何无关**，与「同一内容停在屏幕同一位置」严格等价）：
+    //   视口相对内容不动  ⟺  ΔscrollTop == ΔscrollHeight
+    // 且**逐帧**都必须成立 —— 任何一帧不成立 = 用户看到了一次位移。
+    // 这样不依赖任何"参考 DOM 元素"（重分组会让块的身份本来就变）。
+    const readScroll = (): { t: number; h: number } => {
+      const c = document.querySelector('[data-message-list-content]')
+      let el: HTMLElement | null = (c as HTMLElement | null)?.parentElement ?? null
+      while (el && !['auto', 'scroll'].includes(getComputedStyle(el).overflowY)) el = el.parentElement
+      return { t: el?.scrollTop ?? 0, h: el?.scrollHeight ?? 0 }
+    }
+    const before = await page.evaluate(readScroll)
+    await page.evaluate((src) => {
+      const w = window as unknown as { __scroll?: { t: number; h: number }[] }
+      w.__scroll = []
+      const read = new Function(`return (${src})()`) as () => { t: number; h: number }
+      const sample = (): void => {
+        if (w.__scroll!.length < 900) w.__scroll!.push(read())
+        requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    }, readScroll.toString())
+
+    await expect.poll(() => iterTotal(page), { timeout: 10_000 }).toBe(WINDOW_TO - 18 + 1)
+    const after = await page.evaluate(readScroll)
+    const samples = await page.evaluate(() => (window as unknown as { __scroll?: { t: number; h: number }[] }).__scroll ?? [])
+    const dbg = await page.evaluate(() => (window as unknown as { __prependAnchor?: unknown }).__prependAnchor ?? null)
+    const gap0 = before.t - before.h
+    const gap1 = after.t - after.h
+    const worstGap = samples.length > 0 ? Math.max(...samples.map((s) => Math.abs(s.t - s.h - gap0))) : 0
+    console.log(
+      `[锚-rekey] before(t=${before.t},h=${before.h}) after(t=${after.t},h=${after.h}) Δt=${after.t - before.t} Δh=${after.h - before.h} frames=${samples.length} worstGap=${worstGap.toFixed(2)} debug=${JSON.stringify(dbg)}`,
+    )
+
+    expect(Math.abs(gap1 - gap0), 'ΔscrollTop 必须等于 ΔscrollHeight（视口相对内容一动不动）').toBeLessThanOrEqual(1)
+    expect(worstGap, '逐帧：任何一帧的位移都不允许（= 用户一帧都不能看到移动）').toBeLessThanOrEqual(1)
+  })
+})

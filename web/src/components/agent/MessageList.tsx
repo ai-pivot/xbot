@@ -105,12 +105,14 @@ const heightMemory = createRowHeightMemory()
  */
 interface PrependAnchorDebug {
   begun?: number
-  miss?: boolean
+  miss?: boolean | string
   tag?: string
   cls?: string
   iterId?: string
   msgId?: string
   anchorTop?: number
+  lastSane?: boolean
+  lastGrowth?: number
   settleCalls?: number
   deltas?: number[]
 }
@@ -119,12 +121,16 @@ function devAnchorDebug(patch: Partial<PrependAnchorDebug>): void {
   const w = window as unknown as { __prependAnchor?: PrependAnchorDebug }
   w.__prependAnchor = { ...(w.__prependAnchor ?? {}), ...patch }
 }
-function devAnchorDebugSettle(delta: number): void {
+function devAnchorDebugSettle(delta: number, sane: boolean, growth: number): void {
   if (!import.meta.env.DEV) return
   const w = window as unknown as { __prependAnchor?: PrependAnchorDebug }
   const cur = w.__prependAnchor ?? {}
   cur.settleCalls = (cur.settleCalls ?? 0) + 1
-  if (delta !== 0) cur.deltas = [...(cur.deltas ?? []), Math.round(delta)]
+  if (delta !== 0) {
+    cur.deltas = [...(cur.deltas ?? []), Math.round(delta)]
+    cur.lastSane = sane
+    cur.lastGrowth = Math.round(growth)
+  }
   w.__prependAnchor = cur
 }
 /** 布局宽度追踪：宽度变化 ⇒ 行高记忆作废（高度不变性的前提）。 */
@@ -421,6 +427,19 @@ export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boo
 }
 
 
+/**
+ * 判定「锚测到的位移」是否可信 = 是否**由本次 prepend 造成、且发生在视口上方**。
+ *
+ * 纯函数（⚠️ 为新导出，仅因可单测）：段恒在**视口上方**插入（预取带保证）⇒ 锚只可能
+ * **向下**移动，且位移不可能超过本次高度增长。任何越界都说明这个锚**不能用来判断
+ * 「该补多少」** ⇒ 必须弃用，绝不能让一个巨大的**负** delta 把 `scrollTop` 夹到 0
+ *（那正是用户报告的「加载完毕后视角自动变到最上方」）。
+ */
+export function isSanePrependDelta(delta: number, growth: number): boolean {
+  // 容差只用于吸收**亚像素**舍入（浏览器 rect 是小数）；1px 级的越界必须判不可信。
+  return delta > 0 && delta <= Math.max(growth, 0) + 0.5
+}
+
 export const MessageList = memo(function MessageList({
   chatKey,
   followResetToken = 0,
@@ -620,6 +639,9 @@ export const MessageList = memo(function MessageList({
     stable: number
     /** 安全上限（只用于清理，绝不参与"补多少"）。 */
     expiresAt: number
+    /** 锚所在的**虚拟行**（key 稳定、prepend 不卸载）—— 其高度增量 = 本轮插入的真实高度。 */
+    rowEl: HTMLElement
+    rowHeight: number
   } | null>(null)
   // 供 observer effect 现读（observer 只按 hasMore 建一次，绝不因回调身份变化重建）。
   const beginPrependAnchorRef = useRef<() => void>(() => {})
@@ -1348,6 +1370,7 @@ export const MessageList = memo(function MessageList({
       }
     }
     let anchorEl: HTMLElement | null = null
+    let anchorRow: HTMLElement | null = null
     for (const dy of [1, 8, 16, 28, 44, 64]) {
       const y = rect.top + dy
       const hit = document.elementFromPoint(probeX, y) as HTMLElement | null
@@ -1360,6 +1383,7 @@ export const MessageList = memo(function MessageList({
       // ② 绝对定位、`translateY(item.start)` 的虚拟行本身（段在行**内部**插入时它的 start 不变）。
       if (!row || deep === row) continue
       anchorEl = deep
+      anchorRow = row as HTMLElement
       break
     }
     if (!anchorEl) {
@@ -1375,9 +1399,21 @@ export const MessageList = memo(function MessageList({
       msgId: anchorEl.getAttribute('data-message-id') ?? undefined,
       anchorTop: Math.round(anchorEl.getBoundingClientRect().top),
     })
+    // 行元素必须存在（上面的选择器已保证命中都在行内）；拿不到就直接放弃本次锚定。
+    const rowEl = anchorRow ?? (anchorEl.closest('[data-index]') as HTMLElement | null)
+    if (!rowEl) {
+      prependAnchorRef.current = null
+      devAnchorDebug({ begun: 0, miss: 'no-row' })
+      return
+    }
     prependAnchorRef.current = {
       el: anchorEl,
       top: anchorEl.getBoundingClientRect().top,
+      // 行元素（虚拟行，key 稳定、prepend 不会卸载它）：它的**高度增量**是「这轮段插入让
+      // 内容长高了多少」的 DOM 真相 —— 不能用滚动容器的 scrollHeight（它由虚拟列表的
+      // **总高估算**驱动、滞后于行内真实插入 ⇒ 首帧为 0，会把合法的 417px 误判成越界）。
+      rowEl,
+      rowHeight: rowEl.getBoundingClientRect().height,
       applied: 0,
       stable: 0,
       // 安全上限：请求失败（段永不到达）也不能让锚永久粘住视口。它只负责**清理**，
@@ -1404,8 +1440,14 @@ export const MessageList = memo(function MessageList({
       prependAnchorRef.current = null
       return
     }
-    const delta = snap.el.getBoundingClientRect().top - snap.top
-    devAnchorDebugSettle(delta)
+    const growth = snap.rowEl.isConnected ? snap.rowEl.getBoundingClientRect().height - snap.rowHeight : 0
+    // 锚还活着 ⇒ 用它（精确）；锚被 React 重新分组/卸载（tool-only run 的 head 变化会让旧块
+    // 消失）⇒ 回退到 `growth`：段恒在**视口上方**、**在该行内部**插入 ⇒「这一行长高了多少」
+    // 就是「视口下方的内容被推下去多少」，等价且免疫重挂载。
+    const moved = snap.el.isConnected ? snap.el.getBoundingClientRect().top - snap.top : null
+    const delta = moved ?? growth
+    devAnchorDebugSettle(delta, isSanePrependDelta(delta, growth), growth)
+    snap.rowHeight = snap.rowEl.isConnected ? snap.rowEl.getBoundingClientRect().height : snap.rowHeight
     if (delta === 0) {
       // ⚠️ **只有确实动过一次之后**才允许按"收敛"销账：段响应可能延迟几百 ms，若在它还
       // 没落地时就判"连续两帧零偏移 = 已收敛"而解除锚，段一到照样跳（E2E 实测 417px）。
@@ -1413,6 +1455,11 @@ export const MessageList = memo(function MessageList({
         snap.stable += 1
         if (snap.stable >= 2) prependAnchorRef.current = null // 收敛 ⇒ 销账
       }
+      return
+    }
+    // ⛔ 合法性闸门：不可信的位移（负值 / 超过本次增长）⇒ 当场弃锚，绝不施加。
+    if (!isSanePrependDelta(delta, growth)) {
+      prependAnchorRef.current = null
       return
     }
     snap.stable = 0
