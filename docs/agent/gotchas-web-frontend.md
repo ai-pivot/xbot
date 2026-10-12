@@ -399,3 +399,10 @@ openAutoFocus**。守护：`ModelSelector.test.tsx`（触屏 → activeElement �
   **现契约（DOM 真相锚 + 收敛，无时间窗无重试上限）**：`MessageList` 的 `beginPrependAnchor()` 拍下**视口里最上方那一可见行**（按 `[data-index]` 的**实测 rect**，绝不按虚拟键查表）+ 它此刻的视口内 `top`；提交后 `settlePrependAnchor()` 用 `scrollTop += (该行当前 top − 拍摄时 top)` 在**同一帧**（`useLayoutEffect`，paint 之前）钉回；触发源 = `rows` 的 layout effect + content 的 ResizeObserver；销账 = **收敛**（连续两次零偏移）/ 锚元素卸载 / 用户自己滚动（程序化滚动不算）。**两条 prepend 路径共用同一入口**：`PrependAnchorContext`（MessageList 提供，`useRegionWindow.run()` 在**发请求之前**调用）。哨兵/分隔条本身不可见（见 `RegionsDivider`），所以用户只感知到「上面的历史变多了」，位置不变。
   **判据（E2E，不是"看起来还行"）**：`web/e2e/region-window.spec.ts` 的「prepend 锚」用例 —— 段响应**延迟 600ms** 落地以保证 `r0` 先拍到（否则断言自证）；断言 ① 插入前后同一行 bbox 完全相同（≤0.5px）；② **rAF 逐帧采样零漂移**（任何一帧偏移 ≠ 0 即红）；③ 新段整段位于列表视口**上方**。
   **为什么删掉了离屏预测量**：曾计划「Phase 1 离屏 `measureOffscreen` 先量高度再插入」（`web/src/components/agent/measureOffscreen.tsx`，已删除）。DOM 锚逐帧在 paint 前钉住 ⇒ 估算/实测的二次长高**同样被吸收**，预测量变成多余的第二套机制（用户要求「不留双实现」）。
+
+- **⛔ prepend 锚的【位移合法性闸门】—— 「有概率加载完毕后视角自动变到最上方」的根治（用户报告，2026-10-12）。**
+  **症状**：加载更多完成后，用户的视口**偶发地跳到最上方**。
+  **被证伪的假设（别再往这个方向查）**：一度怀疑「段插入让 `mergeToolRuns` 重新分组（tool-only run 的 head 从 21 变 18）⇒ 旧块被 React 卸载 ⇒ 锚元素 `isConnected=false` ⇒ 弃锚不补 ⇒ 位移」。写用例实测 **`Δh = 0`** —— tool-only run 的 pill 行有「前 7 个 + `+N` 溢出」上限 ⇒ **高度恒定** ⇒ 重分组**不可能**造成位移。（该用例保留为回归守护，断言改用几何无关的 `ΔscrollTop == ΔscrollHeight` + 逐帧零漂移。）
+  **真根因**：settle 原先**无条件**施加 `scrollTop += (锚当前 top − 拍摄时 top)`。快照一旦**陈旧**（挂载期列表还在滚到底部、或快照后视口被别的东西移动过），delta 是很大的**负数** ⇒ `scrollTop` 被夹到 **0** = 「跳到最上方」。「有概率」= 取决于预取是否恰好撞上这种时刻。
+  **修法（自我校验 + DOM 真相，不是"再补一次"）**：纯函数 `isSanePrependDelta(delta, growth)`（`MessageList.tsx`，导出以便单测）—— 段恒在视口**上方**插入 ⇒ 位移必须 `> 0` 且 `≤ growth`（容差仅 0.5px 吸收亚像素）；越界 ⇒ **当场弃锚、绝不施加**。`growth` 必须取**锚所在虚拟行自身的高度增量**（⚠️ 用滚动容器的 `scrollHeight` 会被虚拟列表**总高估算的滞后**坑死：首帧 `growth=0 / delta=417` ⇒ 合法位移被误判越界 ⇒ 弃锚 ⇒ 旧用例回归红，E2E 当场抓到）。锚元素被卸载时回退到 `growth`（段在该行内部、视口上方插入 ⇒ 行高增量 == 下方内容被推下去的距离）。
+  守护：`web/src/components/agent/prependAnchorSaneDelta.test.ts`（负位移/超额/零位移/负增长/亚像素 5 例）+ `web/e2e/region-window.spec.ts` 的两个锚用例（含「锚所在块被重新分组」；几何判据 `ΔscrollTop == ΔscrollHeight` 且 rAF 逐帧零漂移）。
