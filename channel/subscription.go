@@ -694,7 +694,67 @@ func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIter
 	}
 	flushPending()
 	history = attachCompactions(history, pendingCompactions)
+	if foldView {
+		// ⛔ 消息不连续零容忍（用户 2026-10-11；AGENTS.md 最高优先级）：**未完整下发**
+		// 的 turn（RegionsBefore > 0，只带了尾部区域窗口）**绝不在消息流里携带它的
+		// user 行** —— 否则任何「照着数组渲染」的消费者都会把 user msg 渲染在一个尚未
+		// 加载的缺口上方（`user → 跳 y 条 → iter`）。user 行改挂到该 turn 的 assistant
+		// 行上（TurnUser），客户端在边缘还原；是否渲染由「窗口未覆盖迭代 1 ⇒ 不渲染」
+		// 的规则决定。全量视图（CLI/RPC）**不走这里** ⇒ 载荷逐字节不变（R5）。
+		history = relocateIncompleteTurnUsers(history)
+	}
 	return history
+}
+
+// relocateIncompleteTurnUsers 把「未完整下发」（RegionsBefore > 0）的 turn 的 user 行
+// 从消息流里摘下，挂到该 turn 的 assistant 行（TurnUser）上 —— 见调用点的不变量注释。
+// 只影响这些 turn；其余行原样保留（含命令行 standalone 行、legacy 行）。
+func relocateIncompleteTurnUsers(history []HistoryMessage) []HistoryMessage {
+	incomplete := make(map[uint64]bool)
+	for i := range history {
+		if history[i].Role == "assistant" && history[i].TurnID > 0 && history[i].RegionsBefore > 0 {
+			incomplete[history[i].TurnID] = true
+		}
+	}
+	if len(incomplete) == 0 {
+		return history
+	}
+	// 每个 turn 只摘一条 user 行（前端模型：一个 turn 一条 user）。
+	users := make(map[uint64]HistoryMessage, len(incomplete))
+	for _, h := range history {
+		if h.Role != "user" || h.TurnID == 0 || !incomplete[h.TurnID] || h.Standalone {
+			continue
+		}
+		if _, ok := users[h.TurnID]; !ok {
+			users[h.TurnID] = h
+		}
+	}
+	if len(users) == 0 {
+		return history
+	}
+	out := make([]HistoryMessage, 0, len(history))
+	for _, h := range history {
+		if h.Role == "user" && h.TurnID > 0 && !h.Standalone {
+			// 该 turn 未完整下发 ⇒ 它的 user 行**一律**从消息流里摘掉（前端模型与 DB
+			// 事实都是「一个 turn 一条 user 行」——v67 的 Internal 注入行、压缩标记行
+			// 都不是这里的角色；若真出现多条，只保留第一条挂 TurnUser，语义与前端
+			// mergeHistory「取 dbID 最小那条」一致，绝不把第二条漏在流里）。
+			if _, ok := users[h.TurnID]; ok {
+				continue
+			}
+		}
+		out = append(out, h)
+	}
+	for i := range out {
+		if out[i].Role != "assistant" || out[i].TurnID == 0 || out[i].RegionsBefore <= 0 {
+			continue
+		}
+		if u, ok := users[out[i].TurnID]; ok {
+			uu := u
+			out[i].TurnUser = &uu
+		}
+	}
+	return out
 }
 
 // windowTurnIterations 折叠视图（D2 区域窗口 + D3 工具轻字段化）的装配：

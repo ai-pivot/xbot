@@ -34,6 +34,17 @@ export interface HistMsg {
   /** turn 内部发生过的压缩点（迭代边界；渲染在迭代之间，Cursor 式）——
    *  `after_iteration` = 压缩发生在该迭代之后。老数据无此字段（回落独立行）。 */
   compactions?: { after_iteration?: number; content?: string; timestamp?: string }[]
+  /**
+   * `turn_user`：该 turn 的 user 行 —— **仅当**该 turn 只下发了尾部区域窗口
+   * （`regions_before > 0`）时，后端**把它从消息流里摘出来挂在这里**。
+   *
+   * ⛔ 消息不连续零容忍（用户 2026-10-11）：接口层**绝不**把这条 user 行放进消息流，
+   * 免得任何「照着数组渲染」的消费者把它渲染在一个尚未加载的缺口上方
+   * （`user msg → 跳 y 条 → iter`，被点名禁止）。客户端在**边缘**
+   * （`parseHistoryMessages`）把它还原成常规 user 行 ⇒ 下游零改动；是否渲染仍由
+   * `derive` 的「窗口未覆盖迭代 1 ⇒ 该 turn 的 user 行不渲染」规则决定。
+   */
+  turn_user?: HistMsg
   /** TurnID of the turn that produced this message. 0 = untracked (old data
    *  before v50 migration). Used by MessageList to dedup committed history
    *  against the live store's active turn. */

@@ -1,25 +1,25 @@
 /**
- * RegionsDivider —— 「⬆ 该 turn 更早的 N 个展示区域」分隔条（D1 线）。
+ * RegionsDivider —— 「更早展示区域」的**不可见**取回哨兵（D1 线）。
  *
- * 位置：assistant 行内、`TurnBody` **之前**（该 turn 所有已加载迭代的上方），
- * 仅当 `regions_before > 0`（该 turn 未完整下发）时渲染 —— 是**唯一新增可见物**
- * （G2 无感验收：默认视图零差异）。
+ * ⛔⛔ 不变量（用户明确要求，2026-10-11 —— AGENTS.md 最高优先级）：**消息/上下文不连续
+ * 零容忍**。渲染出的历史任何时候都必须连续；绝不允许在可见流里出现
+ * `iter x → 加载哨兵 → iter x+y（y≠1）` 这种「中间跳过 y 条消息」的结构。
  *
- * 三态（恒高，`h-7`）：
- *   idle    ⬆ + 「更早的 {{count}} 个区域」
- *   loading spinner + 「正在加载更早区域…」
- *   error   「加载失败 · 重试」（点击 → 手动重试）
+ * 因此本组件**不再渲染任何可见物**（没有折线、没有「更早的 N 个区域」文字、没有可点
+ * 的折叠条 —— 那正是被点名的 `content - 折叠 - content` 形态）。它只剩一个**零高度、
+ * 不可见**的哨兵节点：`useRegionWindow` 观察它在**预取带**内的可见性，在用户**看到边界
+ * 之前**就把更早的区域链式取回（内容从下往上连续生长，像历史一次就加载好）。
  *
- * ⚠️ 容器高度恒定原则（gotchas 的 content-visibility 事故教训）：本组件是**真实
- * 内容挂载**，三态用**同一行高**；绝不用估算高度占位、也不在三态之间改变高度 ——
- * 分隔条的插入/消失由既有高度机制（MessageList 的 ResizeObserver 补偿）兜住，
- * 「加载前后滚动总高一致性」依赖这里的高度可预测。
+ * 位置：assistant 行内、`TurnBody` **之前**（该 turn 所有已加载迭代的上方）。
  *
- * ⚠️ 根节点即 IO 哨兵（`sentinelRef`）：`useRegionWindow` 观察它的可见性来决定
- * 何时向更旧方向取段。三态复用同一个 DOM 节点（不换 key、不条件卸载）——
- * 卸载会让 observer 失去观察目标而 effect 依赖不含哨兵重建。
+ * 失败态（网络错误 / 服务端拒绝）是唯一的例外：此时自动重试已按保守停止，必须让用户
+ * 有出路 ⇒ 渲染一个小的「重试」按钮（显式失败态，罕见；不参与 idle/loading 的零高度
+ * 契约）。
+ *
+ * ⚠️ 根节点即 IO 哨兵（`sentinelRef`）：三态复用同一个 DOM 节点（不换 key、不条件卸载）
+ * —— 卸载会让 observer 失去观察目标。
  */
-import { Loader2, TriangleAlert, ChevronUp } from 'lucide-react'
+import { TriangleAlert } from 'lucide-react'
 import { memo } from 'react'
 
 import { useI18n } from '@/providers/i18n'
@@ -27,7 +27,7 @@ import { useI18n } from '@/providers/i18n'
 import type { RegionWindowStatus } from '@/hooks/useRegionWindow'
 
 export interface RegionsDividerProps {
-  /** 仍剩的更早展示区域数（后端 `regions_before`）。 */
+  /** 仍剩的更早展示区域数（后端 `regions_before`）。仅作为诊断属性挂在 DOM 上。 */
   count: number
   status: RegionWindowStatus
   /** 手动重试（error 态按钮）。 */
@@ -36,9 +36,6 @@ export interface RegionsDividerProps {
   sentinelRef?: React.RefObject<HTMLDivElement | null>
 }
 
-/** 三态共用的行容器 —— **高度恒定**是三态唯一的结构不变量。 */
-const ROW_CLASS = 'flex h-7 min-w-0 items-center justify-center gap-1.5 px-1 text-[11.5px] text-text-muted'
-
 export const RegionsDivider = memo(function RegionsDivider({
   count,
   status,
@@ -46,34 +43,34 @@ export const RegionsDivider = memo(function RegionsDivider({
   sentinelRef,
 }: RegionsDividerProps) {
   const { t } = useI18n()
+  // 零高度、无背景、无文字 —— 视觉上完全不存在。`h-px` 保留一个 1px 的真实布局盒，
+  // 保证 IntersectionObserver 在所有浏览器都能可靠观察（零面积目标的 isIntersecting
+  // 实现不一致，绝不能依赖它）。
+  // ⚠️ 唯一例外是 error 态：必须让容器长到能容纳「重试」按钮（h-7），否则 1px 容器里的
+  // 按钮会溢出并**盖在下面的迭代正文上**（E2E 实测：`<p>iter 21…</p>` 拦截点击）。
+  // 高度只在显式失败态变化（罕见；idle↔loading 的常见翻转仍恒为 h-px）。
   return (
     <div
       ref={sentinelRef}
       data-testid="regions-divider"
       data-state={status}
       data-regions-before={count}
-      className={ROW_CLASS}
+      className={
+        status === 'error'
+          ? 'flex h-7 w-full items-center justify-center'
+          : 'h-px w-full bg-transparent'
+      }
     >
-      {status === 'loading' ? (
-        <>
-          <Loader2 aria-hidden data-testid="regions-divider-spinner" className="size-3 animate-spin" />
-          <span>{t('agent.regions.loading')}</span>
-        </>
-      ) : status === 'error' ? (
+      {status === 'error' && (
         <button
           type="button"
           data-testid="regions-divider-retry"
           onClick={onRetry}
-          className="flex min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 transition-colors hover:bg-bg-hover hover:text-text-secondary"
+          className="mx-auto flex h-7 min-w-0 items-center justify-center gap-1.5 px-1 text-[11.5px] text-text-muted transition-colors hover:text-text-secondary"
         >
           <TriangleAlert aria-hidden className="size-3" />
           <span>{t('agent.regions.retry')}</span>
         </button>
-      ) : (
-        <>
-          <ChevronUp aria-hidden className="size-3" />
-          <span data-testid="regions-divider-label">{t('agent.regions.loadEarlier', { count })}</span>
-        </>
       )}
     </div>
   )

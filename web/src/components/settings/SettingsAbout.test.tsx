@@ -218,9 +218,15 @@ describe('SettingsAbout（关于 → 版本/更新/重启）', () => {
     const { container } = renderWithProviders(<SettingsAbout />)
     // 锚定到组件自身容器 —— 全量套件里同文档的其它残留 DOM 会让 text 查询误命中（曾 flaky 红灯）。
     const view = within(container)
-    // 托管提示：检测到 manager 名 + 按其策略恢复（不承诺"一定自动重启"）
+    // 托管提示：检测到 manager 名 + 按其策略恢复（不承诺"一定自动重启"）。
+    // ⚠️ 等待必须用**只在托管态出现**的文案（`检测到 {{manager}} 托管` / `Managed by {{manager}}`）：
+    // 中性 restartHint 自己就含 `supervisord` 与 `per that manager's policy`，拿它们
+    // waitFor 会在 RPC 落地、状态切换**之前**就提前通过（那时中性提示还挂着）⇒ 下面
+    // 「中性提示不得存在」的负向断言偶发失败（2026-10-12 flaky 根因，已修）。
     await waitFor(() =>
-      expect(view.getByText(/supervisord/)).toBeInTheDocument(),
+      expect(
+        view.getByText(/检测到 supervisord 托管|Managed by supervisord/i),
+      ).toBeInTheDocument(),
     )
     expect(
       view.getByText(/按其策略|per that manager/i),

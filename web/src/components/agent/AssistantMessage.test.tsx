@@ -267,7 +267,7 @@ describe('AssistantMessage compressing indicator position', () => {
 })
 
 describe('AssistantMessage 展示区域分隔条（D1）', () => {
-  it('regionsBefore > 0 ⇒ 行顶渲染分隔条（count 来自 regions_before）', () => {
+  it('regionsBefore > 0 ⇒ 行顶挂**不可见**取回哨兵（无可见折叠条）', () => {
     const m = msg({
       turnID: 7,
       iterations: [iter('latest', 52)],
@@ -276,8 +276,10 @@ describe('AssistantMessage 展示区域分隔条（D1）', () => {
     renderMsg(<AssistantMessage message={m} />)
     const divider = screen.getByTestId('regions-divider')
     expect(divider.getAttribute('data-regions-before')).toBe('137')
-    expect(divider.textContent).toContain('137')
-    // 分隔条在迭代之前（该 turn 所有已加载迭代的上方）
+    // ⛔ 消息不连续零容忍（用户 2026-10-11）：哨兵不得渲染任何可见物 ——
+    // `content - 折叠 - content` 这种可见折叠条是被点名的形态，永不允许。
+    expect(divider.textContent ?? '').toBe('')
+    // 哨兵在迭代之前（该 turn 所有已加载迭代的上方）
     const turnBody = document.querySelector('.iter-blocks')
     expect(turnBody).not.toBeNull()
     expect(divider.compareDocumentPosition(turnBody!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
