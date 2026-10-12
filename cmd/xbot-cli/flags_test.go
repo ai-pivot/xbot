@@ -1,106 +1,72 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
+	"bytes"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"xbot/version"
 )
 
-// main() 不能被单测直接调用（它会拉起 TUI / 会话），所以这里**构建真实二进制并执行**
-// —— 这正是该 bug 的本质（2026-10-12 用户报告：`xbot-cli --version` 会**启动 xbot**，
-// 而不是打印版本；根因是未知 flag 在 default 里被静默吞掉，随后照常走默认路径起会话）。
-// 只有真正跑进程才能证明"没有起来会话"。
-var (
-	cliBuildOnce sync.Once
-	cliBuildPath string
-	cliBuildErr  error
-)
-
-func cliBinary(t *testing.T) string {
-	t.Helper()
-	cliBuildOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "xbot-cli-flagtest")
-		if err != nil {
-			cliBuildErr = err
-			return
-		}
-		bin := filepath.Join(dir, "xbot-cli")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
-		out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput()
-		if err != nil {
-			cliBuildErr = errors.New(string(out))
-			return
-		}
-		cliBuildPath = bin
-	})
-	if cliBuildErr != nil {
-		t.Skipf("无法构建 CLI 二进制（跳过 flag 回归）: %v", cliBuildErr)
-	}
-	return cliBuildPath
-}
-
-func runCLI(t *testing.T, args ...string) (stdout string, exitCode int) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, cliBinary(t), args...)
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("`xbot-cli %s` 超时未退出 —— 说明它**启动了会话**而不是打印后退出（正是被报告的 bug）", strings.Join(args, " "))
-	}
-	var ee *exec.ExitError
-	switch {
-	case err == nil:
-		exitCode = 0
-	case errors.As(err, &ee):
-		exitCode = ee.ExitCode()
-	default:
-		t.Fatalf("执行 `xbot-cli %s` 失败: %v", strings.Join(args, " "), err)
-	}
-	return string(out), exitCode
-}
-
-func TestCLI_VersionFlagPrintsVersionAndExits(t *testing.T) {
+// ⛔ CLI 未知 flag 必须【报错退出】，绝不静默忽略后启动会话（用户报告，2026-10-12：
+// `xbot-cli --version` 曾会**启动 xbot**）。根因是 flag 循环的 `default` 只把非 `-` 前缀
+// 参数当 prompt、其余静默吞掉 ⇒ 没有对应 case 的 flag 被"当没看见"，随后照常走默认路径。
+//
+// 契约由 **纯函数** `cliEarlyExitFlag` + 它在 main() 里**早于任何会话初始化**的调用点共同
+// 保证（main() 本身无法单测）。⚠️ 不采用「构建真实二进制再 exec」的测法：CI 冷缓存下首次
+// exec 一个刚写完的 ~100MB 二进制会超时（本 PR 的 CI 实测 `--version` 67s 未退出），
+// 那是**测试实现**不可靠，不是被测行为的问题。
+func TestCLIEarlyExitFlag_VersionPrintsVersionOnly(t *testing.T) {
 	for _, flag := range []string{"--version", "-v", "-V"} {
-		out, code := runCLI(t, flag)
-		if code != 0 {
-			t.Fatalf("`%s` 必须 exit 0（打印后退出），got %d\n%s", flag, code, out)
+		var out bytes.Buffer
+		handled, code := cliEarlyExitFlag([]string{flag}, &out)
+		if !handled || code != 0 {
+			t.Fatalf("`%s` 必须 handled=true、code=0（打印后退出），got handled=%v code=%d", flag, handled, code)
 		}
-		// stdout 必须**恰好**是版本号（不带 banner、不带 "Mode: resuming …"）
-		if got := strings.TrimSpace(out); got != version.Version {
+		// stdout 必须**恰好**是版本号一行（不带 banner / 不带 "Mode: resuming …"）
+		if got := strings.TrimSpace(out.String()); got != version.Version {
 			t.Fatalf("`%s` 的输出必须只有版本号 %q，got %q", flag, version.Version, got)
 		}
+		if strings.Count(strings.TrimRight(out.String(), "\n"), "\n") != 0 {
+			t.Fatalf("`%s` 只能输出一行，got %q", flag, out.String())
+		}
 	}
 }
 
-func TestCLI_HelpFlagPrintsUsageAndExits(t *testing.T) {
-	out, code := runCLI(t, "--help")
-	if code != 0 {
-		t.Fatalf("`--help` 必须 exit 0，got %d\n%s", code, out)
+func TestCLIEarlyExitFlag_HelpPrintsUsage(t *testing.T) {
+	var out bytes.Buffer
+	handled, code := cliEarlyExitFlag([]string{"--help"}, &out)
+	if !handled || code != 0 {
+		t.Fatalf("`--help` 必须 handled=true、code=0，got handled=%v code=%d", handled, code)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(out), "Usage: xbot-cli") {
-		t.Fatalf("`--help` 必须打印用法且不带 banner，got %q", out)
+	if !strings.HasPrefix(out.String(), "Usage: xbot-cli") {
+		t.Fatalf("`--help` 必须打印用法（且不带 banner），got %q", out.String())
+	}
+	// 用法里必须能查到 --version（否则用户无从得知）
+	if !strings.Contains(out.String(), "--version") {
+		t.Fatalf("用法必须列出 --version，got %q", out.String())
 	}
 }
 
-func TestCLI_UnknownFlagFailsFastInsteadOfStartingSession(t *testing.T) {
-	// 拼错的 flag：必须**报错退出**（exit 2），绝不静默吞掉后照常启动会话。
-	out, code := runCLI(t, "--versoin")
-	if code != 2 {
-		t.Fatalf("未知 flag 必须以 exit 2 退出，got %d\n%s", code, out)
-	}
-	if !strings.Contains(out, "unknown flag") {
-		t.Fatalf("未知 flag 必须给出明确错误，got %q", out)
+// 未知 flag / 普通参数 / 无参数 ⇒ **不得**被当作"打印即退出"（必须继续走正常路径：
+// 未知 `-` flag 会在 flag 循环里以 exit 2 报错；其余是正常启动/单条 prompt）。
+func TestCLIEarlyExitFlag_DoesNotSwallowOtherArgs(t *testing.T) {
+	for _, args := range [][]string{
+		nil,
+		{},
+		{"--versoin"},       // 拼错：必须落到未知 flag 报错，而不是被这里吞掉
+		{"--new"},           // 正常启动 flag
+		{"do something"},    // 位置参数 = prompt
+		{"setup", "--help"}, // 子命令帮助：不能在这里被拦
+		{"serve"},
+	} {
+		var out bytes.Buffer
+		handled, code := cliEarlyExitFlag(args, &out)
+		if handled || code != 0 {
+			t.Fatalf("args=%v 必须 handled=false（继续走正常路径），got handled=%v code=%d out=%q", args, handled, code, out.String())
+		}
+		if out.Len() != 0 {
+			t.Fatalf("args=%v 必须无输出，got %q", args, out.String())
+		}
 	}
 }

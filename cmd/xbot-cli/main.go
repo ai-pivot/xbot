@@ -942,6 +942,64 @@ func handleAskUserResolvedBroadcast(cliCh *cli.CLIChannel, env protocol.EventEnv
 	})
 }
 
+// writeCLIUsageTo 打印 CLI 用法（`--help` 与「未知 flag 报错」共用）。
+func writeCLIUsageTo(w io.Writer) {
+	for _, line := range []string{
+		"Usage: xbot-cli [options] [prompt]",
+		"",
+		"Modes:",
+		"  default             Auto mode: use remote server if cli.server_url is configured",
+		"  --local             Force in-process transport (Go channels, no server needed)",
+		"  --server <ws-url>   Force remote mode and connect to server",
+		"  serve               Run server mode in the same binary",
+		"",
+		"Options:",
+		"  --version, -v, -V   Print version and exit",
+		"  --help, -h          Show this help",
+		"  --new, --new-session  Start a new isolated session (auto-named)",
+		"  --ephemeral         Ephemeral mode: no persistence, clean state for benchmarking",
+		"  --resume            Resume last session (default)",
+		"  --max-context N     Override max context tokens (e.g. 128000, 1000000)",
+		"  --max-tokens N      Override max output tokens (e.g. 8192)",
+		"  --thinking-mode <json>  Override LLM thinking_mode (e.g. {\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"max\"})",
+		"  -p <prompt>         Non-interactive single prompt",
+		"  --export-session <file>  Export current session (full history) to JSON and exit",
+		"  --import-session <file>  Import session JSON before running (combine with --ephemeral for bench)",
+		"  --export-after <file>    Export session JSON after task completes (bench: no re-run needed)",
+		"  --token <token>     Token for remote server",
+		"  --workspace <path>  Override workspace",
+		"  --sidebar-width N   Set sidebar width (16-40, default 20)",
+		"  --no-sidebar       Disable sidebar",
+	} {
+		fmt.Fprintln(w, line)
+	}
+}
+
+// cliEarlyExitFlag 处理「打印即退出」的机器可读 flag（版本 / 帮助）。
+//
+// ⛔ 必须在**任何**会话 / 传输初始化之前调用并退出：`xbot-cli --version` 绝不能启动 xbot
+// （2026-10-12 用户报告；根因是未知 flag 在 flag 循环的 `default` 里被静默吞掉，随后照常走
+// 默认路径拉起 TUI / 恢复上次会话）。返回 handled=true ⇒ 调用方立刻退出（code≠0 用
+// os.Exit，code=0 用 return 以保留 defer 清理）。
+//
+// 只看 `args[0]`（与 `xbot-cli --version` 语义一致；`setup --help` 这类子命令帮助不受影响）。
+// 是**纯函数** ⇒ 可单测（main() 本身无法单测；此前用「构建真实二进制再 exec」的测法在 CI
+// 冷缓存下首次 exec 会超时，已弃用）。
+func cliEarlyExitFlag(args []string, stdout io.Writer) (handled bool, code int) {
+	if len(args) == 0 {
+		return false, 0
+	}
+	switch args[0] {
+	case "--version", "-v", "-V":
+		fmt.Fprintln(stdout, version.Version)
+		return true, 0
+	case "--help", "-h":
+		writeCLIUsageTo(stdout)
+		return true, 0
+	}
+	return false, 0
+}
+
 func main() {
 	// CJK width: ensureCJKWidth is now a no-op (see comment above).
 	// Kept as a call site for forward compatibility if we need to re-enable
@@ -951,17 +1009,19 @@ func main() {
 	xbotHome := config.XbotHome()
 	clipanic.EnableFileLogging(filepath.Join(xbotHome, "logs", "cli-panic.log"))
 	defer clipanic.Recover("main.main", nil, true)
-	// Version banner: suppressed for **machine-parseable** invocations —— `setup`
-	//（install 脚本 / CI 断言）以及 `--version` / `--help`（stdout 必须**恰好**是
-	// 请求的载荷，混入 banner 会让 `xbot-cli --version` 无法被脚本解析）。
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "setup", "--version", "-v", "-V", "--help", "-h":
-			// suppressed
-		default:
-			fmt.Printf("xbot CLI %s\n", version.Version)
+
+	// ⛔ 机器可读 flag（`--version` / `--help`）必须在**这里**处理并退出 —— 早于 banner、
+	// 子命令分发与一切会话/传输初始化 ⇒ 结构上不可能出现「`--version` 起了 xbot」。
+	if handled, code := cliEarlyExitFlag(os.Args[1:], os.Stdout); handled {
+		if code != 0 {
+			os.Exit(code)
 		}
-	} else {
+		return
+	}
+
+	// Version banner: suppressed for the `setup` sub-command（机器可读输出，供 install 脚本
+	// / CI 断言）。`--version` / `--help` 已在上面 return，不会走到这里。
+	if len(os.Args) <= 1 || os.Args[1] != "setup" {
 		fmt.Printf("xbot CLI %s\n", version.Version)
 	}
 
@@ -970,32 +1030,7 @@ func main() {
 	// Both are in different scopes, so we use a closure variable at main scope.
 	var pluginWidgetSyncFn func(string)
 
-	printHelp := func() {
-		fmt.Println("Usage: xbot-cli [options] [prompt]")
-		fmt.Println()
-		fmt.Println("Modes:")
-		fmt.Println("  default             Auto mode: use remote server if cli.server_url is configured")
-		fmt.Println("  --local             Force in-process transport (Go channels, no server needed)")
-		fmt.Println("  --server <ws-url>   Force remote mode and connect to server")
-		fmt.Println("  serve               Run server mode in the same binary")
-		fmt.Println()
-		fmt.Println("Options:")
-		fmt.Println("  --help, -h          Show this help")
-		fmt.Println("  --new, --new-session  Start a new isolated session (auto-named)")
-		fmt.Println("  --ephemeral         Ephemeral mode: no persistence, clean state for benchmarking")
-		fmt.Println("  --resume            Resume last session (default)")
-		fmt.Println("  --max-context N     Override max context tokens (e.g. 128000, 1000000)")
-		fmt.Println("  --max-tokens N      Override max output tokens (e.g. 8192)")
-		fmt.Println("  --thinking-mode <json>  Override LLM thinking_mode (e.g. {\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"max\"})")
-		fmt.Println("  -p <prompt>         Non-interactive single prompt")
-		fmt.Println("  --export-session <file>  Export current session (full history) to JSON and exit")
-		fmt.Println("  --import-session <file>  Import session JSON before running (combine with --ephemeral for bench)")
-		fmt.Println("  --export-after <file>    Export session JSON after task completes (bench: no re-run needed)")
-		fmt.Println("  --token <token>     Token for remote server")
-		fmt.Println("  --workspace <path>  Override workspace")
-		fmt.Println("  --sidebar-width N  Set sidebar width (16-40, default 20)")
-		fmt.Println("  --no-sidebar       Disable sidebar")
-	}
+	printHelp := func() { writeCLIUsageTo(os.Stdout) }
 
 	// Sub-commands: handled before flag parsing.
 	if len(os.Args) > 1 {
@@ -1067,12 +1102,6 @@ func main() {
 	)
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
-		case "--version", "-v", "-V":
-			// ⛔ 只打印版本号并**立即退出**：绝不进入 TUI / 恢复上次会话。
-			//（2026-10-12 用户报告：`xbot-cli --version` 会启动 xbot —— 根因是这里
-			// 没有 case，落到 default 被静默忽略，随后照常走默认路径拉起会话。）
-			fmt.Println(version.Version)
-			return
 		case "--resume":
 			// 保留兼容性，行为与默认相同
 		case "--new", "--new-session":

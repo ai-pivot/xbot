@@ -94,8 +94,6 @@ export function useRegionWindow({
   const failStreakRef = useRef(0)
   const statusRef = useRef<RegionWindowStatus>('idle')
   statusRef.current = status
-  const enabledRef = useRef(enabled)
-  enabledRef.current = enabled
   const turnIDRef = useRef(turnID)
   turnIDRef.current = turnID
   const beforeIterRef = useRef(beforeIteration)
@@ -103,30 +101,8 @@ export function useRegionWindow({
   const loadRef = useRef(actions.loadRegionSegment)
   loadRef.current = actions.loadRegionSegment
 
-  const runRef = useRef<(chainDepth?: number) => void>(() => {})
-
-  /**
-   * 链式预取（用户 2026-10-11 硬要求）：一段到位后，若哨兵**仍在预取带内**就立刻续拉
-   * 下一段 —— 边界持续被推离视口，上滚时内容连续生长，绝不出现可见缺口。
-   *
-   * 终止条件：① `enabled` 变 false（regionsBefore=0，到 turn 头部）；② 哨兵已离开预取带
-   * （可见性回调会把 visibleRef 置 false）；③ **无进展**（本次加载没让 `beforeIteration`
-   * 前移 —— 防服务端返回同一段导致死循环）。
-   */
-  const scheduleChain = useCallback((requestedBefore: number, chainDepth: number) => {
-    if (chainDepth > 64) return // 硬上限：防御性，正常一屏内几段就够
-    setTimeout(() => {
-      if (!enabledRef.current) return
-      if (visibleRef.current !== true) return
-      if (statusRef.current === 'loading') return
-      if (beforeIterRef.current === undefined) return
-      if (beforeIterRef.current === requestedBefore) return // 无进展 ⇒ 停止
-      runRef.current(chainDepth + 1)
-    }, 0)
-  }, [])
-
   /** 一次段请求（唯一入口：IO 触发与手动重试共用）。 */
-  const run = useCallback((chainDepth = 0) => {
+  const run = useCallback(() => {
     if (statusRef.current === 'loading') return
     const before = beforeIterRef.current
     if (before === undefined) return
@@ -146,15 +122,13 @@ export function useRegionWindow({
         failStreakRef.current = 0
         statusRef.current = 'idle'
         setStatus('idle')
-        scheduleChain(before, chainDepth)
         return
       }
       failStreakRef.current += 1
       statusRef.current = 'error'
       setStatus('error')
     })()
-  }, [scheduleChain])
-  runRef.current = run
+  }, [])
 
   // ── 哨兵 observer：IO 触发源（arm/disarm 状态机；deps 只含 enabled）─────
   useEffect(() => {
@@ -176,13 +150,13 @@ export function useRegionWindow({
           armedRef.current = true
           return
         }
-        // ② 由不可见变为可见（wasVisible === null 也算：首次回调就看到可见）
+        // ② 由不可见变为可见（`wasVisible === null` 也算：observer 首次回调就看到"可见"）
         if (wasVisible !== true) armedRef.current = true
         if (!armedRef.current) return // 本轮「可见回合」已触发过 ⇒ 不再发请求
         if (statusRef.current === 'loading') return
         if (failStreakRef.current >= MAX_AUTO_REGION_FAILURES) return // 保守停止
         armedRef.current = false // 触发即 disarm
-        run(0)
+        run()
       },
       // 预取带（±2 屏）—— 见 PREFETCH_ROOT_MARGIN 注释。
       { root: null, rootMargin: PREFETCH_ROOT_MARGIN, threshold: 0 },
@@ -192,7 +166,7 @@ export function useRegionWindow({
   }, [enabled, run])
 
   const retry = useCallback(() => {
-    run(0)
+    run()
   }, [run])
 
   // ── 自动追赶（2026-10-02 P0：熄屏恢复 × 折叠窗口的洞）────────────────────────
@@ -206,7 +180,7 @@ export function useRegionWindow({
     if (gapTop === undefined) return
     if (statusRef.current === 'loading') return
     if (failStreakRef.current >= MAX_AUTO_REGION_FAILURES) return
-    run(0)
+    run()
   }, [gapTop, run])
 
   return { enabled, status, sentinelRef, retry }
