@@ -96,6 +96,37 @@ const SCROLL_PIN_MAX = 1e9
 //   2. estimateRowByContent：首次访问（无记忆）时按内容长度/迭代数/工具数粗估，
 //      比常数 120 的误差缩小数倍。
 const heightMemory = createRowHeightMemory()
+
+/**
+ * DEV/E2E 诊断：prepend 锚的**现场**（拍了哪个元素 / 补了几次 / 每次补多少）。
+ * 这个不变量（「用户看到的东西一动不动」）只有在真实浏览器 + 真实布局下才能验证，
+ * 出问题时必须一眼看到「锚拍到了什么」—— E2E 在失败时会把它打进 CI 日志
+ * （生产零开销：DEV 门控）。
+ */
+interface PrependAnchorDebug {
+  begun?: number
+  miss?: boolean
+  tag?: string
+  cls?: string
+  iterId?: string
+  msgId?: string
+  anchorTop?: number
+  settleCalls?: number
+  deltas?: number[]
+}
+function devAnchorDebug(patch: Partial<PrependAnchorDebug>): void {
+  if (!import.meta.env.DEV) return
+  const w = window as unknown as { __prependAnchor?: PrependAnchorDebug }
+  w.__prependAnchor = { ...(w.__prependAnchor ?? {}), ...patch }
+}
+function devAnchorDebugSettle(delta: number): void {
+  if (!import.meta.env.DEV) return
+  const w = window as unknown as { __prependAnchor?: PrependAnchorDebug }
+  const cur = w.__prependAnchor ?? {}
+  cur.settleCalls = (cur.settleCalls ?? 0) + 1
+  if (delta !== 0) cur.deltas = [...(cur.deltas ?? []), Math.round(delta)]
+  w.__prependAnchor = cur
+}
 /** 布局宽度追踪：宽度变化 ⇒ 行高记忆作废（高度不变性的前提）。 */
 const heightLayoutWidth = createWidthTracker()
 heightLayoutWidth.onChange(() => heightMemory.clear())
@@ -1333,24 +1364,17 @@ export const MessageList = memo(function MessageList({
     }
     if (!anchorEl) {
       prependAnchorRef.current = null
-      if (import.meta.env.DEV) {
-        const w = window as unknown as { __prependAnchor?: Record<string, unknown> }
-        w.__prependAnchor = { ...(w.__prependAnchor ?? {}), begun: 0, miss: true }
-      }
+      devAnchorDebug({ begun: 0, miss: true })
       return
     }
-    if (import.meta.env.DEV) {
-      const w = window as unknown as { __prependAnchor?: Record<string, unknown> }
-      w.__prependAnchor = {
-        ...(w.__prependAnchor ?? {}),
-        begun: 1,
-        tag: anchorEl.tagName,
-        cls: String(anchorEl.className || '').slice(0, 70),
-        iterId: anchorEl.getAttribute('data-iter-id') ?? undefined,
-        msgId: anchorEl.getAttribute('data-message-id') ?? undefined,
-        anchorTop: Math.round(anchorEl.getBoundingClientRect().top),
-      }
-    }
+    devAnchorDebug({
+      begun: 1,
+      tag: anchorEl.tagName,
+      cls: String(anchorEl.className || '').slice(0, 70),
+      iterId: anchorEl.getAttribute('data-iter-id') ?? undefined,
+      msgId: anchorEl.getAttribute('data-message-id') ?? undefined,
+      anchorTop: Math.round(anchorEl.getBoundingClientRect().top),
+    })
     prependAnchorRef.current = {
       el: anchorEl,
       top: anchorEl.getBoundingClientRect().top,
@@ -1381,13 +1405,7 @@ export const MessageList = memo(function MessageList({
       return
     }
     const delta = snap.el.getBoundingClientRect().top - snap.top
-    if (import.meta.env.DEV) {
-      const w = window as unknown as { __prependAnchor?: { settleCalls?: number; deltas?: number[] } }
-      const cur = w.__prependAnchor ?? {}
-      cur.settleCalls = (cur.settleCalls ?? 0) + 1
-      if (delta !== 0) cur.deltas = [...(cur.deltas ?? []), Math.round(delta)]
-      w.__prependAnchor = cur
-    }
+    devAnchorDebugSettle(delta)
     if (delta === 0) {
       // ⚠️ **只有确实动过一次之后**才允许按"收敛"销账：段响应可能延迟几百 ms，若在它还
       // 没落地时就判"连续两帧零偏移 = 已收敛"而解除锚，段一到照样跳（E2E 实测 417px）。
