@@ -429,3 +429,5 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - **GotoBottom 统一守卫**：所有 `GotoBottom()` 调用通过 `!m.userScrolledUp` 守卫。慢速路径（fullRebuild 后）不再无条件强制滚动。
 - **handleCancelAck 必须 `updateViewportContent()`**：cancel ack 更新缓存后必须立即推送到 viewport，否则 viewport 显示 stale streaming 内容直到下次 tick（用户感知为"历史消失再重现"）。
 - **renderTurnBody 去重**：同一 LLM response 文本从 `iter.Thinking`（ThinkingContent）和 `fallbackContent`（msg.content）两条路径渲染。精确匹配去重是正确做法——它们源自同一数据，必然相等。前缀匹配/百分比阈值是 hack
+
+- **⛔ 运行中必须有**独立**可点的「停止」按钮（P0，2026-10-12 用户报告「cancel 之后会话还显示 busy」）。** `MessageInput` 的单按钮语义 `hasContent || !busy ? submit : onCancel` 会在**输入框有文字时把停止吞掉**（点击＝发送/排队）⇒ 会话无法停止、页面一直 busy（全服日志实证：那段时间零 cancel 到达 ⇒ 前端根本没发出去）。契约：`busy && hasContent` 时**额外**渲染独立停止按钮（`data-testid="composer-cancel"`，只走 `onCancel`），保留「排队发送」；禁止用"单按钮猜意图"实现两种语义。守护：`web/src/components/agent/MessageInput.test.tsx`。排查同类问题时**先看全服日志有无 `Received /cancel request`**。

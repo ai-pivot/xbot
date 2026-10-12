@@ -406,3 +406,9 @@ openAutoFocus**。守护：`ModelSelector.test.tsx`（触屏 → activeElement �
   **真根因**：settle 原先**无条件**施加 `scrollTop += (锚当前 top − 拍摄时 top)`。快照一旦**陈旧**（挂载期列表还在滚到底部、或快照后视口被别的东西移动过），delta 是很大的**负数** ⇒ `scrollTop` 被夹到 **0** = 「跳到最上方」。「有概率」= 取决于预取是否恰好撞上这种时刻。
   **修法（自我校验 + DOM 真相，不是"再补一次"）**：纯函数 `isSanePrependDelta(delta, growth)`（`MessageList.tsx`，导出以便单测）—— 段恒在视口**上方**插入 ⇒ 位移必须 `> 0` 且 `≤ growth`（容差仅 0.5px 吸收亚像素）；越界 ⇒ **当场弃锚、绝不施加**。`growth` 必须取**锚所在虚拟行自身的高度增量**（⚠️ 用滚动容器的 `scrollHeight` 会被虚拟列表**总高估算的滞后**坑死：首帧 `growth=0 / delta=417` ⇒ 合法位移被误判越界 ⇒ 弃锚 ⇒ 旧用例回归红，E2E 当场抓到）。锚元素被卸载时回退到 `growth`（段在该行内部、视口上方插入 ⇒ 行高增量 == 下方内容被推下去的距离）。
   守护：`web/src/components/agent/prependAnchorSaneDelta.test.ts`（负位移/超额/零位移/负增长/亚像素 5 例）+ `web/e2e/region-window.spec.ts` 的两个锚用例（含「锚所在块被重新分组」；几何判据 `ΔscrollTop == ΔscrollHeight` 且 rAF 逐帧零漂移）。
+
+- **⛔ 运行中**必须**永远有一颗可点的「停止」—— composer 单按钮的 `hasContent ⇒ 发送/排队` 会把停止吞掉（用户 P0：2026-10-12「我 cancel 之后，会话还显示 busy」）。**
+  **取证（不是推断）**：全服日志实证 —— 会话 `chat_A642B1525E87` 在 `07:39:33` 之后再**没有任何 cancel 到达**（`Received /cancel request` / `Cancelled pending AskUser` / `AskUser cancel ignored` 一条都没有），而它的 turn 637 一路跑到 `08:03` 仍在发 LLM 请求 ⇒ **会话是真在跑，用户那次「取消」根本没发出去**。
+  **根因**：`MessageInput` 只有一颗按钮，`onClick={hasContent || !busy ? submit : onCancel}` —— **只要输入框里有文字，点击就是「发送/排队」**（aria-label 变成 `agent.queuedSend`），运行中的会话**没有任何可点的停止**。用户截图里输入框恰好有文字（「你查一下最新信息」）⇒ 他点的那一下被当成排队发送 ⇒ 取消永远发不出去 ⇒ busy 一直显示，且消息被丢进队列。
+  **修法（保留"排队发送"这个有效功能）**：`busy && hasContent` 时**额外**渲染一颗独立的破坏性「停止」按钮（`data-testid="composer-cancel"`，点击只走 `onCancel`）；`busy && !hasContent` 仍是原来的单颗停止（空输入时那颗按钮本来就是停止）；非 busy 不变。**不许**把「有内容也能停止」实现成"点主按钮时猜意图"—— 单一按钮承载两种语义就是这个 bug 的来源。
+  守护：`web/src/components/agent/MessageInput.test.tsx`「运行中的停止可达性」两条（busy+有内容 ⇒ 独立停止按钮存在且点击 → `onCancel` 一次 / `onSend` **零次**；busy+无内容 ⇒ 不额外渲染）。**排查同类问题先看全服日志有没有 `Received /cancel request`**：没有 = 前端没发出去（不是状态机/后端的问题）。
