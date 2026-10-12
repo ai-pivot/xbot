@@ -32,8 +32,6 @@ import { cn } from '@/lib/utils'
 import { setChatInsertHandler } from '@/lib/chatInputBridge'
 import { TodoPullOut } from './TodoPullOut'
 import { GoalBanner } from './GoalBanner'
-import { AnnotationChip, useAnnotationActions, useAnnotationDraft } from './MessageAnnotations'
-import { formatAnnotatedMessage } from '@/lib/messageAnnotations'
 import { CompletionPopup } from './CompletionPopup'
 import { SelectionToolbar } from './SelectionToolbar'
 import { useCompletion, type CompletionKeyEvent } from '@/hooks/useCompletion'
@@ -47,7 +45,7 @@ interface MessageInputProps {
   cancelling?: boolean
   /** Send a message, optionally with uploaded attachments.
    *  interrupt=true: ⚡ interject — deliver into the active turn (no new turn). */
-  onSend: (content: string, attachments?: Attachments, interrupt?: boolean, requestID?: string) => void | Promise<boolean>
+  onSend: (content: string, attachments?: Attachments, interrupt?: boolean) => void
   /** Cancel the running agent. */
   onCancel: () => void
   /** Rewind to the latest user message, matching TUI /rewind intent in Web. */
@@ -175,14 +173,6 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const ws = useWSConnection()
   const { cwd } = useCwd()
   const { mode: sendKeyMode } = useSendKeyMode()
-  const annotationActions = useAnnotationActions()
-  const annotationDraft = useAnnotationDraft()
-  const annotations = annotationDraft?.items ?? []
-  const [submitting, setSubmitting] = useState(false)
-  const submittingRef = useRef(false)
-  const contentRevisionRef = useRef(0)
-  const annotationAttemptRef = useRef<{ snapshot: string; requestID: string } | null>(null)
-  const mountedRef = useRef(true)
   const [goalMode, setGoalMode] = useState(false)
   const [addingGoal, setAddingGoal] = useState(false)
   const [goalDraft, setGoalDraft] = useState('')
@@ -353,7 +343,6 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       },
     },
     onUpdate: ({ editor }) => {
-      contentRevisionRef.current++
       setHasContent(!editor.isEmpty)
       // Markdown snapshot — used for the draft AND for the `!` bang-mode hint.
       const md = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? editor.getText()
@@ -393,26 +382,6 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   // Keep editor ref for unmount flush
   editorRef.current = editor
 
-  useEffect(() => {
-    mountedRef.current = true
-    return () => { mountedRef.current = false }
-  }, [])
-
-  useEffect(() => {
-    if (!editor || !annotationActions) return
-    annotationActions.registerComposer(() => {
-      const { from, to } = editor.state.selection
-      const revision = contentRevisionRef.current
-      return () => {
-        if (editor.isDestroyed) return
-        const chain = editor.chain()
-        if (revision === contentRevisionRef.current) chain.setTextSelection({ from, to })
-        chain.focus().run()
-      }
-    })
-    return () => annotationActions.registerComposer(null)
-  }, [editor, annotationActions])
-
   // Expose editor for test access
   useEffect(() => {
     __testEditor = editor
@@ -430,30 +399,21 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   }, [editor])
 
   // --- Submit ---
-  const submit = useCallback(async () => {
-    if (!editor || submittingRef.current) return
-    if (annotationDraft?.editing) {
-      toast.error(t('agent.annotations.finishEditing'))
-      return
-    }
+  const submit = useCallback(() => {
+    if (!editor) return
     const text = getText()
-    if (!text && !pending.some((p) => !p.uploading && p.uploadKey) && annotations.length === 0) return
-    if (annotations.length && (goalMode || interruptMode || text.startsWith('/') || isBangDraft(text))) {
-      toast.error(t('agent.annotations.normalSendOnly'))
-      return
-    }
-    const hasCompletedAttachments = pending.some((p) => !p.uploading && p.uploadKey)
-    if (text === '/rewind' && !hasCompletedAttachments && onRewindLatest) {
+    if (!text && pending.length === 0) return
+    if (text === '/rewind' && pending.length === 0 && onRewindLatest) {
       if (!busy) onRewindLatest()
       editor.commands.clearContent()
       return
     }
-    if (text === '/cancel' && !hasCompletedAttachments) {
+    if (text === '/cancel' && pending.length === 0) {
       if (busy) onCancel()
       editor.commands.clearContent()
       return
     }
-    if (text === '/tasks' && !hasCompletedAttachments && onOpenTasks) {
+    if (text === '/tasks' && pending.length === 0 && onOpenTasks) {
       onOpenTasks()
       editor.commands.clearContent()
       return
@@ -462,7 +422,6 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       toast.error(t('agent.busy'))
       return
     }
-    if (uploading && annotations.length > 0) return
     // 只发完成态的附件（uploading 中的 chip uploadKey 为空——乐观 chip 上传期间不可发送）
     const completed = pending.filter((p) => !p.uploading && p.uploadKey)
     const attachments: Attachments | undefined = completed.length
@@ -481,38 +440,13 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     }
     // When goalMode is on, send as /goal command (sets goal + starts working).
     // When interruptMode is on, pass interrupt=true (⚡ interject into active turn).
-    const content = goalMode ? `/goal ${text}` : formatAnnotatedMessage(text, annotations, t)
-    const sentRevision = contentRevisionRef.current
-    let annotationRequestID: string | undefined
-    if (annotations.length) {
-      const snapshot = JSON.stringify([content, attachments])
-      if (annotationAttemptRef.current?.snapshot !== snapshot) {
-        annotationAttemptRef.current = { snapshot, requestID: `req-${crypto.randomUUID()}` }
-      }
-      annotationRequestID = annotationAttemptRef.current.requestID
-    }
-    submittingRef.current = true
-    setSubmitting(true)
-    try {
-      const accepted = annotationRequestID
-        ? onSend(content, attachments, undefined, annotationRequestID)
-        : onSend(content, attachments, interruptMode || undefined)
-      // Synchronous callbacks remain supported; real sends return the ingress acceptance.
-      if (accepted && await accepted === false) return
-      annotationAttemptRef.current = null
-      annotationDraft?.removeSent(annotations)
-      if (!mountedRef.current) return
-      setGoalMode(false)
-      if (interruptMode) onInterruptModeChange?.(false)
-      if (!editor.isDestroyed && sentRevision === contentRevisionRef.current) editor.commands.clearContent()
-      setPending((current) => current.filter((p) => !completed.includes(p)))
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('agent.annotations.sendError'))
-    } finally {
-      submittingRef.current = false
-      if (mountedRef.current) setSubmitting(false)
-    }
-  }, [editor, getText, pending, onCancel, onRewindLatest, onOpenTasks, onSend, busy, goalMode, interruptMode, onInterruptModeChange, modelVision, t, annotations, annotationDraft, uploading])
+    const content = goalMode ? `/goal ${text}` : text
+    onSend(content, attachments, interruptMode || undefined)
+    setGoalMode(false)
+    if (interruptMode) onInterruptModeChange?.(false)
+    editor.commands.clearContent()
+    setPending([])
+  }, [editor, getText, pending, onCancel, onRewindLatest, onOpenTasks, onSend, busy, goalMode, interruptMode, onInterruptModeChange, modelVision, t])
 
   // Update submit ref (so handleKeyDown always calls the latest submit)
   submitRef.current = submit
@@ -683,8 +617,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     [onUpload, t, insertUploadedMedia],
   )
 
-  const canSend = hasContent || pending.some((p) => !p.uploading && p.uploadKey) || annotations.length > 0
-  const sendDisabled = submitting || (canSend ? uploading && annotations.length > 0 : busy ? cancelling : true)
+  const canSend = hasContent || pending.some((p) => !p.uploading && p.uploadKey)
 
   // Keep the ref current — editorProps closures capture it once (paste/drop).
   onPickFilesRef.current = onPickFiles
@@ -788,9 +721,8 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           </div>
         )}
         {/* Attachment chips (inside container, above editor) */}
-        {(pending.length > 0 || annotations.length > 0) && (
+        {pending.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
-            <AnnotationChip />
             {pending.map((p, i) => (              <span
                 key={`${p.uploadKey}-${i}`}
                 className="inline-flex items-center gap-1 rounded-md bg-bg-tertiary px-2 py-1 text-xs text-text-secondary"
@@ -819,7 +751,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 <button
                   type="button"
                   aria-label="remove"
-                  disabled={p.uploading || submitting}
+                  disabled={p.uploading}
                   onClick={() => setPending((prev) => prev.filter((_, idx) => idx !== i))}
                   className="text-text-muted hover:text-text-primary disabled:opacity-30"
                 >
@@ -863,7 +795,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               variant="ghost"
               size="icon-sm"
               aria-label={t('agent.attach')}
-              disabled={uploading || submitting}
+              disabled={uploading}
               onClick={() => fileRef.current?.click()}
               className={cn('size-9 rounded-md', uploading && 'opacity-40')}
             >
@@ -875,7 +807,6 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               variant="ghost"
               size="icon-sm"
               data-testid="goal-mode-toggle"
-              disabled={submitting}
               aria-label={t('agent.goalModeAria')}
               onClick={() => setGoalMode((v) => !v)}
               className={cn(
@@ -893,7 +824,6 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             {busy && onInterruptModeChange && (
               <button
                 type="button"
-                disabled={submitting}
                 aria-label={interruptMode ? t('agent.switchToQueueMode') : t('agent.switchToInterjectMode')}
                 onClick={() => onInterruptModeChange(!interruptMode)}
                 className={cn(
@@ -915,15 +845,38 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               no overflow — icon only. */}
           <div className="flex min-w-0 items-center gap-1">
             {trailingControls}
+            {/* ⛔ 运行中**必须永远有一颗可点的「停止」**（用户 2026-10-12 P0）。
+                原先只有一颗按钮、且 `onClick = hasContent || !busy ? submit : onCancel`
+                —— 输入框里只要有文字，点击就变成「发送/排队」，运行中的会话**无法停止**
+                （用户点了以为是取消，实际把消息排队了 ⇒ 服务端收不到 cancel ⇒ 会话一直
+                busy；全服日志实证那段时间零 cancel 到达）。这里在「运行中 + 有内容」时
+                补一颗独立的停止按钮，既保留「排队发送」能力、又让停止永远可达。 */}
+            {busy && hasContent && (
+              <Button
+                type="button"
+                size="icon-sm"
+                data-testid="composer-cancel"
+                aria-label={t('common.cancel')}
+                title={t('common.cancel')}
+                disabled={cancelling}
+                onClick={onCancel}
+                className={cn(
+                  'size-9 shrink-0 rounded-md bg-destructive text-destructive-foreground transition-all duration-150 hover:bg-destructive/90 active:scale-95',
+                  cancelling && 'opacity-40',
+                )}
+              >
+                {cancelling ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
+              </Button>
+            )}
             <Button
               type="button"
               size="icon-sm"
-              aria-label={canSend && busy ? (interruptMode ? t('agent.interjectSend') : t('agent.queuedSend')) : busy ? t('common.cancel') : goalMode ? t('agent.setAsGoal') : t('agent.send')}
-              disabled={sendDisabled}
-              onClick={canSend || !busy ? submit : onCancel}
+              aria-label={hasContent && busy ? (interruptMode ? t('agent.interjectSend') : t('agent.queuedSend')) : busy ? t('common.cancel') : goalMode ? t('agent.setAsGoal') : t('agent.send')}
+              disabled={hasContent ? !canSend : (busy ? cancelling : !canSend)}
+              onClick={hasContent || !busy ? submit : onCancel}
               className={cn(
                 'size-9 shrink-0 rounded-md transition-all duration-150 active:scale-95',
-                canSend || !busy
+                hasContent || !busy
                   ? goalMode
                     ? 'bg-accent text-accent-foreground shadow-[0_0_12px_rgba(var(--accent-rgb),0.4)]'
                     : interruptMode
@@ -932,12 +885,12 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                         ? 'bg-indigo-500/80 text-white shadow-[0_0_8px_rgba(99,102,241,0.3)] dark:bg-indigo-500'
                         : 'bg-accent text-accent-foreground'
                   : 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
-                sendDisabled && 'opacity-40',
+                (hasContent ? !canSend : (busy ? cancelling : !canSend)) && 'opacity-40',
               )}
             >
-              {(submitting || (cancelling && !canSend && busy)) ? (
+              {(cancelling && !hasContent && busy) ? (
                 <Loader2 className="size-4 animate-spin" />
-              ) : canSend || !busy ? (
+              ) : hasContent || !busy ? (
                 goalMode ? <Target className="size-4" /> : interruptMode ? <Zap className="size-4" /> : busy ? <Mail className="size-4" /> : <Send className="size-4" />
               ) : (
                 <Square className="size-4" />
