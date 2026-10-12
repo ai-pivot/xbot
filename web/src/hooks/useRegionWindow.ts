@@ -33,6 +33,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useRegionActions } from '@/components/agent/RegionActionsContext'
+import { usePrependAnchor } from '@/components/agent/PrependAnchorContext'
 
 /** 分隔条三态（与 RegionsDivider 的 data-state 一一对应）。 */
 export type RegionWindowStatus = 'idle' | 'loading' | 'error'
@@ -77,6 +78,11 @@ export function useRegionWindow({
   gapTop,
 }: RegionWindowOptions): RegionWindow {
   const actions = useRegionActions()
+  // prepend 锚通道（由 MessageList 提供）：段请求**发出之前**必须拍下「不许动的锚」——
+  // 否则新加载的历史会把下面整体顶下去（用户 2026-10-12 明确要求：视角一动不动）。
+  const prependAnchor = usePrependAnchor()
+  const beginAnchorRef = useRef(prependAnchor.beginPrependAnchor)
+  beginAnchorRef.current = prependAnchor.beginPrependAnchor
   const enabled = (regionsBefore ?? 0) > 0 && beforeIteration !== undefined && turnID > 0
 
   const [status, setStatus] = useState<RegionWindowStatus>('idle')
@@ -124,6 +130,9 @@ export function useRegionWindow({
     if (statusRef.current === 'loading') return
     const before = beforeIterRef.current
     if (before === undefined) return
+    // ⛔ 拍锚必须在**发请求之前**（MessageList 的 prepend 锚）：段落地后由列表在同一帧把
+    // 「用户看到的那一行」钉回原位 ⇒ 视角一动不动（用户 2026-10-12 硬要求）。
+    beginAnchorRef.current()
     statusRef.current = 'loading'
     setStatus('loading')
     void (async () => {

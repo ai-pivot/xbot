@@ -817,3 +817,93 @@ test.describe('区域窗口 — busy 恢复（active_progress 折叠窗口）', 
     expect(made[0].beforeIteration, 'before_iteration 必须是 live 窗口最早迭代号').toBe(WINDOW_FROM)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. prepend 锚：段插入后**用户看到的那一行一动不动**（2026-10-12 用户硬要求）
+//    「用户就是看到的东西要一动不动」—— 判据不是"看起来还行"，而是：
+//      ① 段插入**前/后**同一行的 boundingBox 完全相同；
+//      ② **逐帧采样**（rAF）零漂移 —— 任何一帧偏移 ≠ 0 即判红（禁"先画错一帧再补回来"）；
+//      ③ 新加载的段整段位于列表视口**上方**（只增加上方历史，绝不把内容推进视野）。
+//    段响应刻意**延迟 600ms** 落地，确保 r0 在插入之前拍到（否则断言自证）。
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('区域窗口 — prepend 锚（用户视角一动不动）', () => {
+  test('★ 段插入前/后同一行 bbox 完全相同 + 逐帧零漂移 + 新段整段在视口上方', async ({ page }) => {
+    await setupMock(page, {
+      messages: historyMessages([{ id: 2, turnID: 7, iters: windowIters(), regionsBefore: 3 }]),
+      regions: (req) => {
+        if (req.beforeIteration === WINDOW_FROM) return { iterations: segment(18, 20), regions_before: 1 }
+        if (req.beforeIteration === 18) return { iterations: segment(15, 17), regions_before: 0 }
+        return { iterations: [], regions_before: 0 }
+      },
+    })
+    // 后注册 = 先执行；延迟后再 fallback 给 setupMock 的应答 ⇒ 段一定在 r0 之后落地。
+    await page.route('**/api/regions', async (route) => {
+      await new Promise((r) => setTimeout(r, 600))
+      await route.fallback()
+    })
+    await openSession(page)
+
+    // 用户手势上滚到顶：哨兵进入预取带 ⇒ 触发段请求（此刻内容由**用户自己**定位）
+    await scrollGesture(page)
+    await page.waitForTimeout(150)
+
+    const anchor = page.locator('[data-iter-id="21"]')
+    await expect(anchor).toBeAttached()
+    const before = await anchor.boundingBox()
+    expect(before, '锚行必须可见（否则判据无效）').not.toBeNull()
+
+    // 逐帧采样锚行的 top（rAF），跨越段落地那一刻。
+    await page.evaluate(() => {
+      const w = window as unknown as { __anchorTops?: number[] }
+      w.__anchorTops = []
+      const sample = (): void => {
+        const el = document.querySelector('[data-iter-id="21"]')
+        if (el && w.__anchorTops!.length < 900) w.__anchorTops!.push(el.getBoundingClientRect().top)
+        requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    })
+
+    // 段落地：迭代数 10 → 13（18..30）
+    await expect.poll(() => iterTotal(page), { timeout: 10_000 }).toBe(WINDOW_TO - 18 + 1)
+    const after = await anchor.boundingBox()
+    // 现场取证（DEV 诊断）：锚拍了谁、补了几次、每次多少 —— 输出到 CI 日志
+    const anchorDbg = await page.evaluate(
+      () => (window as unknown as { __prependAnchor?: unknown }).__prependAnchor ?? null,
+    )
+    // 先把测量值打出来（断言前），否则失败时看不到数字
+    console.log(
+      `[锚][debug] ${JSON.stringify(anchorDbg)}\n[锚] before.y=${before!.y.toFixed(2)} after.y=${after ? after.y.toFixed(2) : 'null'} before.h=${before!.height.toFixed(2)} after.h=${after ? after.height.toFixed(2) : 'null'}`,
+    )
+
+    // ① 插入前后同一行 bbox 完全相同
+    expect(after, '锚行必须仍在').not.toBeNull()
+    expect(Math.abs(after!.y - before!.y), '段插入不得移动用户看到的那一行').toBeLessThanOrEqual(0.5)
+    expect(Math.abs(after!.height - before!.height), '锚行自身高度不得变化').toBeLessThanOrEqual(0.5)
+
+    // ② 逐帧零漂移
+    const tops = await page.evaluate(() => (window as unknown as { __anchorTops?: number[] }).__anchorTops ?? [])
+    expect(tops.length, '必须采到足够多帧').toBeGreaterThan(10)
+    const drift = Math.max(...tops.map((t) => Math.abs(t - tops[0])))
+    expect(drift, '逐帧漂移必须为 0（用户一帧都不能看到位移）').toBeLessThanOrEqual(0.5)
+
+    // ③ 新段整段在**可见区**上方（参考系必须是滚动容器的可见顶边；内容包装本身可能
+    //    延伸到视口上方，拿它的 bbox 当顶边会把判定算错。）
+    const viewTop = await page.evaluate(() => {
+      const c = document.querySelector('[data-message-list-content]') as HTMLElement | null
+      let el: HTMLElement | null = c?.parentElement ?? null
+      while (el && getComputedStyle(el).overflowY !== 'auto' && getComputedStyle(el).overflowY !== 'scroll') {
+        el = el.parentElement
+      }
+      return el ? el.getBoundingClientRect().top : null
+    })
+    expect(viewTop, '必须能定位滚动容器').not.toBeNull()
+    const newSeg = await page.locator('[data-iter-id="18"]').boundingBox()
+    expect(newSeg, '新段必须已插入').not.toBeNull()
+    expect(newSeg!.y + newSeg!.height, '新段必须整段位于可见区上方').toBeLessThanOrEqual(viewTop! + 1)
+
+    console.log(
+      `[锚] before.y=${before!.y.toFixed(2)} after.y=${after!.y.toFixed(2)} frames=${tops.length} drift=${drift.toFixed(3)}`,
+    )
+  })
+})

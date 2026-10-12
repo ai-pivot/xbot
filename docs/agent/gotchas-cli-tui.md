@@ -218,3 +218,8 @@
   有 `agentChatID` 的持久化子代理 tab 不受影响（chatID = 自己的 tenant ID，走正常分页）。
 - **守护**：`web/src/hooks/useChatMessages.test.ts` 的「子代理面板 loadMore 绝不触发
   fetchHistory」用例（删掉本修复必红）。
+
+- **⛔ CLI 未知 flag 必须【报错退出】，绝不静默忽略后启动会话（用户报告，2026-10-12）。**
+  现象：`xbot-cli --version` **启动 xbot**（打印 banner 后照常拉起 TUI / 恢复上次会话），而不是打印版本。根因：`cmd/xbot-cli/main.go` 的 flag 循环 `default` 只把**非 `-` 前缀**参数当 prompt，其余**一律静默吞掉** ⇒ 没有对应 `case` 的 flag（含拼错的）被"当没看见"，随后照常走默认路径。
+  契约（三件）：① `--version` / `-v` / `-V` ⇒ `fmt.Println(version.Version)` 后 **return**（stdout 恰好一行版本号，绝不进入会话）；② `--help` / `-h` ⇒ 打印用法后 return；③ **任何 `-` 前缀的未知 flag ⇒ stderr `unknown flag %q` + 打印用法 + `os.Exit(2)`**。另：机器可读调用（`setup` / `--version` / `--help`）**不得打印 banner**（`xbot CLI <ver>`），否则脚本拿不到干净载荷。
+  守护：`cmd/xbot-cli/flags_test.go` —— `main()` 无法单测 ⇒ **构建真实二进制并执行**（超时即判红，正好抓住"起了会话"）：`--version/-v/-V` 输出恰为版本号且 exit 0；`--help` 前缀是 `Usage: xbot-cli`；`--versoin` 必须 exit 2 且含 `unknown flag`。
