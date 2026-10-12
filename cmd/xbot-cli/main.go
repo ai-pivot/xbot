@@ -951,9 +951,17 @@ func main() {
 	xbotHome := config.XbotHome()
 	clipanic.EnableFileLogging(filepath.Join(xbotHome, "logs", "cli-panic.log"))
 	defer clipanic.Recover("main.main", nil, true)
-	// Version banner: suppressed for the "setup" subcommand (machine-parseable
-	// output for install scripts / CI assertions).
-	if len(os.Args) <= 1 || os.Args[1] != "setup" {
+	// Version banner: suppressed for **machine-parseable** invocations —— `setup`
+	//（install 脚本 / CI 断言）以及 `--version` / `--help`（stdout 必须**恰好**是
+	// 请求的载荷，混入 banner 会让 `xbot-cli --version` 无法被脚本解析）。
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "setup", "--version", "-v", "-V", "--help", "-h":
+			// suppressed
+		default:
+			fmt.Printf("xbot CLI %s\n", version.Version)
+		}
+	} else {
 		fmt.Printf("xbot CLI %s\n", version.Version)
 	}
 
@@ -1059,6 +1067,12 @@ func main() {
 	)
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
+		case "--version", "-v", "-V":
+			// ⛔ 只打印版本号并**立即退出**：绝不进入 TUI / 恢复上次会话。
+			//（2026-10-12 用户报告：`xbot-cli --version` 会启动 xbot —— 根因是这里
+			// 没有 case，落到 default 被静默忽略，随后照常走默认路径拉起会话。）
+			fmt.Println(version.Version)
+			return
 		case "--resume":
 			// 保留兼容性，行为与默认相同
 		case "--new", "--new-session":
@@ -1164,9 +1178,16 @@ func main() {
 				i++
 			}
 		default:
-			if !strings.HasPrefix(os.Args[i], "-") {
-				prompt = os.Args[i]
+			if strings.HasPrefix(os.Args[i], "-") {
+				// ⛔ 未知 flag 必须**立刻报错退出**，绝不静默吞掉后照常起会话
+				//（2026-10-12 用户报告：`xbot-cli --version` 会启动 xbot —— 根因就是
+				// 这里的 default 把未知 flag 当成"没看见"，随后走默认路径拉起 TUI /
+				// 恢复上次会话）。拼错的 flag 同理：宁可报错，也不要静默做错事。
+				fmt.Fprintf(os.Stderr, "xbot-cli: unknown flag %q\n\n", os.Args[i])
+				printHelp()
+				os.Exit(2)
 			}
+			prompt = os.Args[i]
 		}
 	}
 	if prompt == "" && !isatty.IsTerminal(os.Stdin.Fd()) {
