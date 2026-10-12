@@ -510,3 +510,37 @@ The context bar (top border of input box) replaces the default lipgloss border w
 **排查手法**：这类失败**全静默**（`Send` 的 `matched==false`、`sseEventShouldWrite` 的 consumed、
 `publishSSEFallbacks` 的 `cleared` 都不打日志）。复现时先对齐 **SSE connect/disconnect 日志与提问时间戳**
 （判断"发布时有无订阅者"），再看前端 key（`[ASKDEBUG]` 是 DEV-only，线上不足为凭）。
+
+## ⛔ Web 附件引用 URL 只能用【运维显式声明的对外地址】——绝不允许绑定地址（2026-10-12 用户 P0）
+
+**现象（用户原话）**：「文件和图片那里写的链接全部是错的，根本下载不了」。用户在会话里拿到的每个非图片附件引用都长这样：
+
+```
+<file name="xxx.md" url="http://127.0.0.1:16000/api/files/download?key=uploads%2F4%2Fxxxx.md" size="22455" />
+```
+
+**取证（不是推断）**：本机直连该 URL → `HTTP 401 {"error":{"code":"unauthorized"}}`；`127.0.0.1` 对**任何**外部消费者（用户的浏览器、别的机器、agent 产物里的拷贝）都只会解析到**它自己**，永远不可达。
+
+**根因**：`channel/web/upload_ref.go` 的 `serverBaseURL()` 曾按 `PublicURL → 监听地址 → 配置 Host/Port` 顺序回落，
+而 wildcard 绑定（`""`/`0.0.0.0`/`::`）经 `dialableHost()` 被映射成 **`127.0.0.1`** ⇒ 未声明 `web.public_url` 的部署里，
+每一条 `<file>` 引用都被烙上 loopback 绝对 URL。这条字符串会**持久化**（消息正文、agent 写出的报告/产物），
+而 `/api/files/download` 又要求会话 cookie ⇒ 既不是给人用的链接，也不是给工具用的链接。旧的 `upload_ref_test.go`
+甚至把这个行为写成了契约（三个 bind 都断言 `http://127.0.0.1:<port>`），所以修复必须**同时改测试**。
+
+**契约（唯一权威实现 = `channel/web/upload_ref.go`，业务代码禁止自己拼）**：
+
+1. 云存储（qiniu/s3）：用 provider 的签名绝对 URL（不变）。
+2. 本地静态：**仅当** `web.public_url` 是显式声明的绝对 http(s) 地址时，才用 `PublicURL + /api/files/download?key=…`；
+   `ws://`/`wss://` 等非 HTTP 形态跳过（该字段同时供 runner 连接命令使用）。
+3. 其它情况（含未声明 `web.public_url`）**一律**退化为同源相对引用 `/api/files/download?key=…`：
+   浏览器按当前 origin 解析（带会话 cookie 可下载），服务端 resolver（vision/附件路径）本地读盘解析。
+4. **⛔ 绑定地址（监听地址 / 配置 Host+Port）永远不作为引用来源** —— 它必然是 loopback / 通配 / 内网地址，
+   对消费者不可用，且会被固化进历史与产物。
+
+**部署侧**：想让链接**可复制、可外发**（粘贴到浏览器地址栏也能下载），必须在配置里显式声明
+`web.public_url`（如 `https://xbot.pivotlang.tech`）——改这个字段需要重启生效。
+
+守护：`channel/web/upload_ref_test.go`
+（`TestExpandUploadKeys_UndeclaredBindNeverLeaksIntoRef`：`127.0.0.1` / `0.0.0.0` / `[::]` / `[::1]` / `10.0.0.67` 五种绑定
+都必须是相对引用且**不含**绑定串；`TestExpandUploadKeys_ConfiguredBindHostAndPortNeverLeakIntoRef`；
+`TestExpandUploadKeys_NonHTTPSPublicURLSkipped`；`TestExpandUploadKeys_LocalProviderAbsoluteRefFromPublicURL` 仍断言绝对引用只在显式声明时出现）。

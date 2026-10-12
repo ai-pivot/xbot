@@ -8,9 +8,7 @@
 package web
 
 import (
-	"net"
 	"net/url"
-	"strconv"
 	"strings"
 
 	log "xbot/logger"
@@ -23,12 +21,18 @@ import (
 //
 //   - Cloud OSS (qiniu / s3): the provider's signed absolute URL is the whole
 //     point — the object lives in the cloud, DownloadFile fetches it directly.
-//   - Local static storage (the default): the provider cannot sign anything,
-//     so the reference is built from THIS server's own base URL
-//     (serverBaseURL) + the same-origin /api/files/download path.
-//   - When no absolute base can be determined — or a cloud signer fails — the
-//     reference degrades to the stable RELATIVE /api/files/download?key=… URL
-//     (never expires; served same-origin).
+//   - Local static storage (the default): the provider cannot sign anything, so
+//     the reference is built from the OPERATOR-DECLARED public URL
+//     (WebChannelConfig.PublicURL) + the same-origin /api/files/download path.
+//   - When no public URL is declared — or a cloud signer fails — the reference
+//     degrades to the stable RELATIVE /api/files/download?key=… URL (never
+//     expires; served same-origin; resolved locally by the server-side
+//     resolver). ⛔ It must NEVER fall back to this server's bind address: an
+//     undeclared bind is a loopback/wildcard/internal address no consumer can
+//     use, and this string is persisted and shown to users (P0 user report
+//     2026-10-12: every attachment link read
+//     "http://127.0.0.1:16000/api/files/download?key=…" — "根本下载不了", and the
+//     same dead URL got copied into the reports agents produced).
 //
 // It NEVER fails and NEVER returns error text: the internal "no signed URL"
 // failure must not leak into user-visible content (P0 user report 2026-09-20:
@@ -55,23 +59,25 @@ func (wc *WebChannel) uploadDownloadRef(key string) string {
 	return relative
 }
 
-// serverBaseURL returns this server's own base URL (scheme://host[:port]) used
-// to build absolute references for locally-stored files. Resolution order:
+// serverBaseURL returns this server's operator-declared base URL
+// (scheme://host[:port]) used to build absolute references for locally-stored
+// files, or "" when none is declared.
 //
 //  1. WebChannelConfig.PublicURL — the operator-declared external address of
 //     this deployment (NAT / reverse proxy / port mapping). Only absolute
 //     http(s) URLs are usable as an HTTP base; other schemes (ws:// / wss:// —
 //     the same field also feeds runner connect commands) are skipped rather
 //     than guessed into http(s).
-//  2. The address the HTTP server is actually listening on (set by Start;
-//     reflects the real port even when the configured Port was 0). Wildcard
-//     binds (0.0.0.0 / ::) are not dialable hosts — they map to loopback.
-//  3. The configured Host/Port (when no listener exists yet), same mapping.
-//  4. "" — undeterminable. Callers MUST degrade to the relative reference
-//     (uploadDownloadRef does) rather than fail.
+//  2. "" — undeterminable. Callers MUST degrade to the relative reference
+//     (uploadDownloadRef does).
 //
-// The app is assumed to be served at the deployment root (every other absolute
-// URL in the app — static assets, /ws, /api/… — bakes in that assumption too).
+// ⛔ The address the HTTP server happens to be bound to is deliberately NOT a
+// source. A wildcard bind maps to loopback and a direct bind is typically a
+// private address: both are unreachable for the browser that renders the
+// reference (and for any other machine), while the download endpoint requires a
+// session cookie — so an undeclared bind address is never a usable download
+// link, yet it PERSISTS (message content, agent-written reports). Emitting it
+// is the P0 defect this function must not reintroduce (2026-10-12).
 func (wc *WebChannel) serverBaseURL() string {
 	if pu := strings.TrimSpace(wc.config.PublicURL); pu != "" {
 		if u, err := url.Parse(pu); err == nil &&
@@ -79,24 +85,5 @@ func (wc *WebChannel) serverBaseURL() string {
 			return u.Scheme + "://" + u.Host
 		}
 	}
-	if wc.listener != nil {
-		if host, port, err := net.SplitHostPort(wc.listener.Addr().String()); err == nil && port != "" {
-			return "http://" + net.JoinHostPort(dialableHost(host), port)
-		}
-	}
-	if wc.config.Port > 0 {
-		return "http://" + net.JoinHostPort(dialableHost(wc.config.Host), strconv.Itoa(wc.config.Port))
-	}
 	return ""
-}
-
-// dialableHost maps a bind host to one that is valid inside a URL and reachable
-// from this machine: wildcard / unspecified binds ("" / 0.0.0.0 / ::) are not
-// dialable addresses — loopback is.
-func dialableHost(host string) string {
-	switch strings.TrimSpace(host) {
-	case "", "0.0.0.0", "::", "[::]":
-		return "127.0.0.1"
-	}
-	return host
 }
