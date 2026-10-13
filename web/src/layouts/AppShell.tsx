@@ -29,6 +29,23 @@ import { useTabManager } from '@/hooks/useTabManager'
 import { useKeyboardInset } from '@/hooks/useKeyboardInset'
 
 import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
+import {
+  flushPluginViewRequest,
+  onPluginViewRequest,
+  parsePluginViewQuery,
+  requestOpenPluginView,
+} from '@/plugin-runtime/pluginViewRequest'
+
+/**
+ * `window.__xbotOpenPluginView` 的形状 —— 宿主（鸿蒙原生壳 / 外部自动化）用它打开
+ * **任意**插件视图（零插件特判；见 pluginViewRequest.ts）。
+ */
+type PluginViewHook = (
+  viewId: string,
+  key?: string,
+  params?: Record<string, unknown>,
+  title?: string,
+) => void
 import { pushMobileWorkView } from '@/workspace/mobileWorkView'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useWSConnection } from '@/hooks/useWSConnection'
@@ -203,7 +220,29 @@ export function AppShell() {
         data: data as never,
       })
     })
-    return () => registerEditorTabOpener(null)
+    // ── 宿主可触发的「打开任意插件视图」：**零插件特判** ─────────────────────────
+    // 为什么在这里：插件 view 没有静态 URL（只能经 ctx.ui.openViewTab），而原生壳/外部宿主
+    // 不在 React 树内 ⇒ 以前点插件只能落到通用根页。这两个入口把"打开任意插件视图"变成
+    // 宿主可调用的一件事，数据全部来自插件自己声明的 view 贡献点 ⇒ **以后任何新插件**
+    // （内置/第三方）都自动可打开，宿主零改动。
+    //   ① URL 深链：`?xbot_view=<viewId>[&xbot_view_key=…][&xbot_view_params=<json>][&xbot_view_title=…]`
+    //   ② JS 钩子：`window.__xbotOpenPluginView(viewId, key, params, title)`
+    const boot = parsePluginViewQuery(window.location.search)
+    if (boot) requestOpenPluginView(boot)
+    const offReq = onPluginViewRequest(() => {
+      flushPluginViewRequest()
+    })
+    flushPluginViewRequest()
+    const w = window as unknown as { __xbotOpenPluginView?: PluginViewHook }
+    w.__xbotOpenPluginView = (viewId, key, params, title) => {
+      requestOpenPluginView({ viewId, title: title ?? viewId, key, params })
+      flushPluginViewRequest()
+    }
+    return () => {
+      offReq()
+      delete w.__xbotOpenPluginView
+      registerEditorTabOpener(null)
+    }
   }, [tabManager, isMobile])
 
   // 布局 v4：openPanel 展开对应 core.* 面板（停靠/浮动归 PanelLayout 持有，
