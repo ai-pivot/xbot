@@ -59,6 +59,8 @@ import { useTheme } from '@/hooks/useTheme'
 import { useWSConnection } from '@/providers/WSProvider'
 import { useTerminal } from '@/hooks/useTerminal'
 import { closeMobileWorkView, pushMobileWorkView, useMobileWorkView, type MobileWorkView } from '@/workspace/mobileWorkView'
+// 宿主深链：`?xbot_panel=<id>` ⇒ 直达内置面板（原生壳「终端/文件/任务」入口用；纯解析在 panelRequest）
+import { mobileViewForPanel, parsePanelQuery } from '@/workspace/panelRequest'
 import { cn } from '@/lib/utils'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import type { PanelProps } from '@/workspace/panels/types'
@@ -145,6 +147,17 @@ export function MobileAppShell() {
   useEffect(() => {
     if (workView) setView('work')
   }, [workView])
+
+  // 宿主深链：`?xbot_panel=<id>` ⇒ 直接落该内置面板（原生壳的「终端/文件/任务」入口用）。
+  // ⛔ 白名单解析在 `workspace/panelRequest.ts`（未知 id ⇒ null ⇒ 保持默认视图，不渲染空壳）。
+  useEffect(() => {
+    const panel = parsePanelQuery(window.location.search)
+    if (!panel) return
+    const nextView = mobileViewForPanel(panel)
+    if (!nextView) return
+    setActivePanel(panel)
+    setView(nextView)
+  }, [])
 
   // 手机端无 Dockview——FileExplorer/FileSearch 等的 openTab(file/plugin)
   // 路由到全屏工作视图（其余类型维持原行为，如 SubAgent 专用机制）。

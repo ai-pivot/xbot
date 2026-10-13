@@ -35,6 +35,8 @@ import {
   parsePluginViewQuery,
   requestOpenPluginView,
 } from '@/plugin-runtime/pluginViewRequest'
+// 宿主深链：`?xbot_panel=<id>` ⇒ 直达内置面板（原生壳「终端/文件/任务」入口用；纯解析在 panelRequest）
+import { parsePanelQuery } from '@/workspace/panelRequest'
 
 /**
  * `window.__xbotOpenPluginView` 的形状 —— 宿主（鸿蒙原生壳 / 外部自动化）用它打开
@@ -254,6 +256,16 @@ export function AppShell() {
   // ctxValue from changing on every AppShell render (e.g. sidebar toggle),
   // which would force panel.update() on ALL dockview panels.
   const rightSidebarControl = useMemo(() => ({ openPanel }), [openPanel])
+  // 宿主深链：`?xbot_panel=<id>` ⇒ 桌面端展开对应 `core.*` 面板（原生壳「终端/文件/任务」入口用）。
+  // ⛔ 子组件（PanelLayout）的 effect 先于父组件跑 ⇒ 此处派发时 `xbot:panel-request` 监听已就位。
+  // 移动端不在这里处理（`MobileAppShell` 自己读同一个参数落 `detail` 视图）。
+  useEffect(() => {
+    if (isMobile) return
+    const panel = parsePanelQuery(window.location.search)
+    if (panel) {
+      openPanel(panel)
+    }
+  }, [isMobile, openPanel])
 
   // ── header 状态条数据 ──
 
