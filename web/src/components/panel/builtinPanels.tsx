@@ -47,6 +47,7 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+  const [newWorkPath, setNewWorkPath] = useState<string | undefined>()
   /** 搜索输入框 ref：开关按钮点击手势内同步 focus（手机软键盘要手势同任务）。 */
   const searchInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -142,7 +143,7 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
       >
         <button
           type="button"
-          onClick={() => setNewOpen(true)}
+          onClick={() => { setNewWorkPath(undefined); setNewOpen(true) }}
           title={t('session.newSession')}
           className={cn(
             'flex min-w-10 items-center justify-center overflow-hidden rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-[flex-grow] duration-200 ease-out hover:opacity-90',
@@ -187,6 +188,7 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
           </div>
         ) : (
           <SessionList
+            onNewSession={(path) => { setNewWorkPath(path); setNewOpen(true) }}
             sessions={filteredSessions}
             groups={filteredGroups}
             sortedSessions={filteredSorted}
@@ -226,6 +228,7 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
         )}
       </div>
       <NewSessionDialog
+        initialWorkPath={newWorkPath}
         open={newOpen}
         onOpenChange={setNewOpen}
         onCreate={async (label, workPath) => {

@@ -383,3 +383,30 @@ describe('project group collapse', () => {
     expect(screen.getByTitle('/repo').closest('button')).toHaveAttribute('aria-expanded', 'false')
   })
 })
+
+describe('project creation entry', () => {
+  it('passes the full path without toggling, including collapsed groups, and only appears for projects', () => {
+    const repo = session({ chatID: 'repo', channel: 'web', label: 'Project chat' })
+    const onNewSession = vi.fn()
+    const onToggleGroup = vi.fn()
+    const props = {
+      sessions: [repo], sortedSessions: [repo], groups: [{ key: '/repos/my-project', sessions: [repo] }],
+      category: 'path' as const, collapsedGroups: new Set(['path:/repos/my-project']),
+      onToggleGroup, onNewSession, starredIds: [], unreadIds: [], activeSession: null,
+      search: '', subAgents: [], onSelect: vi.fn(), onToggleStar: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(),
+    }
+    const { rerender } = renderWithProviders(<SessionList {...props} />)
+    const groupHeader = screen.getByTitle('/repos/my-project')
+    expect(groupHeader.closest('[class*=scroll-area-viewport]')).toHaveClass('[&_[data-slot=scroll-area-viewport]>div]:block!')
+    fireEvent.click(screen.getByRole('button', { name: /— \/repos\/my-project/ }))
+    expect(onNewSession).toHaveBeenCalledWith('/repos/my-project')
+    expect(onToggleGroup).not.toHaveBeenCalled()
+    expect(screen.getByTitle('/repos/my-project').closest('button')).toHaveAttribute('aria-expanded', 'false')
+    rerender(<SessionList {...props} groups={[{ key: '__unset__', sessions: [repo] }]} />)
+    expect(screen.queryByRole('button', { name: /— / })).not.toBeInTheDocument()
+    for (const category of ['time', 'status'] as const) {
+      rerender(<SessionList {...props} category={category} groups={[{ key: category === 'time' ? 'today' : 'idle', sessions: [repo] }]} />)
+      expect(screen.queryByRole('button', { name: /— / })).not.toBeInTheDocument()
+    }
+  })
+})

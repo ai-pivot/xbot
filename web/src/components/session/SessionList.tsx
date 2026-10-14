@@ -55,6 +55,7 @@ interface SessionListProps {
   search: string
   /** Deprecated compatibility prop. The canonical source is sessions[].children. */
   subAgents: SessionInfo[]
+  onNewSession?: (workPath: string) => void
   onSelect: (id: string, channel: string) => void
   onToggleStar: (id: string) => void
   onRename: (id: string, channel: string, label: string) => Promise<boolean>
@@ -88,6 +89,7 @@ export function SessionList({
   unreadIds,
   activeSession,
   search,
+  onNewSession,
   onSelect,
   onToggleStar,
   onRename,
@@ -341,7 +343,8 @@ export function SessionList({
 
   return (
     <div ref={scrollAreaRef} className={`flex h-full flex-col${isScrolling ? ' is-scrolling' : ''}`}>
-      <ScrollArea className="min-h-0 flex-1">
+      {/* Radix's intrinsic-width table wrapper must not widen the session panel. */}
+      <ScrollArea className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
         {showEmpty ? (
           <SessionEmptyState emptyList={emptyList} />
         ) : searching ? (
@@ -393,6 +396,7 @@ export function SessionList({
                 sessions={g.sessions}
                 open={!collapsedGroups.has(ck)}
                 onToggle={() => onToggleGroup(ck)}
+                onNewSession={onNewSession}
                 starredIds={starredIds}
                 unreadIds={unreadIds}
                 activeSession={activeSession}

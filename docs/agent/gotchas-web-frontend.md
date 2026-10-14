@@ -229,7 +229,9 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 
 ## 会话列表默认按项目组织（分类切换器 + 折叠状态；两端都必须有）
 
-- **默认分类 = 项目（= 工作目录）**：`DEFAULT_SESSION_CATEGORY = 'path'`；`SESSION_CATEGORIES`（`web/src/lib/session-grouping.ts`）是切换器顺序的**唯一来源**——禁止在组件里再列一遍分类数组（历史：`SessionSidebar` 里有一份硬编码 `CATEGORIES`，与默认值/顺序各自漂移）。组键 = `workDir`（`pathBucket`）；组头 = **项目名 + 会话数**（用户要求：不加额外按钮），完整路径留在 `title` tooltip 上消歧同名目录；无工作目录的会话落 `__unset__`。
+- **默认分类 = 项目（= 工作目录）**：`DEFAULT_SESSION_CATEGORY = 'path'`；`SESSION_CATEGORIES`（`web/src/lib/session-grouping.ts`）是切换器顺序的**唯一来源**——禁止在组件里再列一遍分类数组（历史：`SessionSidebar` 里有一份硬编码 `CATEGORIES`，与默认值/顺序各自漂移）。组键 = `workDir`（`pathBucket`）；组头 = **项目名 + 会话数 + 右侧新建「+」**（2026-10-14 新增项目创建入口），完整路径留在 `title` tooltip 上消歧同名目录；无工作目录的会话落 `__unset__`。
+- **会话列表禁止内容撑宽侧栏**：Radix ScrollArea 的 viewport 内层默认 `display: table; min-width: 100%` 会按组头/行内容的 intrinsic width 扩宽（220px 侧栏实测 scrollWidth=303px，「+」被挤出视野）。`SessionList` 局部将 viewport 直接子 div 改为 `display: block !important`，配合 `min-w-0` 和标题截断；不要修改用户面板宽度，也不要全局禁用其他滚动区的水平滚动。验收：viewport `scrollWidth === clientWidth`，项目「+」右边界在 viewport 内。
+- **项目新建入口**：`SessionGroup` 的「+」与折叠按钮是兄弟元素，仅 `path` 且非 `__unset__` 显示；经 `SessionList.onNewSession` 传完整组键（不是 basename）给桌面 `CoreSessionsPanel` / 手机 `SessionSidebar`。两端用 `NewSessionDialog.initialWorkPath` 预选目录；顶部新建必须清除此预选，恢复最近目录默认值。折叠项目仍可新建，点击「+」不改变折叠状态。守护：`SessionList.test.tsx` + `NewSessionDialog.test.tsx`。
 - **遗留 `time` 一次性迁移**：旧默认是 `time`，`loadCategory()` 见到 `time` 且无标记（`xbot:session-category-migrated`）→ 改成 `path` **并写回 server**（否则下次 app-load 的 server→localStorage 同步会把 `time` 复活）；`persistCategory()` 写标记 ⇒ 用户**显式**选的 `time` 永不被迁移（否则切换器对时间分类失效）。
 - **折叠状态必须放 store，`SessionGroup` 受控**（`open`/`onToggle`）：键 = `collapseKey(category, groupKey)` —— **必须含 category**（time 桶的 `today` 与同名目录会撞车），持久化 `xbot:session-collapsed-groups`（**纯前端**，与面板高度/宽度同一约定，不同步 server）。「全部折叠/展开」= `store.setGroupsCollapsed(keys, boolean)`（判定 `every(collapsed)`）。
 - **⛔ 分类切换器 + 全部折叠必须在桌面 `core.sessions` 面板里渲染**（`SessionViewBar`，桌面面板与手机抽屉共用）。历史事故：切换器只存在于 `SessionSidebar`（手机抽屉），桌面换成 `CoreSessionsPanel` 后再也切不到分类 —— 与「渠道下拉只在手机里」是同一类遗漏。**新增列表级控件一律放 `SessionViewBar`**。

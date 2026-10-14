@@ -4,7 +4,7 @@
  * Renders the translated group header (time / status) and its
  * sorted SessionItem children. Collapsible so long lists stay scannable.
  */
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
@@ -22,6 +22,7 @@ interface SessionGroupProps {
    *  and is shared by every panel instance（「全部折叠/展开」也要能改它）。 */
   open: boolean
   onToggle: () => void
+  onNewSession?: (workPath: string) => void
   starredIds: string[]
   unreadIds: string[]
   activeSession: SessionSelector | null
@@ -46,6 +47,7 @@ export function SessionGroup({
   sessions,
   open,
   onToggle,
+  onNewSession,
   starredIds,
   unreadIds,
   activeSession,
@@ -67,26 +69,37 @@ export function SessionGroup({
   const unreadSet = new Set(unreadIds)
 
   return (
-    <section className="flex flex-col">
-      {/* Group header — always shown for time/status/path categories.
-          Content is 项目名 + 会话数 only（用户要求：组头不加额外按钮）；完整路径留在 title
-          tooltip 上，用来消歧同名目录。 */}
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-spring hover:bg-bg-tertiary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50"
-        style={{ color: 'var(--text-secondary)' }}
-      >
-        <ChevronRight className={cn('size-3.5 transition-transform duration-200', open && 'rotate-90')} />
-        <span title={category === 'path' && groupKey !== '__unset__' ? groupKey : undefined}>{title}</span>
-        <span
-          className="rounded-full bg-bg-tertiary/70 px-1.5 py-px font-medium tabular-nums"
-          style={{ color: 'var(--text-muted)' }}
+    <section className="flex min-w-0 flex-col">
+      {/* Independent sibling buttons keep creation separate from collapse. */}
+      <div className="flex min-w-0 items-center gap-1">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-spring hover:bg-bg-tertiary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50"
+          style={{ color: 'var(--text-secondary)' }}
         >
-          {sessions.length}
-        </span>
-      </button>
+          <ChevronRight className={cn('size-3.5 shrink-0 transition-transform duration-200', open && 'rotate-90')} />
+          <span className="truncate" title={category === 'path' && groupKey !== '__unset__' ? groupKey : undefined}>{title}</span>
+          <span
+            className="shrink-0 rounded-full bg-bg-tertiary/70 px-1.5 py-px font-medium tabular-nums"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            {sessions.length}
+          </span>
+        </button>
+        {category === 'path' && groupKey !== '__unset__' && onNewSession && (
+          <button
+            type="button"
+            aria-label={`${t('session.newSession')} — ${groupKey}`}
+            title={`${t('session.newSession')} — ${groupKey}`}
+            onClick={() => onNewSession(groupKey)}
+            className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-spring hover:bg-bg-tertiary/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50"
+          >
+            <Plus className="size-3.5" />
+          </button>
+        )}
+      </div>
       <AnimatedCollapse open={open} lazy>
         <div className="flex flex-col gap-0.5">
           {sessions.map((s) => (

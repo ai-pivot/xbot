@@ -27,27 +27,28 @@ import { loadRecentWorkDirs, removeRecentWorkDir } from '@/lib/recent-workdirs'
 
 interface NewSessionDialogProps {
   open: boolean
+  initialWorkPath?: string
   onOpenChange: (open: boolean) => void
   onCreate: (label?: string, workPath?: string) => Promise<string | null>
 }
 
-export function NewSessionDialog({ open, onOpenChange, onCreate }: NewSessionDialogProps) {
+export function NewSessionDialog({ open, initialWorkPath, onOpenChange, onCreate }: NewSessionDialogProps) {
   const { t } = useI18n()
   const [label, setLabel] = useState('')
   const [workPath, setWorkPath] = useState('')
   const [recentWorkDirs, setRecentWorkDirs] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
 
-  // Reset the form whenever the dialog opens; prefer the latest applied path.
+  // Project entrypoints override recents; global creation keeps the latest applied path.
   useEffect(() => {
     if (open) {
       const recent = loadRecentWorkDirs()
       setLabel('')
       setRecentWorkDirs(recent)
-      setWorkPath(recent[0] || '/')
+      setWorkPath(initialWorkPath || recent[0] || '/')
       setBusy(false)
     }
-  }, [open])
+  }, [open, initialWorkPath])
 
   const submit = async () => {
     setBusy(true)

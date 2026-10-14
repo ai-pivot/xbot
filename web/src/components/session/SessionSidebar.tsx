@@ -75,6 +75,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+  const [newWorkPath, setNewWorkPath] = useState<string | undefined>()
 
   // 会话搜索默认隐藏（低频操作）；收起时一并清空查询，避免隐藏的过滤条件让
   // 列表"莫名其妙变短"。开关按钮与「+ 新会话」主按钮同排。
@@ -339,7 +340,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
                 variant="ghost"
                 size="icon-xs"
                 aria-label={t('session.newSession')}
-                onClick={() => setNewOpen(true)}
+                onClick={() => { setNewWorkPath(undefined); setNewOpen(true) }}
               >
                 <Plus />
               </Button>
@@ -358,7 +359,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
       >
         <button
           type="button"
-          onClick={() => setNewOpen(true)}
+          onClick={() => { setNewWorkPath(undefined); setNewOpen(true) }}
           title={t('session.newSession')}
           className={cn(
             'flex min-w-10 items-center justify-center overflow-hidden rounded-xl py-2 text-[12px] font-semibold text-white transition-[flex-grow] duration-200 ease-out hover:opacity-90',
@@ -407,6 +408,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           </div>
         ) : (
         <SessionList
+          onNewSession={(path) => { setNewWorkPath(path); setNewOpen(true) }}
           sessions={filteredSessions}
           groups={filteredGroups}
           sortedSessions={filteredSorted}
@@ -527,6 +529,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
       </AlertDialog>
 
       <NewSessionDialog
+        initialWorkPath={newWorkPath}
         open={newOpen}
         onOpenChange={setNewOpen}
         onCreate={async (label, workPath) => {
