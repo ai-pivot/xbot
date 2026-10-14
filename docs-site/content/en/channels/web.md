@@ -70,6 +70,9 @@ Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.)
 | Upload limit | 10MB per file (size only — no type restrictions) |
 | Terminal commands | A message starting with `!` runs **directly in the sandbox as a shell command** and returns its output as a chat message — the AI is skipped (`!ls -la`, `!git status`, `!docker ps`). The composer shows a hint while the draft is a `!` command; `![…]` markdown images (pasted screenshots) are **not** commands |
 
+Image previews in the composer fit within **240 × 120 px**, preserve their aspect ratio, and shrink to fit narrow windows. **Double-click an image** to view it enlarged; press Esc, click the backdrop, or use the close button to dismiss it. Thumbnail sizing does not modify uploaded files or the image references sent with your message.
+
+
 ## Response Comments
 
 Native selection restoration is bounded to bodies with at most 16384 UTF-16 source/rendered characters and 256 text nodes. Larger bodies retain the captured comment quote without forced highlight restoration; streaming never pauses. Ordinary text sends and local `/cancel`, `/tasks`, and `/rewind` commands remain available during uploads; annotation sends wait for upload completion. Session-list previews may still show the raw annotation-envelope prefix, while message bubbles decode it.

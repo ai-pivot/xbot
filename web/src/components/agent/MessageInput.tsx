@@ -36,6 +36,7 @@ import { AnnotationChip, useAnnotationActions, useAnnotationDraft } from './Mess
 import { formatAnnotatedMessage } from '@/lib/messageAnnotations'
 import { CompletionPopup } from './CompletionPopup'
 import { SelectionToolbar } from './SelectionToolbar'
+import { openLightbox } from './Lightbox'
 import { useCompletion, type CompletionKeyEvent } from '@/hooks/useCompletion'
 import type { TodoState } from '@/hooks/useTodos'
 import type { GoalInfo, TodoItem } from '@/types/shared'
@@ -334,6 +335,12 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       },
       // Drag-over highlight (depth-counted — dragenter/leave fire per child element)
       handleDOMEvents: {
+        dblclick: (_view, event) => {
+          if (!(event.target instanceof HTMLImageElement)) return false
+          event.preventDefault()
+          openLightbox(event.target.getAttribute('src') || '', event.target.alt)
+          return true
+        },
         dragenter: () => {
           dragDepthRef.current += 1
           setDragOverFiles(true)

@@ -287,7 +287,7 @@ export function AppShell() {
       {/* fixed inset-0 — same iOS PWA standalone full-bleed guarantee as
           MobileAppShell (100dvh/height:100% stop at the safe area there). */}
       <div
-        className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary"
+        className="fixed inset-0 flex flex-col overflow-clip bg-bg-primary text-text-primary"
         style={keyboardInset > 0 ? { paddingBottom: `${keyboardInset}px` } : undefined}
       >
       {/* Ambience 壁纸层（z:0，pointer-events:none）——第一子元素 */}
