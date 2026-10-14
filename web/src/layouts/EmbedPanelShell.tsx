@@ -19,8 +19,11 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
+import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
+import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTabManager } from '@/hooks/useTabManager'
 import { useTerminal } from '@/hooks/useTerminal'
+import { useWSConnection } from '@/hooks/useWSConnection'
 import { mobileTerminalProps } from '@/workspace/panelProps'
 import { postHostNav } from '@/workspace/hostBridge'
 import { renderPanelBody, type PluginViewRef } from '@/workspace/panelRender'
@@ -37,6 +40,23 @@ export function EmbedPanelShell({ panelId }: { panelId: SidebarPanel }) {
   const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null)
   const terminalManager = useTerminal(tabManager, (terminalId) => setActiveTerminalId(terminalId))
   const pluginPanels = usePluginViewPanels('right_sidebar')
+
+  // ── 实时通道（2026-10-14 修）：嵌入态此前**从不建立 SSE 订阅** ──────────────────────
+  // 订阅的唯一建立点是 `useActiveSSESubscription`，它此前**只有 `AgentPanel` 一个消费方**
+  // ⇒ 嵌入态（只渲面板本体，不挂 `AgentPanel`）无人 `addSubscription`
+  // ⇒ `MultiSSEManager.connect()` 因 `!chatID` 直接 return（`providers/sseConnection.ts:200-202`）
+  // ⇒ `ws.connected` 恒 `false` ⇒ 任务/终端/文件面板**只吃打开那一刻的 REST 快照**
+  //（`TasksPanel` 因此显示 `sidebar.disconnectedHint`「实时连接已断开，状态可能延迟」）。
+  // 嵌入态**本就有**会话上下文（`App.tsx` 里 `SessionStoreProvider` 同样挂载）⇒ 用它订阅即可。
+  const ws = useWSConnection()
+  const session = useSessionStore()
+  const activeSession = session.activeSession
+  useActiveSSESubscription({
+    ws,
+    chatID: activeSession?.chatID ?? null,
+    channel: activeSession?.channel ?? 'web',
+  })
+
   const pluginViewsMap = useMemo(
     () => new Map<string, PluginViewRef>(pluginPanels.map((p) => [p.id, { pluginId: p.pluginId, view: p.view }])),
     [pluginPanels],
