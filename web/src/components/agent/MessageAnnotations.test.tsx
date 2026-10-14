@@ -36,6 +36,49 @@ afterEach(() => {
 })
 
 describe('selection comment entry', () => {
+  it.each([
+    { x: 60, y: 180, expectedX: 60, expectedY: 128 },
+    { x: 900, y: 600, expectedX: 900, expectedY: 548 },
+    { x: 1020, y: 10, expectedX: 972, expectedY: 18 },
+  ])('anchors mouse selection at release ($x, $y), not the range right edge', ({ x, y, expectedX, expectedY }) => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:mouse-position" visible>
+      <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '正文', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 7, iteration: 1 }}>
+        <p data-annotation-body="">正文</p>
+      </CopyTarget>
+    </MessageAnnotationsProvider>)
+    const text = screen.getByText('正文')
+    const pointer = (type: string) => Object.assign(new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y }), { pointerType: 'mouse' })
+    fireEvent(text, pointer('pointerdown'))
+    selectText(text)
+    fireEvent(text, pointer('pointerup'))
+    act(() => frameScheduler.flushNow())
+    const action = screen.getByTestId('annotation-selection-action')
+    expect(action.style.left).toBe(`${expectedX}px`)
+    expect(action.style.top).toBe(`${expectedY}px`)
+    // A delayed selectionchange must not jump back to the range rectangle.
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(action.style.left).toBe(`${expectedX}px`)
+    fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+    act(() => frameScheduler.flushNow())
+    expect(action.style.left).toBe('96px')
+  })
+
+  it('keeps native touch selection on range geometry rather than touch release coordinates', () => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:touch-position" visible>
+      <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '正文', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 7, iteration: 1 }}>
+        <p data-annotation-body="">正文</p>
+      </CopyTarget>
+    </MessageAnnotationsProvider>)
+    const text = screen.getByText('正文')
+    const pointer = (type: string) => Object.assign(new MouseEvent(type, { bubbles: true, button: 0, clientX: 900, clientY: 600 }), { pointerType: 'touch' })
+    fireEvent(text, pointer('pointerdown'))
+    selectText(text)
+    fireEvent(text, pointer('pointerup'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toHaveStyle({ left: '96px', top: '48px' })
+  })
+
   it('ignores a malformed DOM annotation source without throwing in a frame task', () => {
     renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:malformed" visible>
       <div data-copy-target="iteration" data-annotation-source="{broken"><p data-annotation-body="">body</p></div>
