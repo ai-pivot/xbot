@@ -35,7 +35,10 @@ vi.mock('@/hooks/useSessionStore', () => ({ useSessionStore: () => sessionState 
 
 // 面板本体 / 插件运行时 / 宿主桥：本判据只关心"订阅接线"，这些在单测里不加载。
 vi.mock('@/workspace/panelRender', () => ({ renderPanelBody: () => null }))
-vi.mock('@/plugin-runtime/usePluginViewPanels', () => ({ usePluginViewPanels: () => [] }))
+vi.mock('@/plugin-runtime/usePluginViewPanels', () => ({
+  usePluginViewPanels: () => [],
+  usePluginViewById: () => null,
+}))
 vi.mock('@/hooks/useTabManager', () => ({ useTabManager: () => ({}) }))
 vi.mock('@/hooks/useTerminal', () => ({ useTerminal: () => ({}) }))
 vi.mock('@/workspace/hostBridge', () => ({ postHostNav: () => false }))
@@ -46,14 +49,14 @@ describe('EmbedPanelShell 实时通道（嵌入态必须自建 SSE 订阅）', (
   it('① 有活跃会话 ⇒ 以该会话的 chatID/channel 发起订阅', () => {
     sessionState.activeSession = { channel: 'cli', chatID: 'chat-1' }
     addSubscription.mockClear()
-    render(<EmbedPanelShell panelId="tasks" />)
+    render(<EmbedPanelShell target={{ kind: 'panel', panelId: 'tasks' }} />)
     expect(addSubscription).toHaveBeenCalledWith('chat-1', 'cli')
   })
 
   it('② 无活跃会话 ⇒ 不订阅（不得拿空 chatID 订阅）', () => {
     sessionState.activeSession = null
     addSubscription.mockClear()
-    render(<EmbedPanelShell panelId="tasks" />)
+    render(<EmbedPanelShell target={{ kind: 'panel', panelId: 'tasks' }} />)
     expect(addSubscription).not.toHaveBeenCalled()
   })
 })

@@ -18,7 +18,8 @@
  */
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 
-import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
+import { usePluginViewById, usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
+import { PluginView } from '@/plugin-runtime/PluginView'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTabManager } from '@/hooks/useTabManager'
@@ -29,11 +30,23 @@ import { postHostNav } from '@/workspace/hostBridge'
 import { renderPanelBody, type PluginViewRef } from '@/workspace/panelRender'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 
+/**
+ * 宿主嵌入态要挂的**目标**（`workspace/panelRequest.ts:parseEmbedTarget` 的产物）。
+ *
+ * · `panel` —— 内置面板（`?xbot_panel=<id>&xbot_embed=1`）；
+ * · `view`  —— 插件视图（`?xbot_view=<viewId>&xbot_embed=1`；`params` = `xbot_view_params`）。
+ */
+export type EmbedShellTarget =
+  | { kind: 'panel'; panelId: SidebarPanel }
+  | { kind: 'view'; viewId: string; params?: Record<string, unknown> }
+
 /** 终端会话面板按需加载（与移动端外壳同一策略：不进首屏包）。 */
 const TerminalPanel = lazy(() =>
   import('@/workspace/panels/TerminalPanel').then((m) => ({ default: m.TerminalPanel })))
 
-export function EmbedPanelShell({ panelId }: { panelId: SidebarPanel }) {
+export function EmbedPanelShell({ target }: { target: EmbedShellTarget }) {
+  // 插件视图那条路只用 viewId 查找（**跨容器**）；内置面板那条路不用它。
+  const viewEntry = usePluginViewById(target.kind === 'view' ? target.viewId : '')
   const tabManager = useTabManager()
   // 终端面板：点列表项 ⇒ 在本体内切到会话（**web 内部**导航，不惊动宿主 ——
   // 宿主嵌入的就是这个面板，会话仍属于 web 的终端实现）。
@@ -62,10 +75,32 @@ export function EmbedPanelShell({ panelId }: { panelId: SidebarPanel }) {
     [pluginPanels],
   )
 
+  const readyKey = target.kind === 'panel' ? target.panelId : target.viewId
   // 挂载握手：`nav/ready`（宿主不可用时静默 no-op —— 纯浏览器打开本页也不报错）。
   useEffect(() => {
-    postHostNav({ kind: 'ready', text: panelId })
-  }, [panelId])
+    postHostNav({ kind: 'ready', text: readyKey })
+  }, [readyKey])
+
+  // ── 插件视图：只挂该 view 的**本体**（2026-10-15 修，真机实证）────────────────────
+  // 症状：原生壳里点插件 ⇒ 原生 `‹ 插件 ⟳` 之下又出现 web 自己的 `← 插件 ＋ 🔧 ⚙️` 头
+  //   + 底部 `本机 ●` 栏 = 用户说的"套娃"，且**为一个视图渲了整个 SPA**。
+  // 根因：嵌入判定此前是 `xbot_embed=1` **且** `xbot_panel=<白名单 id>`；插件视图只有
+  //   `xbot_view=<viewId>` ⇒ 落到 `<AppShell />`（整壳）。⇒ 现在两条都走嵌入，各自只挂本体。
+  if (target.kind === 'view') {
+    return (
+      <div className="h-full min-h-0 overflow-hidden">
+        {viewEntry ? (
+          <PluginView
+            pluginId={viewEntry.pluginId}
+            view={viewEntry.view}
+            panelParams={{ viewParams: target.params, viewId: target.viewId }}
+          />
+        ) : null}
+      </div>
+    )
+  }
+
+  const panelId: SidebarPanel = target.panelId
 
   if (panelId === 'terminal' && activeTerminalId) {
     return (

@@ -4,6 +4,7 @@ import {
   PANEL_QUERY_KEY,
   mobileViewForPanel,
   parseEmbedQuery,
+  parseEmbedTarget,
   parsePanelQuery,
 } from './panelRequest'
 
@@ -87,5 +88,51 @@ describe('parseEmbedQuery', () => {
     expect(parseEmbedQuery('?')).toBe(false)
     expect(() => parseEmbedQuery('?xbot_embed=' + 'a'.repeat(5000))).not.toThrow()
     expect(parseEmbedQuery('?xbot_embed=' + 'a'.repeat(5000))).toBe(false)
+  })
+})
+
+/**
+ * parseEmbedTarget —— 嵌入态要挂**什么**（内置面板 **或** 插件视图）。
+ *
+ * 为什么值得测（真机实证 2026-10-15）：此前嵌入判定是 `parseEmbedQuery ? parsePanelQuery : null`
+ * ⇒ `?xbot_view=<viewId>&xbot_embed=1`（原生「能力面板」点插件时发的深链，**没有** `xbot_panel`）
+ * 落到 `null` ⇒ 渲染 `<AppShell />`（整个 SPA）⇒ 原生 `‹ 插件 ⟳` 之下又出现 web 自己的
+ * `← 插件 ＋ 🔧 ⚙️` 头 + 底部 `本机 ●` 栏 = 用户看到的"套娃"，且"为一个视图渲了整个 app"。
+ */
+describe('parseEmbedTarget', () => {
+  it('xbot_panel（白名单内）⇒ panel 目标', () => {
+    expect(parseEmbedTarget('?xbot_panel=tasks&xbot_embed=1')).toEqual({
+      kind: 'panel',
+      panelId: 'tasks',
+    })
+  })
+
+  it('⭐ xbot_view（无 xbot_panel）+ xbot_embed=1 ⇒ view 目标（本轮修复的核心判据）', () => {
+    expect(
+      parseEmbedTarget('?xbot_view=xbot.plugin-manager.panel&xbot_view_title=%E6%8F%92%E4%BB%B6&xbot_embed=1'),
+    ).toEqual({ kind: 'view', viewId: 'xbot.plugin-manager.panel' })
+  })
+
+  it('两条都在 ⇒ panel 优先（内置面板 id 是白名单，语义更窄）', () => {
+    expect(parseEmbedTarget('?xbot_panel=files&xbot_view=x.y.panel&xbot_embed=1')).toEqual({
+      kind: 'panel',
+      panelId: 'files',
+    })
+  })
+
+  it('⛔ 非嵌入态（无 xbot_embed=1）⇒ null，即使带 xbot_view（浏览器访问 `/` 必须仍是完整应用）', () => {
+    expect(parseEmbedTarget('?xbot_view=x.y.panel')).toBeNull()
+    expect(parseEmbedTarget('?xbot_panel=files')).toBeNull()
+  })
+
+  it('⛔ 嵌入态但两条都不可用 ⇒ null（fail-safe：回落完整应用，不给宿主空白壳）', () => {
+    expect(parseEmbedTarget('?xbot_embed=1')).toBeNull()
+    expect(parseEmbedTarget('?xbot_embed=1&xbot_panel=nope')).toBeNull()
+    expect(parseEmbedTarget('?xbot_embed=1&xbot_view=')).toBeNull()
+  })
+
+  it('怪输入不抛', () => {
+    expect(() => parseEmbedTarget('?xbot_embed=1&xbot_view=' + 'a'.repeat(5000))).not.toThrow()
+    expect(() => parseEmbedTarget('?xbot_embed=' + 'a'.repeat(5000))).not.toThrow()
   })
 })

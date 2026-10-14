@@ -98,3 +98,46 @@ export function parseEmbedQuery(search: string): boolean {
     return false
   }
 }
+
+/**
+ * 嵌入模式下宿主**要挂什么**：内置面板（`xbot_panel`）**或**插件视图（`xbot_view`）。
+ *
+ * ── 为什么必须有这条分支（真机实证，2026-10-15）──────────────────────────────────
+ * 原生壳「能力面板」里点插件 ⇒ 深链 `?xbot_view=<viewId>&xbot_view_title=…&xbot_embed=1`
+ * （`pluginViewDeepLink` + `embedPluginViewLink`，见鸿蒙 `core/pluginhost.ets`）。
+ * 此前 `App.tsx` 的嵌入判定是 `parseEmbedQuery ? parsePanelQuery : null` —— `xbot_view`
+ * **没有** `xbot_panel` ⇒ `null` ⇒ 回落 `<AppShell />`（**整个 SPA**）⇒ 原生 chrome
+ * （`‹ 插件 ⟳`）之下又出现 web 自己的 `← 插件 ＋ 🔧 ⚙️` 头 + 底部 `本机 ●` 栏
+ * ⇒ 用户看到的"套娃"，且"为一个面板渲了整个 app"（正是用户说的"不要做多余的渲染"）。
+ *
+ * ⇒ 契约：`xbot_embed=1` 且（面板 id **合法** 或 有 `xbot_view`）⇒ 走嵌入；
+ *   两者都无 / 面板 id 非法且无 view ⇒ `null`（fail-safe：宁可多渲 chrome，也不给宿主空白壳）。
+ *
+ * ⛔ 本模块**不**解析 `xbot_view` 的细节（key/params/title）——那是
+ *   `plugin-runtime/pluginViewRequest.ts` 的唯一职责（避免第二份真源）；这里只回答
+ *   "该不该走嵌入、走哪种"，调用方据此再取具体请求。
+ */
+export type EmbedTarget =
+  | { kind: 'panel'; panelId: string }
+  | { kind: 'view'; viewId: string }
+
+/** `?xbot_view=<viewId>` 的查询键（只判存在性；细节解析归 pluginViewRequest）。 */
+export const VIEW_QUERY_KEY = 'xbot_view'
+
+/** 解析 → 嵌入目标；非嵌入态 / 无从下手 ⇒ `null`。**纯函数**。 */
+export function parseEmbedTarget(search: string): EmbedTarget | null {
+  if (!parseEmbedQuery(search)) {
+    return null
+  }
+  const panelId = parsePanelQuery(search)
+  if (panelId) {
+    return { kind: 'panel', panelId }
+  }
+  let viewId: string | null = null
+  try {
+    viewId = new URLSearchParams(search).get(VIEW_QUERY_KEY)
+  } catch {
+    return null
+  }
+  return viewId ? { kind: 'view', viewId } : null
+}
