@@ -43,6 +43,22 @@ Server 模式安装时，安装器会自动下载 Web UI 到 `~/.xbot/web/dist/`
 # 下载对应版本的 web 压缩包并解压到 ~/.xbot/web/dist/
 ```
 
+### 从源码重新构建并部署（⛔ 别用增量拷贝）
+
+改了 `web/` 的源码后，部署必须**整体替换**：
+
+```bash
+bash scripts/deploy-web.sh              # npm run build + 整体部署 + 一致性自证
+bash scripts/deploy-web.sh --no-build   # 跳过构建，只部署当前 web/dist
+```
+
+{{< hint type=warning >}}
+**混合态产物**是这条路上最容易踩的坑：把新构建的 `assets/` 增量拷进旧目录、而 `index.html`
+保留旧版 ⇒ 服务端吐出的页面**引用旧 bundle**，新代码一行都不跑（症状：新功能"看着打开了"
+但完全不生效）。`deploy-web.sh` 用「整体 mv + 校验 `index.html` 引用的 bundle 存在且含探针
+符号」把这条路封死；校验不过直接 `exit 1`。
+{{< /hint >}}
+
 ## 访问
 
 启动 Server 后，在浏览器中打开 `http://your-server:8082`。
