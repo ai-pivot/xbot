@@ -85,12 +85,15 @@ describe('turn 内压缩点（迭代之间内联渲染，Cursor 式）', () => {
     expect(container.querySelector('[data-iter-id="2"] [data-testid="compaction-divider"]')).toBeTruthy()
   })
 
-  it('同锚点多次压缩只渲染一条（后到的取代前一条；用户报「压缩分隔条堆一摞」）', () => {
-    // 真实场景：一个 turn 内连续触发多次压缩（无新迭代插入）⇒ 4 条 compaction
-    // 的 afterIteration 全落在最后一个迭代 ⇒ 旧实现 arr.push ⇒ 4 条「上下文已压缩」chip
-    // 紧贴堆叠、无内容相隔 = 纯噪音。后到的 summary 已取代前一条（它本就是对"截至该点
-    // 全部上下文"的再压缩）⇒ 只留最新一条。
-    // ⚠️ chip 的 summary 在折叠态不进 DOM（展开才渲染）⇒ 这里只钉**条数**（用户可见的病）。
+  it('同锚点多条压缩全部渲染 —— 每条都是独立事件，禁止再引入 latest-wins 类去重', () => {
+    // ⚠️ 历史教训（2026-10-14，用户亲报「修复完全错误」）：用户报「压缩分隔条堆一摞」时，
+    // 曾误诊为「同锚点多次压缩 ⇒ latest-wins 只留最新一条」并改 map.set —— 完全错误。
+    // 真实根因在后端：iteration_history.created_at 是 CURRENT_TIMESTAMP 写出的 **UTC 裸串**，
+    // 读侧按本地时区解析 ⇒ 8 小时错位 ⇒ 压缩标记"晚于"全部 turn 时间线 ⇒ 后端
+    // compactionAnchor 退化成「最后一个 turn + 其最大迭代号」⇒ 同窗全部分隔条堆到
+    // 一处（判据：xbot 仓 channel/compaction_anchor_tz_test.go）。后端修复后每条
+    // 压缩各自归位到真实发生的迭代边界，天然散开、不再堆叠。
+    // 前端语义自始至终是：**一条分隔 = 一次真实发生的独立压缩，绝不丢、绝不去重**。
     const compactions: WebCompaction[] = [
       { afterIteration: 2, content: '[Compacted context]\n\nsummary-1' },
       { afterIteration: 2, content: '[Compacted context]\n\nsummary-2' },
@@ -101,20 +104,38 @@ describe('turn 内压缩点（迭代之间内联渲染，Cursor 式）', () => {
       <TurnBody iterations={[iter(1, 'a'), iter(2, 'b')]} compactions={compactions} turnID={3} />,
     )
     const dividers = container.querySelectorAll('[data-testid="compaction-divider"]')
-    expect(dividers.length, '同锚点 4 次压缩 ⇒ 只渲染 1 条分隔（不堆叠）').toBe(1)
-    // 落在迭代 2 块之后（同锚点归位不变）。
-    expect(container.querySelector('[data-iter-id="2"] [data-testid="compaction-divider"]')).toBeTruthy()
+    expect(dividers.length, '同锚点 4 次压缩 ⇒ 4 条分隔全部渲染（绝不丢弃任何一次）').toBe(4)
+    expect(
+      container.querySelectorAll('[data-iter-id="2"] [data-testid="compaction-divider"]').length,
+      '同锚点归位不变：全部落在迭代 2 块之后',
+    ).toBe(4)
   })
 
-  it('同锚点（afterIteration=0，turn 开头连续压缩）也只渲染一条', () => {
+  it('不同迭代边界的压缩各自渲染在所属边界（后端正确锚点 ⇒ 天然散开）——afterIteration=0 在 turn 开头、=1 在迭代 1 块后', () => {
     const compactions: WebCompaction[] = [
       { afterIteration: 0, content: '[Compacted context]\n\nlead-1' },
+      { afterIteration: 1, content: '[Compacted context]\n\nmid-1' },
       { afterIteration: 0, content: '[Compacted context]\n\nlead-2' },
     ]
     const { container } = renderWithProviders(
-      <TurnBody iterations={[iter(1, 'a')]} compactions={compactions} turnID={3} />,
+      <TurnBody iterations={[iter(1, 'a'), iter(2, 'b')]} compactions={compactions} turnID={3} />,
     )
-    expect(container.querySelectorAll('[data-testid="compaction-divider"]').length).toBe(1)
+    expect(container.querySelectorAll('[data-testid="compaction-divider"]').length, '三条压缩 ⇒ 三条分隔，各归其位').toBe(3)
+    expect(
+      container.querySelectorAll('[data-iter-id="1"] [data-testid="compaction-divider"]').length,
+      'afterIteration=1 的那条落在迭代 1 块内',
+    ).toBe(1)
+    expect(
+      container.querySelector('[data-iter-id="2"] [data-testid="compaction-divider"]'),
+      '迭代 2 块内没有压缩点',
+    ).toBeFalsy()
+    // 剩下 2 条（afterIteration=0）在 turn 开头（leading，不在任何迭代块内）。
+    const all = container.querySelectorAll('[data-testid="compaction-divider"]')
+    let leading = 0
+    all.forEach((d) => {
+      if (!d.closest('.iter-block')) leading++
+    })
+    expect(leading, 'afterIteration=0 的两条在迭代列表之前').toBe(2)
   })
 })
 

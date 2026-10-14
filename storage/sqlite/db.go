@@ -370,9 +370,39 @@ func (db *DB) initSchema() error {
 	return db.migrateSchema(version)
 }
 
+// canonicalTimestamp 是**全部 session_messages / iteration_history created_at 写点
+// 的唯一出口**（时间表示铁律，2026-10-14）：一律经 `.Local()` 重投影再 Format ——
+//   - host TZ 非 UTC：恒产出 "+08:00" 类**带偏移**形态 ⇒ 读侧 ParseTimestamp case 1
+//     精确解析，绝不进入 case 2 的「Z 串按本地猜」歧义；
+//   - host TZ = UTC：产出 "Z" 形态，但此时 time.Local ≡ UTC、case 2 的本地猜 ≡
+//     字面 UTC —— **构造上无害**（错位只在「写 Z 串 & 读侧 local≠UTC」时发生，
+//     本写法让该组合不可能出现）。
+// ⛔ 不许任何写点绕过本函数直接 `ts.Format(time.RFC3339*)` 落这两张表
+// （判据：TestIterationCreatedAt_CanonicalWriteAndRoundTrip + TestGetSyntheticPairRowsByTurn
+// 双时区跑 —— 后者在规范化前于 TZ=Asia/Shanghai 必红，因为 UTC 时区的时间值会
+// 被写成 "Z" 串、被读侧 +8h 猜错）。
+func canonicalTimestamp(ts time.Time) string {
+	return ts.Local().Format(time.RFC3339Nano)
+}
+
 // parseSQLiteTime parses a time string from SQLite into time.Time.
 // Delegates to internal.ParseTimestamp which correctly handles timezone
 // interpretation for values stored by the modernc.org/sqlite driver.
 func parseSQLiteTime(s string) time.Time {
 	return internal.ParseTimestamp(s)
+}
+
+// parseIterationTime parses **iteration_history.created_at ONLY** —— 表级形态
+// 契约见 internal.ParseIterationTimestamp 长注释（⛔ 不得挪用于其他表：
+// session_messages 的老裸串是本地墙钟，与本表语义**相反**）。
+//
+// 未知格式一律 ERROR + 零值（fail-safe）：下游 buildTurnSpans 跳过该行 /
+// compactionIteration 回落 standalone 压缩标记行（信息不丢、绝不静默错位）。
+func parseIterationTime(s string) time.Time {
+	t, err := internal.ParseIterationTimestamp(s)
+	if err != nil {
+		log.WithFields(log.Fields{"table": "iteration_history", "created_at": s}).
+			Error("created_at 无法解析 —— 按无时间戳处理；压缩锚点对该行将 fail-safe 回落")
+	}
+	return t
 }
