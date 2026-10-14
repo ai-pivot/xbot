@@ -27,7 +27,7 @@ export interface UseAskUserResult {
 
 export function useAskUser({ chatID, channel = 'web' }: UseAskUserOptions): UseAskUserResult {
   const ws = useWSConnection()
-  const { askUserPrompts, clearAskUserPrompt } = useSessionStore()
+  const { askUserPrompts, clearAskUserPrompt, markAskUserAnswered } = useSessionStore()
 
   const key = `${channel}:${chatID ?? ''}`
   const prompt = chatID ? askUserPrompts.get(key) ?? null : null
@@ -47,22 +47,33 @@ export function useAskUser({ chatID, channel = 'web' }: UseAskUserOptions): UseA
 
   const respond = useCallback(
     (answers: Record<string, string>) => {
+      // ⛔ **点击即清**（用户 2026-10-16 亲报严重 bug「提交/cancel 后必须立刻消失，现在消失了还会
+      //   出现一瞬间」）：旧实现把清除挂在 `ws.send().then()` 之后 ⇒ 往返期间面板仍在，且该窗口内
+      //   服务端重播的 pending 问题（或行驱动 hydrate）会把**同一个** prompt 写回 ⇒ 闪回。
+      //   ⇒ 先清 + 记下刚答的 requestId（抑制回填），再发消息；失败才把问题还回来（撤销抑制）。
+      const requestId = prompt ? prompt.requestId : ''
+      clearAskUserPrompt(channel, chatID ?? '')
+      markAskUserAnswered(channel, chatID ?? '', requestId)
       void ws.send({ type: 'ask_user_response', channel, chat_id: chatID ?? undefined, answers, cancelled: false })
-        .then(() => clearAskUserPrompt(channel, chatID ?? ''))
         .catch((error: unknown) => {
+          // 失败 ⇒ 撤销抑制并让服务端权威重新 hydrate（问题还在 pending，会再弹出来给用户重试）
+          markAskUserAnswered(channel, chatID ?? '', '')
           toast.error(error instanceof Error ? error.message : 'response failed')
         })
     },
-    [channel, chatID, ws, clearAskUserPrompt],
+    [channel, chatID, ws, clearAskUserPrompt, markAskUserAnswered, prompt],
   )
 
   const cancel = useCallback(() => {
+    const requestId = prompt ? prompt.requestId : ''
+    clearAskUserPrompt(channel, chatID ?? '')
+    markAskUserAnswered(channel, chatID ?? '', requestId)
     void ws.send({ type: 'ask_user_response', channel, chat_id: chatID ?? undefined, answers: {}, cancelled: true })
-      .then(() => clearAskUserPrompt(channel, chatID ?? ''))
       .catch((error: unknown) => {
+        markAskUserAnswered(channel, chatID ?? '', '')
         toast.error(error instanceof Error ? error.message : 'response failed')
       })
-  }, [channel, chatID, ws, clearAskUserPrompt])
+  }, [channel, chatID, ws, clearAskUserPrompt, markAskUserAnswered, prompt])
 
   return { prompt, respond, cancel }
 }
