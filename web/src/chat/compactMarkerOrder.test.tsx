@@ -84,6 +84,38 @@ describe('turn 内压缩点（迭代之间内联渲染，Cursor 式）', () => {
     expect(container.querySelectorAll('[data-testid="compaction-divider"]').length, '压缩点绝不丢失').toBe(1)
     expect(container.querySelector('[data-iter-id="2"] [data-testid="compaction-divider"]')).toBeTruthy()
   })
+
+  it('同锚点多次压缩只渲染一条（后到的取代前一条；用户报「压缩分隔条堆一摞」）', () => {
+    // 真实场景：一个 turn 内连续触发多次压缩（无新迭代插入）⇒ 4 条 compaction
+    // 的 afterIteration 全落在最后一个迭代 ⇒ 旧实现 arr.push ⇒ 4 条「上下文已压缩」chip
+    // 紧贴堆叠、无内容相隔 = 纯噪音。后到的 summary 已取代前一条（它本就是对"截至该点
+    // 全部上下文"的再压缩）⇒ 只留最新一条。
+    // ⚠️ chip 的 summary 在折叠态不进 DOM（展开才渲染）⇒ 这里只钉**条数**（用户可见的病）。
+    const compactions: WebCompaction[] = [
+      { afterIteration: 2, content: '[Compacted context]\n\nsummary-1' },
+      { afterIteration: 2, content: '[Compacted context]\n\nsummary-2' },
+      { afterIteration: 2, content: '[Compacted context]\n\nsummary-3' },
+      { afterIteration: 2, content: '[Compacted context]\n\nsummary-4' },
+    ]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={[iter(1, 'a'), iter(2, 'b')]} compactions={compactions} turnID={3} />,
+    )
+    const dividers = container.querySelectorAll('[data-testid="compaction-divider"]')
+    expect(dividers.length, '同锚点 4 次压缩 ⇒ 只渲染 1 条分隔（不堆叠）').toBe(1)
+    // 落在迭代 2 块之后（同锚点归位不变）。
+    expect(container.querySelector('[data-iter-id="2"] [data-testid="compaction-divider"]')).toBeTruthy()
+  })
+
+  it('同锚点（afterIteration=0，turn 开头连续压缩）也只渲染一条', () => {
+    const compactions: WebCompaction[] = [
+      { afterIteration: 0, content: '[Compacted context]\n\nlead-1' },
+      { afterIteration: 0, content: '[Compacted context]\n\nlead-2' },
+    ]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={[iter(1, 'a')]} compactions={compactions} turnID={3} />,
+    )
+    expect(container.querySelectorAll('[data-testid="compaction-divider"]').length).toBe(1)
+  })
 })
 
 describe('压缩点穿透历史管线', () => {

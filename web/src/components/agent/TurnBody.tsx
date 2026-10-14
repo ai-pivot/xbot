@@ -1005,9 +1005,11 @@ export const TurnBody = memo(function TurnBody({
       for (const it of merged) {
         if (it.iteration <= c.afterIteration && it.iteration > anchor) anchor = it.iteration
       }
-      const arr = map.get(anchor)
-      if (arr) arr.push(c)
-      else map.set(anchor, [c])
+      // ⚠️ 同锚点多次压缩**只保留最新一条**（2026-10-14 修复：用户报「压缩分隔条堆一摞」）。
+      //   语义：同一 afterIteration 上的多次压缩 = 上下文被反复重述；后到的 summary 已把前一条
+      //   取代（它本身就是对"截至该点的全部上下文"的再压缩）⇒ 旧的已无用、只留噪音。
+      //   不同锚点（不同 afterIteration）仍各占一处 —— 不受影响（各自 map.set 到不同 key）。
+      map.set(anchor, [c])
     }
     return map
   }, [merged, compactions])
