@@ -208,6 +208,48 @@ function lostIterGapSig(
 }
 
 /**
+ * 「**live 明显领先于已持有窗口**」容差（在飞迭代的正常语义：`iter === maxHeld + 1`，
+ * 因为当前迭代尚未落进 `iterations` 数组 ⇒ 差 1 不算脱节；留到 2 覆盖边界抖动）。
+ */
+const LIVE_AHEAD_TOLERANCE = 2
+
+/**
+ * 「live 明显领先于已持有窗口」判据（P0 2026-10-15：切回多迭代会话后历史与最新迭代脱节）。
+ *
+ * 为什么 `lostIterGapSig` 抓不到本例：那条只在**事件**带着跳跃的迭代号到达时才可能判出；
+ * 而本例的脱节是在**一次 hydration/合并内部**形成的（权威快照 + 本地窗口 union 之后，
+ * turn 的迭代计数器已到 N、`iterations` 只到 M ≪ N）—— **没有任何事件会带出跳跃**
+ * ⇒ 旧判据恒不触发 ⇒ 界面永久停在旧迭代：渲染层用 `lastIter` 合成在飞块 ⇒
+ * "最新迭代渲染在旧迭代之后"；turn 一结束合成块消失 ⇒ "又只剩旧窗口"（用户实录）。
+ *
+ * ⛔ 与 `lostIterGapSig` 的**形态差别**：本函数**不做同形状去重**（与 `unreachableGapSig`
+ *    同款）—— 它总是返回当前形状（'' = 无脱节），去重由调用点与 `s.liveAheadGapSig`
+ *    比较完成。若把去重塞进函数内（同形状返回 ''），调用点会把"已存签名"擦成空串 ⇒
+ *    下一帧又被当成新形状 ⇒ **重载风暴**（本文件曾因此红过一次 T2）。
+ *
+ * @returns 当前形状签名（'' = 无脱节）。
+ */
+function liveAheadGapSig(turnID: TurnID, live: LiveSnapshot): string {
+  if (live.iterations.length === 0 || live.iter <= 0) return ''
+  const maxHeld = maxHeldIteration(live.iterations)
+  if (live.iter <= maxHeld + LIVE_AHEAD_TOLERANCE) return '' // 接上了（含正常在飞 +1）⇒ 无脱节
+  // 签名锚定**洞下界**（maxHeld+1）：同一轮脱节内恒定 ⇒ 同形状只触发一次；
+  // 洞被补上（maxHeld 前移）后再脱节 ⇒ 新下界 ⇒ 重新触发。
+  return `${turnID}:liveAheadAt${maxHeld + 1}`
+}
+
+/**
+ * 记录「live 领先」脱节（若有）：`gapReloadToken` 自增 ⇒ 面板 `markHistoryStale` + reset +
+ * 权威 reload（用户定向："要么 catch up gap 要么直接清除 memo 重新拉 api 加载会话"）。
+ * 与既有 gap 出口**同一条**（⛔ 不新造第二条重载通道）。
+ */
+function withLiveAhead(s: ChatState, turnID: TurnID, live: LiveSnapshot): ChatState {
+  const sig = liveAheadGapSig(turnID, live)
+  if (sig === '' || sig === s.liveAheadGapSig) return s
+  return { ...s, gapReloadToken: s.gapReloadToken + 1, liveAheadGapSig: sig }
+}
+
+/**
  * **「无法追赶的 gap」判据**（用户 2026-09-21：「出现无法追赶的 gap 就重新加载 session」）。
  *
  * 本地窗口 ∪ 权威窗口之后**仍有洞**，且**洞有一部分落在权威窗口之外**（服务端历史按 turn
@@ -1189,7 +1231,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           const frozenTurns = new Map(s.turns)
           frozenTurns.set(target, { ...t, phase: { kind: 'frozen', data: live } })
           const activeTurn = s.activeTurn === target ? null : s.activeTurn
-          return { ...s, turns: frozenTurns, activeTurn }
+          // ⛔ 定格时刻复核「live 是否明显领先于已持有窗口」：落后窗口一旦定格，
+          //    渲染层的在飞合成块消失（用户实录："turn 结束后又只剩旧窗口"）⇒
+          //    此处必须触发权威重载，而不是把短窗口当最终形态。
+          return withLiveAhead({ ...s, turns: frozenTurns, activeTurn }, target, live)
         }
         payload = commitViaFold(nonEmptyIts, live.content, 0, undefined, live.regionsBefore)
       }
@@ -1198,7 +1243,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       turns.set(target, { ...t, phase: { kind: 'committed', payload } })
       // commit 后：若这是 active turn，活动指针清空（turn 结束）。
       const activeTurn = s.activeTurn === target ? null : s.activeTurn
-      return { ...s, turns, activeTurn }
+      // ⛔ 提交时刻复核同一判据（提交行的 iterations 就是这份窗口 —— 若它落后于
+      //    计数器，界面会在 turn 结束后退回旧窗口，必须触发权威重载）。
+      return withLiveAhead({ ...s, turns, activeTurn }, target, live)
     }
 
     // ── session_fields：会话级字段的本地水合（get_goal RPC 兜底） ──
@@ -1233,7 +1280,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         })
         const turns = new Map(s.turns)
         turns.set(t.id, { ...t, phase: { kind: 'frozen', data: { ...live, streaming: false } } })
-        return { ...s, turns, activeTurn: null, busy: false }
+        // ⛔ 同一判据：定格时若 live 窗口明显落后于迭代计数器 ⇒ 触发权威重载（否则
+        //    定格成短窗口后渲染层的在飞合成块消失，界面永久少一截迭代）。
+        return withLiveAhead({ ...s, turns, activeTurn: null, busy: false }, t.id, live)
       }
       // 无产出：**必须区分两种空壳**（P0#2，2026-09-16 用户报告：「切会话后两个 turn
       // 之间的 notification（user 形式）不渲染，两侧 assistant 消息粘连」）：
@@ -1246,7 +1295,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       if (t.user !== null && t.user !== undefined) {
         const hollowTurns = new Map(s.turns)
         hollowTurns.set(t.id, { ...t, phase: { kind: 'frozen', data: { ...live, streaming: false } } })
-        return { ...s, turns: hollowTurns, activeTurn: null, busy: false }
+        return withLiveAhead({ ...s, turns: hollowTurns, activeTurn: null, busy: false }, t.id, live)
       }
       // [TURNDROP] 诊断：mid-turn idle 删除无产出且无 user 行的 live（空壳行灭绝）。
       // reasoning-only streaming 若 reasoning 已被迭代边界清空（advanced 清流式字段后
@@ -1585,6 +1634,16 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const legacy = [...legacyById.values()].sort((a, b) => (a.dbID ?? 0) - (b.dbID ?? 0))
       const todos = s.todos.length > 0 ? s.todos : ev.todos
 
+      // ⛔ 「live 明显领先于已持有窗口」（P0 2026-10-15 用户实录：切回多迭代会话 ⇒ 历史停在
+      //    1000 而实际最新 2000；live 合成块显示在 1000 之后；turn 结束又只剩 1-1000）。
+      //    本路径就是那个触发点 —— 脱节在**合并内部**形成（权威快照/本地窗口各带一段），
+      //    **没有任何事件会带出迭代号跳跃** ⇒ 事件路径的 lostIterGapSig 恒不触发。
+      let liveAhead = ''
+      if (activeTurn !== null) {
+        const at = turns.get(activeTurn)
+        if (at && at.phase.kind === 'live') liveAhead = liveAheadGapSig(at.id, at.phase.data)
+      }
+
       // 幂等回放短路：逐项恒等（turns 每个 Turn 对象 / legacy / pendingUsers 元素
       // 引用 + activeTurn/lastSeq/todos）⇒ 返回原 state。
       // 每帧 history_replaced（useChatMessages 的 store 每帧 notify → setMessages
@@ -1601,7 +1660,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         sameItems(todos, s.todos) &&
         // 「无法追赶的 gap」形状变化时必须返回新 state（否则 gapReloadToken 的自增被
         // 短路吞掉，面板拿不到"重载该会话"的信号）。
-        gapSig === s.unreachableGapSig
+        gapSig === s.unreachableGapSig &&
+        // 同一条纪律：live 领先形状变化时也必须返回新 state。
+        liveAhead === s.liveAheadGapSig
       ) {
         return s
       }
@@ -1623,12 +1684,17 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         // ⛔ 出现**无法追赶的 gap**（本地洞在权威窗口之外 ⇒ 永久断裂）⇒ 自增触发面板
         // **重新加载该会话**（丢弃带洞的本地窗口 + 权威重载 + loading 屏）。同一缺口形状
         // 只自增一次 ⇒ 不可能造成重载循环；形状消失后再出现会重新触发。
+        // 「live 领先」脱节走**同一条出口**（用户定向："直接清除 memo 重新拉 api 加载会话"）。
         gapReloadToken:
-          gapSig !== '' && gapSig !== s.unreachableGapSig ? s.gapReloadToken + 1 : s.gapReloadToken,
+          (gapSig !== '' && gapSig !== s.unreachableGapSig) ||
+          (liveAhead !== '' && liveAhead !== s.liveAheadGapSig)
+            ? s.gapReloadToken + 1
+            : s.gapReloadToken,
         unreachableGapSig: gapSig,
         // SSE 增量路径的丢失洞签名（iteration/stream case 写入）在权威窗口到达时
         // 随状态一起传播（未被 reset 打断的 reload 链路里保持去重语义）。
         lostIterGapSig: s.lostIterGapSig,
+        liveAheadGapSig: liveAhead,
       }
     }
 
