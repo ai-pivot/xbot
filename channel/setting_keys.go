@@ -150,7 +150,6 @@ var AllSettingDefs = []SettingDef{
 
 	{Key: "language", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "UI language", ValidValues: "zh|en|ja", DefaultValue: "zh"},
 	{Key: "context_mode", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Context handling: auto or manual", ValidValues: "auto|manual", DefaultValue: "auto"},
-	{Key: "max_iterations", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max tool iterations per turn", ValidValues: "1-500", DefaultValue: "30"},
 	{Key: "max_concurrency", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max parallel LLM calls", ValidValues: "1-100", DefaultValue: "5"},
 	// max_context_tokens is per-model (stored in PerModelConfigs), not per-subscription.
 	// Its read/write entry point is GetUserMaxContext/SetUserMaxContext (ResolveActiveSubModel

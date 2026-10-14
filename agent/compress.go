@@ -757,11 +757,10 @@ Output the structured working state directly.`
 	}
 
 	compressCfg := RunConfig{
-		LLMClient:     client,
-		Model:         model,
-		Messages:      compactionMsgs,
-		Tools:         tools.NewRegistry(), // empty — no tools for compression
-		MaxIterations: 1,                   // single LLM call, no tool execution needed
+		LLMClient: client,
+		Model:     model,
+		Messages:  compactionMsgs,
+		Tools:     tools.NewRegistry(), // empty — no tools for compression
 		// Stream MUST be true — the same timeout semantics as normal chat.
 		// The non-stream path carries perAttemptCtx's HARD 120s deadline
 		// (llm/retry.go); a large compaction summary (e.g. a 52,884-token

@@ -41,8 +41,7 @@ type toolExecResult struct {
 // without passing dozens of parameters.
 type runState struct {
 	// Configuration (read-only after init)
-	cfg     RunConfig
-	maxIter int
+	cfg RunConfig
 	// iterStart offsets the Run's iteration numbering (resume turns): the
 	// first iteration is iterStart+1 instead of 1. A restart-resumed Run
 	// (InjectInboundResume) reuses the interrupted turn's id and must CONTINUE
@@ -178,10 +177,6 @@ type runState struct {
 
 // newRunState creates and initializes a runState from the given RunConfig.
 func newRunState(cfg RunConfig) *runState {
-	maxIter := cfg.MaxIterations
-	if maxIter == 0 {
-		maxIter = DefaultMaxIterations
-	}
 
 	sessionKey := cfg.SessionKey
 	if sessionKey == "" && cfg.Channel != "" {
@@ -210,7 +205,6 @@ func newRunState(cfg RunConfig) *runState {
 
 	state := &runState{
 		cfg:                      cfg,
-		maxIter:                  maxIter,
 		iterStart:                cfg.IterationStart,
 		sessionKey:               sessionKey,
 		offloadSessionKey:        offloadSessionKey,
@@ -1305,7 +1299,7 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 	// byte-for-byte identical to the previous iteration AND the previous
 	// iteration had no tool errors, the agent is stuck repeating itself. Inject
 	// a synthetic tool result warning so the LLM sees explicit feedback and
-	// breaks the cycle instead of looping until maxIter.
+	// breaks the cycle instead of looping forever.
 	s.detectIterationLoop(ctx, response)
 }
 

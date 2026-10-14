@@ -167,7 +167,6 @@ func (a *Agent) buildBaseRunConfig(
 		InitialCWD:       a.workDir, // absolute-resolved at buildToolContext time
 
 		// 循环控制
-		MaxIterations:   a.getMaxIterations(),
 		MaxOutputTokens: maxOutputTokens,
 
 		// Auto worktree: read via GetEffectiveSetting — the single correct
@@ -870,7 +869,6 @@ func (a *Agent) buildSubAgentRunConfig(
 		// (Already computed above before system prompt construction.)
 		IsWorktreeIsolated: isWorktreeIsolated,
 
-		MaxIterations: a.getMaxIterations(), // 继承主 Agent 配置
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
 		// Agent-lifecycle background tasks (async Pre/Post compress memory hooks

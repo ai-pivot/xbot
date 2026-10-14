@@ -11,7 +11,7 @@ description: "Guide for AI to configure xbot TUI, themes, subscriptions, and set
 |------|------|---------|
 | List all settings | `config list` | Shows keys, values, descriptions, permissions |
 | Read a setting | `config get(key)` | `config get("theme")` |
-| Change a setting | `config set(key, value)` | `config set("max_iterations", "50")` |
+| Change a setting | `config set(key, value)` | `config set("compression_threshold", "0.8")` |
 | Switch session | `tui_control switch_session(chat_id)` | |
 | Switch theme | `tui_control set_theme(theme_name)` | `tui_control set_theme("ocean")` |
 | Adjust layout | `tui_control set_layout(key, value)` | `tui_control set_layout("sidebar_width", "30")` |

@@ -200,7 +200,6 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 ```json
 {
   "agent": {
-    "max_iterations": 2000,
     "max_concurrency": 100,
     "memory_provider": "flat",
     "work_dir": ".",
@@ -224,7 +223,6 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_iterations` | int | `2000` | Max tool calls per conversation turn |
 | `max_concurrency` | int | `100` | Max concurrent LLM calls |
 | `memory_provider` | string | `"flat"` | Memory system: `flat` or `letta` |
 | `work_dir` | string | `"."` | Working directory |

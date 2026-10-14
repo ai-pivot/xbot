@@ -147,7 +147,7 @@ func TestSaveToFilePreservesUnknownFields(t *testing.T) {
 		t.Fatal("LoadFromFile returned nil")
 		return
 	}
-	cfg.Agent.MaxIterations = 500
+	cfg.Agent.MemoryProvider = "redis"
 
 	if err := SaveToFile(path, cfg); err != nil {
 		t.Fatalf("SaveToFile: %v", err)
@@ -168,8 +168,8 @@ func TestSaveToFilePreservesUnknownFields(t *testing.T) {
 	}
 
 	// 4. Verify known fields are correctly updated
-	if !strings.Contains(content, `"max_iterations": 500`) {
-		t.Errorf("max_iterations not updated in output:\n%s", content)
+	if !strings.Contains(content, `"memory_provider": "redis"`) {
+		t.Errorf("memory_provider not updated in output:\n%s", content)
 	}
 	if !strings.Contains(content, `"prompt_file": "CLAUDE.md"`) {
 		t.Errorf("prompt_file not preserved in output:\n%s", content)
@@ -254,7 +254,6 @@ func TestSaveToFileLoadSaveRoundtrip(t *testing.T) {
 			Model:    "glm-5.1",
 		},
 		Agent: AgentConfig{
-			MaxIterations:    2000,
 			MemoryProvider:   "flat",
 			WorkDir:          "/ipfs_flash/test",
 			PromptFile:       "CLAUDE.md",
@@ -276,7 +275,7 @@ func TestSaveToFileLoadSaveRoundtrip(t *testing.T) {
 		t.Fatal("LoadFromFile returned nil")
 		return
 	}
-	cfg2.Agent.MaxIterations = 3000
+	cfg2.Agent.MaxContextTokens = 3000
 	if err := SaveToFile(path, cfg2); err != nil {
 		t.Fatalf("second save: %v", err)
 	}
@@ -293,8 +292,8 @@ func TestSaveToFileLoadSaveRoundtrip(t *testing.T) {
 	if cfg3.Agent.WorkDir != "/ipfs_flash/test" {
 		t.Errorf("work_dir lost: got %q", cfg3.Agent.WorkDir)
 	}
-	if cfg3.Agent.MaxIterations != 3000 {
-		t.Errorf("max_iterations not updated: got %d", cfg3.Agent.MaxIterations)
+	if cfg3.Agent.MaxContextTokens != 3000 {
+		t.Errorf("max_context_tokens not updated: got %d", cfg3.Agent.MaxContextTokens)
 	}
 	if cfg3.LLM.Provider != "anthropic" {
 		t.Errorf("llm provider lost: got %q", cfg3.LLM.Provider)
@@ -472,7 +471,6 @@ func TestNormalizeConfigTypes_StringPort(t *testing.T) {
    "pprof": {"enable": "true", "port": "6060"},
    "feishu": {"enabled": "true"},
    "agent": {
-     "max_iterations": "2000",
      "max_concurrency": "3",
      "max_context_tokens": "200000",
      "enable_auto_compress": "true",
@@ -541,9 +539,6 @@ func TestNormalizeConfigTypes_StringPort(t *testing.T) {
 	}
 
 	// Agent fields
-	if cfg.Agent.MaxIterations != 2000 {
-		t.Errorf("agent.max_iterations: got %d, want 2000", cfg.Agent.MaxIterations)
-	}
 	// max_concurrency is NOT a config.json field anymore — its single source is
 	// the canonical user_settings row (channel.MaxConcurrencyChannel).
 	if cfg.Agent.MaxContextTokens != 200000 {
@@ -624,7 +619,7 @@ func TestNormalizeConfigTypes_AlreadyCorrect(t *testing.T) {
 	raw := `{
 	  "server": {"host": "0.0.0.0", "port": 8082},
 	  "web": {"enable": true, "port": 8082},
-	  "agent": {"max_iterations": 2000}
+	  "agent": {"max_context_tokens": 200000}
 	}`
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -645,8 +640,8 @@ func TestNormalizeConfigTypes_AlreadyCorrect(t *testing.T) {
 	if cfg.Web.Enable != true {
 		t.Errorf("web.enable: got %v, want true", cfg.Web.Enable)
 	}
-	if cfg.Agent.MaxIterations != 2000 {
-		t.Errorf("agent.max_iterations: got %d, want 2000", cfg.Agent.MaxIterations)
+	if cfg.Agent.MaxContextTokens != 200000 {
+		t.Errorf("agent.max_context_tokens: got %d, want 200000", cfg.Agent.MaxContextTokens)
 	}
 }
 
@@ -658,7 +653,7 @@ func TestNormalizeConfigTypes_PreservesUnknownFields(t *testing.T) {
 	dirtyConfig := `{
 	"server": {"host": "0.0.0.0", "port": "8082"},
 	"web": {"enable": "true", "port": "8082", "custom_web_key": "preserved"},
-	"agent": {"max_iterations": "2000"},
+	"agent": {"max_context_tokens": "200000"},
 	"my_custom_section": {"key": "value"},
 	"llm": {"provider": "openai", "model": "gpt-4o"}
 	}`
@@ -666,7 +661,7 @@ func TestNormalizeConfigTypes_PreservesUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Load should succeed despite string-typed port/enable/max_iterations
+	// Load should succeed despite string-typed port/enable/max_context_tokens
 	cfg := LoadFromFile(path)
 	if cfg == nil {
 		t.Fatal("LoadFromFile returned nil")
@@ -680,12 +675,12 @@ func TestNormalizeConfigTypes_PreservesUnknownFields(t *testing.T) {
 	if cfg.Web.Port != 8082 {
 		t.Errorf("web.port: got %d, want 8082", cfg.Web.Port)
 	}
-	if cfg.Agent.MaxIterations != 2000 {
-		t.Errorf("agent.max_iterations: got %d, want 2000", cfg.Agent.MaxIterations)
+	if cfg.Agent.MaxContextTokens != 200000 {
+		t.Errorf("agent.max_context_tokens: got %d, want 200000", cfg.Agent.MaxContextTokens)
 	}
 
 	// Modify a known field and save
-	cfg.Agent.MaxIterations = 50
+	cfg.Agent.MaxContextTokens = 123456
 	if err := SaveToFile(path, cfg); err != nil {
 		t.Fatalf("SaveToFile: %v", err)
 	}
@@ -703,8 +698,8 @@ func TestNormalizeConfigTypes_PreservesUnknownFields(t *testing.T) {
 	if !strings.Contains(content, `"my_custom_section"`) {
 		t.Errorf("my_custom_section not preserved in:\n%s", content)
 	}
-	if !strings.Contains(content, `"max_iterations": 50`) {
-		t.Errorf("max_iterations=50 not written in:\n%s", content)
+	if !strings.Contains(content, `"max_context_tokens": 123456`) {
+		t.Errorf("max_context_tokens=123456 not written in:\n%s", content)
 	}
 	// Dirty string values should now be proper types after merge
 	if !strings.Contains(content, `"port": 8082`) {
@@ -732,7 +727,7 @@ func TestSaveToFile_DirtyDataPreserved(t *testing.T) {
 	dirty := `{
 	"server": {"host": "0.0.0.0", "port": "8082"},
 	"web": {"enable": "true", "port": "8082"},
-	"agent": {"max_iterations": "100"},
+	"agent": {"max_context_tokens": "100000"},
 	"llm": {"provider": "openai", "model": "gpt-4o"},
 	"custom_field": "keep_me"
 	}`
@@ -762,8 +757,8 @@ func TestSaveToFile_DirtyDataPreserved(t *testing.T) {
 	if !cfg2.Web.Enable {
 		t.Error("web.enable not preserved")
 	}
-	if cfg2.Agent.MaxIterations != 100 {
-		t.Errorf("agent.max_iterations not preserved: got %d", cfg2.Agent.MaxIterations)
+	if cfg2.Agent.MaxContextTokens != 100000 {
+		t.Errorf("agent.max_context_tokens not preserved: got %d", cfg2.Agent.MaxContextTokens)
 	}
 
 	// Unknown field must survive the save/load cycle

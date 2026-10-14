@@ -482,9 +482,6 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 				result["max_context_tokens"] = fmt.Sprintf("%d", h.Cfg.Agent.MaxContextTokens)
 			}
 		}
-		if _, ok := result["max_iterations"]; !ok {
-			result["max_iterations"] = fmt.Sprintf("%d", h.Cfg.Agent.MaxIterations)
-		}
 		// max_concurrency is NOT injected from config.json: its single source is
 		// the canonical user_settings row (channel.MaxConcurrencyChannel), which
 		// is already in `result` when set. Removing the config fallback is what
@@ -543,13 +540,7 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		return nil
 	})
 
-	// ── Max iterations / concurrency / context tokens ──
-	t["set_max_iterations"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
-		N int `json:"n"`
-	}) error {
-		h.Ag.SetMaxIterations(p.N)
-		return nil
-	}))
+	// ── Concurrency / context tokens ──
 	t["set_max_concurrency"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		N int `json:"n"`
 	}) error {

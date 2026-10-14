@@ -218,7 +218,7 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 		return "flat"
 	}()
 	// ScopeGlobal keys: only fallback to config.json when DB has no value.
-	// Same pattern as max_iterations/max_concurrency/max_context_tokens below.
+	// Same pattern as max_concurrency/max_context_tokens below.
 	if _, ok := vals["compression_threshold"]; !ok {
 		vals["compression_threshold"] = func() string {
 			if app.cfg.Agent.CompressionThreshold > 0 {
@@ -231,17 +231,9 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 	if _, ok := vals["tavily_api_key"]; !ok {
 		vals["tavily_api_key"] = app.cfg.TavilyAPIKey
 	}
-	// ScopeUser keys (max_iterations, max_concurrency, max_context_tokens):
+	// ScopeUser keys (max_concurrency, max_context_tokens):
 	// Primary source is the user_settings DB (written by /set). Only fallback
 	// to config.json when DB has no value (first-run or never changed).
-	if _, ok := vals["max_iterations"]; !ok {
-		vals["max_iterations"] = func() string {
-			if app.cfg.Agent.MaxIterations > 0 {
-				return fmt.Sprintf("%d", app.cfg.Agent.MaxIterations)
-			}
-			return "30"
-		}()
-	}
 	// max_concurrency is NOT seeded from config.json — its single source is the
 	// canonical user_settings row (channel.MaxConcurrencyChannel).
 	if _, ok := vals["max_context_tokens"]; !ok {
@@ -289,7 +281,7 @@ func saveCLIConfig(cfg *config.Config) error {
 			return fmt.Errorf("config file parse error, not overwriting")
 		}
 	}
-	// Agent settings: always write back (max_iterations, max_concurrency, etc.)
+	// Agent settings: always write back (memory_provider, context_mode, etc.)
 	merged.Agent = cfg.Agent
 
 	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode):
@@ -864,7 +856,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		// Sync runtime settings from DB to the Agent.
 		// The Agent's ContextManager and other runtime state were created from
 		// config.json values during InitServer. But user settings (enable_auto_compress,
-		// context_mode, max_iterations, etc.) live in the DB and may differ.
+		// context_mode, compression_threshold, etc.) live in the DB and may differ.
 		// Without this sync, the Agent runs with stale config.json defaults — e.g.
 		// noopManager (mode=none) even though DB says "Auto Compress: On".
 		if dbSettings, err := client.GetSettings("cli", "cli_user"); err == nil && len(dbSettings) > 0 {

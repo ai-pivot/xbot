@@ -428,10 +428,9 @@ func (ss *bgSessionState) setActiveTurn(id uint64) {
 
 // Agent 核心 Agent 引擎
 type Agent struct {
-	bus           *bus.MessageBus
-	multiSession  *session.MultiTenantSession // Multi-tenant session manager
-	tools         *tools.Registry
-	maxIterations int
+	bus          *bus.MessageBus
+	multiSession *session.MultiTenantSession // Multi-tenant session manager
+	tools        *tools.Registry
 
 	skills             *SkillStore
 	agents             *AgentStore
@@ -1757,7 +1756,6 @@ type Config struct {
 	Bus            *bus.MessageBus
 	LLM            llm.LLM
 	Model          string
-	MaxIterations  int    // 单次对话最大工具调用迭代次数
 	MaxConcurrency int    // 最大并发会话处理数（默认 3）
 	DBPath         string // SQLite 数据库路径（空则使用默认路径）
 	SkillsDir      string // Skills 目录
@@ -2106,9 +2104,6 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 // New 创建 Agent
 func New(cfg Config) (*Agent, error) {
 	// 1. 设置配置默认值
-	if cfg.MaxIterations == 0 {
-		cfg.MaxIterations = 2000
-	}
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 3
 	}
@@ -2161,7 +2156,6 @@ func New(cfg Config) (*Agent, error) {
 		bus:                    cfg.Bus,
 		multiSession:           multiSession,
 		tools:                  registry,
-		maxIterations:          cfg.MaxIterations,
 		maxConcurrency:         cfg.MaxConcurrency,
 		deltaPush:              cfg.DeltaPush,
 		iterationLoopDetection: cfg.IterationLoopDetection,
@@ -2408,11 +2402,6 @@ func (a *Agent) SetContextMode(mode string) error {
 	return nil
 }
 
-func (a *Agent) SetMaxIterations(n int) {
-	a.contextManagerMu.Lock()
-	a.maxIterations = n
-	a.contextManagerMu.Unlock()
-}
 func (a *Agent) SetMaxConcurrency(n int) {
 	a.contextManagerMu.Lock()
 	a.maxConcurrency = n
@@ -2432,12 +2421,6 @@ func (a *Agent) SetCompressionThreshold(f float64) {
 	a.contextManagerMu.Lock()
 	a.contextManagerConfig.CompressionThreshold = f
 	a.contextManagerMu.Unlock()
-}
-
-func (a *Agent) getMaxIterations() int {
-	a.contextManagerMu.RLock()
-	defer a.contextManagerMu.RUnlock()
-	return a.maxIterations
 }
 
 func (a *Agent) getMaxConcurrency() int {
