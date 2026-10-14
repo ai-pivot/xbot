@@ -39,6 +39,7 @@ const en: Translations = {
     tasks: 'Tasks',
     tasksCron: 'Cron Jobs',
     tasksBg: 'Background Commands',
+    tasksSubAgents: 'Sub-Agents',
     cronSchedule: 'Schedule',
     cronNext: 'Next run',
     cronTarget: 'Target session',

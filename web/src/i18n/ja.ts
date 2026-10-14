@@ -39,6 +39,7 @@ const ja: Translations = {
     tasks: 'タスク',
     tasksCron: 'スケジュールタスク',
     tasksBg: 'バックグラウンドコマンド',
+    tasksSubAgents: 'サブエージェント',
     cronSchedule: 'スケジュール',
     cronNext: '次回実行',
     cronTarget: '対象セッション',
