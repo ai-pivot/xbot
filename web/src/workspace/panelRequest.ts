@@ -62,3 +62,39 @@ export function parsePanelQuery(search: string): string | null {
 export function mobileViewForPanel(panelId: string): 'detail' | null {
   return PANEL_DEEP_LINK_IDS.includes(panelId) ? 'detail' : null
 }
+
+/**
+ * `?xbot_embed=1` —— 宿主**嵌入模式**开关（与 `xbot_panel` 配对使用）。
+ *
+ * ── 为什么需要（用户定向，2026-10-14 原话）────────────────────────────────────
+ * 「**这种嵌套 web view 应该代理原 web 的导航事件，并且去掉多余的 ui**」＋
+ * 「**然后嵌套 webview 不要做多余的渲染**」。
+ *
+ * 现状（真机截图）：原生壳把 web 整壳塞进 WebView ⇒ 屏幕上是**两层 chrome** ——
+ * 原生 `‹ 文件 ⟳` 之上又出现 web 自己的 `← 工具` 头、`文件/搜索/信息/任务/终端` 页签行、
+ * 底部 InfoBar、会话列表……用户看到的是"套娃"，且**为一个面板渲了整个 SPA**。
+ *
+ * ⇒ 契约：`xbot_embed=1` 时，宿主只挂**面板本体**（`EmbedPanelShell`），web 自己的
+ *   头部/页签/InfoBar/会话列表一律**不渲染**（不是盖住，是不 mount —— 也省掉这份渲染开销）。
+ *   面板内的"导航意图"（标题变化、要求打开文件…）经 `workspace/hostBridge.ts` 代理给原生壳。
+ *
+ * ⛔ 缺省（无 `xbot_embed`）行为**逐字节不变**：浏览器直接访问 `/` 仍是完整应用。
+ */
+export const EMBED_QUERY_KEY = 'xbot_embed'
+
+/**
+ * 解析 URL 查询串 → 是否处于宿主嵌入模式。**纯函数**。
+ *
+ * 只认字面量 `'1'`（⛔ 不用 `!!value` 的宽松判定：`?xbot_embed=0` 必须表示"否"，
+ * 否则宿主拼接参数时的布尔渲染（如 `false`/`0`）会意外打开嵌入模式）。
+ */
+export function parseEmbedQuery(search: string): boolean {
+  if (!search || search.length < 2) {
+    return false
+  }
+  try {
+    return new URLSearchParams(search).get(EMBED_QUERY_KEY) === '1'
+  } catch {
+    return false
+  }
+}

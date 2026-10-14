@@ -16,6 +16,8 @@ import { SessionStoreProvider } from '@/hooks/useSessionStore'
 import { PluginWidgetProvider } from '@/plugins/PluginWidgetProvider'
 import { PluginRuntimeRoot } from '@/plugin-runtime/usePluginRuntimeHost'
 import { AppShell } from '@/layouts/AppShell'
+import { EmbedPanelShell } from '@/layouts/EmbedPanelShell'
+import { parseEmbedQuery, parsePanelQuery } from '@/workspace/panelRequest'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { LoginPage } from '@/pages/LoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
@@ -34,6 +36,16 @@ function SharePageRoute() {
 }
 
 export default function App() {
+  // 宿主嵌入模式（原生壳内嵌单个面板）：`?xbot_panel=<id>&xbot_embed=1`。
+  // 判定一次即可（URL 在 WebView 生命周期内不变，⛔ 不订阅 location 以免无谓重渲）。
+  // 两条都得成立 ⇒ 才走嵌入；`xbot_embed=1` 但面板 id 非法 ⇒ 回落完整应用
+  // （fail-safe：宁可多渲 chrome，也不给宿主渲一个空白壳）。
+  const embedPanelId = (() => {
+    if (typeof window === 'undefined') return null
+    const search = window.location.search
+    return parseEmbedQuery(search) ? parsePanelQuery(search) : null
+  })()
+
   return (
     <TooltipProvider delayDuration={200}>
       <BrowserRouter>
@@ -52,7 +64,11 @@ export default function App() {
                     <CwdProvider>
                       <PluginWidgetProvider>
                         <PluginRuntimeRoot>
-                          <AppShell />
+                          {embedPanelId ? (
+                            <EmbedPanelShell panelId={embedPanelId} />
+                          ) : (
+                            <AppShell />
+                          )}
                         </PluginRuntimeRoot>
                       </PluginWidgetProvider>
                     </CwdProvider>

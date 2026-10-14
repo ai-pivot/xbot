@@ -3,6 +3,7 @@ import {
   PANEL_DEEP_LINK_IDS,
   PANEL_QUERY_KEY,
   mobileViewForPanel,
+  parseEmbedQuery,
   parsePanelQuery,
 } from './panelRequest'
 
@@ -55,5 +56,36 @@ describe('parsePanelQuery', () => {
   it('⛔ 非法 id ⇒ null（不猜视图，宁可留在默认视图也不渲染空壳）', () => {
     expect(mobileViewForPanel('nope')).toBeNull()
     expect(mobileViewForPanel('')).toBeNull()
+  })
+})
+
+/**
+ * parseEmbedQuery —— 宿主**嵌入模式**开关（`?xbot_embed=1`）。
+ *
+ * 为什么值得测：它决定原生壳里要不要渲染 web 自己的 chrome（用户原话「去掉多余的 ui」
+ * 「不要做多余的渲染」）。判错两个方向的代价都不对称：
+ *   · 假阴（该 embed 却判否）⇒ 真机又出现"两层 chrome"套娃（用户已报的观感问题）；
+ *   · 假阳（不该 embed 却判真）⇒ 浏览器直接访问 `/` 时只剩一个面板，**整个应用"消失"**
+ *     （比套娃严重得多）⇒ 所以只认字面量 `'1'`，`0`/`false`/空/任意值一律否（fail-safe）。
+ */
+describe('parseEmbedQuery', () => {
+  it("只认字面量 '1'（与 xbot_panel 配对使用）", () => {
+    expect(parseEmbedQuery('?xbot_panel=files&xbot_embed=1')).toBe(true)
+    expect(parseEmbedQuery('?xbot_embed=1')).toBe(true)
+  })
+
+  it("⛔ '0'/空/任意值/false 一律否（否则浏览器访问 `/` 会只剩一个面板）", () => {
+    expect(parseEmbedQuery('?xbot_panel=files&xbot_embed=0')).toBe(false)
+    expect(parseEmbedQuery('?xbot_embed=')).toBe(false)
+    expect(parseEmbedQuery('?xbot_embed=false')).toBe(false)
+    expect(parseEmbedQuery('?xbot_embed=true')).toBe(false)
+    expect(parseEmbedQuery('?xbot_embed')).toBe(false)
+  })
+
+  it('无查询串 / 空串 / 单字符 / 怪输入 ⇒ 否且不抛', () => {
+    expect(parseEmbedQuery('')).toBe(false)
+    expect(parseEmbedQuery('?')).toBe(false)
+    expect(() => parseEmbedQuery('?xbot_embed=' + 'a'.repeat(5000))).not.toThrow()
+    expect(parseEmbedQuery('?xbot_embed=' + 'a'.repeat(5000))).toBe(false)
   })
 })
