@@ -34,8 +34,16 @@ export function useAnnotationDraft() { return useContext(DraftContext) }
 export function annotationSelection(body: HTMLElement): { quote: string; startOffset: number; endOffset: number } | null {
   const selection = window.getSelection()
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null
-  const range = selection.getRangeAt(0)
-  if (!body.contains(range.startContainer) || !body.contains(range.endContainer)) return null
+  const range = selection.getRangeAt(0).cloneRange()
+  if (!body.contains(range.startContainer)) return null
+  if (!body.contains(range.endContainer)) {
+    // Native paragraph selection can end at offset 0 of the following tool or
+    // block. Accept only an empty DOM-text tail, never actual outside content.
+    const tail = range.cloneRange()
+    tail.setStart(body, body.childNodes.length)
+    if (tail.toString() !== '') return null
+    range.setEnd(body, body.childNodes.length)
+  }
   const prefix = range.cloneRange()
   prefix.selectNodeContents(body)
   prefix.setEnd(range.startContainer, range.startOffset)
@@ -92,7 +100,7 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
       if (selectedRef.current?.live && !dragging && !selectionGesture) return
       selectionGesture = false
       const selection = document.getSelection()
-      const node = selection?.anchorNode
+      const node = selection?.rangeCount === 1 ? selection.getRangeAt(0).startContainer : null
       const element = node?.nodeType === Node.ELEMENT_NODE ? node as Element : node?.parentElement
       const body = element?.closest<HTMLElement>('[data-annotation-body]')
       const target = body?.closest<HTMLElement>('[data-copy-target]')

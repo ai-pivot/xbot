@@ -178,6 +178,39 @@ describe('selection comment entry', () => {
     expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
   })
 
+  it('accepts the final paragraph newline boundary but rejects actual following tool text', () => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:paragraph-end" visible>
+      <div data-copy-target="iteration" data-annotation-source='{"turnID":7,"iteration":1}'>
+        <div data-annotation-body=""><p>最后一段正文</p></div><div><span>工具输出</span></div>
+      </div>
+    </MessageAnnotationsProvider>)
+    const paragraph = screen.getByText('最后一段正文')
+    const tool = screen.getByText('工具输出')
+    const range = document.createRange()
+    range.setStart(paragraph.firstChild!, 0)
+    range.setEnd(tool.firstChild!, 0)
+    range.getClientRects = () => [new DOMRect(20, 100, 120, 20)] as unknown as DOMRectList
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toBeInTheDocument()
+    // Reverse selection starts at the next node, but the ordered range still
+    // belongs to this body. The provider must not resolve via anchorNode.
+    selection.setBaseAndExtent(tool.firstChild!, 0, paragraph.firstChild!, 0)
+    selection.getRangeAt(0).getClientRects = () => [new DOMRect(20, 100, 120, 20)] as unknown as DOMRectList
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toBeInTheDocument()
+    selection.removeAllRanges()
+    selection.addRange(range)
+    range.setEnd(tool.firstChild!, 1)
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
+  })
+
   it('ignores reasoning, tools and cross-body selections', () => {
     renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:eligibility" visible>
       <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '第一段', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 7, iteration: 1 }}>
