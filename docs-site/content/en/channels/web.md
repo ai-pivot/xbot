@@ -70,7 +70,7 @@ Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.)
 | Upload limit | 10MB per file (size only — no type restrictions) |
 | Terminal commands | A message starting with `!` runs **directly in the sandbox as a shell command** and returns its output as a chat message — the AI is skipped (`!ls -la`, `!git status`, `!docker ps`). The composer shows a hint while the draft is a `!` command; `![…]` markdown images (pasted screenshots) are **not** commands |
 
-Image previews in the composer fit within **240 × 120 px**, preserve their aspect ratio, and shrink to fit narrow windows. **Double-click an image** to view it enlarged; press Esc, click the backdrop, or use the close button to dismiss it. Thumbnail sizing does not modify uploaded files or the image references sent with your message.
+Image previews in the composer fit within **240 × 120 px**, preserve their aspect ratio, and shrink to fit narrow windows. **Click an image** to view it enlarged; press Esc, click the backdrop, or use the close button to dismiss it. Thumbnail sizing does not modify uploaded files or the image references sent with your message.
 
 
 ## Response Comments

@@ -76,7 +76,7 @@ describe('MessageInput', () => {
     expect(rule).toMatch(/object-fit:\s*contain/)
   })
 
-  it('opens images only on double click, closes the viewer, and sends the unchanged original reference', async () => {
+  it('opens images on a single click, closes the viewer, and sends the unchanged original reference', async () => {
     const onSend = vi.fn()
     const { container } = renderWithProviders(<>
       <ImageLightboxHost />
@@ -86,16 +86,14 @@ describe('MessageInput', () => {
     await setEditorContent(markdown)
     const image = container.querySelector('.xbot-editor img')!
     fireEvent.click(image)
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    fireEvent.doubleClick(image)
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(screen.getByRole('dialog').querySelector('img')).toHaveAttribute('src', image.getAttribute('src'))
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    fireEvent.doubleClick(image)
+    fireEvent.click(image)
     fireEvent.click(screen.getByRole('button', { name: 'close' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    fireEvent.doubleClick(image)
+    fireEvent.click(image)
     fireEvent.click(screen.getByRole('dialog'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     fireEvent.keyDown(container.querySelector('.xbot-editor')!, { key: 'Enter', ctrlKey: true })

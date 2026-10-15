@@ -335,7 +335,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       },
       // Drag-over highlight (depth-counted — dragenter/leave fire per child element)
       handleDOMEvents: {
-        dblclick: (_view, event) => {
+        click: (_view, event) => {
           if (!(event.target instanceof HTMLImageElement)) return false
           event.preventDefault()
           openLightbox(event.target.getAttribute('src') || '', event.target.alt)
