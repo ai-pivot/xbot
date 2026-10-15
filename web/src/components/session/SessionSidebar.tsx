@@ -15,25 +15,15 @@
  * Wires useSessionStore to the search box, category switcher, the list, and
  * the new-session dialog. Pure presentational composition on top of the store.
  */
-import { useCallback, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Globe, LayoutGrid, Loader2, Plus, Terminal, MessageCircle, Server, CheckSquare, X, Trash2 } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
+import { ChevronDown, Globe, LayoutGrid, Loader2, Plus, Terminal, MessageCircle, Server } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useI18n } from '@/providers/i18n'
 import { useSessionStore } from '@/hooks/useSessionStore'
-import { groupSessions, isSubAgentSession, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
+import { groupSessions, isSubAgentSession, parseAgentChatID, sameSession, sortSessions } from '@/lib/session-grouping'
 import { cn } from '@/lib/utils'
 import type { SessionInfo, SessionSelector } from '@/types/shared'
 import type { ExportFormat } from '@/components/agent/api'
@@ -42,6 +32,8 @@ import type { TabManager } from '@/hooks/useTabManager'
 import { SessionSearch, SessionSearchToggle } from './SessionSearch'
 import { SessionList } from './SessionList'
 import { SessionViewBar } from './SessionViewBar'
+import { useSessionSelection } from '@/hooks/useSessionSelection'
+import { SessionBatchActions, SessionMultiSelectButton } from './SessionBatchActions'
 import { NewSessionDialog } from './NewSessionDialog'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
 
@@ -88,13 +80,6 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   }, [searchOpen, closeSearch])
   const [channelPickerOpen, setChannelPickerOpen] = useState(false)
 
-  // Multi-select state
-  const [multiSelectMode, setMultiSelectMode] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const lastSelectedKey = useRef<string | null>(null)
-  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
-  const [batchBusy, setBatchBusy] = useState(false)
-
   // Channel-filtered sessions
   const filteredSessions = useMemo(() => {
     if (!store.activeChannel) return store.sessions
@@ -114,6 +99,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
     () => sortSessions(filteredSessions, store.starredIds),
     [filteredSessions, store.starredIds],
   )
+
+  const selection = useSessionSelection(filteredSessions, store, search)
 
   // Unified select handler: SubAgent clicks open a new Agent tab; main session
   // clicks open/focus an agent tab for that session (desktop) or switch session
@@ -185,77 +172,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
     [],
   )
 
-  // Multi-select toggle handler with Shift+click range support
-  const handleToggleSelect = useCallback(
-    (key: string, shiftKey: boolean) => {
-      setSelectedIds((prev) => {
-        // Shift+click: select range from lastSelected to current
-        if (shiftKey && lastSelectedKey.current) {
-          // Build ordered key list from visible main sessions
-          const orderedKeys = filteredSessions
-            .filter((s) => !isSubAgentSession(s) && !s.synthetic)
-            .map((s) => sessionKey(s))
-          const startIdx = orderedKeys.indexOf(lastSelectedKey.current)
-          const endIdx = orderedKeys.indexOf(key)
-          if (startIdx >= 0 && endIdx >= 0) {
-            const [from, to] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx]
-            const rangeKeys = orderedKeys.slice(from, to + 1)
-            const next = new Set(prev)
-            const allInRange = rangeKeys.every((k) => next.has(k))
-            if (allInRange) {
-              rangeKeys.forEach((k) => next.delete(k))
-            } else {
-              rangeKeys.forEach((k) => next.add(k))
-            }
-            return next
-          }
-        }
-        // Normal toggle
-        const next = new Set(prev)
-        if (next.has(key)) next.delete(key)
-        else next.add(key)
-        lastSelectedKey.current = key
-        return next
-      })
-    },
-    [filteredSessions],
-  )
-
-  const exitMultiSelect = useCallback(() => {
-    setMultiSelectMode(false)
-    setSelectedIds(new Set())
-    lastSelectedKey.current = null
-  }, [])
-
-  // Batch delete: iterate selected sessions and delete each
-  const handleBatchDelete = useCallback(async () => {
-    setBatchBusy(true)
-    try {
-      const entries = Array.from(selectedIds)
-      await Promise.allSettled(
-        entries.map((key) => {
-          const [channel, ...chatIDParts] = key.split(':')
-          const chatID = chatIDParts.join(':')
-          return store.deleteSession(chatID, channel || 'web')
-        }),
-      )
-    } finally {
-      setBatchBusy(false)
-      setBatchDeleteOpen(false)
-      exitMultiSelect()
-    }
-  }, [selectedIds, store, exitMultiSelect])
-
-  // Select all visible main sessions
-  const selectAll = useCallback(() => {
-    const keys = filteredSessions
-      .filter((s) => !isSubAgentSession(s) && !s.synthetic)
-      .map((s) => sessionKey(s))
-    setSelectedIds(new Set(keys))
-  }, [filteredSessions])
-
   return (
-    <div className="flex h-full w-full flex-col bg-bg-secondary">
+    <div className="flex h-full w-full flex-col bg-bg-secondary" onKeyDown={selection.onKeyDown}>
       {/* Header: channel filter + new-session button */}
       <header
         className="flex h-9 shrink-0 items-center justify-between px-2"
@@ -316,23 +234,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           </Popover>
         </div>
         <div className="flex items-center gap-0.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                aria-label={t('session.multiSelect')}
-                onClick={() => {
-                  if (multiSelectMode) exitMultiSelect()
-                  else setMultiSelectMode(true)
-                }}
-                style={multiSelectMode ? { color: 'var(--accent)', backgroundColor: 'var(--bg-tertiary)' } : undefined}
-              >
-                <CheckSquare />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">{t('session.multiSelect')}</TooltipContent>
-          </Tooltip>
+          <SessionMultiSelectButton selection={selection} />
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -441,9 +343,9 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           }}
           onExport={handleExport}
           onReorder={store.reorderSessions}
-          multiSelectMode={multiSelectMode}
-          selectedIds={selectedIds}
-          onToggleSelect={handleToggleSelect}
+          multiSelectMode={selection.mode}
+          selectedIds={selection.ids}
+          onToggleSelect={selection.toggle}
           hasMore={store.hasMore}
           onLoadMore={store.loadMore}
         />
@@ -451,80 +353,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
       </div>
 
 
-      {/* Batch operation bar — shown when multi-select is active and items are selected */}
-      {multiSelectMode && selectedIds.size > 0 && (
-        <div
-          className="flex shrink-0 items-center gap-2 px-3 py-2"
-          style={{ borderTop: '1px solid var(--border)', backgroundColor: 'var(--bg-tertiary)' }}
-        >
-          <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-            {t('session.selectedCount', { n: selectedIds.size })}
-          </span>
-          <div className="flex-1" />
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={selectAll}
-            className="h-7 text-xs"
-          >
-            {t('session.selectAll')}
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => setBatchDeleteOpen(true)}
-            className="h-7 gap-1 text-xs"
-          >
-            <Trash2 className="size-3" />
-            {t('common.delete')}
-          </Button>
-        </div>
-      )}
-
-      {/* Multi-select exit bar — shown when multi-select is active but nothing selected */}
-      {multiSelectMode && selectedIds.size === 0 && (
-        <div
-          className="flex shrink-0 items-center justify-between px-3 py-2"
-          style={{ borderTop: '1px solid var(--border)' }}
-        >
-          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            {t('session.multiSelect')}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={exitMultiSelect}
-            className="h-7 gap-1 text-xs"
-          >
-            <X className="size-3" />
-            {t('session.exitMultiSelect')}
-          </Button>
-        </div>
-      )}
-
-      {/* Batch delete confirmation */}
-      <AlertDialog open={batchDeleteOpen} onOpenChange={setBatchDeleteOpen}>
-        <AlertDialogContent className="sm:max-w-sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('session.batchDeleteTitle')}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t('session.batchDeleteConfirm', { n: selectedIds.size })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={batchBusy}>{t('common.cancel')}</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault()
-                void handleBatchDelete()
-              }}
-              disabled={batchBusy}
-            >
-              {t('common.delete')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <SessionBatchActions selection={selection} store={store} />
 
       <NewSessionDialog
         open={newOpen}

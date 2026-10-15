@@ -9,6 +9,8 @@
  */
 import type { WSConnection } from '@/types/ws'
 import type { ContextUsage, ModelEntry, PerModelConfig, ProgressEvent, SessionSelector, Subscription, TodoItem, WebIteration } from '@/types/shared'
+import { createStoredZip, type ZipFile } from '@/lib/zipStore'
+import { sessionKey } from '@/lib/session-grouping'
 import { APIError, postAPI } from '@/lib/api'
 import { normalizeWebIteration } from '@/components/agent/normalize'
 
@@ -375,7 +377,7 @@ export interface DemoRecord {
  * - benchmark: HLE / mint-bench JSONL (one record per user turn, with
  *   uuid/question/answer/domain/messages/correct/judge_applied)
  */
-export async function downloadSession(session: SessionSelector, format: ExportFormat = 'native'): Promise<void> {
+export async function exportSessionFile(session: SessionSelector, format: ExportFormat = 'native'): Promise<{ filename: string; content: string; mime: string }> {
   let content: string
   let mime: string
   let ext: string
@@ -570,15 +572,44 @@ export async function downloadSession(session: SessionSelector, format: ExportFo
   // Sanitize the session label for filename
   const label = (session.chatID || 'session').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60)
   const filename = `${label}.${ext}`
-  const blob = new Blob([content], { type: `${mime};charset=utf-8` })
+  return { filename, content, mime }
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
   a.download = filename
   document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  try { a.click() } finally {
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+}
+
+export async function downloadSession(session: SessionSelector, format: ExportFormat = 'native'): Promise<void> {
+  const file = await exportSessionFile(session, format)
+  downloadBlob(new Blob([file.content], { type: `${file.mime};charset=utf-8` }), file.filename)
+}
+
+/** Channel-qualified exports, one file per session, one ZIP download. Failures stay available for retry. */
+export async function downloadSessionsArchive(sessions: Array<SessionSelector & { label?: string }>, format: ExportFormat): Promise<{ succeeded: string[]; failed: string[] }> {
+  const files: ZipFile[] = []
+  const succeeded: string[] = [], failed: string[] = []
+  for (const [index, session] of sessions.entries()) {
+    const key = sessionKey(session)
+    try {
+      const file = await exportSessionFile(session, format)
+      // eslint-disable-next-line no-control-regex -- Remove control bytes from downloaded filenames.
+      const label = (session.label || session.chatID).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/^\.+/, '_').slice(0, 80) || 'session'
+      const channel = session.channel.replace(/[^a-zA-Z0-9_-]/g, '_') || 'web'
+      const extension = file.filename.split('.').pop()
+      files.push({ name: `${String(index + 1).padStart(4, '0')}-${channel}-${label}.${extension}`, bytes: new TextEncoder().encode(file.content) })
+      succeeded.push(key)
+    } catch { failed.push(key) }
+  }
+  if (files.length) downloadBlob(new Blob([createStoredZip(files)], { type: 'application/zip' }), 'xbot-sessions.zip')
+  return { succeeded, failed }
 }
 
 /** Import a portable session into an existing (or new) chat. */

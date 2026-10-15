@@ -1,16 +1,15 @@
 /**
  * 手机端「设置」面板全 tab 溢出/截断回归。
  *
- * 覆盖 SettingsDialog 的 11 个分类（appearance / interaction / language /
- * agent / llm / account / webusers / developer / layout / plugins / about）：
+ * 覆盖 SettingsDialog 的全部移动端分类（不包含桌面专属 shortcuts 分类）：
  * 逐 tab 打开，检测「可见且不可达」的元素溢出（rect.right > 视口宽）。
  *
- * 排除三类合法情况（与 settings-llm-mobile.spec.ts 同口径）：
- *  1) transform/visibility/opacity 隐藏态
- *  2) 祖先有 overflow-x auto/scroll（合法横滚容器，如 nav tab 条）
- *  3) 祖先有 overflow-x hidden（显式裁剪，内容不可拖出）
+ * Measure visible text/control geometry and assert the aggregate is empty.
+ * Ignore accessible scrolling, screen-reader descriptions, deliberate ellipsis,
+ * and entirely offscreen translated drawers; do not silently log failures.
  */
 import { test, expect } from '@playwright/test'
+import { collectSettingsOverflow } from './helpers/settings-overflow'
 
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
 
@@ -91,6 +90,197 @@ async function loginAndOpenSettings(page: import('@playwright/test').Page) {
   await page.waitForTimeout(500)
 }
 
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 1024, height: 600 }]) {
+  test(`shortcut settings header stays compact at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await page.addInitScript(() => {
+      localStorage.setItem('xbot-locale', 'zh-CN')
+      localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ openInTab: 'f8' }))
+    })
+    await setupMock(page)
+    let creations = 0
+    await page.route('**/api/chats/create', route => {
+      creations++
+      return route.fulfill({ json: { ok: true, data: {} } })
+    })
+    await loginAndOpenSettings(page)
+    const dialog = page.getByRole('dialog', { name: '设置' })
+    await dialog.locator('nav').getByRole('button', { name: '交互', exact: true }).click()
+    await expect(dialog.getByRole('textbox')).toHaveCount(0)
+    await expect(dialog.getByRole('heading', { name: '代码块自动换行' })).toBeVisible()
+    await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
+    const section = dialog.getByRole('region', { name: '会话快捷键' })
+    await expect(section.getByRole('textbox')).toHaveCount(7)
+    const createField = section.getByRole('textbox', { name: '创建新会话' })
+    await expect(createField).toHaveValue('F8')
+    await expect(section.getByRole('textbox', { name: '在新标签页中打开' })).toHaveValue(
+      await page.evaluate(() => /^(Linux|Win)/i.test(navigator.platform) ? 'Ctrl+Shift+2' : 'Ctrl+N'),
+    )
+    const heading = section.getByRole('heading', { name: '会话快捷键' })
+    const reset = section.getByRole('button', { name: '全部恢复默认' })
+    await expect(async () => {
+      const titleRect = await heading.boundingBox()
+      const resetRect = await reset.boundingBox()
+      expect(titleRect).not.toBeNull()
+      expect(resetRect).not.toBeNull()
+      expect(Math.abs(titleRect!.y + titleRect!.height / 2 - resetRect!.y - resetRect!.height / 2)).toBeLessThanOrEqual(2)
+      expect(resetRect!.x).toBeGreaterThanOrEqual(titleRect!.x + titleRect!.width)
+      expect(resetRect!.x + resetRect!.width).toBeLessThanOrEqual(viewport.width)
+    }).toPass()
+    const headerHeight = await section.locator('header').evaluate(el => el.getBoundingClientRect().height)
+    expect(headerHeight).toBeLessThanOrEqual(36)
+    const overflow = await section.evaluate(el => el.scrollWidth - el.clientWidth)
+    expect(overflow).toBeLessThanOrEqual(1)
+    if (viewport.width >= 640) {
+      const nav = dialog.locator('nav')
+      const about = nav.getByRole('button', { name: '关于', exact: true })
+      await about.scrollIntoViewIfNeeded()
+      const navRect = await nav.boundingBox()
+      const aboutRect = await about.boundingBox()
+      expect(aboutRect!.y).toBeGreaterThanOrEqual(navRect!.y)
+      expect(aboutRect!.y + aboutRect!.height).toBeLessThanOrEqual(navRect!.y + navRect!.height)
+    }
+    await createField.focus()
+    await page.keyboard.press('F8')
+    expect(creations).toBe(0)
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    const tabs = page.context().pages().length
+    await page.keyboard.press('F8')
+    await expect.poll(() => creations).toBe(1)
+    expect(page.context().pages()).toHaveLength(tabs)
+  })
+}
+
+for (const { viewport, mode } of [
+  { viewport: { width: 390, height: 844 }, mode: 'auto' },
+  { viewport: { width: 320, height: 700 }, mode: 'auto' },
+  { viewport: { width: 1440, height: 1000 }, mode: 'mobile' },
+]) {
+  test(`mobile shortcut settings are absent at ${viewport.width}px in ${mode} mode`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await page.addInitScript(mode => {
+      localStorage.setItem('xbot-locale', 'zh-CN')
+      localStorage.setItem('xbot-ui-mode', mode)
+      localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ openInTab: 'f8', star: 'f9' }))
+    }, mode)
+    await setupMock(page)
+    let creations = 0
+    await page.route('**/api/chats/create', route => {
+      creations++
+      return route.fulfill({ json: { ok: true, data: {} } })
+    })
+    await loginAndOpenSettings(page)
+    const dialog = page.getByRole('dialog', { name: '设置' })
+    await expect(dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true })).toHaveCount(0)
+    await expect(dialog.locator('[data-shortcut-action]')).toHaveCount(0)
+    await dialog.locator('nav').getByRole('button', { name: '交互', exact: true }).click()
+    await expect(dialog.getByRole('heading', { name: '代码块自动换行' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await page.keyboard.press('F8')
+    await page.keyboard.press('F2')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    expect(creations).toBe(0)
+    await page.getByRole('button', { name: '会话', exact: true }).click()
+    const row = page.locator('[data-session-row="web:chat-1"]')
+    await row.click({ button: 'right' })
+    const menu = page.getByRole('menu')
+    await expect(menu).toBeVisible()
+    await expect(menu.locator('[data-slot="context-menu-shortcut"]')).toHaveCount(0)
+    await page.keyboard.press('F2')
+    await expect(page.getByRole('dialog', { name: '重命名' })).toHaveCount(0)
+    await menu.getByRole('menuitem', { name: '重命名', exact: true }).click()
+    const rename = page.getByRole('dialog', { name: '重命名' })
+    await expect(rename).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(rename).toBeHidden()
+    await row.click()
+    await expect(page.getByRole('dialog', { name: '会话', exact: true })).toBeHidden()
+    await page.getByRole('button', { name: '新建会话', exact: true }).click()
+    await expect.poll(() => creations).toBe(1)
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('xbot-session-shortcuts')!))).toEqual({ openInTab: 'f8', star: 'f9' })
+  })
+}
+
+test('shortcut settings follow viewport changes without rewriting desktop bindings', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.addInitScript(() => {
+    localStorage.setItem('xbot-locale', 'zh-CN')
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: 'f8' }))
+  })
+  await setupMock(page)
+  await loginAndOpenSettings(page)
+  let dialog = page.getByRole('dialog', { name: '设置' })
+  await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
+  await expect(dialog.getByRole('textbox', { name: '创建新会话' })).toHaveValue('F8')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(dialog).toBeHidden()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  dialog = page.getByRole('dialog', { name: '设置' })
+  await expect(dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true })).toHaveCount(0)
+  await expect(dialog.locator('[data-shortcut-action]')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await expect(dialog).toBeVisible()
+  await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
+  await expect(dialog.getByRole('textbox', { name: '创建新会话' })).toHaveValue('F8')
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('xbot-session-shortcuts')!))).toEqual({ newSession: 'f8' })
+})
+
+test('browser-tab shortcut opens the row and menu target without creating a session', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.addInitScript(() => {
+    localStorage.setItem('xbot-locale', 'zh-CN')
+    if (!localStorage.getItem('xbot-session-shortcuts')) {
+      localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: 'f8' }))
+    }
+  })
+  await setupMock(page)
+  let creations = 0
+  await page.route('**/api/chats/create', route => {
+    creations++
+    return route.fulfill({ json: { ok: true, data: {} } })
+  })
+  await loginAndOpenSettings(page)
+  const dialog = page.getByRole('dialog', { name: '设置' })
+  await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
+  const field = dialog.getByRole('textbox', { name: '在新标签页中打开' })
+  await field.fill('F9')
+  await field.press('Enter')
+  await expect(field).toHaveValue('F9')
+  await expect(dialog.getByRole('textbox', { name: '创建新会话' })).toHaveValue('F8')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  const row = page.locator('[data-session-row="web:chat-1"]')
+  for (const scope of ['row', 'menu']) {
+    if (scope === 'row') await row.focus()
+    else {
+      await row.click({ button: 'right' })
+      await expect(page.getByRole('menuitem', { name: '在新标签页中打开' }).locator('[data-slot="context-menu-shortcut"]')).toHaveText('F9')
+    }
+    const popupPromise = page.waitForEvent('popup')
+    await page.keyboard.press('F9')
+    const popup = await popupPromise
+    await expect(popup).toHaveURL(/\?session=web%3Achat-1$/)
+    expect(await popup.evaluate(() => window.opener)).toBeNull()
+    await popup.close()
+    await expect(page.getByRole('menu')).toBeHidden()
+    expect(creations).toBe(0)
+  }
+  await page.reload()
+  await row.waitFor({ state: 'visible' })
+  await row.focus()
+  const popupPromise = page.waitForEvent('popup')
+  await page.keyboard.press('F9')
+  const popup = await popupPromise
+  await expect(popup).toHaveURL(/\?session=web%3Achat-1$/)
+  await popup.close()
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('xbot-session-shortcuts')!))).toEqual({ newSession: 'f8', openInBrowserTab: 'f9' })
+  expect(creations).toBe(0)
+})
+
 test('mobile: every settings tab fits the viewport (no truncation)', async ({ browser }) => {
   for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 700 }]) {
   const page = await browser.newPage({ viewport })
@@ -128,52 +318,33 @@ test('mobile: every settings tab fits the viewport (no truncation)', async ({ br
     const label = ((await navButtons.nth(i).textContent()) ?? `tab-${i}`).trim()
     await navButtons.nth(i).click()
     await page.waitForTimeout(450)
-    const overflow = await page.evaluate(() => {
-      const vw = window.innerWidth
-      const out: string[] = []
-      document.querySelectorAll('[data-slot="dialog-content"] *').forEach((el) => {
-        const tag = el.tagName.toLowerCase()
-        const cls = String((el as HTMLElement).className).split(' ').slice(0, 3).join('.')
-        const txt = (el.textContent ?? '').trim().slice(0, 24)
-        const st = getComputedStyle(el)
-        const r = el.getBoundingClientRect()
-
-        // (A) 溢出视口且不可达（排除隐藏态 + 合法横滚/裁剪祖先）——含向左溢出
-        if (r.width > 0 && (r.right > vw + 1 || r.left < -1)) {
-          if (!(st.opacity === '0' || st.visibility === 'hidden' || st.transform !== 'none')) {
-            let p = el.parentElement
-            let reachable = true
-            while (p && p !== document.body) {
-              const ps = getComputedStyle(p)
-              if (ps.overflowX === 'auto' || ps.overflowX === 'scroll' || ps.overflowX === 'hidden') {
-                reachable = false
-                break
-              }
-              p = p.parentElement
-            }
-            if (reachable) out.push(`OVERFLOW-VIEWPORT ${tag}.${cls} left=${Math.round(r.left)} right=${Math.round(r.right)} w=${Math.round(r.width)} "${txt}"`)
-          }
-        }
-
-        // (B) 横向内容被裁：scrollWidth 超出但 overflow-x 不可滚（内容不可达）
-        if (st.overflowX === 'hidden' && el.scrollWidth > el.clientWidth + 2 && el.clientWidth > 0) {
-          // 有 ellipsis 的是「有意截断」（单行省略号），单列出来便于人工判断
-          const kind = st.textOverflow === 'ellipsis' ? 'ELLIPSIS' : 'CLIPPED-X'
-          out.push(`${kind} ${tag}.${cls} scrollW=${el.scrollWidth} clientW=${el.clientWidth} "${txt}"`)
-        }
-
-        // (C) 纵向内容被裁：scrollHeight 超出但 overflow-y 不可滚（底部内容不可达）
-        if (st.overflowY === 'hidden' && el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0) {
-          out.push(`CLIPPED-Y ${tag}.${cls} scrollH=${el.scrollHeight} clientH=${el.clientHeight} "${txt}"`)
-        }
-      })
-      return out
-    })
+    const overflow = await page.evaluate(collectSettingsOverflow)
     if (overflow.length) problems.push(`[${viewport.width}px|${label}] ${overflow.join(' || ')}`)
   }
 
-  console.log(`SETTINGS TAB OVERFLOW PROBLEMS (${viewport.width}px):\n` + problems.join('\n'))
+  expect(problems, `Settings overflow at ${viewport.width}px`).toEqual([])
   await page.close()
   }
-  // 汇总在循环内打印；断言由每次运行的日志体现（problems 在循环内累积）
+})
+
+test('settings overflow guard detects a visible regression while permitting intentional clipping', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 700 })
+  await page.setContent(`<div data-slot="dialog-content" style="position:relative;width:280px;overflow:hidden">
+    <p class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden">Accessible description</p>
+    <p style="width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">An intentionally truncated label</p>
+    <nav style="width:280px;overflow-x:auto"><button style="width:500px">Reachable by scrolling</button></nav>
+    <aside style="position:absolute;width:280px;transform:translateX(100%)"><button>Closed drawer</button></aside>
+  </div>`)
+  expect(await page.evaluate(collectSettingsOverflow)).toEqual([])
+  await page.evaluate(() => {
+    const button = document.createElement('button'); button.textContent = 'Oversized visible control'; button.style.width = '600px'
+    document.querySelector('[data-slot="dialog-content"]')!.appendChild(button)
+  })
+  expect(await page.evaluate(collectSettingsOverflow)).toEqual(expect.arrayContaining([expect.stringContaining('Oversized visible control')]))
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-slot="dialog-content"]')!
+    root.lastElementChild!.remove()
+    root.insertAdjacentHTML('beforeend', '<div style="width:250px;overflow:auto"><div style="width:80px;height:10px;overflow:hidden"><span>Clipped inner text</span></div></div>')
+  })
+  expect(await page.evaluate(collectSettingsOverflow)).toEqual(expect.arrayContaining([expect.stringContaining('Clipped inner text')]))
 })
