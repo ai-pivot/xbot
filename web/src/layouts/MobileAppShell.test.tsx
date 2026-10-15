@@ -113,6 +113,13 @@ import { registerBuiltinLayoutItems, layoutRegistry } from '@/plugin-runtime/lay
 import { changeLocale } from '@/i18n'
 
 describe('MobileAppShell', () => {
+  it('clips the app viewport without making it an ancestor scroll container', () => {
+    const { container } = renderWithProviders(<MobileAppShell />)
+    const viewport = container.querySelector('.fixed.inset-0')
+    expect(viewport).toHaveClass('overflow-clip')
+    expect(viewport).not.toHaveClass('overflow-hidden')
+  })
+
   beforeEach(() => {
     localStorage.removeItem('xbot-session-shortcuts')
     mocks.sessionStore.createSession.mockReset()

@@ -102,6 +102,13 @@ import { AppShell } from './AppShell'
 import { PluginWidgetsContext } from '@/plugins/PluginWidgetProvider'
 
 describe('AppShell workspace layout (info bar must not squeeze the dockview)', () => {
+  it('clips the app viewport without making it an ancestor scroll container', () => {
+    const { container } = renderWithProviders(<AppShell />)
+    const viewport = container.querySelector('.fixed.inset-0')
+    expect(viewport).toHaveClass('overflow-clip')
+    expect(viewport).not.toHaveClass('overflow-hidden')
+  })
+
   beforeEach(() => {
     sessionMocks.createSession.mockClear()
     sessionMocks.openTab.mockClear()
