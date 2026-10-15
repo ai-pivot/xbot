@@ -1252,8 +1252,14 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	if a.multiSession == nil {
 		return key, nil
 	}
-	if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
-		if replay, err := sess.Replay(); err == nil && replay.PendingAskUser != nil {
+	// Resolve again before replay: deletion may have happened after the probe.
+	// Never use GetOrCreateSession on this read-only recovery path.
+	tenantID, err := sqlite.NewTenantService(a.multiSession.DB()).GetTenantIDByChannelChatID(ch, chatID)
+	if err != nil || tenantID == 0 {
+		return key, nil
+	}
+	if svc, err := a.multiSession.SessionServiceFor(tenantID); err == nil {
+		if replay, err := svc.Replay(tenantID); err == nil && replay.PendingAskUser != nil {
 			event := &protocol.ProgressEvent{}
 			metadata := replay.PendingAskUser.Metadata
 			event.RequestID = metadata["request_id"]
@@ -1343,13 +1349,24 @@ func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqli
 	if a.multiSession == nil {
 		return 0, "", false
 	}
-	sess, err := a.multiSession.GetOrCreateSession(ch, chatID)
+	db := a.multiSession.DB()
+	if db == nil {
+		return 0, "", false
+	}
+	// Session-tree probes must not recreate a tenant from a stale deleted row.
+	tenantID, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil {
 		return 0, "", false
 	}
-	// v71（每会话一个 DB）：ask 控制记录在会话库 —— 经 TenantSession.SessionService()
-	// （绑定会话库）查询，绝不再 NewSessionService(主库)（那会读主库的旧数据）。
-	id, recordType, err := sess.SessionService().LatestAskControlRecord(sess.TenantID())
+	if tenantID == 0 {
+		return 0, "", true
+	}
+	// AskUser records live in the per-session DB, not the main registry.
+	svc, err := a.multiSession.SessionServiceFor(tenantID)
+	if err != nil {
+		return 0, "", false
+	}
+	id, recordType, err := svc.LatestAskControlRecord(tenantID)
 	if err != nil {
 		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
 			Warn("latestAskControlRecord: query failed, trusting in-memory AskUser state")

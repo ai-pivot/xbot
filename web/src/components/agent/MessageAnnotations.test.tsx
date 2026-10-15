@@ -36,6 +36,49 @@ afterEach(() => {
 })
 
 describe('selection comment entry', () => {
+  it.each([
+    { x: 60, y: 180, expectedX: 60, expectedY: 128 },
+    { x: 900, y: 600, expectedX: 900, expectedY: 548 },
+    { x: 1020, y: 10, expectedX: 972, expectedY: 18 },
+  ])('anchors mouse selection at release ($x, $y), not the range right edge', ({ x, y, expectedX, expectedY }) => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:mouse-position" visible>
+      <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '正文', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 7, iteration: 1 }}>
+        <p data-annotation-body="">正文</p>
+      </CopyTarget>
+    </MessageAnnotationsProvider>)
+    const text = screen.getByText('正文')
+    const pointer = (type: string) => Object.assign(new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y }), { pointerType: 'mouse' })
+    fireEvent(text, pointer('pointerdown'))
+    selectText(text)
+    fireEvent(text, pointer('pointerup'))
+    act(() => frameScheduler.flushNow())
+    const action = screen.getByTestId('annotation-selection-action')
+    expect(action.style.left).toBe(`${expectedX}px`)
+    expect(action.style.top).toBe(`${expectedY}px`)
+    // A delayed selectionchange must not jump back to the range rectangle.
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(action.style.left).toBe(`${expectedX}px`)
+    fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+    act(() => frameScheduler.flushNow())
+    expect(action.style.left).toBe('96px')
+  })
+
+  it('keeps native touch selection on range geometry rather than touch release coordinates', () => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:touch-position" visible>
+      <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '正文', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 7, iteration: 1 }}>
+        <p data-annotation-body="">正文</p>
+      </CopyTarget>
+    </MessageAnnotationsProvider>)
+    const text = screen.getByText('正文')
+    const pointer = (type: string) => Object.assign(new MouseEvent(type, { bubbles: true, button: 0, clientX: 900, clientY: 600 }), { pointerType: 'touch' })
+    fireEvent(text, pointer('pointerdown'))
+    selectText(text)
+    fireEvent(text, pointer('pointerup'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toHaveStyle({ left: '96px', top: '48px' })
+  })
+
   it('ignores a malformed DOM annotation source without throwing in a frame task', () => {
     renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:malformed" visible>
       <div data-copy-target="iteration" data-annotation-source="{broken"><p data-annotation-body="">body</p></div>
@@ -130,6 +173,39 @@ describe('selection comment entry', () => {
     expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
     selectText(text)
     document.getSelection()!.removeAllRanges()
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
+  })
+
+  it('accepts the final paragraph newline boundary but rejects actual following tool text', () => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:paragraph-end" visible>
+      <div data-copy-target="iteration" data-annotation-source='{"turnID":7,"iteration":1}'>
+        <div data-annotation-body=""><p>最后一段正文</p></div><div><span>工具输出</span></div>
+      </div>
+    </MessageAnnotationsProvider>)
+    const paragraph = screen.getByText('最后一段正文')
+    const tool = screen.getByText('工具输出')
+    const range = document.createRange()
+    range.setStart(paragraph.firstChild!, 0)
+    range.setEnd(tool.firstChild!, 0)
+    range.getClientRects = () => [new DOMRect(20, 100, 120, 20)] as unknown as DOMRectList
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toBeInTheDocument()
+    // Reverse selection starts at the next node, but the ordered range still
+    // belongs to this body. The provider must not resolve via anchorNode.
+    selection.setBaseAndExtent(tool.firstChild!, 0, paragraph.firstChild!, 0)
+    selection.getRangeAt(0).getClientRects = () => [new DOMRect(20, 100, 120, 20)] as unknown as DOMRectList
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toBeInTheDocument()
+    selection.removeAllRanges()
+    selection.addRange(range)
+    range.setEnd(tool.firstChild!, 1)
     fireEvent(document, new Event('selectionchange'))
     act(() => frameScheduler.flushNow())
     expect(screen.queryByTestId('annotation-selection-action')).toBeNull()

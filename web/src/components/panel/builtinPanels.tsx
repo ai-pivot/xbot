@@ -25,6 +25,8 @@ import { SessionList } from '@/components/session/SessionList'
 import { ChannelPicker } from '@/components/session/ChannelPicker'
 import { SessionSearch, SessionSearchToggle } from '@/components/session/SessionSearch'
 import { SessionViewBar } from '@/components/session/SessionViewBar'
+import { useSessionSelection } from '@/hooks/useSessionSelection'
+import { SessionBatchActions, SessionMultiSelectButton } from '@/components/session/SessionBatchActions'
 import { NewSessionDialog } from '@/components/session/NewSessionDialog'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
 import {
@@ -85,6 +87,8 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
     [filteredSessions, store.starredIds],
   )
 
+  const selection = useSessionSelection(filteredSessions, store, search)
+
   // 主会话点击：desktop 打开/聚焦 agent tab（session-per-tab）+ 侧栏高亮。
   const handleSelect = useCallback(
     (id: string, channel: string) => {
@@ -133,7 +137,7 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   }, [])
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col" onKeyDown={selection.onKeyDown}>
       {/* 「新建会话」+ 搜索：同一行。展开搜索时【横向挤压】新建会话按钮
           （收缩到图标大小），搜索框在同一行内展开——不纵向撑开列表。 */}
       <div
@@ -174,6 +178,7 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
         >
           <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} inputRef={searchInputRef} className="ml-1.5" />
         </div>
+        <SessionMultiSelectButton selection={selection} />
         <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} className="ml-1.5" />
       </div>
       {/* 分类切换 + 全部折叠/展开：与手机抽屉共用（桌面曾整体缺失，切不到按项目） */}
@@ -219,12 +224,16 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
               return newID
             }}
             onExport={handleExport}
+            multiSelectMode={selection.mode}
+            selectedIds={selection.ids}
+            onToggleSelect={selection.toggle}
             onReorder={store.reorderSessions}
             hasMore={store.hasMore}
             onLoadMore={store.loadMore}
           />
         )}
       </div>
+      <SessionBatchActions selection={selection} store={store} />
       <NewSessionDialog
         open={newOpen}
         onOpenChange={setNewOpen}

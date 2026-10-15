@@ -14,11 +14,13 @@ interface SettingsSectionProps {
   title: string
   /** Secondary line explaining the option. */
   description?: string
+  /** Group-level controls displayed beside the heading. */
+  actions?: ReactNode
   /** The setting control(s): switch, select, color picker, ... */
   children: ReactNode
 }
 
-export function SettingsSection({ title, description, children }: SettingsSectionProps) {
+export function SettingsSection({ title, description, actions, children }: SettingsSectionProps) {
   // Generate a stable-ish label id so controls can associate aria-labelledby.
   const reactId = useId()
   const titleId = `settings-section-${reactId}`
@@ -28,14 +30,17 @@ export function SettingsSection({ title, description, children }: SettingsSectio
       aria-labelledby={titleId}
       className="flex flex-col gap-2.5 rounded-xl border border-border bg-bg-secondary px-4 py-4"
     >
-      <div className="flex flex-col gap-1">
-        <h3 id={titleId} className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-          {title}
-        </h3>
-        {description ? (
-          <p className="text-xs text-text-muted">{description}</p>
-        ) : null}
-      </div>
+      <header className="flex min-w-0 items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <h3 id={titleId} className="text-[10px] font-semibold uppercase tracking-wider text-text-muted wrap-anywhere">
+            {title}
+          </h3>
+          {description ? (
+            <p className="text-xs text-text-muted">{description}</p>
+          ) : null}
+        </div>
+        {actions ? <div className="shrink-0">{actions}</div> : null}
+      </header>
       <div className="flex flex-col gap-2.5">{children}</div>
     </section>
   )
