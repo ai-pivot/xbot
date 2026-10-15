@@ -4,17 +4,26 @@
  * Renders the translated group header (time / status) and its
  * sorted SessionItem children. Collapsible so long lists stay scannable.
  */
-import { ChevronRight, Plus } from 'lucide-react'
+import { ChevronRight, Plus, Pencil, GripVertical } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
+import type { SessionCustomGroup } from '@/lib/session-custom-groups'
 import type { ExportFormat } from '@/components/agent/api'
 import { SessionItem } from './SessionItem'
 import { childrenForParent } from './session-tree'
 import { AnimatedCollapse } from '@/components/ui/animated-collapse'
 
 interface SessionGroupProps {
+  customGroup?: SessionCustomGroup
+  customGroups?: SessionCustomGroup[]
+  groupBusy?: boolean
+  onEditGroup?: () => void
+  onMoveToGroup?: (session: SessionInfo, groupId: string | null) => void
+  onDropGroup?: (event: React.DragEvent) => void
+  onDragGroup?: (event: React.DragEvent) => void
+
   groupKey: string
   category: SessionCategory
   sessions: SessionInfo[]
@@ -39,10 +48,12 @@ interface SessionGroupProps {
   /** Drag-and-drop reorder. */
   onDragStartItem?: (key: string) => void
   onDropItem?: (targetKey: string) => void
+  onDragEndItem?: () => void
 }
 
 export function SessionGroup({
   groupKey,
+  customGroup, customGroups, groupBusy, onEditGroup, onMoveToGroup, onDropGroup, onDragGroup,
   category,
   sessions,
   open,
@@ -62,25 +73,28 @@ export function SessionGroup({
   onToggleSelect,
   onDragStartItem,
   onDropItem,
+  onDragEndItem,
 }: SessionGroupProps) {
   const { t } = useI18n()
-  const title = groupTitle(groupKey, category, t)
+  const title = customGroup?.name ?? groupTitle(groupKey, category, t)
   const starred = new Set(starredIds)
   const unreadSet = new Set(unreadIds)
 
   return (
-    <section className="flex min-w-0 flex-col">
+    <section data-testid={`session-group-${groupKey}`} className="flex min-w-0 flex-col" onDragOver={event => { if (onDropGroup && !groupBusy) event.preventDefault() }} onDrop={onDropGroup}>
       {/* Independent sibling buttons keep creation separate from collapse. */}
       <div className="flex min-w-0 items-center gap-1">
+        {customGroup && <button type="button" data-testid="group-drag" draggable={!groupBusy} disabled={groupBusy} onDragStart={onDragGroup} aria-label={t('session.reorderGroup')} title={t('session.reorderGroup')} className="size-6 shrink-0 cursor-grab text-text-secondary"><GripVertical className="mx-auto size-3.5" /></button>}
         <button
           type="button"
           onClick={onToggle}
+          data-testid="group-header"
           aria-expanded={open}
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-spring hover:bg-bg-tertiary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50"
           style={{ color: 'var(--text-secondary)' }}
         >
           <ChevronRight className={cn('size-3.5 shrink-0 transition-transform duration-200', open && 'rotate-90')} />
-          <span className="truncate" title={category === 'path' && groupKey !== '__unset__' ? groupKey : undefined}>{title}</span>
+          <span className="min-w-0 truncate" title={customGroup?.name ?? (category === 'path' && groupKey !== '__unset__' ? groupKey : undefined)}>{title}</span>
           <span
             className="shrink-0 rounded-full bg-bg-tertiary/70 px-1.5 py-px font-medium tabular-nums"
             style={{ color: 'var(--text-muted)' }}
@@ -88,11 +102,14 @@ export function SessionGroup({
             {sessions.length}
           </span>
         </button>
-        {category === 'path' && groupKey !== '__unset__' && onNewSession && (
+        {onEditGroup && <button type="button" disabled={groupBusy} data-testid="group-edit" onClick={onEditGroup} aria-label={t('session.editGroup')} title={t('session.editGroup')} className="size-7 shrink-0 rounded-md text-text-secondary hover:bg-bg-tertiary/40 disabled:opacity-40"><Pencil className="mx-auto size-3.5" /></button>}
+        {(customGroup || (category === 'path' && groupKey !== '__unset__')) && onNewSession && (
           <button
             type="button"
+            disabled={groupBusy}
             aria-label={`${t('session.newSession')} — ${groupKey}`}
             title={`${t('session.newSession')} — ${groupKey}`}
+            data-testid="group-new-session"
             onClick={() => onNewSession(groupKey)}
             className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-spring hover:bg-bg-tertiary/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50"
           >
@@ -106,6 +123,9 @@ export function SessionGroup({
             <div key={sessionKey(s)} className="flex flex-col gap-0.5">
               <SessionItem
                 session={s}
+                customGroups={customGroups}
+                groupBusy={groupBusy}
+                onMoveToGroup={onMoveToGroup}
                 starred={starred.has(sessionKey(s))}
                 unread={unreadSet.has(sessionKey(s))}
                 active={sameSession(activeSession, s)}
@@ -120,6 +140,7 @@ export function SessionGroup({
                 onToggleSelect={onToggleSelect}
                 onDragStartItem={onDragStartItem}
                 onDropItem={onDropItem}
+                onDragEndItem={onDragEndItem}
               />
               {/* Render SubAgent children (indented) for this parent session */}
               {childrenForParent(s).filter(isVisibleSubAgent).map((sa) => (

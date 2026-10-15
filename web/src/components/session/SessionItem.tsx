@@ -25,6 +25,7 @@ import i18n from '@/i18n'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { parseAgentChatID, sessionKey } from '@/lib/session-grouping'
 import type { SessionInfo, SessionStatus } from '@/types/shared'
+import type { SessionCustomGroup } from '@/lib/session-custom-groups'
 import type { ExportFormat } from '@/components/agent/api'
 
 interface SessionItemProps {
@@ -52,6 +53,10 @@ interface SessionItemProps {
   /** Drag-and-drop reorder: called when this item is dragged over another. */
   onDragStartItem?: (key: string) => void
   onDropItem?: (targetKey: string) => void
+  onDragEndItem?: () => void
+  customGroups?: SessionCustomGroup[]
+  groupBusy?: boolean
+  onMoveToGroup?: (session: SessionInfo, groupId: string | null) => void
 }
 
 const STATUS_COLOR: Record<SessionStatus, string> = {
@@ -81,6 +86,10 @@ export function SessionItem({
   onToggleSelect,
   onDragStartItem,
   onDropItem,
+  onDragEndItem,
+  customGroups = [],
+  groupBusy = false,
+  onMoveToGroup,
 }: SessionItemProps) {
   const { t } = useI18n()
   const isTouch = useIsTouch()
@@ -101,6 +110,7 @@ export function SessionItem({
 
   const row = (
     <div
+      data-session-key={key}
       role="button"
       tabIndex={0}
       draggable={!isSubAgent && !multiSelectMode && !session.synthetic && !!onDragStartItem}
@@ -108,15 +118,19 @@ export function SessionItem({
         if (!onDragStartItem) return
         onDragStartItem(key)
         e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('application/x-xbot-session', JSON.stringify({ channel: session.channel, chatID: session.chatID }))
       }}
+      onDragEnd={onDragEndItem}
       onDragOver={(e) => {
         if (!onDropItem) return
         e.preventDefault()
         e.dataTransfer.dropEffect = 'move'
       }}
       onDrop={(e) => {
+        if (e.dataTransfer.getData('application/x-xbot-group')) return
         if (!onDropItem) return
         e.preventDefault()
+        e.stopPropagation()
         onDropItem(key)
       }}
       onClick={(e) => {
@@ -310,6 +324,13 @@ export function SessionItem({
             </ContextMenuSubContent>
           </ContextMenuSub>
         )}
+        {onMoveToGroup && <ContextMenuSub>
+          <ContextMenuSubTrigger disabled={groupBusy}>{t('session.moveToGroup')}</ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            <ContextMenuItem disabled={groupBusy} onSelect={() => onMoveToGroup(session, null)}>{t('session.automaticGroup')}</ContextMenuItem>
+            {customGroups.map(group => <ContextMenuItem key={group.id} disabled={groupBusy} onSelect={() => onMoveToGroup(session, group.id)}>{group.name}</ContextMenuItem>)}
+          </ContextMenuSubContent>
+        </ContextMenuSub>}
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => onDelete(session)} variant="destructive">
           <Trash2 className="size-4" />

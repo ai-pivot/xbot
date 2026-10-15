@@ -30,6 +30,7 @@ function session(overrides: Partial<SessionInfo> & { chatID: string; channel: st
     historical: overrides.historical,
     synthetic: overrides.synthetic,
     children: overrides.children,
+    workDir: overrides.workDir,
   }
 }
 
@@ -212,12 +213,14 @@ describe('SessionList', () => {
     expect(screen.getByText('review/1')).toBeInTheDocument()
   })
 
-  it('hides synthetic parents and their SubAgents from the active list', () => {
+  it('hides synthetic parents without live SubAgents from the active list', () => {
     const child = session({
       chatID: 'cli:/repo:Agent-deleted/review:1',
       channel: 'agent',
       label: 'review/1',
       type: 'agent',
+      running: false,
+      status: 'idle',
       parentChannel: 'cli',
       parentChatID: '/repo:Agent-deleted',
     })
@@ -386,7 +389,7 @@ describe('project group collapse', () => {
 
 describe('project creation entry', () => {
   it('passes the full path without toggling, including collapsed groups, and only appears for projects', () => {
-    const repo = session({ chatID: 'repo', channel: 'web', label: 'Project chat' })
+    const repo = session({ chatID: 'repo', channel: 'web', label: 'Project chat', workDir: '/repos/my-project' })
     const onNewSession = vi.fn()
     const onToggleGroup = vi.fn()
     const props = {
@@ -402,7 +405,7 @@ describe('project creation entry', () => {
     expect(onNewSession).toHaveBeenCalledWith('/repos/my-project')
     expect(onToggleGroup).not.toHaveBeenCalled()
     expect(screen.getByTitle('/repos/my-project').closest('button')).toHaveAttribute('aria-expanded', 'false')
-    rerender(<SessionList {...props} groups={[{ key: '__unset__', sessions: [repo] }]} />)
+    rerender(<SessionList {...props} sessions={[{ ...repo, workDir: undefined }]} groups={[{ key: '__unset__', sessions: [repo] }]} />)
     expect(screen.queryByRole('button', { name: /— / })).not.toBeInTheDocument()
     for (const category of ['time', 'status'] as const) {
       rerender(<SessionList {...props} category={category} groups={[{ key: category === 'time' ? 'today' : 'idle', sessions: [repo] }]} />)
@@ -410,3 +413,9 @@ describe('project creation entry', () => {
     }
   })
 })
+
+vi.mock('@/hooks/useSessionGroups', () => ({
+  notifySessionGroupsChanged: vi.fn(),
+  useSessionGroups: () => ({ state: { revision: 0, groups: [], memberships: {} }, loading: false, busy: false, error: null,
+    refresh: vi.fn(), createGroup: vi.fn(), convertGroup: vi.fn(), updateGroup: vi.fn(), deleteGroup: vi.fn(), moveSessions: vi.fn(), reorderGroups: vi.fn() }),
+}))

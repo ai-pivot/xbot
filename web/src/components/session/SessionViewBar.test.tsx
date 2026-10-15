@@ -11,10 +11,12 @@ import { fireEvent, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import i18n from '@/i18n'
+import { I18nProvider } from '@/providers/i18n'
 import { renderWithProviders } from '@/test-utils'
 import { SessionViewBar } from './SessionViewBar'
 
 const spies = vi.hoisted(() => ({
+  groupBusy: false,
   setCategory: vi.fn(),
   setGroupsCollapsed: vi.fn(),
   state: { category: 'path' as string, collapsed: new Set<string>() },
@@ -30,6 +32,7 @@ vi.mock('@/hooks/useSessionStore', () => ({
 }))
 
 beforeEach(() => {
+  spies.groupBusy = false
   spies.state.category = 'path'
   spies.state.collapsed = new Set<string>()
   spies.setCategory.mockClear()
@@ -43,6 +46,21 @@ function categoryOrder(): string[] {
 }
 
 describe('SessionViewBar', () => {
+  it('preserves create draft across parent refresh, focus and busy rerenders', () => {
+    const { rerender } = renderWithProviders(<SessionViewBar groupKeys={['/repo']} />)
+    fireEvent.click(screen.getByTestId('group-create'))
+    fireEvent.change(screen.getByLabelText(i18n.t('session.groupName')), { target: { value: 'Draft team' } })
+    fireEvent.change(screen.getByLabelText(i18n.t('session.groupDirectory')), { target: { value: '/draft/path' } })
+    fireEvent.focus(window)
+    spies.groupBusy = true
+    rerender(<I18nProvider><SessionViewBar groupKeys={['/repo', '/new']} /></I18nProvider>)
+    expect(screen.getByLabelText(i18n.t('session.groupName'))).toHaveValue('Draft team')
+    expect(screen.getByLabelText(i18n.t('session.groupDirectory'))).toHaveValue('/draft/path')
+    spies.groupBusy = false
+    rerender(<I18nProvider><SessionViewBar groupKeys={['/repo']} /></I18nProvider>)
+    expect(screen.getByLabelText(i18n.t('session.groupName'))).toHaveValue('Draft team')
+    expect(screen.getByLabelText(i18n.t('session.groupDirectory'))).toHaveValue('/draft/path')
+  })
   it('renders 项目 → 状态 → 时间，并高亮当前分类', () => {
     renderWithProviders(<SessionViewBar groupKeys={['/repo']} />)
 
@@ -84,3 +102,9 @@ describe('SessionViewBar', () => {
     expect(screen.queryByTestId('session-collapse-all')).toBeNull()
   })
 })
+
+vi.mock('@/hooks/useSessionGroups', () => ({
+  notifySessionGroupsChanged: vi.fn(),
+  useSessionGroups: () => ({ state: { revision: 0, groups: [], memberships: {} }, loading: false, busy: spies.groupBusy, error: null,
+    refresh: vi.fn(), createGroup: vi.fn(), convertGroup: vi.fn(), updateGroup: vi.fn(), deleteGroup: vi.fn(), moveSessions: vi.fn(), reorderGroups: vi.fn() }),
+}))

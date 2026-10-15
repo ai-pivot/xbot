@@ -6,7 +6,10 @@
  * `CoreSessionsPanel` 后再也切不了渠道；分类切换器曾重演同一遗漏（只在抽屉里）
  * ⇒ 桌面上「按项目组织」根本切不到。新增列表级控件一律放这里，两处复用。
  */
-import { ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
+import { useState } from 'react'
+import { SessionGroupDialog, type GroupDialogTarget } from './SessionGroupDialog'
+import { useSessionGroups } from '@/hooks/useSessionGroups'
+import { ChevronsDownUp, ChevronsUpDown, FolderPlus } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
@@ -33,6 +36,8 @@ function labelForCategory(c: SessionCategory, t: (k: string) => string): string 
 
 export function SessionViewBar({ groupKeys, className }: SessionViewBarProps) {
   const { t } = useI18n()
+  const [createTarget, setCreateTarget] = useState<GroupDialogTarget | null>(null)
+  const groups = useSessionGroups()
   const store = useSessionStore()
   const keys = groupKeys.map((k) => collapseKey(store.category, k))
   const allCollapsed = keys.length > 0 && keys.every((k) => store.collapsedGroups.has(k))
@@ -63,6 +68,8 @@ export function SessionViewBar({ groupKeys, className }: SessionViewBarProps) {
           </button>
         )
       })}
+      <button type="button" data-testid="group-create" disabled={groups.loading || groups.busy || !!groups.error} onClick={() => setCreateTarget({})} aria-label={t('session.createGroup')} title={t('session.createGroup')} className="size-7 shrink-0 rounded text-text-secondary hover:bg-bg-tertiary/60"><FolderPlus className="mx-auto size-3.5" /></button>
+      <SessionGroupDialog target={createTarget} onClose={() => setCreateTarget(null)} />
       {keys.length > 0 && (
         <button
           type="button"

@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -127,5 +128,74 @@ func TestUserSettingsNilDB(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Delete with nil db")
 		return
+	}
+}
+
+// Generic settings are single-operator, so private per-Web-user group rows
+// must be excluded at the store boundary (including namespace-based RPCs).
+func TestUserSettingsSessionGroupsPrivate(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "private.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	svc := NewUserSettingsService(db)
+	for _, namespace := range []string{"web", "cli", "custom"} {
+		for _, sender := range []string{"web-1", "web-2", "cli_user"} {
+			_, err := db.Conn().Exec(`INSERT INTO user_settings(channel,sender_id,key,value,updated_at) VALUES(?,?,?,?,0)`, namespace, sender, SessionGroupsSettingKey, "private-"+sender)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := svc.Set(namespace, "web-1", "ordinary", "public"); err != nil {
+			t.Fatal(err)
+		}
+		for _, sender := range []string{"web-1", "web-2", "cli_user", "unknown"} {
+			got, err := svc.Get(namespace, sender)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := got[SessionGroupsSettingKey]; ok {
+				t.Fatalf("private groups leaked to %s/%s", namespace, sender)
+			}
+			if got["ordinary"] != "public" {
+				t.Fatalf("unrelated setting changed: %v", got)
+			}
+			if err := svc.Set(namespace, sender, SessionGroupsSettingKey, "overwrite"); !errors.Is(err, ErrPrivateSetting) {
+				t.Fatalf("private write not blocked: %v", err)
+			}
+			if err := svc.Delete(namespace, sender, SessionGroupsSettingKey); !errors.Is(err, ErrPrivateSetting) {
+				t.Fatalf("private delete not blocked: %v", err)
+			}
+		}
+		rows, err := db.Conn().Query(`SELECT sender_id,value FROM user_settings WHERE channel=? AND key=?`, namespace, SessionGroupsSettingKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for rows.Next() {
+			var sender, value string
+			if err := rows.Scan(&sender, &value); err != nil {
+				t.Fatal(err)
+			}
+			if value != "private-"+sender {
+				t.Fatal("private document overwritten")
+			}
+			count++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		rows.Close()
+		if count != 3 {
+			t.Fatalf("private documents removed: %d", count)
+		}
+		if err := svc.Delete(namespace, "web-2", "ordinary"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := svc.Get(namespace, "web-1")
+		if err != nil || len(got) != 0 {
+			t.Fatalf("ordinary deletion changed: %v %v", got, err)
+		}
 	}
 }

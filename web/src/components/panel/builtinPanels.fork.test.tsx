@@ -131,3 +131,9 @@ describe('CoreSessionsPanel fork（REPRO: 主会话面板的 SessionList 漏传 
     })
   })
 })
+
+vi.mock('@/hooks/useSessionGroups', () => ({
+  notifySessionGroupsChanged: vi.fn(),
+  useSessionGroups: () => ({ state: { revision: 0, groups: [], memberships: {} }, loading: false, busy: false, error: null,
+    refresh: vi.fn(), createGroup: vi.fn(), convertGroup: vi.fn(), updateGroup: vi.fn(), deleteGroup: vi.fn(), moveSessions: vi.fn(), reorderGroups: vi.fn() }),
+}))
