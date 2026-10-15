@@ -4,6 +4,9 @@ import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
 import { MessageInput, __getTestEditor, isBangDraft } from './MessageInput'
+import { ImageLightboxHost } from './Lightbox'
+// @ts-expect-error node builtin — test-only file; the web tsconfig has no node types
+import { readFileSync } from 'node:fs'
 import { MessageAnnotationsProvider } from './MessageAnnotations'
 import { CopyTarget } from './MessageActions'
 import { annotationStorageKey, parseAnnotatedMessage, type MessageAnnotation } from '@/lib/messageAnnotations'
@@ -63,6 +66,40 @@ async function setEditorContent(content: string) {
 }
 
 describe('MessageInput', () => {
+  it('bounds composer thumbnails in both dimensions without cropping', () => {
+    const rule = readFileSync('src/index.css', 'utf8').match(/\.ProseMirror\.xbot-editor img\s*\{([^}]+)\}/)?.[1]
+    expect(rule).toBeDefined()
+    expect(rule).toMatch(/max-width:\s*min\(100%, 240px\)/)
+    expect(rule).toMatch(/max-height:\s*120px/)
+    expect(rule).toMatch(/width:\s*auto/)
+    expect(rule).toMatch(/height:\s*auto/)
+    expect(rule).toMatch(/object-fit:\s*contain/)
+  })
+
+  it('opens images on a single click, closes the viewer, and sends the unchanged original reference', async () => {
+    const onSend = vi.fn()
+    const { container } = renderWithProviders(<>
+      <ImageLightboxHost />
+      <MessageInput busy={false} onSend={onSend} onCancel={vi.fn()} onUpload={vi.fn()} />
+    </>)
+    const markdown = '![long screenshot](/api/files/download?key=uploads%2Flong.png&inline=1)'
+    await setEditorContent(markdown)
+    const image = container.querySelector('.xbot-editor img')!
+    fireEvent.click(image)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByRole('dialog').querySelector('img')).toHaveAttribute('src', image.getAttribute('src'))
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.click(image)
+    fireEvent.click(screen.getByRole('button', { name: 'close' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.click(image)
+    fireEvent.click(screen.getByRole('dialog'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.keyDown(container.querySelector('.xbot-editor')!, { key: 'Enter', ctrlKey: true })
+    expect(onSend).toHaveBeenCalledWith(markdown, undefined, undefined)
+  })
+
   it('sends ordinary text without removing an in-flight upload', async () => {
     const onSend = vi.fn().mockResolvedValue(true)
     const onUpload = vi.fn(() => new Promise<{ upload_key: string }>(() => {}))
@@ -201,6 +238,27 @@ describe('MessageInput', () => {
     fireEvent.click(screen.getByLabelText('common.cancel'))
     expect(onCancel).toHaveBeenCalledOnce()
     await act(async () => { finishUpload({ upload_key: 'uploads/notes.txt', name: 'notes.txt', size: 4, mime: 'text/plain' }) })
+  })
+
+  it('does not expose image node selection when navigating before an image', async () => {
+    renderWithProviders(<MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />)
+    await setEditorContent('![photo](/api/files/download?key=uploads%2Fphoto.png&inline=1)')
+    // ProseMirror arrow navigation selects adjacent selectable inline atoms;
+    // typing then replaces that entire image instead of inserting before it.
+    expect(__getTestEditor()!.schema.nodes.image.spec.selectable).toBe(false)
+  })
+
+  it('keeps an inline image visible and serializable when text is inserted before it', async () => {
+    const { container } = renderWithProviders(
+      <MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />,
+    )
+    await setEditorContent('![photo](/api/files/download?key=uploads%2Fphoto.png&inline=1)')
+    const editor = __getTestEditor()!
+    expect(editor.state.doc.toJSON()).toMatchObject({ content: [{ type: 'paragraph', content: [{ type: 'image' }] }] })
+    editor.commands.setTextSelection({ from: 1, to: 1 })
+    editor.commands.insertContent('12')
+    expect(container.querySelectorAll('.xbot-editor img[src]')).toHaveLength(1)
+    expect((editor.storage as unknown as { markdown: { getMarkdown: () => string } }).markdown.getMarkdown()).toContain('12![photo](/api/files/download?key=uploads%2Fphoto.png&inline=1)')
   })
 
   it('delegates the bottom safe area to the InfoBar below (no own inset padding)', () => {
