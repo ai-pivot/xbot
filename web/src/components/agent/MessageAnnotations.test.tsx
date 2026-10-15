@@ -388,24 +388,35 @@ describe('annotation editor', () => {
 })
 
 describe('annotation snapshot rendering', () => {
-  it('renders literal brackets, HTML, links, fences and math instead of interpreting them', () => {
+  it('renders literal brackets, HTML, links, fences and math instead of interpreting them', async () => {
     const quote = '中文 🙂 [链接](https://example.com) <script>x</script> $x$ \\(x\\) ``` !rm -rf /'
     const annotation: MessageAnnotation = { id: 'one', source: { turnID: 7 }, quote, comment: '评论 [保持字面量]' }
     const content = formatAnnotatedMessage('正文', [annotation], (key) => key)
     const { container } = renderWithProviders(<UserMessage content={content} />)
-    expect(container.querySelector('pre code')?.textContent).toContain(quote)
-    expect(container.textContent).toContain(annotation.comment)
-    expect(container.querySelector('script, a, .katex')).toBeNull()
+    // The floating card owns the snapshots; the bubble keeps the count pill and body only.
+    expect(container.textContent).not.toContain(quote)
+    fireEvent.click(screen.getByRole('button', { name: /1 (条注释|annotation)/ }))
+    const card = await screen.findByRole('dialog')
+    expect(card.textContent).toContain(quote)
+    expect(card.textContent).toContain(annotation.comment)
+    expect(card.querySelector('script, a, .katex')).toBeNull()
+    expect(card.textContent).not.toMatch(/response-annotations|turnId|startOffset|Response annotations|My request/)
     expect(container.textContent).not.toMatch(/response-annotations|turnId|startOffset|Response annotations|My request/)
   })
 
-  it('preserves TeX after a shorter standalone fence inside the snapshot fence', () => {
+  it('preserves TeX after a shorter standalone fence inside the snapshot fence', async () => {
     const quote = '前文\n```\n\\(literal\\)\n\\[literal display\\]\n````still literal\n\\(more\\)'
     const annotation: MessageAnnotation = { id: 'nested', source: { turnID: 7 }, quote, comment: '保留原文' }
     const content = formatAnnotatedMessage('', [annotation], (key) => key)
     const { container } = renderWithProviders(<UserMessage content={content} />)
-    expect(container.querySelector('pre code')?.textContent).toBe(quote + '\n')
-    expect(container.querySelector('.katex')).toBeNull()
+    expect(container.querySelector('pre code')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /1 (条注释|annotation)/ }))
+    const card = await screen.findByRole('dialog')
+    // Plain-text rendering: the quote renders exactly, fences included, with no KaTeX.
+    const rendered = [...card.querySelectorAll('div.whitespace-pre-wrap')].map((el) => el.textContent)
+    expect(rendered).toContain(quote)
+    expect(rendered).toContain('保留原文')
+    expect(card.querySelector('.katex')).toBeNull()
   })
 
   it('clears annotation drafts when authentication caches are reset', () => {
