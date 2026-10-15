@@ -1,3 +1,6 @@
+import { toast } from 'sonner'
+import { useSessionGroups } from '@/hooks/useSessionGroups'
+import { composeSessionGroups } from '@/lib/session-custom-groups'
 /**
  * SessionSidebar — the left session panel (Spec 3 §3.1).
  *
@@ -72,9 +75,12 @@ interface SessionSidebarProps {
 export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect }: SessionSidebarProps) {
   const { t } = useI18n()
   const store = useSessionStore()
+  const sessionGroups = useSessionGroups()
+  const [newGroupId, setNewGroupId] = useState<string | undefined>()
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+  const [newWorkPath, setNewWorkPath] = useState<string | undefined>()
 
   // 会话搜索默认隐藏（低频操作）；收起时一并清空查询，避免隐藏的过滤条件让
   // 列表"莫名其妙变短"。开关按钮与「+ 新会话」主按钮同排。
@@ -107,8 +113,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
 
   // Re-derive groups and sortedSessions for filtered sessions
   const filteredGroups = useMemo(
-    () => groupSessions(filteredSessions, store.category, store.starredIds),
-    [filteredSessions, store.category, store.starredIds],
+    () => store.category === 'path' ? composeSessionGroups(filteredSessions, store.starredIds, sessionGroups.state) : groupSessions(filteredSessions, store.category, store.starredIds),
+    [filteredSessions, store.category, store.starredIds, sessionGroups.state],
   )
   const filteredSorted = useMemo(
     () => sortSessions(filteredSessions, store.starredIds),
@@ -339,7 +345,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
                 variant="ghost"
                 size="icon-xs"
                 aria-label={t('session.newSession')}
-                onClick={() => setNewOpen(true)}
+                onClick={() => { setNewGroupId(undefined); setNewWorkPath(undefined); setNewOpen(true) }}
               >
                 <Plus />
               </Button>
@@ -358,7 +364,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
       >
         <button
           type="button"
-          onClick={() => setNewOpen(true)}
+          onClick={() => { setNewGroupId(undefined); setNewWorkPath(undefined); setNewOpen(true) }}
           title={t('session.newSession')}
           className={cn(
             'flex min-w-10 items-center justify-center overflow-hidden rounded-xl py-2 text-[12px] font-semibold text-white transition-[flex-grow] duration-200 ease-out hover:opacity-90',
@@ -407,6 +413,10 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           </div>
         ) : (
         <SessionList
+          onNewSession={(key) => {
+            const group = sessionGroups.state.groups.find(item => `custom:${item.id}` === key)
+            setNewGroupId(group?.id); setNewWorkPath(group ? group.defaultWorkDir || undefined : key); setNewOpen(true)
+          }}
           sessions={filteredSessions}
           groups={filteredGroups}
           sortedSessions={filteredSorted}
@@ -429,13 +439,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
               // clicking the session — handleSelect). forkSession already
               // switched the store (switchSession path); the tab completes the
               // desktop switch.
-              tabManager.openTab({
-                type: 'agent',
-                title: label,
-                icon: 'bot',
-                closable: true,
-                data: { filePath: newID, channel: 'web' },
-              })
+              if (!onSubAgentSelect) openAgentSessionTab(tabManager, newID, 'web', label)
+              onSessionSelected?.()
             }
             return newID
           }}
@@ -527,10 +532,13 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
       </AlertDialog>
 
       <NewSessionDialog
+        initialWorkPath={newWorkPath}
+        initialGroupId={newGroupId}
         open={newOpen}
         onOpenChange={setNewOpen}
-        onCreate={async (label, workPath) => {
+        onCreate={async (label, workPath, groupId) => {
           const newID = await store.createSession(label, workPath)
+          if (newID && groupId && !await sessionGroups.moveSessions([{ channel: 'web', chatID: newID }], groupId)) toast.warning(t('session.createdGroupWarning'))
           if (newID) {
             // 手机端（onSubAgentSelect 存在，无 dockview）AgentPanel 跟随
             // activeSession —— 与点击会话同一处理：关掉抽屉即完成切换；

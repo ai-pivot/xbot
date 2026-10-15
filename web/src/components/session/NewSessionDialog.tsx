@@ -25,33 +25,44 @@ import { toast } from 'sonner'
 import { useI18n } from '@/providers/i18n'
 import { loadRecentWorkDirs, removeRecentWorkDir } from '@/lib/recent-workdirs'
 
+import { useSessionGroups } from '@/hooks/useSessionGroups'
+
 interface NewSessionDialogProps {
   open: boolean
+  initialWorkPath?: string
+  initialGroupId?: string
   onOpenChange: (open: boolean) => void
-  onCreate: (label?: string, workPath?: string) => Promise<string | null>
+  onCreate: (label?: string, workPath?: string, groupId?: string) => Promise<string | null>
 }
 
-export function NewSessionDialog({ open, onOpenChange, onCreate }: NewSessionDialogProps) {
+export function NewSessionDialog({ open, initialWorkPath, initialGroupId, onOpenChange, onCreate }: NewSessionDialogProps) {
   const { t } = useI18n()
+  const groups = useSessionGroups()
+  const [groupId, setGroupId] = useState('')
   const [label, setLabel] = useState('')
   const [workPath, setWorkPath] = useState('')
   const [recentWorkDirs, setRecentWorkDirs] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
 
-  // Reset the form whenever the dialog opens; prefer the latest applied path.
+  // Project entrypoints override recents; global creation keeps the latest applied path.
   useEffect(() => {
     if (open) {
       const recent = loadRecentWorkDirs()
       setLabel('')
       setRecentWorkDirs(recent)
-      setWorkPath(recent[0] || '/')
+      setGroupId(initialGroupId ?? '')
+      const initialGroup = groups.state.groups.find(group => group.id === initialGroupId)
+      setWorkPath(initialGroup?.defaultWorkDir || initialWorkPath || recent[0] || '/')
       setBusy(false)
     }
-  }, [open])
+  }, [open, initialWorkPath, initialGroupId])
 
   const submit = async () => {
+    if (busy || (groups.loading || groups.busy) || groups.error) return
     setBusy(true)
-    const id = await onCreate(label.trim() || undefined, workPath.trim() || undefined)
+    const id = groupId
+      ? await onCreate(label.trim() || undefined, workPath.trim() || undefined, groupId)
+      : await onCreate(label.trim() || undefined, workPath.trim() || undefined)
     setBusy(false)
     if (id) {
       toast.success(t('session.created'))
@@ -79,7 +90,19 @@ export function NewSessionDialog({ open, onOpenChange, onCreate }: NewSessionDia
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="new-session-path">{t('session.workPath')}</Label>
+            <Label htmlFor="new-session-group">{t('session.group')}</Label>
+          <select id="new-session-group" data-testid="new-session-group" disabled={busy || (groups.loading || groups.busy)} value={groupId} className="mb-3 w-full rounded-md border border-border bg-bg-primary p-2 text-sm" onChange={event => {
+            const id = event.target.value
+            setGroupId(id)
+            const group = groups.state.groups.find(item => item.id === id)
+            setWorkPath(group?.defaultWorkDir || recentWorkDirs[0] || '/')
+          }}>
+            <option value="">{t('session.automaticGroup')}</option>
+            {groups.state.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+          </select>
+          {groups.loading && <p role="status" className="text-sm text-text-secondary">{t('session.groupsLoading')}</p>}
+          {groups.error && <p role="alert" className="text-sm text-red-500">{t('session.groupError')} <button type="button" disabled={groups.loading || groups.busy} className="underline" onClick={() => void groups.refresh()}>{t('session.retryGroups')}</button></p>}
+          <Label htmlFor="new-session-path">{t('session.workPath')}</Label>
             <PathPicker
               value={workPath}
               onChange={setWorkPath}
@@ -114,11 +137,11 @@ export function NewSessionDialog({ open, onOpenChange, onCreate }: NewSessionDia
             ) : null}
           </div>
         </div>
-        <DialogFooter>
+        <DialogFooter className="relative z-[60] bg-bg-primary">
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={() => void submit()} disabled={busy}>
+          <Button onClick={() => void submit()} disabled={busy || (groups.loading || groups.busy) || !!groups.error}>
             {busy ? t('common.loading') : t('common.confirm')}
           </Button>
         </DialogFooter>

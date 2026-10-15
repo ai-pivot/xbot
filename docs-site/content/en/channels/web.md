@@ -88,13 +88,20 @@ The chat bubble still shows only your message, quotes and comments, without XML 
 
 ## Session list (organised by project)
 
-The session list is organised **by project** by default — a project is the session's **working directory** (backend `tenants.cwd`). Sessions in the same directory share one group; its header shows the **project name + session count** (hover for the full path; sessions without a working directory land in "No work path").
+The Project view separates **named session groups** from **working directories**. Create a group with a name and an optional default directory. A group can contain sessions from different directories; sessions without explicit membership remain automatically grouped by their actual working directory.
+
+- **Edit / +** beside a group opens its editor or creates a session with the default directory preselected. The directory remains editable; changing the default never changes existing sessions.
+- Editing an automatic path group converts its currently displayed real sessions into a named group. Future sessions at that path still use automatic grouping.
+- **Move to group** in a session's context menu or drag-and-drop changes organization only, never its directory. Return a session to automatic grouping to use its own path again.
+- A fork inherits its source's explicit group, while preserving the existing fork working-directory behavior.
+- Drag group handles to reorder, or use Move up / Move down in the editor on touch devices. Deleting a group only removes organization; it does not delete sessions. Empty named groups remain available.
+- Group definitions, ordering and memberships are saved per logged-in user and synchronized on refresh, focus and periodic visible-page checks. Group defaults use the existing active execution environment; organizing sessions never switches runners.
 
 The view bar above the list switches the organisation (identical on the desktop sidebar and the mobile drawer):
 
 | Category | Group key |
 |----------|-----------|
-| **Project** (default) | working directory |
+| **Project** (default) | named groups, then automatic working-directory groups |
 | Status | running / waiting for input / queued / unread / idle / error |
 | Time | today / yesterday / earlier |
 

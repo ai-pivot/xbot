@@ -1,9 +1,17 @@
 package sqlite
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+// SessionGroupsSettingKey is private metadata managed by the Web session-groups
+// API under its read/modify/write mutex. Generic settings must never expose or
+// mutate it, even when the caller supplies another namespace or sender.
+const SessionGroupsSettingKey = "ui:session-groups"
+
+var ErrPrivateSetting = errors.New("setting is private to the session-groups API")
 
 // UserSettingsService manages per-user settings stored in the user_settings table.
 type UserSettingsService struct {
@@ -34,8 +42,8 @@ func (s *UserSettingsService) Get(channel, senderID string) (map[string]string, 
 		return nil, fmt.Errorf("user settings store: database connection closed")
 	}
 	rows, err := conn.Query(
-		"SELECT key, value FROM user_settings WHERE channel = ?",
-		channel,
+		"SELECT key, value FROM user_settings WHERE channel = ? AND key != ?",
+		channel, SessionGroupsSettingKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get user settings: %w", err)
@@ -68,6 +76,9 @@ const singleOperatorSender = "cli_user"
 
 // Set creates or updates a single setting.
 func (s *UserSettingsService) Set(channel, senderID, key, value string) error {
+	if key == SessionGroupsSettingKey {
+		return ErrPrivateSetting
+	}
 	_ = senderID // single operator: writes normalise to the operator id
 	if s.db == nil {
 		return fmt.Errorf("user settings store: database not initialized")
@@ -94,6 +105,9 @@ func (s *UserSettingsService) Set(channel, senderID, key, value string) error {
 // Single operator: delete by (channel, key) so a legacy row stored under a
 // different sender id is removed too (CR: 写入/清除端仍按 sender_id，两边不对称).
 func (s *UserSettingsService) Delete(channel, senderID, key string) error {
+	if key == SessionGroupsSettingKey {
+		return ErrPrivateSetting
+	}
 	_ = senderID // single operator
 	if s.db == nil {
 		return fmt.Errorf("user settings store: database not initialized")

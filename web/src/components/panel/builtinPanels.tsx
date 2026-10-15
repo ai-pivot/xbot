@@ -1,3 +1,6 @@
+import { toast } from 'sonner'
+import { useSessionGroups } from '@/hooks/useSessionGroups'
+import { composeSessionGroups } from '@/lib/session-custom-groups'
 /**
  * builtinPanels —— 布局 v4 内置面板（source='core'）。
  *
@@ -43,10 +46,13 @@ import { downloadSession } from '@/components/agent/api'
 export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   const { t } = useI18n()
   const store = useSessionStore()
+  const sessionGroups = useSessionGroups()
+  const [newGroupId, setNewGroupId] = useState<string | undefined>()
   const tabManager = ctx.tabManager
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+  const [newWorkPath, setNewWorkPath] = useState<string | undefined>()
   /** 搜索输入框 ref：开关按钮点击手势内同步 focus（手机软键盘要手势同任务）。 */
   const searchInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -77,8 +83,8 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   }, [store.sessions, store.activeChannel])
 
   const filteredGroups = useMemo(
-    () => groupSessions(filteredSessions, store.category, store.starredIds),
-    [filteredSessions, store.category, store.starredIds],
+    () => store.category === 'path' ? composeSessionGroups(filteredSessions, store.starredIds, sessionGroups.state) : groupSessions(filteredSessions, store.category, store.starredIds),
+    [filteredSessions, store.category, store.starredIds, sessionGroups.state],
   )
   const filteredSorted = useMemo(
     () => sortSessions(filteredSessions, store.starredIds),
@@ -142,7 +148,7 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
       >
         <button
           type="button"
-          onClick={() => setNewOpen(true)}
+          onClick={() => { setNewGroupId(undefined); setNewWorkPath(undefined); setNewOpen(true) }}
           title={t('session.newSession')}
           className={cn(
             'flex min-w-10 items-center justify-center overflow-hidden rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-[flex-grow] duration-200 ease-out hover:opacity-90',
@@ -187,6 +193,10 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
           </div>
         ) : (
           <SessionList
+            onNewSession={(key) => {
+            const group = sessionGroups.state.groups.find(item => `custom:${item.id}` === key)
+            setNewGroupId(group?.id); setNewWorkPath(group ? group.defaultWorkDir || undefined : key); setNewOpen(true)
+          }}
             sessions={filteredSessions}
             groups={filteredGroups}
             sortedSessions={filteredSorted}
@@ -226,10 +236,13 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
         )}
       </div>
       <NewSessionDialog
+        initialWorkPath={newWorkPath}
+        initialGroupId={newGroupId}
         open={newOpen}
         onOpenChange={setNewOpen}
-        onCreate={async (label, workPath) => {
+        onCreate={async (label, workPath, groupId) => {
           const newID = await store.createSession(label, workPath)
+          if (newID && groupId && !await sessionGroups.moveSessions([{ channel: 'web', chatID: newID }], groupId)) toast.warning(t('session.createdGroupWarning'))
           // 创建 = 切换到新会话。store.createSession 已经走了完整 switchSession
           // （store activeSession + 后端 /switch，侧栏因此高亮），但 desktop 主区
           // 的会话身份来自 tab 自己的 params.sessionId —— 必须再为新会话打开/聚焦

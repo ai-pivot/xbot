@@ -33,10 +33,13 @@ import { Input } from '@/components/ui/input'
 import { useI18n } from '@/providers/i18n'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
 import type { ExportFormat } from '@/components/agent/api'
+import { useSessionGroups } from '@/hooks/useSessionGroups'
+import { composeSessionGroups } from '@/lib/session-custom-groups'
+import { SessionGroupDialog, type GroupDialogTarget } from './SessionGroupDialog'
 import { SessionGroup } from './SessionGroup'
 import { SessionItem } from './SessionItem'
 import { SessionEmptyState } from './SessionEmptyState'
-import { collapseKey, isSubAgentSession, sortSessions } from '@/lib/session-grouping'
+import { collapseKey, isSubAgentSession, pathBucket, sortSessions } from '@/lib/session-grouping'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
 import { childrenForParent } from './session-tree'
 
@@ -55,6 +58,7 @@ interface SessionListProps {
   search: string
   /** Deprecated compatibility prop. The canonical source is sessions[].children. */
   subAgents: SessionInfo[]
+  onNewSession?: (workPath: string) => void
   onSelect: (id: string, channel: string) => void
   onToggleStar: (id: string) => void
   onRename: (id: string, channel: string, label: string) => Promise<boolean>
@@ -88,6 +92,7 @@ export function SessionList({
   unreadIds,
   activeSession,
   search,
+  onNewSession,
   onSelect,
   onToggleStar,
   onRename,
@@ -102,6 +107,14 @@ export function SessionList({
   onLoadMore,
 }: SessionListProps) {
   const { t } = useI18n()
+  const custom = useSessionGroups()
+  const [groupTarget, setGroupTarget] = useState<GroupDialogTarget | null>(null)
+  const [groupBusy, setGroupBusy] = useState(false)
+  const moveToGroup = async (session: SessionSelector, groupId: string | null) => {
+    if (groupBusy || (custom.loading || custom.busy || !!custom.error)) return
+    setGroupBusy(true)
+    try { await custom.moveSessions([{ channel: session.channel, chatID: session.chatID }], groupId) } finally { setGroupBusy(false) }
+  }
   const [rename, setRename] = useState<DialogState>(null)
   const [del, setDelete] = useState<DialogState>(null)
   const [forkTarget, setForkTarget] = useState<DialogState>(null)
@@ -207,11 +220,12 @@ export function SessionList({
     () => sortedSessions.filter((s) => !isSubAgentSession(s) && (!s.synthetic || (s.children || []).some(c => c.running || c.status === 'running' || c.status === 'pending' || c.status === 'waiting_input'))),
     [sortedSessions],
   )
-  const mainGroups = useMemo(
-    () => groups.map((g) => ({ ...g, sessions: g.sessions.filter((s) => !isSubAgentSession(s) && !s.synthetic) }))
-      .filter((g) => g.sessions.length > 0),
-    [groups],
-  )
+  const mainGroups = useMemo(() => {
+    const eligible = mainSessions
+    return category === 'path'
+      ? composeSessionGroups(eligible, starredIds, custom.state)
+      : groups.map(g => ({ ...g, customGroup: undefined, sessions: g.sessions.filter(s => mainSessions.some(main => sameSession(main, s))) })).filter(g => g.sessions.length > 0)
+  }, [mainSessions, groups, category, starredIds, custom.state])
   const query = search.trim().toLowerCase()
   const matchesQuery = (s: SessionInfo) =>
     s.label.toLowerCase().includes(query) || s.preview.toLowerCase().includes(query)
@@ -225,7 +239,7 @@ export function SessionList({
   }, [query, mainSortedSessions, mainSessions, starredIds])
 
   const searching = !!query
-  const emptyList = mainSessions.length === 0
+  const emptyList = mainSessions.length === 0 && mainGroups.length === 0
   const showEmpty = searching ? searchResults.length === 0 : emptyList
 
   // ── Backend pagination: the store already holds the loaded page(s) ─────────
@@ -285,9 +299,29 @@ export function SessionList({
   const handleDrop = (targetKey: string) => {
     const draggedKey = draggedKeyRef.current
     draggedKeyRef.current = null
-    if (!draggedKey || draggedKey === targetKey || !onReorder) return
-    // Reorder within the flat main sessions list.
-    const ordered = mainSortedSessions.map(sessionKey)
+    if (!draggedKey || draggedKey === targetKey) return
+    const source = mainSortedSessions.find(s => sessionKey(s) === draggedKey)
+    const target = mainSortedSessions.find(s => sessionKey(s) === targetKey)
+    if (!source || !target) return
+    if (category === 'path') {
+      const sourceGroup = custom.state.memberships[draggedKey] ?? null
+      const targetGroup = custom.state.memberships[targetKey] ?? null
+      if (!targetGroup && pathBucket(source) !== pathBucket(target)) return
+      if (sourceGroup !== targetGroup) {
+        void moveToGroup(source, targetGroup)
+        return
+      }
+    }
+    if (source.channel !== target.channel) return
+    // Legacy row order is scoped to exactly one channel.
+    const sourceGroup = custom.state.memberships[draggedKey] ?? null
+    const channelSessions = mainSortedSessions.filter(s => {
+      if (s.channel !== source.channel) return false
+      if (category !== 'path') return true
+      const group = custom.state.memberships[sessionKey(s)] ?? null
+      return sourceGroup ? group === sourceGroup : !group && pathBucket(s) === pathBucket(source)
+    })
+    const ordered = channelSessions.map(sessionKey)
     const fromIdx = ordered.indexOf(draggedKey)
     const toIdx = ordered.indexOf(targetKey)
     if (fromIdx < 0 || toIdx < 0) return
@@ -296,11 +330,11 @@ export function SessionList({
     // Map session keys back to chatIDs
     const keyToID = new Map(mainSortedSessions.map((s) => [sessionKey(s), s.chatID]))
     const orderedIDs = ordered.map((k) => keyToID.get(k)).filter((id): id is string => !!id)
-    // Use the first session's channel (all web sessions share it)
-    const channel = mainSortedSessions[0]?.channel || 'web'
-    void onReorder(channel, orderedIDs)
+    // Never send mixed-channel IDs to the channel-scoped legacy endpoint.
+    const channel = source.channel
+    void onReorder?.(channel, orderedIDs)
   }
-  const dndProps = onReorder ? { onDragStartItem: handleDragStart, onDropItem: handleDrop } : {}
+  const dndProps = (onReorder || category === 'path') && !groupBusy && !custom.loading && !custom.busy && !custom.error ? { onDragStartItem: handleDragStart, onDropItem: handleDrop, onDragEndItem: () => { draggedKeyRef.current = null } } : {}
 
   const submitRename = async () => {
     if (!rename) return
@@ -341,7 +375,10 @@ export function SessionList({
 
   return (
     <div ref={scrollAreaRef} className={`flex h-full flex-col${isScrolling ? ' is-scrolling' : ''}`}>
-      <ScrollArea className="min-h-0 flex-1">
+      {(custom.error || custom.loading || custom.busy) && <div role={custom.error ? 'alert' : 'status'} className="px-3 py-1 text-xs text-text-secondary">{t(custom.error ? 'session.groupError' : 'session.groupsLoading')}{custom.error && <button type="button" disabled={custom.loading || custom.busy} onClick={() => void custom.refresh()} className="ml-2 underline">{t('session.retryGroups')}</button>}</div>}
+      <SessionGroupDialog target={groupTarget} onClose={() => setGroupTarget(null)} />
+      {/* Radix's intrinsic-width table wrapper must not widen the session panel. */}
+      <ScrollArea className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
         {showEmpty ? (
           <SessionEmptyState emptyList={emptyList} />
         ) : searching ? (
@@ -350,6 +387,9 @@ export function SessionList({
               <div key={sessionKey(s)} className="flex flex-col gap-0.5">
                 <SessionItem
                   session={s}
+                  customGroups={custom.state.groups}
+                  groupBusy={groupBusy || (custom.loading || custom.busy || !!custom.error)}
+                  onMoveToGroup={(session, id) => void moveToGroup(session, id)}
                   starred={starredIds.includes(sessionKey(s))}
                   unread={unreadIds.includes(sessionKey(s))}
                   active={sameSession(activeSession, s)}
@@ -383,16 +423,51 @@ export function SessionList({
           </div>
         ) : (
           <div className="flex min-w-0 flex-1 flex-col gap-1 p-1">
+            {category === 'path' && custom.state.groups.length > 0 && <div data-testid="automatic-group-drop" className="rounded-md border border-dashed border-border px-2 py-1 text-xs text-text-secondary" onDragOver={event => { if (!groupBusy && !custom.loading && !custom.busy) event.preventDefault() }} onDrop={event => {
+              event.preventDefault(); event.stopPropagation(); draggedKeyRef.current = null
+              try {
+                const selector = JSON.parse(event.dataTransfer.getData('application/x-xbot-session')) as SessionSelector
+                if (selector.channel && selector.chatID) void moveToGroup(selector, null)
+              } catch { /* Ignore external drag data. */ }
+            }}>{t('session.automaticGroup')}</div>}
             {mainGroups.map((g) => {
               const ck = collapseKey(category, g.key)
               return (
               <SessionGroup
                 key={g.key}
                 groupKey={g.key}
+                customGroup={g.customGroup}
+                customGroups={custom.state.groups}
+                groupBusy={groupBusy || (custom.loading || custom.busy || !!custom.error)}
+                onMoveToGroup={(session, id) => void moveToGroup(session, id)}
+                onEditGroup={category === 'path' ? () => setGroupTarget(g.customGroup ? { group: g.customGroup } : { path: g.key === '__unset__' ? '' : g.key, sessions: g.sessions.filter(session => !session.synthetic).map(({ channel, chatID }) => ({ channel, chatID })) }) : undefined}
+                onDragGroup={g.customGroup ? event => { event.stopPropagation(); draggedKeyRef.current = null; event.dataTransfer.setData('application/x-xbot-group', g.customGroup!.id); event.dataTransfer.effectAllowed = 'move' } : undefined}
+                onDropGroup={category === 'path' ? event => {
+                  event.preventDefault(); event.stopPropagation(); draggedKeyRef.current = null
+                  if (groupBusy || (custom.loading || custom.busy || !!custom.error)) return
+                  const groupId = event.dataTransfer.getData('application/x-xbot-group')
+                  if (groupId && g.customGroup) {
+                    const ids = custom.state.groups.map(item => item.id)
+                    const from = ids.indexOf(groupId); const to = ids.indexOf(g.customGroup.id)
+                    if (from < 0 || from === to) return
+                    ids.splice(from, 1); ids.splice(to, 0, groupId)
+                    setGroupBusy(true)
+                    void custom.reorderGroups(ids).finally(() => setGroupBusy(false))
+                  } else {
+                    try {
+                      const selector = JSON.parse(event.dataTransfer.getData('application/x-xbot-session')) as SessionSelector
+                      if (selector.channel && selector.chatID) {
+                        const source = mainSessions.find(session => sameSession(session, selector))
+                        if (source && !source.synthetic && (g.customGroup || pathBucket(source) === g.key)) void moveToGroup(selector, g.customGroup?.id ?? null)
+                      }
+                    } catch { /* Ignore external drag data. */ }
+                  }
+                } : undefined}
                 category={category}
                 sessions={g.sessions}
                 open={!collapsedGroups.has(ck)}
                 onToggle={() => onToggleGroup(ck)}
+                onNewSession={onNewSession}
                 starredIds={starredIds}
                 unreadIds={unreadIds}
                 activeSession={activeSession}

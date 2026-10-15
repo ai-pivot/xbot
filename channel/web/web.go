@@ -388,6 +388,9 @@ type WebChannel struct {
 	// DB
 	db *sql.DB
 
+	// Serializes every per-user session-group read/modify/write operation.
+	sessionGroupsMu sync.Mutex
+
 	// Lifecycle
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -914,6 +917,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/iteration_detail", wc.authenticatedPOST(wc.handleIterationDetail))
 	mux.HandleFunc("/api/search", wc.authenticatedPOST(wc.handleSearchPOST))
 
+	mux.HandleFunc("/api/session-groups", wc.authenticatedPOST(wc.handleSessionGroups))
 	mux.HandleFunc("/api/settings", wc.authenticatedPOST(wc.handleSettingsPOST))
 	mux.HandleFunc("/api/llm-config", wc.authenticatedPOST(wc.handleLLMConfigPOST))
 	mux.HandleFunc("/api/session/status", wc.authenticatedPOST(wc.handleSessionStatus))

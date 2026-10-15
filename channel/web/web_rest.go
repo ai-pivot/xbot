@@ -661,6 +661,14 @@ func (wc *WebChannel) handleChatsForkPOST(w http.ResponseWriter, r *http.Request
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := wc.inheritForkSessionGroup(senderID, body.SourceChannel, body.SourceChatID, newChatID); err != nil {
+		// The conversation already exists. Return its ID as a successful fork
+		// with an explicit metadata warning, never invite a duplicate retry.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"group_inheritance_error": "fork created but group inheritance failed", "chat_id": newChatID, "channel": "web",
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"chat_id": newChatID, "channel": "web"})
 }
 

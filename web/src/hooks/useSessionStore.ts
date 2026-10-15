@@ -23,6 +23,8 @@
  */
 import { createElement, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
+import i18n from '@/i18n'
+import { notifySessionGroupsChanged } from '@/hooks/useSessionGroups'
 import { getContextUsage, setCwd } from '@/components/agent/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { postAPI } from '@/lib/api'
@@ -1528,13 +1530,15 @@ export function useSessionStoreImpl(): SessionStore {
   const forkSession = useCallback(
     async (sourceChatID: string, sourceChannel: string = DEFAULT_CHANNEL, label?: string): Promise<string | null> => {
       try {
-        const data = await postAPI<{ chat_id: string }>('/api/chats/fork', {
+        const data = await postAPI<{ chat_id: string; group_inheritance_error?: string }>('/api/chats/fork', {
           source_channel: sourceChannel,
           source_chat_id: sourceChatID,
           label: label ?? '',
         })
         if (!data.chat_id) return null
         const chatID = data.chat_id
+        if (data.group_inheritance_error) toast.warning(i18n.t('session.forkGroupWarning'))
+        notifySessionGroupsChanged()
         // Optimistic insert so the new session appears immediately in the
         // tree; the switchSession below reconciles isCurrent via markCurrent
         // and refresh() brings the real label/preview from the server.
