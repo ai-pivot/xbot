@@ -4337,6 +4337,10 @@ func summarizeRetryError(err error) string {
 	}
 	msg := err.Error()
 	switch {
+	case strings.Contains(msg, "context canceled"):
+		// 用户主动取消/turn-cancel：不是失败——显示为「已取消」（避开 retry-go 的
+		// 「All attempts fail」灾难性文案直出）。
+		return "已取消"
 	case strings.Contains(msg, "TLS handshake timeout"):
 		return "网络超时"
 	case strings.Contains(msg, "connection refused"):

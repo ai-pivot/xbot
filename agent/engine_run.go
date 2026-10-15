@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -979,7 +980,13 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 			ErrorMessage: err.Error(),
 		})
 	}
-	if ctx.Err() != nil {
+	// P0（2026-10-17 用户亲报「All attempts fail: #1: openai stream completion: context
+	// canceled」写进会话历史）：取消判定不能只看 ctx——cancel 与 LLM 错误返回存在 race
+	//（turn-cancel 后到 ⇒ 此刻 ctx.Err() 仍 nil ⇒ 取消错误漏进下方 reqerr 路径 ⇒ 被
+	// retry-go 的「All attempts fail」汇总持久化为**失败迭代**——用户看到自己取消的操作
+	// 显示成灾难性失败）。错误本体 errors.Is(err, context.Canceled) ⇒ 必然是取消
+	//（流被 turn-cancel 杀掉），一律走取消路径（「Agent was cancelled.」——不写错误历史）。
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return s.buildOutput(&channel.OutboundMsg{
 			Channel:   s.cfg.Channel,
 			ChatID:    s.cfg.ChatID,
