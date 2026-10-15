@@ -50,3 +50,24 @@ export function flattenSubAgentTree(sessions: SessionInfo[]): SessionInfo[] {
   for (const session of sessions) visit(session.children)
   return result
 }
+
+export function matchesSelfOrDescendant(
+  session: SessionInfo,
+  matches: (s: SessionInfo) => boolean,
+  seen = new Set<string>(),
+): boolean {
+  const key = sessionKey(session)
+  if (seen.has(key)) return false
+  seen.add(key)
+  if (matches(session)) return true
+  return childrenForParent(session).filter(isVisibleSubAgent).some((child) => matchesSelfOrDescendant(child, matches, seen))
+}
+
+export function isVisibleSubAgent(session: SessionInfo): boolean {
+  // Always show sub-agents (running AND completed) so users can open and review
+  // them. Previously this filtered to running/waiting_input/pending only — a
+  // completed sub-agent vanished from the sidebar immediately, and with the
+  // (now fixed) unreliable running flag even active ones could disappear.
+  // Only historical legacy rows are hidden.
+  return session.historical !== true
+}

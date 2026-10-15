@@ -76,7 +76,7 @@ Native selection restoration is bounded to bodies with at most 16384 UTF-16 sour
 
 Within these limits, selections retain their highlight and direction across appended Markdown updates when the selected text and preceding text stay unchanged. If Markdown formatting changes that text, the comment action still retains the captured quote.
 
-Select text in an assistant response, including already visible excerpts while more text is appearing. A comment icon appears next to the selection without right-clicking; click it to open the comment editor. Streaming continues, and subsequent text updates keep the selected quote as a snapshot rather than removing the icon. On a phone, long-press to select text and adjust the native selection handles. The editor shows only the selected excerpt as a read-only snapshot, without turn/iteration labels or character counters. Press **Enter** to confirm the comment, or **Shift+Enter** for a newline; IME candidate confirmation never saves prematurely. Confirming adds a draft and does not send it. Clicking elsewhere, clearing the selection with the keyboard, scrolling, resizing or switching sessions dismisses the icon. Right-click menus remain dedicated to copying and links. Reasoning, tool output and user messages cannot be annotated.
+Select text in an assistant response, including already visible excerpts while more text is appearing. After a mouse drag, a comment icon appears near the point where you release the mouse, kept within the visible viewport. Keyboard and native touch selection place it near the selection. Selecting the final paragraph, including its trailing line break, also supports comments; selecting actual tool text or another response does not. No right-click is needed; click the icon to open the comment editor. Streaming continues, and subsequent text updates keep the selected quote as a snapshot rather than removing the icon. On a phone, long-press to select text and adjust the native selection handles. The editor shows only the selected excerpt as a read-only snapshot, without turn/iteration labels or character counters. Press **Enter** to confirm the comment, or **Shift+Enter** for a newline; IME candidate confirmation never saves prematurely. Confirming adds a draft and does not send it. Clicking elsewhere, clearing the selection with the keyboard, scrolling, resizing or switching sessions dismisses the icon. Right-click menus remain dedicated to copying and links. Reasoning, tool output and user messages cannot be annotated.
 
 Confirming a comment adds it to the **comments chip inside the existing composer**, alongside file attachments. The chip opens a preview with edit/delete actions. Adding or editing comments leaves your message and attachments unchanged and does not contact the agent. Send comments alone or together with a message and files; while the agent is busy, ordinary feedback is queued. Comments cannot be combined with slash/shell commands, goal mode or interject mode.
 
@@ -101,6 +101,76 @@ The view bar above the list switches the organisation (identical on the desktop 
 **Collapse / expand**: click a group header to collapse or expand that group; use "Collapse all / Expand all" on the right of the view bar to change every group at once. Collapse state is **remembered per project** (kept in `localStorage`; frontend-only, not synced across devices) and survives reloads and panel remounts.
 
 > Upgrading from an older version: the previous default was "by time" and the first load switches to "by project" **once**; a category you pick yourself is never changed afterwards.
+
+**Delete confirmation**: choose Delete in a session's context menu, then press
+Enter to confirm or Escape to cancel. Enter confirms even when Cancel has focus.
+IME confirmation and held-key repeats do not delete a session; while deletion
+is pending, the confirmation cannot submit another request.
+
+### Session keyboard shortcuts
+
+Session shortcuts are **desktop-only**. Mobile mode hides their settings category
+and menu hints, and does not handle these seven bindings. Ordinary touch/menu
+actions and dialog confirmation remain available. This follows the effective
+UI mode in Settings > Appearance, including forced mobile mode. Switching modes
+does not clear your bindings; they remain available when you return to desktop.
+
+Edit all seven bindings in the dedicated **Settings > Keyboard Shortcuts** category.
+Interaction keeps code wrapping and the send-key mode. Type a
+combination and press Enter or leave the field to save, or use the keyboard
+icon to record it. The actions menu clears/disables a binding or restores its
+default; **Reset all shortcuts** in the section header restores the full set. Duplicate session and
+registered-command bindings are rejected. Changes apply immediately to both
+actions and menu labels, persist on refresh, and sync with your account.
+Custom Control and Command keys remain distinct; `Mod` accepts Ctrl/Cmd on
+Mac/Linux and Ctrl only on Windows.
+Unmodified text/navigation keys are not accepted (F1-F24 are supported).
+Escape cancels recording; IME and held-key events are ignored. System/browser
+reserved combinations may never reach the page: enter a different binding
+manually when recording cannot capture one. The table below lists defaults.
+
+| Action | Mac | Linux | Windows |
+| --- | --- | --- | --- |
+| Create new session | `Ctrl/Cmd+Alt+N` | `Ctrl/Cmd+Alt+N` | `Ctrl+Alt+N` |
+| Open existing session in browser tab | `Ctrl+N` | `Ctrl+Shift+2` | `Ctrl+Shift+2` |
+| Star / unstar | `Ctrl/Cmd+Alt+S` | `Ctrl/Cmd+Alt+S` | `Ctrl+Alt+S` |
+| Rename | `F2` | `F2` | `F2` |
+| Fork | `Ctrl/Cmd+Alt+F` | `Ctrl/Cmd+Alt+F` | `Ctrl+Alt+F` |
+| Export (choose Native / OpenAI / Codex) | `Ctrl/Cmd+Alt+E` | `Ctrl/Cmd+Alt+E` | `Ctrl+Alt+E` |
+| Open delete confirmation | `Ctrl/Cmd+Alt+Backspace` | `Ctrl/Cmd+Alt+Backspace` | `Ctrl+Alt+Backspace` |
+
+Windows uses a separate shortcut configuration, initially populated with its
+own defaults rather than copying existing Mac/Linux bindings. Editing,
+disabling, or resetting shortcuts on Windows does not overwrite Mac/Linux
+preferences. Both configurations sync independently with your account. Product
+defaults map Command to Control and Option to Alt; Shift remains Shift. This
+does not translate saved custom modifiers or collapse Control+Command. Existing
+Windows overrides, including numeric bindings and disabled actions, are preserved.
+Physical key positions are used when modifiers produce symbols; AltGraph input
+is ignored. System/browser and keyboard-layout hotkeys can still conflict; all
+bindings are editable.
+
+Create new session works globally, even with no current session or a hidden
+session panel, and switches to the new conversation. Any previously customized
+legacy `openInTab` binding (including a disabled binding) is preserved for
+creation. The independent browser-tab action uses `openInBrowserTab` and opens
+the existing conversation without creating or selecting a session. Its default
+on Mac matches Control+N only, not Command+N. Linux and Windows default to
+Control+Shift+2 and leave Control+N unassigned by default. Saved custom bindings,
+including an explicit Linux Control+N, remain unchanged. Reset uses the current
+platform default; browser-reserved combinations may need to be changed in Settings.
+
+The other six shortcuts appear in the context menu (Alt is Option on macOS). They target the
+open session menu or focused session row first; otherwise they target the
+current session while the session panel is visible. Input fields, editors,
+focused AskUser choices/buttons, IME events, and held-key repeats are excluded from all seven actions. Creation
+pauses in any open dialog/menu; the other six ignore unrelated dialogs/menus
+and multi-select mode.
+Subagents and synthetic rows support the non-destructive browser-tab action
+from their row/menu; mutation shortcuts remain unavailable. Rename and fork
+require confirmation with Enter or their button; Escape cancels. Export opens
+the format submenu from a context menu, or a format dialog from a row/current
+session. The delete shortcut never deletes without confirmation.
 
 ## Authentication
 
@@ -174,3 +244,11 @@ When `persona_isolation` is `true`:
 - Fetch: `GET /api/files/download?key=…` (download by default; add `&inline=1` to render inline).
 - Credentials are **masked** on read (`AKID****`); echoing a masked value back never overwrites the real key. Switching to a cloud backend requires access/secret/bucket (Alibaba OSS / Tencent COS also need a region unless you provide an explicit endpoint), otherwise the save is **rejected** (a half-configured backend would break every upload).
 - For the model to actually *see* an image, also enable **Settings → LLM → model row → Vision input**.
+
+### Selecting multiple sessions
+
+Both the desktop session panel and mobile drawer offer **Multi-select**. Click or press Space/Enter to check a main session without changing the active conversation. Shift selects a range in display order. Select all includes only loaded, search-matching main sessions in expanded groups; SubAgents and synthetic placeholders are excluded. A scope hint appears when more sessions remain unloaded.
+
+Batch actions include star, unstar, mark as read, export and delete. Export chooses one xbot / OpenAI / Codex format, with one file per session in a single ZIP download. Deletion requires confirmation showing the count and session names. Partial export/deletion failures are reported and remain selected for retry.
+
+Clear selection keeps the mode active; Exit multi-select or Escape leaves it. Ctrl/Cmd+A selects all while focus is in the list, without intercepting editors or dialogs. Changing search, channel or category clears selection. Newly loaded sessions are never automatically checked.

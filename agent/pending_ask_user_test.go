@@ -10,6 +10,7 @@ import (
 	"xbot/llm"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
@@ -433,5 +434,32 @@ func TestPendingEntriesAgreeFromDBWithEmptyMemory(t *testing.T) {
 	pending := a.GetPendingAskUser("test", "chat")
 	if pending == nil || pending.RequestID != "req-2" {
 		t.Fatalf("GetPendingAskUser = %+v, want pending req-2", pending)
+	}
+}
+
+func TestPendingAskUserProbeDoesNotRecreateDeletedSession(t *testing.T) {
+	for _, probe := range []string{"fast", "snapshot"} {
+		t.Run(probe, func(t *testing.T) {
+			mt, _ := newAgentHistorySession(t)
+			const chatID = "/tmp/deleted-cli-session"
+			if _, err := mt.GetOrCreateSession("cli", chatID); err != nil {
+				t.Fatal(err)
+			}
+			if err := mt.DestroySession("cli", chatID); err != nil {
+				t.Fatal(err)
+			}
+			a := &Agent{multiSession: mt}
+			if probe == "fast" {
+				if a.HasPendingAskUserFast("cli", chatID) {
+					t.Fatal("deleted session has a pending question")
+				}
+			} else if a.GetPendingAskUser("cli", chatID) != nil {
+				t.Fatal("deleted session has a pending question")
+			}
+			id, err := sqlite.NewTenantService(mt.DB()).GetTenantIDByChannelChatID("cli", chatID)
+			if err != nil || id != 0 {
+				t.Fatalf("read-only probe resurrected deleted tenant: id=%d err=%v", id, err)
+			}
+		})
 	}
 }
