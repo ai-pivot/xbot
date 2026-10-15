@@ -59,6 +59,24 @@ async function openDesktopSession(page: Page) {
   await expect(page.getByText('第二段独立正文', { exact: true })).toBeVisible()
 }
 
+test('native paragraph selection at the final body boundary still offers a comment', async ({ page }) => {
+  await setup(page)
+  await openDesktopSession(page)
+  const paragraph = page.getByText('注释、评论功能的设计稿尚未交付。', { exact: true })
+  await paragraph.click({ clickCount: 3 })
+  const snapshot = await paragraph.evaluate((el) => {
+    const selection = document.getSelection()!
+    const range = selection.getRangeAt(0)
+    return { quote: selection.toString(), endInside: el.closest('[data-annotation-body]')!.contains(range.endContainer) }
+  })
+  expect(snapshot.quote).toContain('注释、评论功能的设计稿尚未交付。')
+  // Real Chromium paragraph selection includes the trailing block boundary.
+  expect(snapshot.endInside).toBe(false)
+  await expect(page.getByTestId('annotation-selection-action')).toBeVisible()
+  await page.getByTestId('annotation-selection-action').click()
+  await expect(page.getByRole('textbox', { name: '所选文本' })).toHaveValue(snapshot.quote)
+})
+
 async function emitProgress(page: Page, seq: number, type: string, progress: Record<string, unknown>) {
   await page.evaluate(({ type, progress, seq }) => {
     const sources = (window as unknown as { __annotationSources: (EventTarget & { readyState: number })[] }).__annotationSources

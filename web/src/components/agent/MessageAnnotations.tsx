@@ -34,8 +34,16 @@ export function useAnnotationDraft() { return useContext(DraftContext) }
 export function annotationSelection(body: HTMLElement): { quote: string; startOffset: number; endOffset: number } | null {
   const selection = window.getSelection()
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null
-  const range = selection.getRangeAt(0)
-  if (!body.contains(range.startContainer) || !body.contains(range.endContainer)) return null
+  const range = selection.getRangeAt(0).cloneRange()
+  if (!body.contains(range.startContainer)) return null
+  if (!body.contains(range.endContainer)) {
+    // Native paragraph selection can end at offset 0 of the following tool or
+    // block. Accept only an empty DOM-text tail, never actual outside content.
+    const tail = range.cloneRange()
+    tail.setStart(body, body.childNodes.length)
+    if (tail.toString() !== '') return null
+    range.setEnd(body, body.childNodes.length)
+  }
   const prefix = range.cloneRange()
   prefix.selectNodeContents(body)
   prefix.setEnd(range.startContainer, range.startOffset)
@@ -83,13 +91,16 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
     if (!enabled || !visible || editing || listPosition) { setSelected(null); return }
     let dragging = false
     let selectionGesture = false
+    // Keep the release point across delayed selectionchange events. Keyboard and
+    // touch selections have no mouse anchor and continue to use range geometry.
+    let mouseAnchor: AnnotationPosition | null = null
     const update = () => {
       // Streaming replaces/clips text nodes and collapses the native range.
       // Keep the user's captured quote until the next selection gesture.
       if (selectedRef.current?.live && !dragging && !selectionGesture) return
       selectionGesture = false
       const selection = document.getSelection()
-      const node = selection?.anchorNode
+      const node = selection?.rangeCount === 1 ? selection.getRangeAt(0).startContainer : null
       const element = node?.nodeType === Node.ELEMENT_NODE ? node as Element : node?.parentElement
       const body = element?.closest<HTMLElement>('[data-annotation-body]')
       const target = body?.closest<HTMLElement>('[data-copy-target]')
@@ -111,9 +122,12 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
       const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0 && r.bottom > top && r.top < bottom && r.right > left && r.left < right)
       const rect = selection!.focusNode === range.startContainer && selection!.focusOffset === range.startOffset ? rects[0] : rects.at(-1)
       if (!rect) { setSelected(null); return }
+      const anchorX = mouseAnchor?.x ?? rect.right - 44
+      const anchorTop = mouseAnchor?.y ?? rect.top
+      const anchorBottom = mouseAnchor?.y ?? rect.bottom
       setSelected({ source: { ...annotationSource, startOffset: snapshot.startOffset, endOffset: snapshot.endOffset }, quote: snapshot.quote, live: body.hasAttribute('data-annotation-live'), position: {
-        x: Math.max(left + 8, Math.min(rect.right - 44, right - 52)),
-        y: Math.max(top + 8, Math.min(rect.top - 52 >= top + 8 ? rect.top - 52 : rect.bottom + 8, bottom - 52)),
+        x: Math.max(left + 8, Math.min(anchorX, right - 52)),
+        y: Math.max(top + 8, Math.min(anchorTop - 52 >= top + 8 ? anchorTop - 52 : anchorBottom + 8, bottom - 52)),
       } })
     }
     const schedule = () => frameScheduler.schedule(update)
@@ -121,11 +135,20 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
       if (event.button !== 0) return
       if ((event.target as HTMLElement)?.closest('[data-testid="annotation-selection-action"]')) return
       dragging = true
+      mouseAnchor = null
       selectionGesture = true
       setSelected(null)
     }
-    const up = () => { dragging = false; selectionGesture = true; schedule() }
+    const up = (event: PointerEvent) => {
+      if (!dragging) return // Clicking the action must not reposition its editor.
+      mouseAnchor = event.type === 'pointerup' && event.pointerType === 'mouse'
+        ? { x: event.clientX, y: event.clientY } : null
+      dragging = false
+      selectionGesture = true
+      schedule()
+    }
     const dismiss = () => {
+      mouseAnchor = null
       frameScheduler.cancel(update)
       if (selectedRef.current) { selectedRef.current = null; setSelected(null) }
     }
@@ -141,6 +164,7 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') dismiss()
       else if (!['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) {
+        mouseAnchor = null
         selectionGesture = true
         schedule()
       }
