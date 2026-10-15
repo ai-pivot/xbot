@@ -240,6 +240,14 @@ describe('MessageInput', () => {
     await act(async () => { finishUpload({ upload_key: 'uploads/notes.txt', name: 'notes.txt', size: 4, mime: 'text/plain' }) })
   })
 
+  it('does not expose image node selection when navigating before an image', async () => {
+    renderWithProviders(<MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />)
+    await setEditorContent('![photo](/api/files/download?key=uploads%2Fphoto.png&inline=1)')
+    // ProseMirror arrow navigation selects adjacent selectable inline atoms;
+    // typing then replaces that entire image instead of inserting before it.
+    expect(__getTestEditor()!.schema.nodes.image.spec.selectable).toBe(false)
+  })
+
   it('keeps an inline image visible and serializable when text is inserted before it', async () => {
     const { container } = renderWithProviders(
       <MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />,

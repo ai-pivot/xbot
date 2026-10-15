@@ -261,7 +261,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       // Paste-markdown image rendering: pasted/uploaded images insert as ![name](url)
       // markdown — this extension makes tiptap render them inline in the composer
       // (tiptap-markdown parses ![alt](src) into image nodes when the schema has one).
-      Image.configure({ inline: true }),
+      Image.extend({ selectable: false }).configure({ inline: true }),
       EditorLink,
       Placeholder.configure({
         placeholder: () => placeholderRef.current,
