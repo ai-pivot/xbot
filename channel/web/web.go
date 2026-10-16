@@ -970,6 +970,11 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	// Plugin install (single-plugin zip, multipart upload → local temp → install)
 	mux.HandleFunc("/api/plugin/install-file", wc.authenticatedPOST(wc.handlePluginInstallFile))
 
+	// Registry marketplace (browse/search/install from git-based registries)
+	mux.HandleFunc("/api/registry/search", wc.authenticatedPOST(wc.handleRegistrySearch))
+	mux.HandleFunc("/api/registry/install", wc.authenticatedPOST(wc.handleRegistryInstall))
+	mux.HandleFunc("/api/registry/list-installed", wc.authenticatedPOST(wc.handleRegistryListInstalled))
+
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		jsonErrorResponse(w, http.StatusNotFound, "endpoint not found")
 	})

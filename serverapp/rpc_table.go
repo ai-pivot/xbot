@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -21,6 +23,7 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/registry"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -295,6 +298,7 @@ func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher
 	registerPluginHandlers(t, h)
 	registerRunnerHandlers(t, h)
 	registerSkillHandlers(t, h)
+	registerRegistryHandlers(t, h)
 	registerGenUIHandlers(t, h)
 	registerChannelOpsHandlers(t, h)
 	return t
@@ -2971,6 +2975,143 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		return router.SetSessionRunner(p.Channel+":"+p.ChatID, p.Name)
 	})
 
+}
+
+// --- Registry RPC handlers ---
+
+func registerRegistryHandlers(t RPCTable, h *RPCContext) {
+
+	t["registry_search"] = rpc1(func(ctx context.Context, p struct {
+		Query string `json:"query"`
+		Type  string `json:"type"` // optional filter: skill/agent/plugin/package
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		idx, err := registry.Fetch(xbotHome)
+		if err != nil {
+			return nil, err
+		}
+		results := registry.Search(idx, p.Query)
+		if p.Type != "" {
+			var filtered []registry.Entry
+			for _, e := range results {
+				if e.Type == p.Type {
+					filtered = append(filtered, e)
+				}
+			}
+			results = filtered
+		}
+		return map[string]any{"items": results}, nil
+	})
+
+	t["registry_install"] = rpc1(func(ctx context.Context, p struct {
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		workDir := h.Cfg.Agent.WorkDir
+		if workDir == "" {
+			workDir = xbotHome
+		}
+		senderID := rpcAuthID(ctx)
+
+		idx, err := registry.Fetch(xbotHome)
+		if err != nil {
+			return nil, err
+		}
+		entry := registry.FindEntry(idx, p.Name)
+		if entry == nil {
+			return nil, fmt.Errorf("item %q not found in any registry", p.Name)
+		}
+
+		if p.Force {
+			registryRemove(xbotHome, workDir, senderID, entry.Type, entry.Name)
+		}
+
+		if err := registry.Install(xbotHome, workDir, senderID, entry); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"type":    entry.Type,
+			"name":    entry.Name,
+			"version": entry.Version,
+		}, nil
+	})
+
+	t["registry_list_installed"] = rpc1(func(ctx context.Context, p struct {
+		Type string `json:"type"` // optional filter
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		workDir := h.Cfg.Agent.WorkDir
+		if workDir == "" {
+			workDir = xbotHome
+		}
+		senderID := rpcAuthID(ctx)
+
+		type installedItem struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}
+		var items []installedItem
+
+		if p.Type == "" || p.Type == "skill" {
+			for _, n := range listUserInstalled(xbotHome, workDir, senderID, "skill") {
+				items = append(items, installedItem{Type: "skill", Name: n})
+			}
+		}
+		if p.Type == "" || p.Type == "agent" {
+			for _, n := range listUserInstalled(xbotHome, workDir, senderID, "agent") {
+				items = append(items, installedItem{Type: "agent", Name: n})
+			}
+		}
+		if p.Type == "" || p.Type == "plugin" {
+			for _, n := range listUserInstalled(xbotHome, workDir, senderID, "plugin") {
+				items = append(items, installedItem{Type: "plugin", Name: n})
+			}
+		}
+		return map[string]any{"items": items}, nil
+	})
+}
+
+// registryRemove removes an installed item by type and name.
+func registryRemove(xbotHome, workDir, senderID, itemType, name string) {
+	switch itemType {
+	case "skill":
+		_ = os.RemoveAll(filepath.Join(tools.UserSkillsRoot(workDir, senderID), name))
+	case "agent":
+		_ = os.Remove(filepath.Join(tools.UserAgentsRoot(workDir, senderID), name+".md"))
+	case "plugin":
+		_ = os.RemoveAll(filepath.Join(xbotHome, "plugins", name))
+	}
+}
+
+// listUserInstalled returns names of installed items of the given type.
+func listUserInstalled(xbotHome, workDir, senderID, itemType string) []string {
+	var dir string
+	switch itemType {
+	case "skill":
+		dir = tools.UserSkillsRoot(workDir, senderID)
+	case "agent":
+		dir = tools.UserAgentsRoot(workDir, senderID)
+	case "plugin":
+		dir = filepath.Join(xbotHome, "plugins")
+	default:
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if itemType == "agent" {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+				names = append(names, strings.TrimSuffix(e.Name(), ".md"))
+			}
+		} else if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names
 }
 
 // ── Helpers ──

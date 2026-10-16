@@ -989,7 +989,93 @@ func (wc *WebChannel) handleAgentUninstall(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, marketResponse{OK: true})
 }
 
-// sanitizeExportName keeps only alphanumerics, '-', '_', '.' — everything else becomes '_'.
+// --- Registry marketplace handlers ---
+
+// handleRegistrySearch handles POST /api/registry/search
+func (wc *WebChannel) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Query string `json:"query"`
+		Type  string `json:"type"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	var result struct {
+		Items []struct {
+			Type        string   `json:"type"`
+			Name        string   `json:"name"`
+			Description string   `json:"description"`
+			Author      string   `json:"author"`
+			Version     string   `json:"version"`
+			Tags        []string `json:"tags,omitempty"`
+			Registry    string   `json:"registry"`
+		} `json:"items"`
+	}
+	if err := wc.rpcCallAs(r, "registry_search", map[string]any{
+		"query": req.Query,
+		"type":  req.Type,
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleRegistryInstall handles POST /api/registry/install
+func (wc *WebChannel) handleRegistryInstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	var result struct {
+		Type    string `json:"type"`
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	}
+	if err := wc.rpcCallAs(r, "registry_install", map[string]any{
+		"name":  req.Name,
+		"force": req.Force,
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "type": result.Type, "name": result.Name, "version": result.Version})
+}
+
+// handleRegistryListInstalled handles POST /api/registry/list-installed
+func (wc *WebChannel) handleRegistryListInstalled(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Type string `json:"type"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	var result struct {
+		Items []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := wc.rpcCallAs(r, "registry_list_installed", map[string]any{
+		"type": req.Type,
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
 // A result of "." or ".." (or anything that would traverse out of the zip root) is
 // replaced with "skill" — such a name would otherwise produce a path-traversal zip
 // entry (zip-slip) via filepath.Join(name, rel).
