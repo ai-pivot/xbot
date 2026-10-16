@@ -3,6 +3,7 @@ package agent
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -368,4 +369,107 @@ func findSkillDir(tmpDir, zipPath string) (string, string, error) {
 	}
 
 	return "", "", fmt.Errorf("no SKILL.md found in zip (expected a directory containing SKILL.md)")
+}
+
+// --- Uninstall ---
+
+// UninstallSkill removes a user-installed skill by name.
+// Only removes from the user's skills directory (not global or embedded).
+func (rm *RegistryManager) UninstallSkill(name, senderID string) error {
+	dir := filepath.Join(rm.userSkillsDir(senderID), name)
+
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		if _, err := rm.sandbox.Stat(ctx, dir, senderID); errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("skill %q is not installed", name)
+		}
+		if err := rm.sandbox.RemoveAll(ctx, dir, senderID); err != nil {
+			return fmt.Errorf("remove skill: %w", err)
+		}
+	} else {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return fmt.Errorf("skill %q is not installed", name)
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("remove skill: %w", err)
+		}
+	}
+	// Invalidate the skill cache so the uninstalled skill disappears immediately.
+	if rm.store != nil {
+		rm.store.InvalidateCache()
+	}
+	log.WithFields(log.Fields{"type": "skill", "name": name, "sender": senderID}).Info("Uninstalled")
+	return nil
+}
+
+// --- Agent install / uninstall ---
+
+// InstallAgentFromFile copies an agent .md file to the user's agents directory.
+// The agent name is derived from the provided name parameter (typically the
+// original filename without .md extension). Returns the installed agent name.
+func (rm *RegistryManager) InstallAgentFromFile(mdPath, name, senderID string, force bool) (string, error) {
+	agentsDir := rm.userAgentsDir(senderID)
+	destFile := filepath.Join(agentsDir, name+".md")
+
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		return "", fmt.Errorf("read agent file: %w", err)
+	}
+
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		if err := rm.sandbox.MkdirAll(ctx, agentsDir, 0o755, senderID); err != nil {
+			return "", fmt.Errorf("create agents dir: %w", err)
+		}
+		if _, err := rm.sandbox.Stat(ctx, destFile, senderID); err == nil && !force {
+			return "", fmt.Errorf("agent %q already exists (use force=true to overwrite)", name)
+		}
+		if err := rm.sandbox.WriteFile(ctx, destFile, data, 0o644, senderID); err != nil {
+			return "", fmt.Errorf("write agent file: %w", err)
+		}
+	} else {
+		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+			return "", fmt.Errorf("create agents dir: %w", err)
+		}
+		if _, err := os.Stat(destFile); err == nil && !force {
+			return "", fmt.Errorf("agent %q already exists (use force=true to overwrite)", name)
+		}
+		if err := os.WriteFile(destFile, data, 0o644); err != nil {
+			return "", fmt.Errorf("write agent file: %w", err)
+		}
+	}
+
+	log.WithFields(log.Fields{
+		"agent":  name,
+		"sender": senderID,
+	}).Info("Installed agent from file")
+	return name, nil
+}
+
+// UninstallAgent removes an agent .md file from the user's agents directory.
+func (rm *RegistryManager) UninstallAgent(name, senderID string) error {
+	agentsDir := rm.userAgentsDir(senderID)
+	mdFile := filepath.Join(agentsDir, name+".md")
+
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		if _, err := rm.sandbox.Stat(ctx, mdFile, senderID); errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("agent %q is not installed", name)
+		}
+		if err := rm.sandbox.Remove(ctx, mdFile, senderID); err != nil {
+			return fmt.Errorf("remove agent: %w", err)
+		}
+	} else {
+		if _, err := os.Stat(mdFile); os.IsNotExist(err) {
+			return fmt.Errorf("agent %q is not installed", name)
+		}
+		if err := os.Remove(mdFile); err != nil {
+			return fmt.Errorf("remove agent: %w", err)
+		}
+	}
+	log.WithFields(log.Fields{"type": "agent", "name": name, "sender": senderID}).Info("Uninstalled")
+	return nil
 }

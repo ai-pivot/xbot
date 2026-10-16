@@ -99,6 +99,9 @@ const (
 
 	MethodListCommands                 = "list_commands"
 	MethodListCommandNames             = "list_command_names"
+	MethodSkillUninstall              = "skill_uninstall"
+	MethodAgentInstallFile             = "agent_install_file"
+	MethodAgentUninstall               = "agent_uninstall"
 )
 
 // --- Settings ---

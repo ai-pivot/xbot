@@ -3120,4 +3120,40 @@ func registerSkillHandlers(t RPCTable, h *RPCContext) {
 		return map[string]bool{"valid": ss.IsKnownSkillPathFor(rpcAuthID(ctx), p.Path)}, nil
 	})
 
+	t["skill_uninstall"] = rpc1void(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) error {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return fmt.Errorf("registry manager not initialized")
+		}
+		return rm.UninstallSkill(p.Name, rpcAuthID(ctx))
+	})
+
+	t["agent_install_file"] = rpc1(func(ctx context.Context, p struct {
+		MDPath string `json:"md_path"`
+		Name   string `json:"name"`
+		Force  bool   `json:"force"`
+	}) (any, error) {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return nil, fmt.Errorf("registry manager not initialized")
+		}
+		name, err := rm.InstallAgentFromFile(p.MDPath, p.Name, rpcAuthID(ctx), p.Force)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"name": name}, nil
+	})
+
+	t["agent_uninstall"] = rpc1void(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) error {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return fmt.Errorf("registry manager not initialized")
+		}
+		return rm.UninstallAgent(p.Name, rpcAuthID(ctx))
+	})
+
 }
