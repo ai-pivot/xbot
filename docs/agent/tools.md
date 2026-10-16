@@ -229,6 +229,8 @@ Manages webhook event subscriptions for external service integration. Actions: `
 | `WebSearch` | `tools/web_search.go` | Tavily web search |
 | `Runner` | `tools/sandbox_runner.go` | Manage remote sandbox connections |
 
+`Skill` 本地加载除全局目录及 workspace/CWD 下的 `.xbot/skills`、`skills`、`.skills` 外，还需从 workspace/CWD 向上扫描 `.agents/skills`，与 `SkillStore.scanProjectSkills` 的目录发现保持兼容，否则 catalog 可见但调用报 `not found`。frontmatter 名称回退扫描须用 `os.Stat` 跟随符号链接目录；`list_files` 须先解析根目录符号链接再 Walk（保留原 display 路径），否则只会列出链接本身。回归测试：`TestSkillToolProjectDiscovery`（load/list_files、父目录、别名和符号链接）。
+
 ## File Publishing — `share_file` (`tools/share_file.go` + `serverapp/file_sharer.go`)
 
 Agent 把**本地文件发布成 Web 可访问 URL**，在回复里嵌入给用户看（图表 / 报告 / 截图）。**Web 专属**：`serverapp/server.go` 只在 `cfg.Web.Enable && imgProvider != nil` 时注册（`RegisterCoreTool` + `RegisterTool`）。

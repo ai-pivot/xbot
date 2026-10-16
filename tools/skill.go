@@ -97,7 +97,8 @@ func (t *SkillTool) resolveSkill(ctx *ToolContext, name string) (skillDir, displ
 		// 1. Global skill dirs (server config, e.g. ~/.xbot/skills)
 		// 2. WorkspaceRoot-relative dirs
 		// 3. Session CWD-relative dirs (CurrentDir from Cd/PWD)
-		// Project-local skills live in .xbot/skills/ (same directory as .xbot/agents/).
+		// Project-local skills also include .agents/skills in each ancestor,
+		// matching SkillStore.scanProjectSkills catalog discovery.
 		bases = append(bases, ctx.SkillsDirs...)
 		if ctx.WorkspaceRoot != "" {
 			bases = append(bases,
@@ -112,6 +113,28 @@ func (t *SkillTool) resolveSkill(ctx *ToolContext, name string) (skillDir, displ
 				filepath.Join(ctx.CurrentDir, "skills"),
 				filepath.Join(ctx.CurrentDir, ".skills"),
 			)
+		}
+		seen := make(map[string]bool)
+		for _, root := range []string{ctx.WorkspaceRoot, ctx.CurrentDir} {
+			if root == "" {
+				continue
+			}
+			dir, err := filepath.Abs(root)
+			if err != nil {
+				continue
+			}
+			for {
+				base := filepath.Join(dir, ".agents", "skills")
+				if !seen[base] {
+					bases = append(bases, base)
+					seen[base] = true
+				}
+				parent := filepath.Dir(dir)
+				if parent == dir {
+					break
+				}
+				dir = parent
+			}
 		}
 	}
 
@@ -156,7 +179,9 @@ func (t *SkillTool) resolveSkill(ctx *ToolContext, name string) (skillDir, displ
 				continue
 			}
 			for _, e := range entries {
-				if !e.IsDir() {
+				// Follow symlinked skill directories, as catalog discovery does.
+				info, err := os.Stat(filepath.Join(base, e.Name()))
+				if err != nil || !info.IsDir() {
 					continue
 				}
 				skillFile := filepath.Join(base, e.Name(), "SKILL.md")
@@ -250,14 +275,20 @@ func (t *SkillTool) doListFiles(ctx *ToolContext, skillDir, displayBase string) 
 			return nil, fmt.Errorf("listing skill files: %w", err)
 		}
 	} else {
-		err := filepath.Walk(skillDir, func(path string, info os.FileInfo, err error) error {
+		// Walk does not follow a symlink at its root. Resolve only the root,
+		// retaining the original display base for executable paths.
+		walkDir, err := filepath.EvalSymlinks(skillDir)
+		if err != nil {
+			return nil, fmt.Errorf("listing skill files: %w", err)
+		}
+		err = filepath.Walk(walkDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
 			}
 			if info.IsDir() {
 				return nil
 			}
-			rel, _ := filepath.Rel(skillDir, path)
+			rel, _ := filepath.Rel(walkDir, path)
 			containerPath := filepath.Join(displayBase, rel)
 			files = append(files, containerPath)
 			if len(files) >= MaxSkillSearchResults {
