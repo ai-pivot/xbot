@@ -2260,24 +2260,7 @@ func New(cfg Config) (*Agent, error) {
 		if err := agent.pluginMgr.ActivateAll(context.Background()); err != nil {
 			log.WithError(err).Warn("Plugin activation failed")
 		}
-		// Wire plugin activator into RegistryManager so newly installed plugins
-		// (via /app install) are activated immediately without manual reload.
-		// ReloadAll triggers OnReload callbacks which re-wire hooks/tools/widgets/commands.
-		//
-		// Note: ReloadAll reloads ALL plugins, not just the installed one.
-		// This is intentional — OnReload callbacks (which re-wire hooks/tools/widgets)
-		// only fire on full reload, not on single-plugin Activate. The O(n) overhead
-		// is acceptable since /app install is a rare manual operation.
-		agent.registryManager.SetPluginActivator(func(pluginID string) error {
-			return agent.pluginMgr.ReloadAll(context.Background())
-		})
-		// Wire plugin deactivator so /app uninstall stops the plugin (hooks,
-		// widgets, runtime) after removing files.
-		// uninstallPlugin deletes files FIRST, then calls this — so ReloadAll
-		// won't re-discover the deleted plugin. Same O(n) note as above.
-		agent.registryManager.SetPluginDeactivator(func(pluginID string) error {
-			return agent.pluginMgr.ReloadAll(context.Background())
-		})
+
 		// Wire plugin capabilities to xbot subsystems
 		hookBridge := plugin.NewPluginHookBridge()
 		enricherReg := plugin.NewEnricherRegistry()
