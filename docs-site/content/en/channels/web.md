@@ -72,6 +72,8 @@ Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.)
 
 Image previews in the composer fit within **240 × 120 px**, preserve their aspect ratio, and shrink to fit narrow windows. **Click an image** to view it enlarged; press Esc, click the backdrop, or use the close button to dismiss it. Thumbnail sizing does not modify uploaded files or the image references sent with your message.
 
+Deleting an uploaded image from the composer also removes its attachment chip, so it is not sent as a hidden attachment. Clicking the image chip’s × removes the matching image previews as well. Images with the same filename are tracked independently.
+
 
 ## Response Comments
 

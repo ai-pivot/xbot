@@ -520,6 +520,79 @@ describe('MessageInput links & file paste', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
+  it.each(['body', 'chip'])('removes only the matching same-name image attachment via %s', async (via) => {
+    const onUpload = vi.fn()
+      .mockResolvedValueOnce({ upload_key: 'uploads/one.png', name: 'image.png', mime: 'image/png' })
+      .mockResolvedValueOnce({ upload_key: 'uploads/two.png', name: 'image.png', mime: 'image/png' })
+    const { editor, onSend } = await renderInput({ onUpload })
+    const files = [1, 2].map(() => new File(['img'], 'image.png', { type: 'image/png' }))
+    fireEvent.paste(editor.view.dom, { clipboardData: { files, getData: () => '', types: [] } })
+    await waitFor(() => expect(screen.getAllByLabelText('remove')).toHaveLength(2))
+    await waitFor(() => expect(editor.view.dom.querySelectorAll('img[src]')).toHaveLength(2))
+    if (via === 'body') {
+      act(() => { editor.commands.deleteRange({ from: 1, to: 2 }) })
+    } else {
+      fireEvent.click(screen.getAllByLabelText('remove')[0])
+    }
+    await waitFor(() => expect(screen.getAllByLabelText('remove')).toHaveLength(1))
+    expect(editor.view.dom.querySelectorAll('img[src]')).toHaveLength(1)
+    expect(editor.getHTML()).not.toContain('uploads%2Fone.png')
+    expect(editor.getHTML()).toContain('uploads%2Ftwo.png')
+    fireEvent.keyDown(editor.view.dom, { key: 'Enter', ctrlKey: true })
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    expect(onSend.mock.calls[0][1].uploadKeys).toEqual(['uploads/two.png'])
+    expect(onSend.mock.calls[0][0]).not.toContain('uploads%2Fone.png')
+  })
+
+  it('keeps a chip until its last repeated image reference is deleted', async () => {
+    const onUpload = vi.fn().mockResolvedValue({ upload_key: 'uploads/repeated.png', name: 'image.png', mime: 'image/png' })
+    const { editor } = await renderInput({ onUpload })
+    fireEvent.paste(editor.view.dom, { clipboardData: { files: [new File(['img'], 'image.png', { type: 'image/png' })], getData: () => '', types: [] } })
+    await waitFor(() => expect(editor.view.dom.querySelector('img[src]')).not.toBeNull())
+    act(() => {
+      editor.commands.insertContent({ type: 'image', attrs: { src: '/api/files/download?key=uploads%2Frepeated.png&inline=1' } })
+      editor.commands.deleteRange({ from: 1, to: 2 })
+    })
+    expect(screen.getAllByLabelText('remove')).toHaveLength(1)
+    act(() => { editor.commands.clearContent() })
+    await waitFor(() => expect(screen.queryByLabelText('remove')).not.toBeInTheDocument())
+  })
+
+  it('keeps an in-flight upload when another image is deleted', async () => {
+    let finish!: (value: { upload_key: string; name: string; mime: string }) => void
+    const onUpload = vi.fn()
+      .mockResolvedValueOnce({ upload_key: 'uploads/first.png', name: 'first.png', mime: 'image/png' })
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const { editor } = await renderInput({ onUpload })
+    fireEvent.paste(editor.view.dom, { clipboardData: { files: [new File(['img'], 'first.png', { type: 'image/png' }), new File(['img'], 'second.png', { type: 'image/png' })], getData: () => '', types: [] } })
+    await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(2))
+    act(() => { editor.commands.clearContent() })
+    await waitFor(() => expect(screen.queryByText('first.png')).not.toBeInTheDocument())
+    expect(screen.getByText('second.png')).toBeInTheDocument()
+    await act(async () => { finish({ upload_key: 'uploads/second.png', name: 'second.png', mime: 'image/png' }) })
+    await waitFor(() => expect(editor.getHTML()).toContain('uploads%2Fsecond.png'))
+    expect(screen.getAllByLabelText('remove')).toHaveLength(1)
+  })
+
+  it('clearing image content removes its chip but preserves ordinary file attachments', async () => {
+    const onUpload = vi.fn()
+      .mockResolvedValueOnce({ upload_key: 'uploads/img.png', name: 'image.png', mime: 'image/png' })
+      .mockResolvedValueOnce({ upload_key: 'uploads/data.bin', name: 'data.bin', mime: 'application/octet-stream' })
+    const { editor, onSend } = await renderInput({ onUpload })
+    fireEvent.paste(editor.view.dom, { clipboardData: {
+      files: [new File(['img'], 'image.png', { type: 'image/png' }), new File(['bin'], 'data.bin')],
+      getData: () => '', types: [],
+    } })
+    await waitFor(() => expect(screen.getAllByLabelText('remove')).toHaveLength(2))
+    await waitFor(() => expect(editor.getHTML()).toContain('uploads%2Fdata.bin'))
+    act(() => { editor.commands.clearContent() })
+    await waitFor(() => expect(screen.getAllByLabelText('remove')).toHaveLength(1))
+    expect(screen.queryByText('image.png')).not.toBeInTheDocument()
+    fireEvent.keyDown(editor.view.dom, { key: 'Enter', ctrlKey: true })
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    expect(onSend.mock.calls[0][1].uploadKeys).toEqual(['uploads/data.bin'])
+  })
+
   it('upload success inserts media into the editor: image → inline ![name](view-url), file → [name](download-url)', async () => {
     const onUpload = vi.fn().mockImplementation((file: File) =>
       file.name.endsWith('.png')
