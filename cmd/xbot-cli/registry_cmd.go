@@ -7,9 +7,17 @@ import (
 	"strings"
 
 	"xbot/config"
+	log "xbot/logger"
 	"xbot/registry"
 	"xbot/tools"
 )
+
+// suppressLog silences info-level logs so CLI subcommand output stays clean.
+func suppressLog() {
+	if level, err := log.ParseLevel("warn"); err == nil {
+		log.SetLevel(level)
+	}
+}
 
 // runRegistryCmd handles `xbot-cli registry <subcommand> [args]`.
 func runRegistryCmd(args []string) error {
@@ -65,13 +73,30 @@ func runRegistryCmd(args []string) error {
 		}
 		return nil
 
+	case "update":
+		cfg, err := registry.LoadConfig(xbotHome)
+		if err != nil {
+			return err
+		}
+		if len(cfg.Registries) == 0 {
+			fmt.Println("No registries configured.")
+			return nil
+		}
+		fmt.Println("Updating registries...")
+		idx, err := registry.Fetch(xbotHome)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("✅ Updated. %d items available.\n", len(idx.Items))
+		return nil
+
 	default:
 		printRegistryHelp()
 		return nil
 	}
 }
 
-// runSearchCmd handles `xbot-cli search [query]`.
+// runSearchCmd handles `xbot-cli search [query] [--type skill|agent|plugin]`.
 func runSearchCmd(args []string) error {
 	xbotHome := config.XbotHome()
 
@@ -90,11 +115,42 @@ func runSearchCmd(args []string) error {
 		return err
 	}
 
-	query := strings.TrimSpace(strings.Join(args, " "))
+	// Parse --type filter and query from args
+	typeFilter := ""
+	var queryParts []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--type" && i+1 < len(args) {
+			typeFilter = args[i+1]
+			i++
+		} else if strings.HasPrefix(args[i], "--type=") {
+			typeFilter = strings.TrimPrefix(args[i], "--type=")
+		} else {
+			queryParts = append(queryParts, args[i])
+		}
+	}
+
+	query := strings.TrimSpace(strings.Join(queryParts, " "))
 	results := registry.Search(idx, query)
 
+	// Apply type filter
+	if typeFilter != "" {
+		var filtered []registry.Entry
+		for _, e := range results {
+			if e.Type == typeFilter {
+				filtered = append(filtered, e)
+			}
+		}
+		results = filtered
+	}
+
 	if len(results) == 0 {
-		fmt.Printf("No items found for %q\n", query)
+		if typeFilter != "" && query != "" {
+			fmt.Printf("No %ss found for %q\n", typeFilter, query)
+		} else if typeFilter != "" {
+			fmt.Printf("No %ss found\n", typeFilter)
+		} else {
+			fmt.Printf("No items found for %q\n", query)
+		}
 		return nil
 	}
 
@@ -139,7 +195,6 @@ func runInstallFromRegistry(args []string) error {
 	fmt.Printf("Installing %s/%s from registry %q...\n", entry.Type, entry.Name, entry.Registry)
 
 	if force {
-		// Remove existing installation first
 		removeExisting(entry, xbotHome, workDir, cliSenderID)
 	}
 
@@ -148,7 +203,58 @@ func runInstallFromRegistry(args []string) error {
 	}
 
 	fmt.Printf("✅ Installed %s %q (v%s)\n", entry.Type, entry.Name, entry.Version)
-	fmt.Println("Use /plugin reload-all if you installed a plugin and need it active immediately.")
+	if entry.Type == "plugin" {
+		fmt.Println("Run /plugin reload-all to activate the plugin.")
+	}
+	return nil
+}
+
+// runUninstallCmd handles `xbot-cli uninstall <name>`.
+// Auto-detects the type (skill/agent/plugin) by looking for the name
+// in each installation directory.
+func runUninstallCmd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: xbot-cli uninstall <name>")
+	}
+
+	name := args[0]
+	xbotHome := config.XbotHome()
+	workDir := getWorkDir()
+
+	// Try to find and remove the item, auto-detecting type
+	// 1. Check skills
+	skillDir := filepath.Join(tools.UserSkillsRoot(workDir, cliSenderID), name)
+	if info, err := os.Stat(skillDir); err == nil && info.IsDir() {
+		if err := os.RemoveAll(skillDir); err != nil {
+			return fmt.Errorf("remove skill: %w", err)
+		}
+		fmt.Printf("✅ Uninstalled skill %q\n", name)
+		return nil
+	}
+
+	// 2. Check agents
+	agentFile := filepath.Join(tools.UserAgentsRoot(workDir, cliSenderID), name+".md")
+	if _, err := os.Stat(agentFile); err == nil {
+		if err := os.Remove(agentFile); err != nil {
+			return fmt.Errorf("remove agent: %w", err)
+		}
+		fmt.Printf("✅ Uninstalled agent %q\n", name)
+		return nil
+	}
+
+	// 3. Check plugins
+	pluginDir := filepath.Join(xbotHome, "plugins", name)
+	if info, err := os.Stat(pluginDir); err == nil && info.IsDir() {
+		if err := os.RemoveAll(pluginDir); err != nil {
+			return fmt.Errorf("remove plugin: %w", err)
+		}
+		fmt.Printf("✅ Uninstalled plugin %q\n", name)
+		fmt.Println("Run /plugin reload-all to deactivate the plugin.")
+		return nil
+	}
+
+	fmt.Printf("Item %q is not installed.\n", name)
+	fmt.Println("List installed items with: xbot-cli list-installed")
 	return nil
 }
 
@@ -258,11 +364,13 @@ func listMDFiles(dir string) []string {
 func printRegistryHelp() {
 	fmt.Println("Registry commands:")
 	fmt.Println("  xbot-cli registry add <name> <url> [branch]  Add a registry")
-	fmt.Println("  xbot-cli registry remove <name>            Remove a registry")
-	fmt.Println("  xbot-cli registry list                      List configured registries")
+	fmt.Println("  xbot-cli registry remove <name>              Remove a registry")
+	fmt.Println("  xbot-cli registry list                        List configured registries")
+	fmt.Println("  xbot-cli registry update                      Force re-fetch all registries")
 	fmt.Println()
 	fmt.Println("Distribution commands:")
-	fmt.Println("  xbot-cli search [query]                     Search registries")
-	fmt.Println("  xbot-cli install <name> [--force]          Install from registry")
-	fmt.Println("  xbot-cli list-installed                     List installed items")
+	fmt.Println("  xbot-cli search [query] [--type skill|agent|plugin]  Search registries")
+	fmt.Println("  xbot-cli install <name> [--force]                    Install from registry")
+	fmt.Println("  xbot-cli uninstall <name>                             Uninstall a component")
+	fmt.Println("  xbot-cli list-installed                               List installed items")
 }

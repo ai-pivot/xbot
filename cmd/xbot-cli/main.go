@@ -975,8 +975,10 @@ func main() {
 		fmt.Println("  registry add <name> <url> [branch]  Add a component registry")
 		fmt.Println("  registry remove <name>              Remove a registry")
 		fmt.Println("  registry list                       List configured registries")
-		fmt.Println("  search [query]                      Search registries for skills/agents/plugins")
+		fmt.Println("  registry update                     Re-fetch all registries")
+		fmt.Println("  search [query] [--type skill|agent|plugin]  Search registries")
 		fmt.Println("  install <name> [--force]            Install a component from registry")
+		fmt.Println("  uninstall <name>                    Uninstall a component")
 		fmt.Println("  list-installed                       List installed skills/agents/plugins")
 		fmt.Println()
 		fmt.Println("Options:")
@@ -1001,18 +1003,27 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "install":
+			suppressLog()
 			if err := runInstallFromRegistry(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "install: %v\n", err)
 				os.Exit(1)
 			}
 			return
+		case "uninstall":
+			if err := runUninstallCmd(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "uninstall: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "registry":
+			suppressLog()
 			if err := runRegistryCmd(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "registry: %v\n", err)
 				os.Exit(1)
 			}
 			return
 		case "search":
+			suppressLog()
 			if err := runSearchCmd(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "search: %v\n", err)
 				os.Exit(1)
