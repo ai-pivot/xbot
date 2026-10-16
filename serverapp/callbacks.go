@@ -638,55 +638,23 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if webDB == nil {
 			return nil, nil
 		}
-		allowedWebParents := map[string]bool{}
-		if !admin {
-			var err error
-			allowedWebParents, err = listWebChatIDsForSender(webDB.Conn(), senderID)
-			if err != nil {
-				return nil, err
-			}
-		}
-		var rows []web.UserChatWithPreview
-		if admin {
-			var err error
-			rows, err = listTenantsByChannel(webDB.Conn(), "agent", "")
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			agentRows, err := listTenantsByChannel(webDB.Conn(), "agent", "")
-			if err != nil {
-				return nil, err
-			}
-			for _, row := range agentRows {
-				if subAgentRowBelongsToAllowedWebParent(row, allowedWebParents) {
-					rows = append(rows, row)
-				}
-			}
+		// v63 single-operator: always use the full unfiltered view.
+		rows, err := listTenantsByChannel(webDB.Conn(), "agent", "")
+		if err != nil {
+			return nil, err
 		}
 		seen := make(map[string]bool, len(rows))
 		for _, row := range rows {
 			seen[subAgentRowKey(row)] = true
 		}
 		for _, s := range ag.ListInteractiveSessions("web", "") {
-			if admin || allowedWebParents[s.ChatID] {
-				rows = upsertSubAgentRow(rows, seen, "web", s)
-			}
+			rows = upsertSubAgentRow(rows, seen, "web", s)
 		}
-		if admin {
-			for _, s := range ag.ListInteractiveSessions("cli", "") {
-				rows = upsertSubAgentRow(rows, seen, "cli", s)
-			}
-			for _, s := range ag.ListInteractiveSessions("agent", "") {
-				rows = upsertSubAgentRow(rows, seen, "agent", s)
-			}
-		} else {
-			for _, s := range ag.ListInteractiveSessions("agent", "") {
-				row := subAgentRowFromInteractiveSession("agent", s)
-				if subAgentRowBelongsToAllowedWebParent(row, allowedWebParents) {
-					rows = upsertSubAgentRow(rows, seen, "agent", s)
-				}
-			}
+		for _, s := range ag.ListInteractiveSessions("cli", "") {
+			rows = upsertSubAgentRow(rows, seen, "cli", s)
+		}
+		for _, s := range ag.ListInteractiveSessions("agent", "") {
+			rows = upsertSubAgentRow(rows, seen, "agent", s)
 		}
 		applyWebRunningStatuses(ag, rows)
 		return rows, nil
@@ -696,119 +664,62 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			return web.SessionTreeResult{}, nil
 		}
 		var mains []web.UserChatWithPreview
-		webCurrent := ""
-		if current.Channel == "web" {
-			webCurrent = current.ChatID
-		}
 
-		// hasMore/nextOffset are defined over the ADMIN main-session list (the
-		// cross-channel union) since that is the dominant case for admins.
-		// Non-admin users paginate web user_chats only (below).
 		var hasMore bool
 		var nextOffset int
 
-		if admin {
-			// Admin: dynamically discover ALL channels from the tenants table
-			// (no hardcoding) and collect every main session, then sort by the
-			// uniform key and paginate in-memory. This is what makes sidebar
-			// pagination actually work for admins — the previous behaviour only
-			// paginated web user_chats and loaded cli/agent/github/... in full.
-			channels, err := listDistinctChannels(webDB.Conn())
-			if err != nil {
-				return web.SessionTreeResult{}, err
-			}
-			for _, ch := range channels {
-				if ch == "agent" {
-					// Agent rows are SubAgents, loaded in full by SubAgentList
-					// and attached to their parents by buildSessionTree. They
-					// must NOT participate in main-session pagination — doing so
-					// would consume page slots and split a Sub-agent from its
-					// parent across page boundaries.
-					continue
-				}
-				if ch == "cli" {
-					cliCurrent := ""
-					if current.Channel == "cli" {
-						cliCurrent = current.ChatID
-					}
-					cliChats, err := listCLIChatSessions(webDB.Conn(), cliCurrent)
-					if err != nil {
-						return web.SessionTreeResult{}, err
-					}
-					applyWebRunningStatuses(ag, cliChats)
-					mains = appendMissingSessionRows(mains, cliChats)
-					continue
-				}
-				chCurrent := ""
-				if current.Channel == ch {
-					chCurrent = current.ChatID
-				}
-				tenants, err := listTenantsByChannel(webDB.Conn(), ch, chCurrent)
-				if err != nil {
-					log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
-					continue
-				}
-				applyWebRunningStatuses(ag, tenants)
-				mains = appendMissingSessionRows(mains, tenants)
-			}
-
-			// Uniform in-memory pagination across all channels.
-			sortSessionTreeMains(mains)
-			total := len(mains)
-			if limit < 0 {
-				limit = total
-			}
-			if offset > total {
-				offset = total
-			}
-			end := offset + limit
-			if end > total {
-				end = total
-			}
-			mains = mains[offset:end]
-			hasMore = end < total
-			nextOffset = end
-		} else {
-			// Non-admin: paginate the user's own web user_chats (dominant case);
-			// their non-web sessions are few and appended in full.
-			cs := sqlite.NewChatService(webDB)
-			webChats, more, err := cs.ListUserChats("web", senderID, webCurrent, offset, limit)
-			if err != nil {
-				return web.SessionTreeResult{}, err
-			}
-			for _, c := range webChats {
-				mains = append(mains, web.UserChatWithPreview{
-					ChatID:     c.ChatID,
-					Channel:    "web",
-					Label:      c.Label,
-					LastActive: c.LastActive.Format(time.RFC3339),
-					Preview:    c.Preview,
-					IsCurrent:  c.IsCurrent,
-					CreatedAt:  c.CreatedAt.Format(time.RFC3339),
-					SortOrder:  c.SortOrder,
-				})
-				applyWebRunningStatus(ag, &mains[len(mains)-1])
-			}
-			hasMore = more
-
-			senderTenants, err := listTenantsForSender(webDB.Conn(), senderID, webCurrent)
-			if err != nil {
-				log.WithError(err).Warn("Failed to list tenants for sender")
-			} else {
-				applyWebRunningStatuses(ag, senderTenants)
-				mains = appendMissingSessionRows(mains, senderTenants)
-			}
-
-			// NextOffset = offset + web user_chats loaded this page.
-			// len(webChats) includes the default chat (always first, not
-			// paginated), so subtract one — the default chat never advances
-			// the offset.
-			if len(webChats) > 0 {
-				nextOffset = offset + len(webChats) - 1
-			} else {
-				nextOffset = offset
-			}
+		// v63 single-operator: always use the full cross-channel view.
+		// (The non-admin per-sender pagination path was removed — there is
+		// no non-admin user in single-operator mode.)
+		channels, err := listDistinctChannels(webDB.Conn())
+		if err != nil {
+			return web.SessionTreeResult{}, err
 		}
+		for _, ch := range channels {
+			if ch == "agent" {
+				continue
+			}
+			if ch == "cli" {
+				cliCurrent := ""
+				if current.Channel == "cli" {
+					cliCurrent = current.ChatID
+				}
+				cliChats, err := listCLIChatSessions(webDB.Conn(), cliCurrent)
+				if err != nil {
+					return web.SessionTreeResult{}, err
+				}
+				applyWebRunningStatuses(ag, cliChats)
+				mains = appendMissingSessionRows(mains, cliChats)
+				continue
+			}
+			chCurrent := ""
+			if current.Channel == ch {
+				chCurrent = current.ChatID
+			}
+			tenants, err := listTenantsByChannel(webDB.Conn(), ch, chCurrent)
+			if err != nil {
+				log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
+				continue
+			}
+			applyWebRunningStatuses(ag, tenants)
+			mains = appendMissingSessionRows(mains, tenants)
+		}
+
+		sortSessionTreeMains(mains)
+		total := len(mains)
+		if limit < 0 {
+			limit = total
+		}
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		mains = mains[offset:end]
+		hasMore = end < total
+		nextOffset = end
 
 		subagents, err := callbacks.SubAgentList(senderID, admin)
 		if err != nil {
