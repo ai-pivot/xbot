@@ -19,7 +19,7 @@ Existing files are served before SPA fallback. Extensionless frontend routes fal
 
 ## PR previews and security
 
-Eligible PRs automatically receive deployment status and a preview URL from the Vercel GitHub integration. Additional commits create updated deployments. Fork PRs may require maintainer approval; do not disable fork protection or expose deployment secrets to untrusted code. A PR changing only files outside `web` can be skipped by Vercel's root-directory optimization; turn that setting off if literally every PR needs a fresh deployment.
+Eligible PRs automatically receive deployment status and a preview URL from the Vercel GitHub integration. Additional commits create updated deployments. Fork PRs may require maintainer approval; do not disable fork protection or expose deployment secrets to untrusted code. The project's “Skip deployments when there are no changes to the root directory or its dependencies” optimization is disabled so backend-only and documentation-only PR updates can also trigger previews. Keep it disabled if every eligible PR should receive a fresh deployment.
 
 This deployment-only change does NOT add backend selection, cross-origin authorization, mock data or localhost access. The current frontend assumes a same-origin backend: a static deployment can display the frontend shell, but authenticated backend operations are unavailable. Those capabilities are a separate change. Do not expose a local backend or relax CORS/cookie settings to make this hosting-only PR appear fully functional.
 
