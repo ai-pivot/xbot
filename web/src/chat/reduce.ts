@@ -487,13 +487,13 @@ function isStaleSeq(
   seq: EventSeq | null,
   live: Pick<LiveSnapshot, 'iter' | 'iterations'>,
   extra: {
-    iter?: IterNum
+    iter?: IterNum | null
     iterationsDelta?: readonly WebIteration[]
     finalIteration?: WebIteration | null
   },
 ): boolean {
   if (lastSeq === null || seq === null || seq > lastSeq) return false
-  if (extra.iter !== undefined && extra.iter > live.iter) return false
+  if (extra.iter !== undefined && extra.iter !== null && extra.iter > live.iter) return false
   const maxKnown = live.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
   if (extra.iterationsDelta?.some((it) => it.iteration > maxKnown)) return false
   // phase_done 的 finalIteration 是**进行中迭代**的收尾快照（可能 = live.iter）——
@@ -741,6 +741,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
     // ── iteration：仅 active turn；迭代 append-only（I4） ──
     case 'iteration': {
+      // ⛔ `ev.iter === null` = 事件未携带迭代号（**不是迭代 1**）：保留 prev.iter，
+      //   不触发 advanced / 不解除遮蔽 / 不参与 gap 判据。
+      const evIter: IterNum | null = ev.iter
       // turnID null（turn_id=0 缺失）→ 回退 activeTurn（与 stream 一致）。
       // todos 是会话级状态，不因 turn 缺失而丢弃。
       const target = ev.turnID !== null ? ev.turnID : s.activeTurn
@@ -765,10 +768,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           // （含尾部截断的「更早 N 个迭代」路径）分叉 ⇒ 上下文视图缺迭代（刷新才
           // 恢复）。只有【新迭代】（ev.iter > maxIter —— 后端不会对已结束的 turn
           // 发新迭代）才能证明 turn 仍在运行并解除遮蔽。
-          if (ev.iter > maxIter) {
+          if (evIter !== null && evIter > maxIter) {
             const live: LiveSnapshot = {
               ...EMPTY_LIVE,
-              iter: ev.iter,
+              iter: evIter,
               content: t0.phase.payload.content,
               iterations: t0.phase.payload.iterations,
             }
@@ -791,10 +794,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           // 与上面 committed 遮蔽解除**同一规则、同一证据标准**（ev.iter > maxIter）。
           // 保留 frozen 数据（已渲染的迭代/内容/工具一个不少），流式恢复更新。
           const maxIter = t0.phase.data.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
-          if (ev.iter > maxIter) {
+          if (evIter !== null && evIter > maxIter) {
             const live: LiveSnapshot = {
               ...t0.phase.data,
-              iter: ev.iter,
+              iter: evIter,
               content: ev.content ?? t0.phase.data.content,
               reasoning: ev.reasoning ?? t0.phase.data.reasoning,
               streaming: true,
@@ -819,10 +822,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
       const prev = t.phase.data
       // I5：重放丢弃（seq ≤ 水位 **且** 无新迭代信息 —— 见 isStaleSeq 的 Run 重启说明）。
-      if (isStaleSeq(s.lastSeq, ev.seq, prev, { iter: ev.iter, iterationsDelta: ev.iterationsDelta })) return s
+      if (isStaleSeq(s.lastSeq, ev.seq, prev, { iter: evIter, iterationsDelta: ev.iterationsDelta })) return s
       // ⛔ ev.iter === null = 事件未携带迭代号（不是迭代 1）：保留 prev.iter，
       //   不触发 advanced、不参与 gap 判据。
-      const evIter: IterNum | null = ev.iter
       const advanced = evIter !== null && evIter > prev.iter
       // ── 迭代 commit（history append 且 iteration 未前进）──
       // 事件 A（snapshotCompletedIteration）：iterationsDelta append 了刚完成
