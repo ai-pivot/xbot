@@ -1095,6 +1095,7 @@ const zhCN = {
       enable: '启用',
       reloading: '重载中…',
       reload: '重载',
+      uninstall: '卸载',
       // 内置插件面板（宿主静态 import）的清单文案 —— 随主 bundle 走宿主 i18n。
       manifest: {
         name: '插件管理',

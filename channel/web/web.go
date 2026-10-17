@@ -960,15 +960,24 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/cron/remove", wc.authenticatedPOST(wc.handleCronRemovePOST))
 	mux.HandleFunc("/api/tasks/list", wc.authenticatedPOST(wc.handleTasksListPOST))
 
-	// App bundle API
-	mux.HandleFunc("/api/app/pack", wc.authenticatedPOST(wc.handleMarketPack))
-	mux.HandleFunc("/api/app/install-file", wc.authenticatedPOST(wc.handleMarketInstallFile))
-	mux.HandleFunc("/api/app/uninstall", wc.authenticatedPOST(wc.handleMarketUninstall))
+	// Skill & agent install/uninstall
 	mux.HandleFunc("/api/skills/export", wc.authenticatedPOST(wc.handleSkillsExport))
 	mux.HandleFunc("/api/skills/install-file", wc.authenticatedPOST(wc.handleSkillsInstallFile))
+	mux.HandleFunc("/api/skills/uninstall", wc.authenticatedPOST(wc.handleSkillUninstall))
+	mux.HandleFunc("/api/agents/install-file", wc.authenticatedPOST(wc.handleAgentInstallFile))
+	mux.HandleFunc("/api/agents/uninstall", wc.authenticatedPOST(wc.handleAgentUninstall))
 
 	// Plugin install (single-plugin zip, multipart upload → local temp → install)
 	mux.HandleFunc("/api/plugin/install-file", wc.authenticatedPOST(wc.handlePluginInstallFile))
+
+	// Registry marketplace (browse/search/install from git-based registries)
+	mux.HandleFunc("/api/registry/search", wc.authenticatedPOST(wc.handleRegistrySearch))
+	mux.HandleFunc("/api/registry/install", wc.authenticatedPOST(wc.handleRegistryInstall))
+	mux.HandleFunc("/api/registry/list-installed", wc.authenticatedPOST(wc.handleRegistryListInstalled))
+	mux.HandleFunc("/api/registry/config-list", wc.authenticatedPOST(wc.handleRegistryConfigList))
+	mux.HandleFunc("/api/registry/config-add", wc.authenticatedPOST(wc.handleRegistryConfigAdd))
+	mux.HandleFunc("/api/registry/config-remove", wc.authenticatedPOST(wc.handleRegistryConfigRemove))
+	mux.HandleFunc("/api/registry/uninstall", wc.authenticatedPOST(wc.handleRegistryUninstall))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		jsonErrorResponse(w, http.StatusNotFound, "endpoint not found")

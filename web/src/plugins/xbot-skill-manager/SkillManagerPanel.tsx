@@ -4,7 +4,7 @@
  * 由旧分支 SkillsPanel 移植，API 调用替换为插件运行时核心 RPC：
  * - skill_list / skill_set_enabled / skill_get_content：runtime.rpc.call 无点号直传 /api/rpc
  * - export：薄 REST /api/skills/export（zip 二进制下载）
- * - install / uninstall：复用 master 通用市场 REST（/api/app/install-file + /api/app/uninstall，
+ * - install / uninstall：独立 REST（/api/skills/install-file + /api/skills/uninstall，
  *   后端从会话身份注入 sender_id，不信任前端参数）
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -139,7 +139,7 @@ export function SkillManagerPanel() {
       if (!skill.can_uninstall) return
       if (!window.confirm(t('skills.confirmUninstall', { name: skill.name }))) return
       try {
-        await postAPI('/api/app/uninstall', { type: 'skill', name: skill.name })
+        await postAPI('/api/skills/uninstall', { name: skill.name })
         await load()
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))

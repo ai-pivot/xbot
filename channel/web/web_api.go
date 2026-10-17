@@ -436,124 +436,6 @@ type marketResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-type marketUninstallRequest struct {
-	Type string `json:"type"`
-	Name string `json:"name"`
-}
-
-type marketPackRequest struct {
-	Name  string            `json:"name"`
-	Items []packItemRequest `json:"items"`
-}
-
-type packItemRequest struct {
-	Type string `json:"type"`
-	Name string `json:"name"`
-}
-
-type marketPackResponse struct {
-	OK    bool   `json:"ok"`
-	Path  string `json:"path,omitempty"`
-	Error string `json:"error,omitempty"`
-}
-
-// handleMarketPack handles POST /api/app/pack
-func (wc *WebChannel) handleMarketPack(w http.ResponseWriter, r *http.Request) {
-	senderID := senderIDFromContext(r.Context())
-
-	if wc.callbacks.RPCHandler == nil {
-		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
-		return
-	}
-
-	var req marketPackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
-		return
-	}
-
-	if req.Name == "" || len(req.Items) == 0 {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "name and items are required"})
-		return
-	}
-
-	var resp struct {
-		Path string `json:"path"`
-	}
-	if err := wc.rpcCall("app_pack", map[string]any{
-		"name":   req.Name,
-		"items":  req.Items,
-		"author": senderID,
-	}, &resp); err != nil {
-		writeJSON(w, http.StatusInternalServerError, marketPackResponse{OK: false, Error: err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, marketPackResponse{OK: true, Path: resp.Path})
-}
-
-// handleMarketInstallFile handles POST /api/app/install-file
-// Accepts multipart/form-data with a "file" field containing the .xbot.zip
-func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Request) {
-	senderID := senderIDFromContext(r.Context())
-
-	if wc.callbacks.RPCHandler == nil {
-		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
-		return
-	}
-
-	// Parse multipart upload
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "failed to parse multipart form"})
-		return
-	}
-
-	file, _, err := r.FormFile("file")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "no file uploaded"})
-		return
-	}
-	defer file.Close()
-
-	// Save to temp file
-	tmpFile, err := os.CreateTemp("", "xbot-install-*.xbot.zip")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to create temp file"})
-		return
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-	if _, err := io.Copy(tmpFile, file); err != nil {
-		tmpFile.Close()
-		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to save uploaded file"})
-		return
-	}
-	tmpFile.Close()
-
-	var resp struct {
-		Name      string   `json:"name"`
-		Version   string   `json:"version"`
-		Installed []string `json:"installed"`
-		Skipped   []string `json:"skipped"`
-	}
-	if err := wc.rpcCall("app_install_file", map[string]any{
-		"zip_path":  tmpPath,
-		"sender_id": senderID,
-		"force":     r.URL.Query().Get("force") == "true",
-	}, &resp); err != nil {
-		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"name":    resp.Name,
-		"version": resp.Version,
-		"items":   resp.Installed,
-		"skipped": resp.Skipped,
-	})
-}
-
 // handlePluginInstallFile handles POST /api/plugin/install-file.
 // Accepts multipart/form-data with a "file" field containing a single-plugin
 // zip (plugin.json at root or wrapped in one directory). The zip is saved to a
@@ -831,32 +713,6 @@ func (wc *WebChannel) handleLLMModelSet(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, llmConfigResponse{OK: true})
 }
 
-// handleMarketUninstall handles POST /api/app/uninstall
-func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Request) {
-	senderID := senderIDFromContext(r.Context())
-
-	if wc.callbacks.RPCHandler == nil {
-		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
-		return
-	}
-
-	var req marketUninstallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
-		return
-	}
-
-	if err := wc.rpcCall("app_uninstall", map[string]any{
-		"type":      req.Type,
-		"name":      req.Name,
-		"sender_id": senderID,
-	}, nil); err != nil {
-		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, marketResponse{OK: true})
-}
 
 type skillsExportRequest struct {
 	Path string `json:"path"`
@@ -1023,6 +879,293 @@ func (wc *WebChannel) handleSkillsInstallFile(w http.ResponseWriter, r *http.Req
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": result.Name})
+}
+
+// handleSkillUninstall handles POST /api/skills/uninstall — removes a
+// user-installed skill by name.
+func (wc *WebChannel) handleSkillUninstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if err := wc.rpcCallAs(r, "skill_uninstall", map[string]any{
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// handleAgentInstallFile handles POST /api/agents/install-file — installs an
+// agent from a .md file upload. The filename (without .md) becomes the agent name.
+func (wc *WebChannel) handleAgentInstallFile(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "failed to parse multipart form"})
+		return
+	}
+
+	file, handler, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "no file uploaded"})
+		return
+	}
+	defer file.Close()
+
+	// Derive agent name from uploaded filename (without .md extension).
+	agentName := strings.TrimSuffix(handler.Filename, ".md")
+	if agentName == "" || agentName == handler.Filename {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "file must have .md extension"})
+		return
+	}
+
+	tmpFile, err := os.CreateTemp("", "xbot-agent-install-*.md")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to create temp file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to save uploaded file"})
+		return
+	}
+	tmpFile.Close()
+
+	var result struct {
+		Name string `json:"name"`
+	}
+	if err := wc.rpcCallAs(r, "agent_install_file", map[string]any{
+		"md_path": tmpPath,
+		"name":    agentName,
+		"force":   r.URL.Query().Get("force") == "true",
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": result.Name})
+}
+
+// handleAgentUninstall handles POST /api/agents/uninstall — removes a
+// user-installed agent by name.
+func (wc *WebChannel) handleAgentUninstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if err := wc.rpcCallAs(r, "agent_uninstall", map[string]any{
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// --- Registry marketplace handlers ---
+
+// handleRegistrySearch handles POST /api/registry/search
+func (wc *WebChannel) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Query string `json:"query"`
+		Type  string `json:"type"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	var result struct {
+		Items []struct {
+			Type        string   `json:"type"`
+			Name        string   `json:"name"`
+			Description string   `json:"description"`
+			Author      string   `json:"author"`
+			Version     string   `json:"version"`
+			Tags        []string `json:"tags,omitempty"`
+			Registry    string   `json:"registry"`
+		} `json:"items"`
+	}
+	if err := wc.rpcCallAs(r, "registry_search", map[string]any{
+		"query": req.Query,
+		"type":  req.Type,
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleRegistryInstall handles POST /api/registry/install
+func (wc *WebChannel) handleRegistryInstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	var result struct {
+		Type    string `json:"type"`
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	}
+	if err := wc.rpcCallAs(r, "registry_install", map[string]any{
+		"name":  req.Name,
+		"force": req.Force,
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "type": result.Type, "name": result.Name, "version": result.Version})
+}
+
+// handleRegistryListInstalled handles POST /api/registry/list-installed
+func (wc *WebChannel) handleRegistryListInstalled(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Type string `json:"type"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	var result struct {
+		Items []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := wc.rpcCallAs(r, "registry_list_installed", map[string]any{
+		"type": req.Type,
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleRegistryConfigList handles POST /api/registry/config-list
+func (wc *WebChannel) handleRegistryConfigList(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var result struct {
+		Registries []struct {
+			Name   string `json:"name"`
+			URL    string `json:"url"`
+			Branch string `json:"branch,omitempty"`
+		} `json:"registries"`
+	}
+	if err := wc.rpcCallAs(r, "registry_config_list", map[string]any{}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleRegistryConfigAdd handles POST /api/registry/config-add
+func (wc *WebChannel) handleRegistryConfigAdd(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		Branch string `json:"branch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if err := wc.rpcCallAs(r, "registry_config_add", map[string]any{
+		"name": req.Name, "url": req.URL, "branch": req.Branch,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// handleRegistryConfigRemove handles POST /api/registry/config-remove
+func (wc *WebChannel) handleRegistryConfigRemove(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if err := wc.rpcCallAs(r, "registry_config_remove", map[string]any{
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// handleRegistryUninstall handles POST /api/registry/uninstall — removes an
+// installed component (skill/agent/plugin) by type and name.
+func (wc *WebChannel) handleRegistryUninstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if err := wc.rpcCallAs(r, "registry_uninstall", map[string]any{
+		"type": req.Type,
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
 }
 
 // sanitizeExportName keeps only alphanumerics, '-', '_', '.' — everything else becomes '_'.
