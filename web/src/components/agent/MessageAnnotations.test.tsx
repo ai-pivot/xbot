@@ -36,6 +36,49 @@ afterEach(() => {
 })
 
 describe('selection comment entry', () => {
+  it.each([
+    { x: 60, y: 180, expectedX: 60, expectedY: 128 },
+    { x: 900, y: 600, expectedX: 900, expectedY: 548 },
+    { x: 1020, y: 10, expectedX: 972, expectedY: 18 },
+  ])('anchors mouse selection at release ($x, $y), not the range right edge', ({ x, y, expectedX, expectedY }) => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:mouse-position" visible>
+      <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '正文', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 7, iteration: 1 }}>
+        <p data-annotation-body="">正文</p>
+      </CopyTarget>
+    </MessageAnnotationsProvider>)
+    const text = screen.getByText('正文')
+    const pointer = (type: string) => Object.assign(new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y }), { pointerType: 'mouse' })
+    fireEvent(text, pointer('pointerdown'))
+    selectText(text)
+    fireEvent(text, pointer('pointerup'))
+    act(() => frameScheduler.flushNow())
+    const action = screen.getByTestId('annotation-selection-action')
+    expect(action.style.left).toBe(`${expectedX}px`)
+    expect(action.style.top).toBe(`${expectedY}px`)
+    // A delayed selectionchange must not jump back to the range rectangle.
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(action.style.left).toBe(`${expectedX}px`)
+    fireEvent.keyDown(document, { key: 'ArrowRight', shiftKey: true })
+    act(() => frameScheduler.flushNow())
+    expect(action.style.left).toBe('96px')
+  })
+
+  it('keeps native touch selection on range geometry rather than touch release coordinates', () => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:touch-position" visible>
+      <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '正文', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 7, iteration: 1 }}>
+        <p data-annotation-body="">正文</p>
+      </CopyTarget>
+    </MessageAnnotationsProvider>)
+    const text = screen.getByText('正文')
+    const pointer = (type: string) => Object.assign(new MouseEvent(type, { bubbles: true, button: 0, clientX: 900, clientY: 600 }), { pointerType: 'touch' })
+    fireEvent(text, pointer('pointerdown'))
+    selectText(text)
+    fireEvent(text, pointer('pointerup'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toHaveStyle({ left: '96px', top: '48px' })
+  })
+
   it('ignores a malformed DOM annotation source without throwing in a frame task', () => {
     renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:malformed" visible>
       <div data-copy-target="iteration" data-annotation-source="{broken"><p data-annotation-body="">body</p></div>
@@ -130,6 +173,39 @@ describe('selection comment entry', () => {
     expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
     selectText(text)
     document.getSelection()!.removeAllRanges()
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
+  })
+
+  it('accepts the final paragraph newline boundary but rejects actual following tool text', () => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:paragraph-end" visible>
+      <div data-copy-target="iteration" data-annotation-source='{"turnID":7,"iteration":1}'>
+        <div data-annotation-body=""><p>最后一段正文</p></div><div><span>工具输出</span></div>
+      </div>
+    </MessageAnnotationsProvider>)
+    const paragraph = screen.getByText('最后一段正文')
+    const tool = screen.getByText('工具输出')
+    const range = document.createRange()
+    range.setStart(paragraph.firstChild!, 0)
+    range.setEnd(tool.firstChild!, 0)
+    range.getClientRects = () => [new DOMRect(20, 100, 120, 20)] as unknown as DOMRectList
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toBeInTheDocument()
+    // Reverse selection starts at the next node, but the ordered range still
+    // belongs to this body. The provider must not resolve via anchorNode.
+    selection.setBaseAndExtent(tool.firstChild!, 0, paragraph.firstChild!, 0)
+    selection.getRangeAt(0).getClientRects = () => [new DOMRect(20, 100, 120, 20)] as unknown as DOMRectList
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toBeInTheDocument()
+    selection.removeAllRanges()
+    selection.addRange(range)
+    range.setEnd(tool.firstChild!, 1)
     fireEvent(document, new Event('selectionchange'))
     act(() => frameScheduler.flushNow())
     expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
@@ -312,24 +388,35 @@ describe('annotation editor', () => {
 })
 
 describe('annotation snapshot rendering', () => {
-  it('renders literal brackets, HTML, links, fences and math instead of interpreting them', () => {
+  it('renders literal brackets, HTML, links, fences and math instead of interpreting them', async () => {
     const quote = '中文 🙂 [链接](https://example.com) <script>x</script> $x$ \\(x\\) ``` !rm -rf /'
     const annotation: MessageAnnotation = { id: 'one', source: { turnID: 7 }, quote, comment: '评论 [保持字面量]' }
     const content = formatAnnotatedMessage('正文', [annotation], (key) => key)
     const { container } = renderWithProviders(<UserMessage content={content} />)
-    expect(container.querySelector('pre code')?.textContent).toContain(quote)
-    expect(container.textContent).toContain(annotation.comment)
-    expect(container.querySelector('script, a, .katex')).toBeNull()
+    // The floating card owns the snapshots; the bubble keeps the count pill and body only.
+    expect(container.textContent).not.toContain(quote)
+    fireEvent.click(screen.getByRole('button', { name: /1 (条注释|annotation)/ }))
+    const card = await screen.findByRole('dialog')
+    expect(card.textContent).toContain(quote)
+    expect(card.textContent).toContain(annotation.comment)
+    expect(card.querySelector('script, a, .katex')).toBeNull()
+    expect(card.textContent).not.toMatch(/response-annotations|turnId|startOffset|Response annotations|My request/)
     expect(container.textContent).not.toMatch(/response-annotations|turnId|startOffset|Response annotations|My request/)
   })
 
-  it('preserves TeX after a shorter standalone fence inside the snapshot fence', () => {
+  it('preserves TeX after a shorter standalone fence inside the snapshot fence', async () => {
     const quote = '前文\n```\n\\(literal\\)\n\\[literal display\\]\n````still literal\n\\(more\\)'
     const annotation: MessageAnnotation = { id: 'nested', source: { turnID: 7 }, quote, comment: '保留原文' }
     const content = formatAnnotatedMessage('', [annotation], (key) => key)
     const { container } = renderWithProviders(<UserMessage content={content} />)
-    expect(container.querySelector('pre code')?.textContent).toBe(quote + '\n')
-    expect(container.querySelector('.katex')).toBeNull()
+    expect(container.querySelector('pre code')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /1 (条注释|annotation)/ }))
+    const card = await screen.findByRole('dialog')
+    // Plain-text rendering: the quote renders exactly, fences included, with no KaTeX.
+    const rendered = [...card.querySelectorAll('div.whitespace-pre-wrap')].map((el) => el.textContent)
+    expect(rendered).toContain(quote)
+    expect(rendered).toContain('保留原文')
+    expect(card.querySelector('.katex')).toBeNull()
   })
 
   it('clears annotation drafts when authentication caches are reset', () => {

@@ -7,6 +7,7 @@ import (
 	"xbot/agent"
 	"xbot/channel/web"
 	"xbot/llm"
+	"xbot/storage/sqlite"
 )
 
 func newTestAgentForWaitingStatus(t *testing.T) *agent.Agent {
@@ -52,5 +53,25 @@ func TestWaitingInputRowIsNotRunning(t *testing.T) {
 	}
 	if row.Running {
 		t.Fatal("waiting_input row reported running=true (busy and waiting must be mutually exclusive)")
+	}
+}
+
+func TestStaleCLIListRowDoesNotRecreateDeletedSession(t *testing.T) {
+	ag := newTestAgentForWaitingStatus(t)
+	const chatID = "/tmp/deleted-cli-list-row"
+	if _, err := ag.MultiSession().GetOrCreateSession("cli", chatID); err != nil {
+		t.Fatal(err)
+	}
+	row := web.UserChatWithPreview{Channel: "cli", ChatID: chatID}
+	if err := ag.MultiSession().DestroySession("cli", chatID); err != nil {
+		t.Fatal(err)
+	}
+	applyWebRunningStatus(ag, &row)
+	id, err := sqlite.NewTenantService(ag.MultiSession().DB()).GetTenantIDByChannelChatID("cli", chatID)
+	if err != nil || id != 0 {
+		t.Fatalf("stale list row recreated deleted tenant: id=%d err=%v", id, err)
+	}
+	if row.Status == "waiting_input" || row.Running {
+		t.Fatalf("deleted row reported active state: %#v", row)
 	}
 }

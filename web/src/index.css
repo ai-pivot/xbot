@@ -1029,8 +1029,12 @@
 /* Images — pasted/uploaded media rendered inline in the composer
    (![name](/api/files/download?key=...&inline=1) → tiptap Image extension). */
 .ProseMirror.xbot-editor img {
-  max-width: 100%;
+  max-width: min(100%, 240px);
+  max-height: 120px;
+  width: auto;
   height: auto;
+  object-fit: contain;
+  cursor: zoom-in;
   border-radius: 8px;
   margin: 2px 0;
   display: inline-block;

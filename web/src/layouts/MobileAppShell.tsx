@@ -360,7 +360,7 @@ export function MobileAppShell() {
          *  viewport-fit=cover. This is the community-verified iOS PWA
          *  full-bleed fix. */}
         <div
-          className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary"
+          className="fixed inset-0 flex flex-col overflow-clip bg-bg-primary text-text-primary"
           style={keyboardInset > 0 ? { paddingBottom: `${keyboardInset}px` } : undefined}
         >
           {/* Ambience 壁纸层（z:0）——第一子元素 */}

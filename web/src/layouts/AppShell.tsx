@@ -27,6 +27,7 @@ import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabManager } from '@/hooks/useTabManager'
 import { useKeyboardInset } from '@/hooks/useKeyboardInset'
+import { useNewSessionShortcut } from '@/hooks/useNewSessionShortcut'
 
 import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
 import {
@@ -151,12 +152,11 @@ export function AppShell() {
           id: 'session.new',
           titleKey: 'sidebar.newSession',
           category: 'sessions',
-          handler: () => {
-            void sessionStore.createSession().then((id) => {
-              // desktop：创建后把新会话切到主编辑区（与侧栏点击 / fork 同一处理
-              // —— 主区身份在 tab 的 sessionId 上，光改 activeSession 看不到切换）。
-              if (id && !isMobile) openAgentSessionTab(tabManager, id)
-            })
+          handler: async () => {
+            const id = await sessionStore.createSession()
+            // desktop：创建后把新会话切到主编辑区（与侧栏点击 / fork 同一处理
+            // —— 主区身份在 tab 的 sessionId 上，光改 activeSession 看不到切换）。
+            if (id && !isMobile) openAgentSessionTab(tabManager, id)
           },
         },
         {
@@ -170,6 +170,8 @@ export function AppShell() {
       ]),
     [sessionStore, tabManager, isMobile],
   )
+
+  useNewSessionShortcut(() => commands.execute('session.new'), !isMobile)
 
   // 桥接插件 editor-view API：PluginUI.openViewTab/openFileTab（React 树外）
   // 经模块级注册器走到 tabManager.openTab（VSCode webviewPanel 语义）。
@@ -338,7 +340,7 @@ export function AppShell() {
       {/* fixed inset-0 — same iOS PWA standalone full-bleed guarantee as
           MobileAppShell (100dvh/height:100% stop at the safe area there). */}
       <div
-        className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary"
+        className="fixed inset-0 flex flex-col overflow-clip bg-bg-primary text-text-primary"
         style={keyboardInset > 0 ? { paddingBottom: `${keyboardInset}px` } : undefined}
       >
       {/* Ambience 壁纸层（z:0，pointer-events:none）——第一子元素 */}

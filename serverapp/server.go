@@ -1304,13 +1304,15 @@ const adminSenderID = "admin"
 const cliSenderID = "cli_user"
 
 // isAdmin checks if the given context has admin privileges.
-// Checks canonical user role first; falls back to authSenderID == "admin"
-// for backward compat (CLI local mode where IdentityResolver may not be wired).
+// v63 single-operator mode: the multi-user system was removed — there is
+// exactly one operator, so every authenticated user IS the operator IS
+// admin. The rpcRole check is retained for a potential future multi-user
+// restoration (where roles would be set explicitly via IdentityResolver).
 func isAdmin(ctx context.Context) bool {
 	if role := rpcRole(ctx); role != "" {
 		return role == "admin"
 	}
-	return rpcAuthID(ctx) == adminSenderID
+	return rpcAuthID(ctx) != ""
 }
 
 // sessionKeyOwner extracts the chatID (owner) from a session/full key.

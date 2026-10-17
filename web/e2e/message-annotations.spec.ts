@@ -59,6 +59,24 @@ async function openDesktopSession(page: Page) {
   await expect(page.getByText('第二段独立正文', { exact: true })).toBeVisible()
 }
 
+test('native paragraph selection at the final body boundary still offers a comment', async ({ page }) => {
+  await setup(page)
+  await openDesktopSession(page)
+  const paragraph = page.getByText('注释、评论功能的设计稿尚未交付。', { exact: true })
+  await paragraph.click({ clickCount: 3 })
+  const snapshot = await paragraph.evaluate((el) => {
+    const selection = document.getSelection()!
+    const range = selection.getRangeAt(0)
+    return { quote: selection.toString(), endInside: el.closest('[data-annotation-body]')!.contains(range.endContainer) }
+  })
+  expect(snapshot.quote).toContain('注释、评论功能的设计稿尚未交付。')
+  // Real Chromium paragraph selection includes the trailing block boundary.
+  expect(snapshot.endInside).toBe(false)
+  await expect(page.getByTestId('annotation-selection-action')).toBeVisible()
+  await page.getByTestId('annotation-selection-action').click()
+  await expect(page.getByRole('textbox', { name: '所选文本' })).toHaveValue(snapshot.quote)
+})
+
 async function emitProgress(page: Page, seq: number, type: string, progress: Record<string, unknown>) {
   await page.evaluate(({ type, progress, seq }) => {
     const sources = (window as unknown as { __annotationSources: (EventTarget & { readyState: number })[] }).__annotationSources
@@ -209,9 +227,17 @@ test.describe('comment keyboard flow', () => {
       annotation: '请先实现选文评论，保留现有输入内容。',
       source: { turnId: 7, iteration: 1, startOffset: 0, endOffset: '注释、评论功能的设计稿尚未交付。'.length, offsetBasis: 'dom-text', offsetEncoding: 'utf-16' },
     }])
-    const bubble = page.getByTestId('user-bubble').filter({ hasText: '请先实现选文评论' })
-    await expect(bubble).toContainText('注释、评论功能的设计稿尚未交付。')
+    const bubble = page.getByTestId('user-bubble').filter({ hasText: '我们先把评论功能完善好。' })
+    await expect(bubble).toContainText('我们先把评论功能完善好。')
     await expect(bubble).not.toContainText(/response-annotations|turnId|startOffset|Response annotations|My request/)
+    // The sent envelope renders as a count pill; the floating card carries the snapshots.
+    const pill = bubble.getByRole('button', { name: /1 条注释|1 annotation/ })
+    await expect(pill).toBeVisible()
+    await pill.click()
+    const card = page.getByRole('dialog', { name: /1 条注释|1 annotation/ })
+    await expect(card).toContainText('注释、评论功能的设计稿尚未交付。')
+    await expect(card).toContainText('请先实现选文评论，保留现有输入内容。')
+    await expect(card).not.toContainText(/response-annotations|turnId|startOffset|Response annotations|My request|第\s*7\s*轮|第\s*1\s*次迭代|\/6000|\/2000/)
     await pause()
   })
 })
@@ -294,11 +320,17 @@ test('desktop: locates a repeated Markdown excerpt and keeps XML feedback readab
   }])
   await page.reload()
   await expect(page.locator('[data-agent-visible="1"]')).toHaveAttribute('data-agent-chat-id', 'annotation-test')
-  const bubble = page.getByTestId('user-bubble').filter({ hasText: '这里只改第二次出现的内容。' })
+  const bubble = page.getByTestId('user-bubble').filter({ hasText: '保留正文。' })
   await expect(bubble).toBeVisible()
   await expect(bubble).toContainText('保留正文。')
-  await expect(bubble).toContainText('重复')
   await expect(bubble).not.toContainText(/response-annotations|turnId|startOffset|Response annotations|My request/)
+  // The reloaded envelope renders as a count pill; the card keeps the XML feedback readable.
+  const pill = bubble.getByRole('button', { name: /1 条注释|1 annotation/ })
+  await expect(pill).toBeVisible()
+  await pill.click()
+  const card = page.getByRole('dialog', { name: /1 条注释|1 annotation/ })
+  await expect(card).toContainText('重复')
+  await expect(card).toContainText('这里只改第二次出现的内容。')
   await expect(page.getByTestId('session-loading-screen')).toHaveCount(0)
   await expect(page.locator('.animate-spin')).toHaveCount(0)
   if (recording) await page.screenshot({ path: '/tmp/xbot-annotations-xml-history.png' })

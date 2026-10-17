@@ -18,12 +18,12 @@ import { Archive, Check, ChevronRight, Clock, Copy, Loader2, Pencil, X } from 'l
 import { CopyTarget } from './MessageActions'
 import type { ChatMessage } from '@/types/shared'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { parseResponseAnnotations, ResponseAnnotations } from './ResponseAnnotations'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/providers/i18n'
 import { useSendKeyMode, isSendKey } from '@/hooks/useSendKeyMode'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
-import { annotatedMessageDisplay } from '@/lib/messageAnnotations'
 
 interface UserMessageProps {
   content: string
@@ -65,7 +65,7 @@ export const UserMessage = memo(function UserMessage({
   const displayRef = useRef<HTMLDivElement>(null)
   const [editMinHeight, setEditMinHeight] = useState<number | null>(null)
   const [copied, setCopied] = useState(false)
-  const displayContent = useMemo(() => isNotification ? content : annotatedMessageDisplay(content, t), [content, isNotification, t])
+  const annotatedMessage = useMemo(() => isNotification ? null : parseResponseAnnotations(content), [content, isNotification])
 
   // 复制这条 user 消息（2026-09-16 用户报告：手机上没有任何复制 user msg 的入口）。
   // 触屏上"长按"会被原生文本选择抢走手势（同一版也修了 useLongPress 的抖动误判），
@@ -280,7 +280,14 @@ export const UserMessage = memo(function UserMessage({
             <div className="whitespace-pre-wrap wrap-anywhere">{content}</div>
           ) : (
             <>
-              <MarkdownRenderer content={displayContent || ' '} />
+              {annotatedMessage && (
+                <div className={annotatedMessage.body ? 'mb-2' : undefined}>
+                  <ResponseAnnotations annotations={annotatedMessage.annotations} />
+                </div>
+              )}
+              {(!annotatedMessage || annotatedMessage.body) && (
+                <MarkdownRenderer content={(annotatedMessage ? annotatedMessage.body : content) || ' '} />
+              )}
             </>
           )}
           {sending && (

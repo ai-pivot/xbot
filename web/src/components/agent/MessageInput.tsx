@@ -36,6 +36,7 @@ import { AnnotationChip, useAnnotationActions, useAnnotationDraft } from './Mess
 import { formatAnnotatedMessage } from '@/lib/messageAnnotations'
 import { CompletionPopup } from './CompletionPopup'
 import { SelectionToolbar } from './SelectionToolbar'
+import { openLightbox } from './Lightbox'
 import { useCompletion, type CompletionKeyEvent } from '@/hooks/useCompletion'
 import type { TodoState } from '@/hooks/useTodos'
 import type { GoalInfo, TodoItem } from '@/types/shared'
@@ -104,6 +105,10 @@ interface PendingAttachment {
 
 /** Image attachment detection (matches insertUploadedMedia's mime/extension
  * test — an attachment is an image when the pending chip carries it). */
+function imageAttachmentURL(uploadKey: string): string {
+  return `/api/files/download?key=${encodeURIComponent(uploadKey)}&inline=1`
+}
+
 function isImageAttachment(p: PendingAttachment): boolean {
   return p.mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i.test(p.name)
 }
@@ -260,7 +265,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       // Paste-markdown image rendering: pasted/uploaded images insert as ![name](url)
       // markdown — this extension makes tiptap render them inline in the composer
       // (tiptap-markdown parses ![alt](src) into image nodes when the schema has one).
-      Image.configure({ inline: true }),
+      Image.extend({ selectable: false }).configure({ inline: true }),
       EditorLink,
       Placeholder.configure({
         placeholder: () => placeholderRef.current,
@@ -334,6 +339,12 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       },
       // Drag-over highlight (depth-counted — dragenter/leave fire per child element)
       handleDOMEvents: {
+        click: (_view, event) => {
+          if (!(event.target instanceof HTMLImageElement)) return false
+          event.preventDefault()
+          openLightbox(event.target.getAttribute('src') || '', event.target.alt)
+          return true
+        },
         dragenter: () => {
           dragDepthRef.current += 1
           setDragOverFiles(true)
@@ -352,7 +363,23 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
         },
       },
     },
-    onUpdate: ({ editor }) => {
+    onUpdate: ({ editor, transaction }) => {
+      // Reconcile only removed image references. Upload-in-progress chips and
+      // ordinary files are independent of editor content and must survive.
+      const removedImages = new Set<string>()
+      transaction.before.descendants((node) => {
+        if (node.type.name === 'image') removedImages.add(node.attrs.src)
+      })
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === 'image') removedImages.delete(node.attrs.src)
+      })
+      if (removedImages.size) {
+        setPending((current) => {
+          const next = current.filter((item) => item.uploading || !isImageAttachment(item)
+            || !removedImages.has(imageAttachmentURL(item.uploadKey)))
+          return next.length === current.length ? current : next
+        })
+      }
       contentRevisionRef.current++
       setHasContent(!editor.isEmpty)
       // Markdown snapshot — used for the draft AND for the `!` bang-mode hint.
@@ -683,6 +710,24 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     [onUpload, t, insertUploadedMedia],
   )
 
+  const removeAttachment = (attachment: PendingAttachment) => {
+    if (editor && isImageAttachment(attachment)) {
+      const src = imageAttachmentURL(attachment.uploadKey)
+      const ranges: { from: number; to: number }[] = []
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'image' && node.attrs.src === src) {
+          ranges.push({ from: pos, to: pos + node.nodeSize })
+        }
+      })
+      if (ranges.length) {
+        const transaction = editor.state.tr
+        for (const { from, to } of ranges.reverse()) transaction.delete(from, to)
+        editor.view.dispatch(transaction)
+      }
+    }
+    setPending((current) => current.filter((item) => item !== attachment))
+  }
+
   const canSend = hasContent || pending.some((p) => !p.uploading && p.uploadKey) || annotations.length > 0
   const sendDisabled = submitting || (canSend ? uploading && annotations.length > 0 : busy ? cancelling : true)
 
@@ -820,7 +865,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                   type="button"
                   aria-label="remove"
                   disabled={p.uploading || submitting}
-                  onClick={() => setPending((prev) => prev.filter((_, idx) => idx !== i))}
+                  onClick={() => removeAttachment(p)}
                   className="text-text-muted hover:text-text-primary disabled:opacity-30"
                 >
                   <X className="size-3" />
