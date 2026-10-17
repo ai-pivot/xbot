@@ -3107,6 +3107,91 @@ func registerRegistryHandlers(t RPCTable, h *RPCContext) {
 		}
 		return map[string]any{"ok": true}, nil
 	})
+
+	t["registry_uninstall"] = rpc1(func(ctx context.Context, p struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}) (any, error) {
+		if p.Name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+		xbotHome := config.XbotHome()
+		workDir := h.Cfg.Agent.WorkDir
+		if workDir == "" {
+			workDir = xbotHome
+		}
+		senderID := rpcAuthID(ctx)
+
+		switch p.Type {
+		case "skill":
+			rm := h.Ag.RegistryManager()
+			if rm == nil {
+				return nil, fmt.Errorf("registry manager not initialized")
+			}
+			if err := rm.UninstallSkill(p.Name, senderID); err != nil {
+				return nil, err
+			}
+		case "agent":
+			rm := h.Ag.RegistryManager()
+			if rm == nil {
+				return nil, fmt.Errorf("registry manager not initialized")
+			}
+			if err := rm.UninstallAgent(p.Name, senderID); err != nil {
+				return nil, err
+			}
+		case "plugin":
+			// Resolve the plugin ID (manifest id or directory name), then
+			// uninstall through the plugin manager for proper deactivation
+			// (hooks/widgets/runtime torn down before files are removed).
+			id := resolveInstalledPluginID(xbotHome, p.Name)
+			if id == "" {
+				return nil, fmt.Errorf("plugin %q is not installed", p.Name)
+			}
+			if pm := h.Ag.PluginManager(); pm != nil {
+				if err := pm.UninstallPlugin(ctx, id); err != nil {
+					return nil, err
+				}
+			} else {
+				_ = os.RemoveAll(filepath.Join(xbotHome, "plugins", id))
+			}
+		default:
+			return nil, fmt.Errorf("unknown type %q (expected skill, agent, or plugin)", p.Type)
+		}
+		return map[string]any{"ok": true}, nil
+	})
+}
+
+// resolveInstalledPluginID maps a user-supplied plugin name (directory name or
+// manifest id) to the plugin's install directory name (== its manifest id).
+// Returns "" when no installed plugin matches.
+func resolveInstalledPluginID(xbotHome, name string) string {
+	pluginsDir := filepath.Join(xbotHome, "plugins")
+	// Direct directory match (covers name == id, the common case).
+	if info, err := os.Stat(filepath.Join(pluginsDir, name)); err == nil && info.IsDir() {
+		return name
+	}
+	// Scan manifests for a matching id (name may be the id while the dir
+	// differs, or vice versa).
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(pluginsDir, e.Name(), "plugin.json"))
+		if err != nil {
+			continue
+		}
+		var m struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(data, &m) == nil && m.ID == name {
+			return e.Name()
+		}
+	}
+	return ""
 }
 
 // registryRemove removes an installed item by type and name.
@@ -3138,14 +3223,43 @@ func listUserInstalled(xbotHome, workDir, senderID, itemType string) []string {
 	if err != nil {
 		return nil
 	}
+	seen := make(map[string]bool)
 	var names []string
+	add := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
 	for _, e := range entries {
-		if itemType == "agent" {
+		switch itemType {
+		case "agent":
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-				names = append(names, strings.TrimSuffix(e.Name(), ".md"))
+				add(strings.TrimSuffix(e.Name(), ".md"))
 			}
-		} else if e.IsDir() {
-			names = append(names, e.Name())
+		case "plugin":
+			// Only count real plugins (dirs containing plugin.json) and report
+			// the manifest id — registry entries use ids, so installed status
+			// matches correctly (e.g. xbot.ssh-runner, not the repo dir name).
+			if !e.IsDir() {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, e.Name(), "plugin.json"))
+			if err != nil {
+				continue
+			}
+			var m struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(data, &m) == nil && m.ID != "" {
+				add(m.ID)
+			} else {
+				add(e.Name())
+			}
+		default: // skill
+			if e.IsDir() {
+				add(e.Name())
+			}
 		}
 	}
 	return names

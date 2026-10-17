@@ -1101,6 +1101,7 @@ const en: Translations = {
       enable: 'Enable',
       reloading: 'Reloading…',
       reload: 'Reload',
+      uninstall: 'Uninstall',
       // Built-in plugin panel (host static import) — manifest text uses host i18n.
       manifest: {
         name: 'Plugin Manager',

@@ -69,6 +69,7 @@ export function MarketplacePanel() {
   const [registries, setRegistries] = useState<RegistryRef[]>([])
   const [loading, setLoading] = useState(false)
   const [installing, setInstalling] = useState<string | null>(null)
+  const [uninstalling, setUninstalling] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
@@ -135,6 +136,23 @@ export function MarketplacePanel() {
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setInstalling(null)
+      }
+    },
+    [loadInstalled],
+  )
+
+  const handleUninstall = useCallback(
+    async (item: RegistryItem) => {
+      if (!window.confirm(`卸载 ${item.name}？`)) return
+      setUninstalling(item.name)
+      setError('')
+      try {
+        await postAPI('/api/registry/uninstall', { type: item.type, name: item.name })
+        await loadInstalled()
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setUninstalling(null)
       }
     },
     [loadInstalled],
@@ -367,10 +385,24 @@ export function MarketplacePanel() {
                       </span>
                     </div>
                     {isInstalled ? (
-                      <span className="flex shrink-0 items-center gap-1 text-xs text-green-600">
-                        <Check className="h-3.5 w-3.5" />
-                        已安装
-                      </span>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <span className="flex items-center gap-1 text-xs text-green-600">
+                          <Check className="h-3.5 w-3.5" />
+                          已安装
+                        </span>
+                        <button
+                          disabled={isThisUninstalling}
+                          onClick={() => handleUninstall(item)}
+                          className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                          title="卸载"
+                        >
+                          {isThisUninstalling ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </div>
                     ) : (
                       <Button
                         size="sm"

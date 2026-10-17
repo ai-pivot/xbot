@@ -1099,6 +1099,7 @@ const ja: Translations = {
       enable: '有効化',
       reloading: '再読み込み中…',
       reload: '再読み込み',
+      uninstall: 'アンインストール',
       // 組み込みプラグインパネル（ホストに静的 import）のマニフェスト文言はホスト i18n を使う。
       manifest: {
         name: 'プラグイン管理',

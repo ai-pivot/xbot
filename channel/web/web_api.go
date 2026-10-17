@@ -1143,6 +1143,31 @@ func (wc *WebChannel) handleRegistryConfigRemove(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, marketResponse{OK: true})
 }
 
+// handleRegistryUninstall handles POST /api/registry/uninstall — removes an
+// installed component (skill/agent/plugin) by type and name.
+func (wc *WebChannel) handleRegistryUninstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if err := wc.rpcCallAs(r, "registry_uninstall", map[string]any{
+		"type": req.Type,
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
 // sanitizeExportName keeps only alphanumerics, '-', '_', '.' — everything else becomes '_'.
 // A result of "." or ".." (or anything that would traverse out of the zip root) is
 // replaced with "skill" — such a name would otherwise produce a path-traversal zip

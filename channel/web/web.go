@@ -977,6 +977,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/registry/config-list", wc.authenticatedPOST(wc.handleRegistryConfigList))
 	mux.HandleFunc("/api/registry/config-add", wc.authenticatedPOST(wc.handleRegistryConfigAdd))
 	mux.HandleFunc("/api/registry/config-remove", wc.authenticatedPOST(wc.handleRegistryConfigRemove))
+	mux.HandleFunc("/api/registry/uninstall", wc.authenticatedPOST(wc.handleRegistryUninstall))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		jsonErrorResponse(w, http.StatusNotFound, "endpoint not found")
