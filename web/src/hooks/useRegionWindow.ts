@@ -1,14 +1,26 @@
 /**
  * useRegionWindow —— 单个 turn 的「更早展示区域」按需取回**编排**（D1 线）。
  *
- * 触发源 = IO 哨兵（分隔条自身），状态机**逐字复刻** `MessageList.tsx:1233-1275`
- * 的 `loadMoreArmedRef` arm/disarm 模式 —— 历史事故（一次手势 11 次请求 /
- * observe=2037）的根因是「observer 每次 loading 翻转都重建 + 新建 observer 立刻
+ * ⛔⛔ 不变量（用户明确要求，2026-10-11 —— AGENTS.md 最高优先级）：**消息/上下文不连续
+ * 零容忍**。用户看得见的相邻两条内容必须在真实时间线上相邻；`iter x → 加载哨兵 →
+ * iter x+y（y≠1）`（中间跳过 y 条）绝不可接受。
+ *
+ * 契约由此变成「**在用户看到边界之前把它补上**」：
+ *   ① **预取**：观察哨兵的 rootMargin 扩到 ±2 屏 ⇒ 边界还在视口之上时就开拉；
+ *   ② **链式**：一段到位后若哨兵仍在预取带内，立刻续拉下一段（`scheduleChain`）——
+ *      用户上滚时内容像「本就一次加载好」一样从下往上连续生长，边界始终停在视口之上；
+ *      新内容把边界推离预取带后自然停止（+ 进展判定防死循环）。
+ * 做不到时**宁可不渲染**：见 `RegionsDivider`（不可见哨兵）与 `derive.ts`
+ * （`regionsBefore > 0` ⇒ 该 turn 的 user 行不渲染）。
+ *
+ * 触发源 = IO 哨兵（`RegionsDivider` 的根节点），状态机**逐字复刻**
+ * `MessageList.tsx` 的 `loadMoreArmedRef` arm/disarm 模式 —— 历史事故（一次手势 11 次
+ * 请求 / observe=2037）的根因是「observer 每次 loading 翻转都重建 + 新建 observer 立刻
  * 投递一次初始回调」，因此铁律三条：
  *   ① observer effect 的依赖**只含哨兵存在性**（`enabled`），其余状态一律 ref 现读；
- *   ② **触发即 disarm**；re-arm 仅两条路径 —— 哨兵离开视口（下一次回到视口是新
- *      手势），或「不可见 → 可见」（含 observer 首次回调就看到可见：内容短到
- *      视口不可滚动时"离开视口"物理上不可达，留这条退路，否则分页永久锁死）；
+ *   ② **触发即 disarm**；re-arm 仅两条路径 —— 哨兵离开预取带（下一次回到带内是新
+ *      手势），或「不可见 → 可见」（含 observer 首次回调就看到可见）；链式续拉走
+ *      `scheduleChain`，**不再**依赖 observer 重复回调；
  *   ③ 请求失败**不自动重试**（进入 retry 态，用户点击重试）；连续失败
  *      `MAX_AUTO_FAILURES` 次后连「新手势」也不再自动发请求（保守停止），
  *      只保留手动重试 —— 避免弱网下的自动请求循环。
@@ -21,12 +33,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useRegionActions } from '@/components/agent/RegionActionsContext'
+import { usePrependAnchor } from '@/components/agent/PrependAnchorContext'
 
 /** 分隔条三态（与 RegionsDivider 的 data-state 一一对应）。 */
 export type RegionWindowStatus = 'idle' | 'loading' | 'error'
 
 /** 连续失败到此值即「保守停止」自动触发（手动重试永远可用）。 */
 export const MAX_AUTO_REGION_FAILURES = 2
+
+/**
+ * 预取带 = 视口上下各扩 2 屏。边界（哨兵）还在视口之上时就开拉 ⇒ 用户**永远看不到**
+ * 「跳过 y 条」的缺口。链式续拉使上滚像连续加载。
+ */
+const PREFETCH_ROOT_MARGIN = '200% 0px 200% 0px'
 
 export interface RegionWindowOptions {
   /** 目标 turn（0 = 无 turn 归属 ⇒ 永不触发：standalone / legacy 行）。 */
@@ -59,6 +78,11 @@ export function useRegionWindow({
   gapTop,
 }: RegionWindowOptions): RegionWindow {
   const actions = useRegionActions()
+  // prepend 锚通道（由 MessageList 提供）：段请求**发出之前**必须拍下「不许动的锚」——
+  // 否则新加载的历史会把下面整体顶下去（用户 2026-10-12 明确要求：视角一动不动）。
+  const prependAnchor = usePrependAnchor()
+  const beginAnchorRef = useRef(prependAnchor.beginPrependAnchor)
+  beginAnchorRef.current = prependAnchor.beginPrependAnchor
   const enabled = (regionsBefore ?? 0) > 0 && beforeIteration !== undefined && turnID > 0
 
   const [status, setStatus] = useState<RegionWindowStatus>('idle')
@@ -82,6 +106,9 @@ export function useRegionWindow({
     if (statusRef.current === 'loading') return
     const before = beforeIterRef.current
     if (before === undefined) return
+    // ⛔ 拍锚必须在**发请求之前**（MessageList 的 prepend 锚）：段落地后由列表在同一帧把
+    // 「用户看到的那一行」钉回原位 ⇒ 视角一动不动（用户 2026-10-12 硬要求）。
+    beginAnchorRef.current()
     statusRef.current = 'loading'
     setStatus('loading')
     void (async () => {
@@ -103,7 +130,7 @@ export function useRegionWindow({
     })()
   }, [])
 
-  // ── 哨兵 observer：唯一触发源（arm/disarm 状态机；deps 只含 enabled）─────
+  // ── 哨兵 observer：IO 触发源（arm/disarm 状态机；deps 只含 enabled）─────
   useEffect(() => {
     armedRef.current = false
     visibleRef.current = null
@@ -119,11 +146,11 @@ export function useRegionWindow({
         const wasVisible = visibleRef.current
         visibleRef.current = visible
         if (!visible) {
-          // ① 哨兵离开视口 ⇒ 归还触发权（下次回到视口是一次新手势）
+          // ① 哨兵离开预取带 ⇒ 归还触发权（下次回到带内是一次新手势）
           armedRef.current = true
           return
         }
-        // ② 由不可见变为可见（wasVisible === null 也算：首次回调就看到可见）
+        // ② 由不可见变为可见（`wasVisible === null` 也算：observer 首次回调就看到"可见"）
         if (wasVisible !== true) armedRef.current = true
         if (!armedRef.current) return // 本轮「可见回合」已触发过 ⇒ 不再发请求
         if (statusRef.current === 'loading') return
@@ -131,7 +158,8 @@ export function useRegionWindow({
         armedRef.current = false // 触发即 disarm
         run()
       },
-      { root: null, threshold: 0 },
+      // 预取带（±2 屏）—— 见 PREFETCH_ROOT_MARGIN 注释。
+      { root: null, rootMargin: PREFETCH_ROOT_MARGIN, threshold: 0 },
     )
     observer.observe(el)
     return () => observer.disconnect()

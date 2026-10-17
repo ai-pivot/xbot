@@ -83,7 +83,17 @@ func BuildSystemReminder(
 	sb.WriteString("<system-reminder role=\"reminder\">")
 	// note 从简（用户 2026-09-17：原文太长且可能被误读）。只保留最少必要信息：
 	// 这是自动注入的 system reminder（不是用户消息）、<user-msg> 是原始用户消息。
-	sb.WriteString("<note>Auto-injected system reminder for this iteration (not a user message). &lt;user-msg&gt; = the original user message, for context.</note>")
+	//
+	// ⚠️ 2026-10-14 用户定向（第二次改）：
+	//   ① 「强调是自动注入的」——模型曾把这条注入误当成**自己调用过的工具**（`system_reminder`
+	//      这个假 tool pair 的名字就写在历史里），进而反复自我检讨；⇒ 用全大写 AUTO-INJECTED 开头，
+	//      并**显式说明"不是用户消息、不是你调用的工具、无需采取行动"**（陈述事实）。
+	//   ② 「去掉多余的关于不要调用的提示」——旧文案里带命令式口吻（"不要…"）的内容一并去掉：
+	//      说明清楚"它是系统自动注入的事实"后，命令是多余的（命令还会挤占真正的指令位，
+	//      并让模型把注意力放在"我是不是调错了工具"上）。
+	sb.WriteString("<note>AUTO-INJECTED by the xbot runtime every iteration — the system wrote this, " +
+		"not the user and not you. It is not a tool you called and not a tool result; nothing here " +
+		"needs an action from you. &lt;user-msg&gt; = the original user message, for context.</note>")
 
 	// 用户原始消息（CDATA 包裹，100% 防 XML 注入——wrapCDATA 拆分 ]]> ）
 	if userMsg != "" {

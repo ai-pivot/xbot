@@ -25,6 +25,30 @@ func sessionRouteKey(channel, chatID string) string {
 	return channel + "\x00" + chatID
 }
 
+// canonicalChatID strips repeated channel prefixes from an inbound chat id.
+//
+// The session key is `channel + ":" + chatID`; a client that sends a *full key*
+// (`web:chat_X`) in `chat_id` would otherwise create the ghost session
+// `web:web:chat_X`. This was the root cause of "send and cancel hit different
+// sessions" (2026-10-17): some client paths canonicalized, others did not.
+// One canonical form at the transport boundary makes message/cancel/history/
+// ask/SSE all agree, independent of client version.
+//
+// Only the *same* channel's prefix is stripped (a `cli:` id passed to the web
+// channel must stay a distinct session). Empty chatID is returned unchanged so
+// callers can keep their existing "missing => default/current" semantics.
+func canonicalChatID(channel, chatID string) string {
+	chatID = strings.TrimSpace(chatID)
+	if channel == "" {
+		return chatID
+	}
+	prefix := channel + ":"
+	for strings.HasPrefix(chatID, prefix) {
+		chatID = strings.TrimPrefix(chatID, prefix)
+	}
+	return chatID
+}
+
 func parseSessionRouteKey(routeKey string) (channel, chatID string, ok bool) {
 	channel, chatID, ok = strings.Cut(routeKey, "\x00")
 	return channel, chatID, ok && channel != "" && chatID != ""

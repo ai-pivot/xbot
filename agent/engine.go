@@ -98,7 +98,6 @@ type RunConfig struct {
 	IsWorktreeIsolated bool
 
 	// === 循环控制 ===
-	MaxIterations   int // 0 = 使用默认值 2000（DefaultMaxIterations）
 	MaxOutputTokens int // 0 = 使用 LLM client 默认值
 	// IterationStart 偏移 Run 的迭代编号（resume 场景）：> 0 时首个迭代号是
 	// IterationStart+1 而非 1。重启恢复的 Run（InjectInboundResume）复用被中断
@@ -429,9 +428,6 @@ type ToolContextExtras struct {
 	InvalidateAllSessionMCP func()
 }
 
-// DefaultMaxIterations 默认最大迭代次数。
-const DefaultMaxIterations = 2000
-
 // readOnlyTools 只读工具集合，用于读写分离并行执行。
 var readOnlyTools = map[string]bool{
 	"Read": true, "Grep": true, "Glob": true,
@@ -688,8 +684,7 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 
 	// --- Main loop ---
 	log.Ctx(ctx).WithFields(log.Fields{
-		"chat_id":  s.cfg.ChatID,
-		"max_iter": s.maxIter,
+		"chat_id": s.cfg.ChatID,
 	}).Debug("Run loop starting")
 	// Iteration numbers are 1-based: the first iteration is 1, not 0.
 	// This is the single source of truth — every downstream consumer
@@ -701,7 +696,7 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	// the first iteration is iterStart+1, keeping iteration_history (keyed by
 	// (turn_id, iteration)) and the frontend's per-turn iteration advance/merge
 	// contiguous across the restart boundary. See RunConfig.IterationStart.
-	for n := 1; n <= s.maxIter; n++ {
+	for n := 1; ; n++ {
 		i := n + s.iterStart
 		log.Ctx(ctx).WithField("iteration", i).Debug("Run loop iteration start")
 		// Check for cancellation before starting each iteration

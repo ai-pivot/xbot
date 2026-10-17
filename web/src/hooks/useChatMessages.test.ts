@@ -1001,3 +1001,37 @@ describe('useChatMessages', () => {
     expect(result.current.hasMore).toBe(false)
   })
 })
+
+// ⛔ 消息不连续零容忍（用户 2026-10-11）：未完整下发的 turn（regions_before>0）的 user 行
+// **不在消息流里**（后端摘到 assistant 行的 `turn_user`）—— 消费者照着数组渲染也不可能
+// 把 user msg 放在一个尚未加载的缺口上方。客户端在边缘（parseHistoryMessages）还原成
+// 常规 user 行 ⇒ 下游（derive / reload 启发式 / rewind）零改动。
+describe('turn_user —— 未完整下发 turn 的 user 行（边缘还原）', () => {
+  it('★ 必须还原成常规 user 行（含 turnID/dbID/顺序），窗口声明仍透传', async () => {
+    const ws = makeWS([
+      {
+        messages: [
+          {
+            id: 101, role: 'assistant', content: '', turn_id: 7, regions_before: 137,
+            iterations: [{ iteration: 52, content: 'x' }],
+            turn_user: {
+              id: 100, role: 'user', content: '继续优化到 7ms', turn_id: 7,
+              timestamp: '2026-10-11T00:00:00Z',
+            },
+          },
+        ],
+      },
+    ])
+    const { result } = renderHook(() => useChatMessages({ chatID: 'turn-user', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.length).toBeGreaterThan(0))
+
+    const idxU = result.current.messages.findIndex((m) => m.role === 'user')
+    const idxA = result.current.messages.findIndex((m) => m.role === 'assistant')
+    expect(idxU, 'turn_user 必须被还原成 user 行（下游零改动）').toBeGreaterThanOrEqual(0)
+    expect(result.current.messages[idxU]!.content).toBe('继续优化到 7ms')
+    expect(result.current.messages[idxU]!.turnID).toBe(7)
+    expect(result.current.messages[idxU]!.dbID).toBe(100)
+    expect(idxU, '顺序：user 行 → assistant 行').toBeLessThan(idxA)
+    expect(result.current.messages[idxA]!.regionsBefore, '窗口声明必须照常透传').toBe(137)
+  })
+})

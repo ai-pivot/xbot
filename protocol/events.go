@@ -299,6 +299,15 @@ type HistoryMessage struct {
 	// 没有压缩。老数据（无结构化迭代、无法定位迭代位置）回落为独立的 standalone
 	// 标记行（见 Standalone/AnchorTurnID）。
 	Compactions []HistoryCompaction `json:"compactions,omitempty"`
+	// TurnUser = 该 turn 的 user 行 —— **仅当**该 turn 只下发了尾部区域窗口
+	// （`RegionsBefore > 0`）时，转换层把它**从消息流里摘出来**挂在这里。
+	//
+	// ⛔ 消息不连续零容忍（用户 2026-10-11）：接口层**绝不**把这条 user 行放进消息流
+	// —— 否则任何「照着数组渲染」的消费者都会把它渲染在一个**尚未加载的缺口**上方
+	// （`user msg → 跳 y 条 → iter`，被点名禁止的形态）。客户端在边缘把它还原成常规
+	// user 行，是否渲染由「窗口未覆盖迭代 1 ⇒ 不渲染 user 行」的规则决定。
+	// 全量视图（CLI/RPC，foldView=false）恒为 nil ⇒ 载荷逐字节不变（R5）。
+	TurnUser *HistoryMessage `json:"turn_user,omitempty"`
 }
 
 // HistoryCompaction marks one context compaction that happened DURING a turn.

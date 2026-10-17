@@ -282,11 +282,11 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     liveProgress,
     sessionIdle,
     dispatchIterationsLoaded,
-  // busyFallback：状态机有活动 turn 即 busy —— 不依赖 streaming（lazy 采纳
-  // 的 live turn 可能 streaming=false，但 turn 仍在运行；turn_started 建的
-  // EMPTY_LIVE streaming=true）。覆盖 REST ack 到 session(busy) 之间的窗口
-  // + 切换会话后 currentSession.running 是旧会话状态的场景。
-  busyFallback: state.activeTurn !== null,
+  // busyFallback：live turn 仍在产出（`progressSnapshot.streaming`）—— 不再用
+  // `activeTurn !== null`：权威 idle 现在只停 streaming、保留 activeTurn（为了不丢
+  // 后续同迭代事件）⇒ 用 activeTurn 会永久卡 busy。`streaming` 覆盖 REST ack
+  // 到 session(busy) 之间的窗口（turn_started 建的 EMPTY_LIVE streaming=true）。
+  busyFallback: state.activeTurn !== null && liveProgress.streaming,
     tokenPrompt,
     queue: state.queue,
     /** **会话重载信号**：出现「无法追赶的 gap」时自增（见 chat/types.ts）。 */

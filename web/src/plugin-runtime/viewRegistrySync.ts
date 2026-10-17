@@ -21,6 +21,7 @@ import { resolvePluginText, type PluginI18nTable } from './i18n'
 import { layoutRegistry, VIEW_CONTAINER_TO_SLOT } from './layoutRegistry'
 import { buildPanelDefs, panelRegistry } from './panelRegistry'
 import { PluginView } from './PluginView'
+import { flushPluginViewRequest } from './pluginViewRequest'
 
 /**
  * 同步所需的最小 runtime 视图（结构化子集 —— 单测可传 stub，不必构造整个
@@ -99,6 +100,10 @@ export function createViewRegistrySync(runtime: ViewSourceRuntime): ViewRegistry
     for (const id of currentPanelIds) syncedPanels.add(id)
     syncedLayout.clear()
     for (const id of currentLayoutIds) syncedLayout.add(id)
+    // 视图集合变化 = 插件模块 import 完成的信号 ⇒ 此刻尝试兑现"宿主请求打开某插件视图"
+    //（URL 深链 / window.__xbotOpenPluginView / 原生壳钩子；见 pluginViewRequest.ts）。
+    // 幂等：没有待办或打开器未注册时什么都不做。
+    flushPluginViewRequest()
   }
 
   return {

@@ -36,6 +36,7 @@ const zhCN = {
     tasks: '任务',
     tasksCron: '定时任务',
     tasksBg: '后台命令',
+    tasksSubAgents: '子代理',
     cronSchedule: '调度',
     cronNext: '下次运行',
     cronTarget: '目标会话',

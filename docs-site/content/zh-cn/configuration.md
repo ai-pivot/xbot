@@ -183,7 +183,6 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 ```json
 {
   "agent": {
-    "max_iterations": 2000,
     "max_concurrency": 100,
     "memory_provider": "flat",
     "work_dir": ".",
@@ -207,7 +206,6 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `max_iterations` | int | `2000` | 单次对话最大工具调用次数 |
 | `max_concurrency` | int | `100` | 最大并发 LLM 调用数 |
 | `memory_provider` | string | `"flat"` | 记忆系统：`flat` 或 `letta` |
 | `work_dir` | string | `"."` | 工作目录 |

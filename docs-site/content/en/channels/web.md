@@ -51,6 +51,23 @@ In Server mode, the installer automatically downloads the Web UI to
 For manual installation, download the web release archive and extract it to
 `~/.xbot/web/dist/`.
 
+### Rebuilding and deploying from source (⛔ never copy incrementally)
+
+After changing `web/` sources, the deployment must be a **whole-directory replacement**:
+
+```bash
+bash scripts/deploy-web.sh              # npm run build + atomic deploy + consistency check
+bash scripts/deploy-web.sh --no-build   # skip the build, deploy the current web/dist
+```
+
+{{< hint type=warning >}}
+**Mixed artifacts** are the easiest trap here: copying a freshly built `assets/` into an old
+directory while keeping the old `index.html` means the served page still references the **old
+bundle** — new code never runs (the symptom is a feature that "seems to open" but does nothing).
+`deploy-web.sh` closes that path with a whole-directory `mv` plus a check that the bundle
+referenced by `index.html` exists and contains a probe symbol; it exits 1 if the check fails.
+{{< /hint >}}
+
 ## Access
 
 After starting the server, open `http://your-server:8082` in a browser.

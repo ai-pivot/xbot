@@ -32,6 +32,7 @@ import { MessageItem } from './MessageItem'
 import { MessageUserNav } from './MessageUserNav'
 import { ShimmerThinking } from './ShimmerThinking'
 import { liveIterationInFlight } from './progressStore'
+import { PrependAnchorContext } from './PrependAnchorContext'
 import { bindTurnIDs, orderMessageRows } from './messageOrder'
 import { useI18n } from '@/providers/i18n'
 import { commands } from '@/lib/commandRouter'
@@ -95,6 +96,43 @@ const SCROLL_PIN_MAX = 1e9
 //   2. estimateRowByContent：首次访问（无记忆）时按内容长度/迭代数/工具数粗估，
 //      比常数 120 的误差缩小数倍。
 const heightMemory = createRowHeightMemory()
+
+/**
+ * DEV/E2E 诊断：prepend 锚的**现场**（拍了哪个元素 / 补了几次 / 每次补多少）。
+ * 这个不变量（「用户看到的东西一动不动」）只有在真实浏览器 + 真实布局下才能验证，
+ * 出问题时必须一眼看到「锚拍到了什么」—— E2E 在失败时会把它打进 CI 日志
+ * （生产零开销：DEV 门控）。
+ */
+interface PrependAnchorDebug {
+  begun?: number
+  miss?: boolean | string
+  tag?: string
+  cls?: string
+  iterId?: string
+  msgId?: string
+  anchorTop?: number
+  lastSane?: boolean
+  lastGrowth?: number
+  settleCalls?: number
+  deltas?: number[]
+}
+function devAnchorDebug(patch: Partial<PrependAnchorDebug>): void {
+  if (!import.meta.env.DEV) return
+  const w = window as unknown as { __prependAnchor?: PrependAnchorDebug }
+  w.__prependAnchor = { ...(w.__prependAnchor ?? {}), ...patch }
+}
+function devAnchorDebugSettle(delta: number, sane: boolean, growth: number): void {
+  if (!import.meta.env.DEV) return
+  const w = window as unknown as { __prependAnchor?: PrependAnchorDebug }
+  const cur = w.__prependAnchor ?? {}
+  cur.settleCalls = (cur.settleCalls ?? 0) + 1
+  if (delta !== 0) {
+    cur.deltas = [...(cur.deltas ?? []), Math.round(delta)]
+    cur.lastSane = sane
+    cur.lastGrowth = Math.round(growth)
+  }
+  w.__prependAnchor = cur
+}
 /** 布局宽度追踪：宽度变化 ⇒ 行高记忆作废（高度不变性的前提）。 */
 const heightLayoutWidth = createWidthTracker()
 heightLayoutWidth.onChange(() => heightMemory.clear())
@@ -389,6 +427,19 @@ export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boo
 }
 
 
+/**
+ * 判定「锚测到的位移」是否可信 = 是否**由本次 prepend 造成、且发生在视口上方**。
+ *
+ * 纯函数（⚠️ 为新导出，仅因可单测）：段恒在**视口上方**插入（预取带保证）⇒ 锚只可能
+ * **向下**移动，且位移不可能超过本次高度增长。任何越界都说明这个锚**不能用来判断
+ * 「该补多少」** ⇒ 必须弃用，绝不能让一个巨大的**负** delta 把 `scrollTop` 夹到 0
+ *（那正是用户报告的「加载完毕后视角自动变到最上方」）。
+ */
+export function isSanePrependDelta(delta: number, growth: number): boolean {
+  // 容差只用于吸收**亚像素**舍入（浏览器 rect 是小数）；1px 级的越界必须判不可信。
+  return delta > 0 && delta <= Math.max(growth, 0) + 0.5
+}
+
 export const MessageList = memo(function MessageList({
   chatKey,
   followResetToken = 0,
@@ -571,11 +622,29 @@ export const MessageList = memo(function MessageList({
   const loadMoreArmedRef = useRef(false)
   // 哨兵上一次的可见性（null = 本 observer 尚未收到回调），用于识别"变得可见"。
   const sentinelVisibleRef = useRef<boolean | null>(null)
-  // **待补偿**的锚定快照（prepend 前的 scrollTop + totalSize）。与触发权**解耦**：
-  // 它记的是"还欠用户一次视口补偿"，只有补偿成功（或视口已被别处移动）才销账。
-  // 绝不能在补偿成功前清掉（旧实现先清后判 delta<=0，等于白清），也绝不能拿它
-  // 当触发守卫（长 turn 的页 delta 恒为 0 → 会把分页永久锁死）。
-  const loadMoreRestoreRef = useRef<{ scrollTop: number; totalSize: number; deadline: number } | null>(null)
+  // ── prepend 锚（DOM 真相；两条 prepend 路径共用）────────────────────────────
+  // ⛔ 用户硬要求（2026-10-12）：「加载更多触发之后，新加载的历史直接加在最上方，用户的
+  // 视角不变 —— **用户看到的东西一动不动**」。旧实现用「scrollTop + totalSize 快照 +
+  // 800ms deadline + 反复平移基准」去**猜**该补多少 ⇒ 天生有「先画错一帧再补回来」的窗口，
+  // 而且区域段（loadRegionSegment）那条路径压根没接上（这正是用户截图里的形态）。
+  // 现在锚的是**真实 DOM 元素**：当前视口里最上方那一可见行 + 它此刻的视口内 top；prepend
+  // 提交后在同一帧（layout effect，paint 之前）把它的 top 钉回原值 —— 浏览器只会画最终帧。
+  // 销账判据 = **收敛**（连续两次零偏移）或锚元素卸载/用户自己滚动；没有时间窗、没有重试上限。
+  const prependAnchorRef = useRef<{
+    el: HTMLElement
+    top: number
+    /** 已实际施加过几次非零钉回（0 = 段还没落地）。 */
+    applied: number
+    /** 收敛计数（连续零偏移帧数）。 */
+    stable: number
+    /** 安全上限（只用于清理，绝不参与"补多少"）。 */
+    expiresAt: number
+    /** 锚所在的**虚拟行**（key 稳定、prepend 不卸载）—— 其高度增量 = 本轮插入的真实高度。 */
+    rowEl: HTMLElement
+    rowHeight: number
+  } | null>(null)
+  // 供 observer effect 现读（observer 只按 hasMore 建一次，绝不因回调身份变化重建）。
+  const beginPrependAnchorRef = useRef<() => void>(() => {})
   // observer 回调必须读到**最新**的 loading/hasMore/onLoadMore/virtualizer，但这些
   // 值每次渲染都变（onLoadMore 的 useCallback deps 含 loadingMore/hasMore，身份每
   // 次 loading 翻转都变）—— 一旦进 effect deps，observer 就会反复重建，而**新建
@@ -1174,11 +1243,10 @@ export const MessageList = memo(function MessageList({
       const target = velocity > 2 ? 14 : velocity > 0.5 ? 8 : 5
       pendingOverscanRef.current = target
     }
-    // loadMore 的锚定补偿记的是「还欠用户一次视口钉住」：视口一旦被**别的东西**
-    // 移动过（用户自己滚 / virtualizer 自己的尺寸修正），这次补偿就已经没有意义，
-    // 当场销账 —— 否则过期的 delta（可能很大）会在稍后把视口拽走。
+    // prepend 锚记的是「不许动的那一行」：用户一旦**自己**滚动，这个锚就失效（他有意换了
+    // 位置）⇒ 当场销账。程序化滚动（我们自己的钉回）不算。
     if (el.scrollTop !== lastScrollTopRef.current && !programmaticScrollRef.current) {
-      loadMoreRestoreRef.current = null
+      prependAnchorRef.current = null
     }
     lastScrollTopRef.current = el.scrollTop
     lastScrollTimeRef.current = now
@@ -1257,15 +1325,9 @@ export const MessageList = memo(function MessageList({
         const scroller = scrollRef.current
         if (!cb || !scroller) return
         loadMoreArmedRef.current = false // 触发即 disarm
-        // 快照必须在 onLoadMore **之前**取：prepend 落地后要用
-        // ΔscrollTop == ΔtotalSize 把视口钉回原来那段内容（老行只出现在视口上方，
-        // 用户只看到"数据多了"，不闪到顶部再跳回来）。
-        loadMoreRestoreRef.current = {
-          scrollTop: scroller.scrollTop,
-          totalSize: virtualizerRef.current.getTotalSize(),
-          // 补偿窗口：覆盖"前置行从估算被实测"的那几次长高（约几百 ms）
-          deadline: performance.now() + 800,
-        }
+        // 锚必须在 onLoadMore **之前**拍下（DOM 真相 = 视口里最上方那行）。prepend 落地后
+        // settlePrependAnchor 把它的视口内 top 钉回原值 ⇒ 用户视角一动不动。
+        beginPrependAnchorRef.current()
         void cb()
       },
       { root: scrollRef.current, threshold: 0 },
@@ -1274,47 +1336,152 @@ export const MessageList = memo(function MessageList({
     return () => observer.disconnect()
   }, [hasMore])
 
-  // ── loadMore 锚定补偿：ΔscrollTop == ΔtotalSize，视口在原内容上纹丝不动 ────
-  // 两处触发，缺一不可：
-  //   a) `rows` 的 useLayoutEffect —— prepend 落地那一帧（paint 前）就补偿，用户
-  //      看不到闪动；
-  //   b) content 的 ResizeObserver —— "渲染行数不变、只有已存在的 slot 长高"的那
-  //      一页（服务端把新 DB 行并进已有 turn slot；或新行从估算高度被实测修正）
-  //      在 a) 那一刻 totalSize 还没变（delta<=0）⇒ **保留快照**，等 total 真的
-  //      长起来再补。旧实现在 delta<=0 时先清快照再放弃 —— 既不补偿也不重试，
-  //      视口不动 ⇒ 哨兵不离开视口 ⇒ 永不 re-arm 的死循环。
-  const restoreLoadMoreAnchor = useCallback(() => {
-    const snap = loadMoreRestoreRef.current
-    if (!snap) return
+  // ── prepend 锚：把「用户当前看到的那一行」钉住（两条 prepend 路径共用）────────
+  // 触发源两处：a) `rows` 的 useLayoutEffect（prepend 落地那一帧、paint 之前）；
+  // b) content 的 ResizeObserver（前置行「估算→实测」的二次长高）。
+  // ⚠️ 补多少由 begin/settle 里的 **DOM 锚**决定 —— 不再是 totalSize 差值、也没有 deadline。
+  /**
+   * 拍下「不许动的锚」：当前视口里**最上方**那一可见行 + 它此刻的视口内 top。
+   * 必须在 prepend 请求**发出之前**调用（两条路径共用：历史分页 sentinel / 区域段 run()）。
+   * 取行按 **DOM 真相**（`[data-index]` 实测 rect），绝不按虚拟键查表。
+   */
+  const beginPrependAnchor = useCallback(() => {
     const el = scrollRef.current
-    if (!el) {
-      loadMoreRestoreRef.current = null
+    if (!el) return
+    const rect = el.getBoundingClientRect()    // ⛔ 锚必须是**会随内容一起移动的元素**。虚拟行（`[data-index]`）是 position:absolute
+    // 且 `translateY(item.start)` —— 段插入发生在**行内部**时，行的 start/top 不变
+    // （δ=0、一个像素都不补），而用户看到的行内内容却整体下移（E2E 实测 417px）。
+    // 因此：在视口顶边附近多个高度探测（顶边常落在行 padding 里 ⇒ 只会命中行本身），
+    // 命中即**下钻到最内层元素** = 用户真正看到的那一行。
+    const probeX = Math.min(rect.left + rect.width - 2, Math.max(rect.left + 2, rect.left + rect.width / 2))
+    const deepestAt = (root: HTMLElement, x: number, y: number): HTMLElement => {
+      let cur = root
+      for (;;) {
+        let next: HTMLElement | null = null
+        for (const child of Array.from(cur.children) as HTMLElement[]) {
+          const r = child.getBoundingClientRect()
+          if (r.width > 0 && r.height > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+            next = child
+            break
+          }
+        }
+        if (!next) return cur
+        cur = next
+      }
+    }
+    let anchorEl: HTMLElement | null = null
+    let anchorRow: HTMLElement | null = null
+    for (const dy of [1, 8, 16, 28, 44, 64]) {
+      const y = rect.top + dy
+      const hit = document.elementFromPoint(probeX, y) as HTMLElement | null
+      if (!hit || !el.contains(hit)) continue
+      const deep = deepestAt(hit, probeX, y)
+      const row = deep.closest('[data-index]')
+      // ⛔ 锚只能是**行内内容**：`closest('[data-index]')` 必须存在且 ≠ 该行本身。
+      // 排除两类"top 不随行内插入而移动"的元素：① 滚动容器 / 内容包装 / 尺寸占位
+      // （实测踩过：锚拍到 `h-full overflow-y-auto …` 的滚动容器 ⇒ δ 恒 0、什么都不补）；
+      // ② 绝对定位、`translateY(item.start)` 的虚拟行本身（段在行**内部**插入时它的 start 不变）。
+      if (!row || deep === row) continue
+      anchorEl = deep
+      anchorRow = row as HTMLElement
+      break
+    }
+    if (!anchorEl) {
+      prependAnchorRef.current = null
+      devAnchorDebug({ begun: 0, miss: true })
       return
     }
-    const total = virtualizerRef.current.getTotalSize()
-    const delta = total - snap.totalSize
-    if (delta <= 0) return // 上方还没长出来：欠着，等下一次（不放弃，也不销账）
+    devAnchorDebug({
+      begun: 1,
+      tag: anchorEl.tagName,
+      cls: String(anchorEl.className || '').slice(0, 70),
+      iterId: anchorEl.getAttribute('data-iter-id') ?? undefined,
+      msgId: anchorEl.getAttribute('data-message-id') ?? undefined,
+      anchorTop: Math.round(anchorEl.getBoundingClientRect().top),
+    })
+    // 行元素必须存在（上面的选择器已保证命中都在行内）；拿不到就直接放弃本次锚定。
+    const rowEl = anchorRow ?? (anchorEl.closest('[data-index]') as HTMLElement | null)
+    if (!rowEl) {
+      prependAnchorRef.current = null
+      devAnchorDebug({ begun: 0, miss: 'no-row' })
+      return
+    }
+    prependAnchorRef.current = {
+      el: anchorEl,
+      top: anchorEl.getBoundingClientRect().top,
+      // 行元素（虚拟行，key 稳定、prepend 不会卸载它）：它的**高度增量**是「这轮段插入让
+      // 内容长高了多少」的 DOM 真相 —— 不能用滚动容器的 scrollHeight（它由虚拟列表的
+      // **总高估算**驱动、滞后于行内真实插入 ⇒ 首帧为 0，会把合法的 417px 误判成越界）。
+      rowEl,
+      rowHeight: rowEl.getBoundingClientRect().height,
+      applied: 0,
+      stable: 0,
+      // 安全上限：请求失败（段永不到达）也不能让锚永久粘住视口。它只负责**清理**，
+      // 不参与"补多少"的判定（补多少永远由 DOM 真相决定）。
+      expiresAt: performance.now() + 15000,
+    }
+  }, [])
+  beginPrependAnchorRef.current = beginPrependAnchor
+  // 上下文值身份稳定（provider 每帧重建会击穿行组件 memo）
+  const prependAnchorValue = useMemo(() => ({ beginPrependAnchor }), [beginPrependAnchor])
+
+  /**
+   * 把锚钉回原位：`scrollTop += (锚行当前 top − 拍摄时 top)` —— 同一帧（layout effect，
+   * paint 之前）一次到位，浏览器只画最终帧 ⇒ 用户看到的东西一动不动。
+   *
+   * 销账判据是**收敛**（连续两次零偏移）或锚元素卸载 —— 没有 deadline、没有重试上限：
+   * 「前置行先估算后被实测」的二次长高由同一规则继续吸收，收敛即停。
+   */
+  const settlePrependAnchor = useCallback(() => {
+    const snap = prependAnchorRef.current
+    if (!snap) return
+    const el = scrollRef.current
+    if (!el || !snap.el.isConnected || performance.now() > snap.expiresAt) {
+      prependAnchorRef.current = null
+      return
+    }
+    const growth = snap.rowEl.isConnected ? snap.rowEl.getBoundingClientRect().height - snap.rowHeight : 0
+    // 锚还活着 ⇒ 用它（精确）；锚被 React 重新分组/卸载（tool-only run 的 head 变化会让旧块
+    // 消失）⇒ 回退到 `growth`：段恒在**视口上方**、**在该行内部**插入 ⇒「这一行长高了多少」
+    // 就是「视口下方的内容被推下去多少」，等价且免疫重挂载。
+    const moved = snap.el.isConnected ? snap.el.getBoundingClientRect().top - snap.top : null
+    const delta = moved ?? growth
+    devAnchorDebugSettle(delta, isSanePrependDelta(delta, growth), growth)
+    snap.rowHeight = snap.rowEl.isConnected ? snap.rowEl.getBoundingClientRect().height : snap.rowHeight
+    if (delta === 0) {
+      // ⚠️ **只有确实动过一次之后**才允许按"收敛"销账：段响应可能延迟几百 ms，若在它还
+      // 没落地时就判"连续两帧零偏移 = 已收敛"而解除锚，段一到照样跳（E2E 实测 417px）。
+      if (snap.applied > 0) {
+        snap.stable += 1
+        if (snap.stable >= 2) prependAnchorRef.current = null // 收敛 ⇒ 销账
+      }
+      return
+    }
+    // ⛔ 合法性闸门：不可信的位移（负值 / 超过本次增长）⇒ 当场弃锚，绝不施加。
+    if (!isSanePrependDelta(delta, growth)) {
+      prependAnchorRef.current = null
+      return
+    }
+    snap.stable = 0
+    snap.applied += 1
     programmaticScrollRef.current = true
-    el.scrollTop = snap.scrollTop + delta
+    el.scrollTop += delta
     queueMicrotask(() => { programmaticScrollRef.current = false })
-    // ⚠️ **补偿后继续欠着**（2026-09-15「翻页时已渲染内容抖动」根治）：
-    // prepend 落地那一刻前置行还是**估算**高度，随后被实测 ⇒ 总高**再次**变化 ⇒ 只补一次的
-    // 旧实现会把这段二次长高留给浏览器 ⇒ 位置二次跳。改为把快照**平移到新基准**并保留，
-    // 让后续每一次长高都继续补偿；只在「用户自己滚动」（非程序滚动）或超时后才销账。
-    loadMoreRestoreRef.current = { scrollTop: el.scrollTop, totalSize: total, deadline: snap.deadline }
   }, [])
 
   useLayoutEffect(() => {
-    restoreLoadMoreAnchor()
-  }, [rows, restoreLoadMoreAnchor])
+    settlePrependAnchor()
+  }, [rows, settlePrependAnchor])
 
+  // content 高度变化（prepend 落地 / 前置行估算→实测）都要再钉一次 —— RO 只是**触发源**，
+  // 补多少由 DOM 锚决定（没有任何时间窗）。
   useEffect(() => {
     const content = contentRef.current
     if (!content || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(() => restoreLoadMoreAnchor())
+    const observer = new ResizeObserver(() => settlePrependAnchor())
     observer.observe(content)
     return () => observer.disconnect()
-  }, [restoreLoadMoreAnchor])
+  }, [settlePrependAnchor])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
@@ -1605,6 +1772,7 @@ export const MessageList = memo(function MessageList({
               style={{ height: `${virtualizer.getTotalSize()}px` }}
               className="relative w-full"
             >
+              <PrependAnchorContext.Provider value={prependAnchorValue}>
               {virtualizer.getVirtualItems().map((item) => {
                 const row = rows[item.index]
                 if (!row) return null
@@ -1657,6 +1825,7 @@ export const MessageList = memo(function MessageList({
                   </div>
                 )
               })}
+              </PrependAnchorContext.Provider>
             </div>
           )}
           {/* Busy placeholder: when agent is thinking but no streaming

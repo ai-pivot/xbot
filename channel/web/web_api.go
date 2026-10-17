@@ -42,6 +42,12 @@ func (wc *WebChannel) isUnknownSession(senderID, channelName, chatID string) boo
 	if wc.callbacks.SessionExists == nil || chatID == "" {
 		return false
 	}
+	// 规范化后再探测：全键（`web:chat_X`）必须先剥成裸 id，否则会被当成
+	// "未知会话"（404）或去探测 `web:web:chat_X`。
+	chatID = canonicalChatID(channelName, chatID)
+	if chatID == "" {
+		return false
+	}
 	if chatID == senderID {
 		return false
 	}
@@ -58,6 +64,9 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 	if channelName == "" {
 		channelName = wc.inferAPISessionChannel(senderID, chatID)
 	}
+	// ⛔ 读路径同样规范化：客户端缓存的旧 chatID 可能是全键（`web:chat_X`）⇒
+	//    不剥前缀会查/建 `web:web:chat_X` 幽灵会话（DELETE/status/history 全中招）。
+	chatID = canonicalChatID(channelName, chatID)
 	if chatID == "" {
 		chatID = senderID
 	}
@@ -76,10 +85,11 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 
 func (wc *WebChannel) inferAPISessionChannel(senderID, chatID string) string {
 	current := wc.GetCurrentSession(senderID)
-	if chatID == "" || current.ChatID == chatID {
+	bare := canonicalChatID(current.Channel, chatID)
+	if chatID == "" || current.ChatID == bare {
 		return current.Channel
 	}
-	if webChatIDLooksLikeSubAgent(chatID) {
+	if webChatIDLooksLikeSubAgent(bare) {
 		return "agent"
 	}
 	return "web"

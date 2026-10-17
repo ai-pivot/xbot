@@ -197,6 +197,29 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
     idCounts.set(baseId, seen + 1)
     const id = seen === 0 ? baseId : `${baseId}-${seen}`
 
+    // `turn_user`：后端对「只下发了尾部区域窗口」（regions_before>0）的 turn **不把
+    // user 行放进消息流**（否则任何照着数组渲染的消费者都会把 user msg 渲染在一个尚未
+    // 加载的缺口上方 —— 消息不连续零容忍，用户 2026-10-11），改挂在 assistant 行上。
+    // 这里在**边缘**还原成常规 user 行：下游（derive / reload 启发式 / rewind）全部
+    // 零改动；是否渲染仍由 derive 的「窗口未覆盖迭代 1 ⇒ user 行不渲染」规则决定。
+    if (m.turn_user && m.turn_user.role === 'user' && typeof m.turn_user.content === 'string') {
+      const tu = m.turn_user
+      normalized.push({
+        id: `turn-user-${tu.id ?? m.id ?? i}`,
+        role: 'user',
+        content: tu.content,
+        iterations: [],
+        timestamp: tu.timestamp ?? '',
+        isPartial: false,
+        turnID: typeof tu.turn_id === 'number' ? tu.turn_id : (typeof m.turn_id === 'number' ? m.turn_id : 0),
+        displayOnly: false,
+        persisted: true,
+        // ⚠️ dbID 必须取 **user 行自己**的 id —— 绝不能回落成 assistant 行的 id，
+        // 否则 rewind 会把这条 user msg 回滚到 assistant 行上（CR 抓到的 bug）。
+        dbID: tu.id ?? (i + 1),
+      })
+    }
+
     normalized.push({
       id,
       role: (m.role === 'user' ? 'user' : 'assistant') as ChatMessage['role'],

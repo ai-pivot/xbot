@@ -84,6 +84,59 @@ describe('turn 内压缩点（迭代之间内联渲染，Cursor 式）', () => {
     expect(container.querySelectorAll('[data-testid="compaction-divider"]').length, '压缩点绝不丢失').toBe(1)
     expect(container.querySelector('[data-iter-id="2"] [data-testid="compaction-divider"]')).toBeTruthy()
   })
+
+  it('同锚点多条压缩全部渲染 —— 每条都是独立事件，禁止再引入 latest-wins 类去重', () => {
+    // ⚠️ 历史教训（2026-10-14，用户亲报「修复完全错误」）：用户报「压缩分隔条堆一摞」时，
+    // 曾误诊为「同锚点多次压缩 ⇒ latest-wins 只留最新一条」并改 map.set —— 完全错误。
+    // 真实根因在后端：iteration_history.created_at 是 CURRENT_TIMESTAMP 写出的 **UTC 裸串**，
+    // 读侧按本地时区解析 ⇒ 8 小时错位 ⇒ 压缩标记"晚于"全部 turn 时间线 ⇒ 后端
+    // compactionAnchor 退化成「最后一个 turn + 其最大迭代号」⇒ 同窗全部分隔条堆到
+    // 一处（判据：xbot 仓 channel/compaction_anchor_tz_test.go）。后端修复后每条
+    // 压缩各自归位到真实发生的迭代边界，天然散开、不再堆叠。
+    // 前端语义自始至终是：**一条分隔 = 一次真实发生的独立压缩，绝不丢、绝不去重**。
+    const compactions: WebCompaction[] = [
+      { afterIteration: 2, content: '[Compacted context]\n\nsummary-1' },
+      { afterIteration: 2, content: '[Compacted context]\n\nsummary-2' },
+      { afterIteration: 2, content: '[Compacted context]\n\nsummary-3' },
+      { afterIteration: 2, content: '[Compacted context]\n\nsummary-4' },
+    ]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={[iter(1, 'a'), iter(2, 'b')]} compactions={compactions} turnID={3} />,
+    )
+    const dividers = container.querySelectorAll('[data-testid="compaction-divider"]')
+    expect(dividers.length, '同锚点 4 次压缩 ⇒ 4 条分隔全部渲染（绝不丢弃任何一次）').toBe(4)
+    expect(
+      container.querySelectorAll('[data-iter-id="2"] [data-testid="compaction-divider"]').length,
+      '同锚点归位不变：全部落在迭代 2 块之后',
+    ).toBe(4)
+  })
+
+  it('不同迭代边界的压缩各自渲染在所属边界（后端正确锚点 ⇒ 天然散开）——afterIteration=0 在 turn 开头、=1 在迭代 1 块后', () => {
+    const compactions: WebCompaction[] = [
+      { afterIteration: 0, content: '[Compacted context]\n\nlead-1' },
+      { afterIteration: 1, content: '[Compacted context]\n\nmid-1' },
+      { afterIteration: 0, content: '[Compacted context]\n\nlead-2' },
+    ]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={[iter(1, 'a'), iter(2, 'b')]} compactions={compactions} turnID={3} />,
+    )
+    expect(container.querySelectorAll('[data-testid="compaction-divider"]').length, '三条压缩 ⇒ 三条分隔，各归其位').toBe(3)
+    expect(
+      container.querySelectorAll('[data-iter-id="1"] [data-testid="compaction-divider"]').length,
+      'afterIteration=1 的那条落在迭代 1 块内',
+    ).toBe(1)
+    expect(
+      container.querySelector('[data-iter-id="2"] [data-testid="compaction-divider"]'),
+      '迭代 2 块内没有压缩点',
+    ).toBeFalsy()
+    // 剩下 2 条（afterIteration=0）在 turn 开头（leading，不在任何迭代块内）。
+    const all = container.querySelectorAll('[data-testid="compaction-divider"]')
+    let leading = 0
+    all.forEach((d) => {
+      if (!d.closest('.iter-block')) leading++
+    })
+    expect(leading, 'afterIteration=0 的两条在迭代列表之前').toBe(2)
+  })
 })
 
 describe('压缩点穿透历史管线', () => {
@@ -254,5 +307,96 @@ describe('窗口外压缩点挂起（区域窗口化交互）', () => {
     )
     expect(container.querySelectorAll('[data-testid="compaction-divider"]').length).toBe(1)
     expect(container.querySelector('[data-iter-id="60"] [data-testid="compaction-divider"]')).toBeTruthy()
+  })
+})
+
+// ─── 压缩紧跟在 user msg 之后（afterIteration=0）—— user msg 不得消失 ──────
+// 用户要求（2026-10-11）：压缩若在 user msg 之后**立刻**发生，形态必须是
+// 「user msg → 横线（上下文压缩提示）→ 后面的迭代」，而**不是** user msg 直接消失。
+describe('压缩紧跟 user msg 之后（afterIteration=0）', () => {
+  it('★ 管线：user msg 必须保留；压缩点归属该 turn 且 afterIteration=0；user 行在 assistant 行之前', () => {
+    const msgs: ChatMessage[] = [
+      {
+        id: 'u3', role: 'user', content: '继续优化到 7ms，你的上下文无限', iterations: [],
+        timestamp: '', isPartial: false, turnID: 3, dbID: 100,
+      },
+      {
+        id: 'a3', role: 'assistant', content: 'turn3 回复', iterations: [iter(1, 'a'), iter(2, 'b')],
+        timestamp: '', isPartial: false, turnID: 3, dbID: 101,
+        // 压缩在 user msg 之后**立刻**发生（该 turn 第一条迭代之前）⇒ afterIteration=0
+        compactions: [{ afterIteration: 0, content: '[Compacted context]\n\ns' }],
+      },
+    ]
+    let s = initialChatState('chat-1')
+    s = reduce(s, historyToReplaced(msgs, null))
+    const rows = rowsToChatMessages(deriveRows(s))
+    const userIdx = rows.findIndex((r) => r && r.turnID === 3 && r.role === 'user')
+    const asstIdx = rows.findIndex((r) => r && r.turnID === 3 && r.role === 'assistant')
+    expect(userIdx, 'user 行必须存在（绝不能被压缩点顶掉/消失）').toBeGreaterThanOrEqual(0)
+    expect(rows[userIdx]!.content, 'user msg 正文必须原样保留').toBe('继续优化到 7ms，你的上下文无限')
+    expect(asstIdx, 'assistant 行必须存在').toBeGreaterThanOrEqual(0)
+    expect(userIdx, '顺序：user 行 → (assistant 体内的横线) → 迭代').toBeLessThan(asstIdx)
+    expect(
+      (rows[asstIdx] as ChatMessage).compactions?.[0]?.afterIteration,
+      '压缩点归属该 turn，且 afterIteration=0（紧随 user msg）',
+    ).toBe(0)
+  })
+
+  it('★ 判据 A：折叠（regionsBefore>0）⇒ user 行**与** afterIteration=0 的横线都不渲染；覆盖到迭代 1 后两者一起还原', () => {
+    const mk = (regionsBefore?: number): ChatMessage => ({
+      id: 'a3', role: 'assistant', content: '', iterations: [iter(52, 'a')],
+      timestamp: '', isPartial: false, turnID: 3, dbID: 101,
+      ...(regionsBefore !== undefined ? { regionsBefore } : {}),
+      compactions: [{ afterIteration: 0, content: '[Compacted context]\n\ns' }],
+    })
+    const user: ChatMessage = {
+      id: 'u3', role: 'user', content: '继续优化到 7ms', iterations: [],
+      timestamp: '', isPartial: false, turnID: 3, dbID: 100,
+    }
+    const rowsOf = (assistant: ChatMessage) => {
+      let s = initialChatState('chat-1')
+      s = reduce(s, historyToReplaced([user, assistant], null))
+      return rowsToChatMessages(deriveRows(s))
+    }
+
+    // ① 窗口未覆盖到迭代 1（regionsBefore>0）⇒ user 行不渲染；横线也不渲染
+    //（否则它会浮在「尚未加载的缺口」正上方 —— 又一处不连续）。
+    const folded = rowsOf(mk(137))
+    expect(
+      folded.findIndex((r) => r && r.turnID === 3 && r.role === 'user'),
+      '窗口未覆盖迭代 1 ⇒ user 行不得渲染',
+    ).toBe(-1)
+    const foldedAsst = folded.find((r) => r && r.turnID === 3 && r.role === 'assistant')
+    expect(
+      (foldedAsst as ChatMessage)?.compactions,
+      '窗口未覆盖迭代 1 ⇒ afterIteration=0 的横线必须一并挂起（不得浮在缺口上方）',
+    ).toBeUndefined()
+
+    // ② 窗口已覆盖到迭代 1（上面已加载）⇒ 立刻还原成 user msg → 横线 → 迭代。
+    const complete = rowsOf(mk(undefined))
+    const userIdx = complete.findIndex((r) => r && r.turnID === 3 && r.role === 'user')
+    const asstIdx = complete.findIndex((r) => r && r.turnID === 3 && r.role === 'assistant')
+    expect(userIdx, '覆盖到迭代 1 ⇒ user msg 必须出现（不得消失）').toBeGreaterThanOrEqual(0)
+    expect(complete[userIdx]!.content).toBe('继续优化到 7ms')
+    expect(userIdx, '顺序：user msg →（assistant 体内的横线）→ 迭代').toBeLessThan(asstIdx)
+    expect(
+      (complete[asstIdx] as ChatMessage).compactions?.[0]?.afterIteration,
+      '覆盖到迭代 1 ⇒ 紧随 user msg 的横线必须还原',
+    ).toBe(0)
+  })
+
+  it('★ 渲染：横线必须在第一个迭代块**之前**（= 紧随 user 行之后、迭代之前）', () => {
+    const compactions: WebCompaction[] = [{ afterIteration: 0, content: '[Compacted context]\n\ns' }]
+    const { container } = renderWithProviders(
+      <TurnBody iterations={[iter(1, 'a'), iter(2, 'b')]} compactions={compactions} turnID={3} />,
+    )
+    const dividers = container.querySelectorAll('[data-testid="compaction-divider"]')
+    expect(dividers.length, '紧随 user msg 的压缩点必须渲染').toBe(1)
+    const firstIter = container.querySelector('[data-iter-id="1"]')
+    expect(firstIter, '迭代 1 必须渲染').toBeTruthy()
+    expect(
+      dividers[0].compareDocumentPosition(firstIter!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      '横线必须在迭代 1 之前',
+    ).toBeTruthy()
   })
 })

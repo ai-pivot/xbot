@@ -413,6 +413,30 @@ openAutoFocus**。守护：`ModelSelector.test.tsx`（触屏 → activeElement �
 
 - **⛔ SSE 增量路径丢失中间迭代 ⇒ 渲染永久截断在洞前，必须由「迭代号跳变」触发会话重载（2026-10-06 P0，chat_AE903161C55A turn 445 实证：view 停在迭代 1-40、后端已到 84；迭代 81 live 可见、81 done 后 view 变回 1-40）。** 根因：iterationHistory 是**增量 feed**——某迭代的完成 delta 在链路丢失后**没有任何后续事件会回头补它**（快照只带「新」迭代；progressStore canonical 注释早已写明 "a reload is required to restore the missing iterations"，但无人执行）。传输层防护（seq gap / resync_required / ring 回放）尽力而为，本场景全未命中 ⇒ 状态机盲目把 81 append 进 [1..40] ⇒ `continuousIterations` 在洞 41 处截断 ⇒ 每个 commit「出现（live）即消失（done 后历史不显示）」、view 永久停在洞前。修复（`chat/reduce.ts`）：**迭代号跳变本身就是数据丢失的数学证据**（引擎逐 +1 单调，`from > maxHeld+1` 不可能是正常事件——与遮蔽解除 `ev.iter > maxIter` 同一证据家族）⇒ `iteration`/`stream` 两 case 用 `lostIterGapSig` 检测「到达侧没接上已持有窗口」⇒ `gapReloadToken` 自增 ⇒ AgentPanel reset + 权威 reload（REST DB 窗口 union 补洞）。**三个契约**：① 签名只锚定**洞下界**（`gapFrom${maxHeld+1}`）——含上界时 stream 帧逐帧递增（81→82→83…）会击穿去重 ⇒ 每帧自增 token = 重载风暴（mutation C2 实证）；② 空窗口（iterations 为空）不判——reset 后回放帧无「已持有」基准，reload 本就在途；③ restore 快照自带补洞 delta（min = maxHeld+1，区间完整）天然不触发（T4）——不制造多余 reload。守护：`web/src/chat/p0-lost-mid-run-iterations.test.ts`（7 例；mutation A 禁用 iteration 检测 ⇒ T1/T5 红、mutation C2 禁用去重 ⇒ T5b 红）。与 `unreachableGapSig` 分工：那个判「reload **之后**仍修不好的洞」（权威窗口外，history_replaced 路径）；本条判「增量路径上**正在产生**的洞」——DB 里一切都在，只需触发一次 reload。
 
+- **⛔⛔ prepend（加载更多 / 区域段）后「用户看到的那一行」必须**一动不动**（用户硬要求，2026-10-12：「用户就是看到的东西要一动不动懂吗」；违反会被严厉批评）。**
+  **被否掉的旧实现（禁止回退）**：`loadMoreRestoreRef = {scrollTop, totalSize, deadline: now+800}` 快照 + `ΔscrollTop == ΔtotalSize` 事后补偿 + 内容级 ResizeObserver 反复「平移基准」重试。三个致命点：① 靠**时间窗 + 估算**猜该补多少 ⇒ 天生存在「先画错一帧再补回来」的窗口；② **只挂在历史分页 `onLoadMore`** 这条路径上，**区域段 `loadRegionSegment`（`useRegionWindow`）压根没接** ⇒ 段插入时一个像素都不补、内容整体下移（用户截图形态）；③ 前置行「估算→实测」的二次长高只能靠 deadline 内反复补，收敛性靠运气。
+  **现契约（DOM 真相锚 + 收敛，无时间窗无重试上限）**：`MessageList` 的 `beginPrependAnchor()` 拍下**视口里最上方那一可见行**（按 `[data-index]` 的**实测 rect**，绝不按虚拟键查表）+ 它此刻的视口内 `top`；提交后 `settlePrependAnchor()` 用 `scrollTop += (该行当前 top − 拍摄时 top)` 在**同一帧**（`useLayoutEffect`，paint 之前）钉回；触发源 = `rows` 的 layout effect + content 的 ResizeObserver；销账 = **收敛**（连续两次零偏移）/ 锚元素卸载 / 用户自己滚动（程序化滚动不算）。**两条 prepend 路径共用同一入口**：`PrependAnchorContext`（MessageList 提供，`useRegionWindow.run()` 在**发请求之前**调用）。哨兵/分隔条本身不可见（见 `RegionsDivider`），所以用户只感知到「上面的历史变多了」，位置不变。
+  **判据（E2E，不是"看起来还行"）**：`web/e2e/region-window.spec.ts` 的「prepend 锚」用例 —— 段响应**延迟 600ms** 落地以保证 `r0` 先拍到（否则断言自证）；断言 ① 插入前后同一行 bbox 完全相同（≤0.5px）；② **rAF 逐帧采样零漂移**（任何一帧偏移 ≠ 0 即红）；③ 新段整段位于列表视口**上方**。
+  **为什么删掉了离屏预测量**：曾计划「Phase 1 离屏 `measureOffscreen` 先量高度再插入」（`web/src/components/agent/measureOffscreen.tsx`，已删除）。DOM 锚逐帧在 paint 前钉住 ⇒ 估算/实测的二次长高**同样被吸收**，预测量变成多余的第二套机制（用户要求「不留双实现」）。
+
+- **⛔ prepend 锚的【位移合法性闸门】—— 「有概率加载完毕后视角自动变到最上方」的根治（用户报告，2026-10-12）。**
+  **症状**：加载更多完成后，用户的视口**偶发地跳到最上方**。
+  **被证伪的假设（别再往这个方向查）**：一度怀疑「段插入让 `mergeToolRuns` 重新分组（tool-only run 的 head 从 21 变 18）⇒ 旧块被 React 卸载 ⇒ 锚元素 `isConnected=false` ⇒ 弃锚不补 ⇒ 位移」。写用例实测 **`Δh = 0`** —— tool-only run 的 pill 行有「前 7 个 + `+N` 溢出」上限 ⇒ **高度恒定** ⇒ 重分组**不可能**造成位移。（该用例保留为回归守护，断言改用几何无关的 `ΔscrollTop == ΔscrollHeight` + 逐帧零漂移。）
+  **真根因**：settle 原先**无条件**施加 `scrollTop += (锚当前 top − 拍摄时 top)`。快照一旦**陈旧**（挂载期列表还在滚到底部、或快照后视口被别的东西移动过），delta 是很大的**负数** ⇒ `scrollTop` 被夹到 **0** = 「跳到最上方」。「有概率」= 取决于预取是否恰好撞上这种时刻。
+  **修法（自我校验 + DOM 真相，不是"再补一次"）**：纯函数 `isSanePrependDelta(delta, growth)`（`MessageList.tsx`，导出以便单测）—— 段恒在视口**上方**插入 ⇒ 位移必须 `> 0` 且 `≤ growth`（容差仅 0.5px 吸收亚像素）；越界 ⇒ **当场弃锚、绝不施加**。`growth` 必须取**锚所在虚拟行自身的高度增量**（⚠️ 用滚动容器的 `scrollHeight` 会被虚拟列表**总高估算的滞后**坑死：首帧 `growth=0 / delta=417` ⇒ 合法位移被误判越界 ⇒ 弃锚 ⇒ 旧用例回归红，E2E 当场抓到）。锚元素被卸载时回退到 `growth`（段在该行内部、视口上方插入 ⇒ 行高增量 == 下方内容被推下去的距离）。
+  守护：`web/src/components/agent/prependAnchorSaneDelta.test.ts`（负位移/超额/零位移/负增长/亚像素 5 例）+ `web/e2e/region-window.spec.ts` 的两个锚用例（含「锚所在块被重新分组」；几何判据 `ΔscrollTop == ΔscrollHeight` 且 rAF 逐帧零漂移）。
+
+- **⛔ 运行中**必须**永远有一颗可点的「停止」—— composer 单按钮的 `canSend ⇒ 发送/排队` 会把停止吞掉（用户 P0：2026-10-12「我 cancel 之后，会话还显示 busy」）。**
+  **取证（不是推断）**：全服日志实证 —— 会话 `chat_A642B1525E87` 在 `07:39:33` 之后再**没有任何 cancel 到达**（`Received /cancel request` / `Cancelled pending AskUser` / `AskUser cancel ignored` 一条都没有），而它的 turn 637 一路跑到 `08:03` 仍在发 LLM 请求 ⇒ **会话是真在跑，用户那次「取消」根本没发出去**。
+  **根因**：`MessageInput` 只有一颗按钮，`onClick={canSend || !busy ? submit : onCancel}` —— **只要输入框里有「可发送的内容」（文字 / 完成态附件 / 批注），点击就是「发送/排队」**（aria-label 变成 `agent.queuedSend`），运行中的会话**没有任何可点的停止**。用户截图里输入框恰好有文字（「你查一下最新信息」）⇒ 他点的那一下被当成排队发送 ⇒ 取消永远发不出去 ⇒ busy 一直显示，且消息被丢进队列。
+  **修法（保留"排队发送"这个有效功能）**：`busy && canSend` 时**额外**渲染一颗独立的破坏性「停止」按钮（`data-testid="composer-cancel"`，点击只走 `onCancel`）；`busy && !canSend` 仍是原来的单颗停止（空输入时那颗按钮本来就是停止）；非 busy 不变。判据必须与主按钮**同一条件**（`canSend`，含附件/批注——只要主按钮是"发送"，停止就必须另有一颗）。**不许**把「有内容也能停止」实现成"点主按钮时猜意图"—— 单一按钮承载两种语义就是这个 bug 的来源。
+  守护：`web/src/components/agent/MessageInput.test.tsx`「运行中的停止可达性」三条（busy+文字 ⇒ 独立停止按钮存在且点击 → `onCancel` 一次 / `onSend` **零次**；busy+**只有完成态附件** ⇒ 同样必须有；busy+无内容 ⇒ 不额外渲染、那颗唯一按钮仍是停止）。**排查同类问题先看全服日志有没有 `Received /cancel request`**：没有 = 前端没发出去（不是状态机/后端的问题）。
+
+- **⛔ 改文件只做定点替换（`FileReplace`），禁止整份覆盖 —— 用旧版文件覆盖会静默删掉已合并的功能（2026-10-12 事故，CI E2E 11 红）。**
+  事故：我为「加一颗停止按钮」写 `MessageInput.tsx` 时用了**旧基线**（主仓 checkout 的过期副本）整份写回 ⇒ `git show da2a81a4` 显示 **48 insertions / 95 deletions**（净 -47 行），**PR #427 的批注/附件集成被整段删掉**（`hasCompletedAttachments`、批注 draft 逻辑…），`MessageInput.test.tsx` 同时少掉 **8 条已合并用例**。症状：`web/e2e/message-annotations.spec.ts` **11 条全红**（`annotation-chip` 根本不渲染），而单元测试竟然全绿（被删的用例也一起没了 ⇒ **测试删了不会报红**）。
+  **契约**：① 改已有文件一律用定点替换（`FileReplace`，old_string 唯一且足够长）；② 万不得已要整份写入（换行/大重构）时，先 `git show HEAD:<path>` 拿到当前版本再改，并**在提交前核对变更行数是否与意图相符**（「加一个按钮」却出现 -47 行 = 立即停手自查）；③ 新增覆盖文件后立刻 `git diff --stat <file>` 复核。
+  **排查入口**：大面积（≥3 条）E2E 同文件全红 + 单元测试全绿 ⇒ 高度怀疑**功能代码被回退**，先 `git log -p <file>` 看最近一次改动是否夹带了无关删除，而不是去怀疑 E2E 环境。
+
 ## Session shortcut review follow-ups (2026-10-11)
 
 - Shared `sessionShortcutAction` excludes the whole focused AskUser panel, including non-editor radio/checkbox/button choices, for creation and current/row/menu actions. Other non-editor surfaces retain their normal behavior.

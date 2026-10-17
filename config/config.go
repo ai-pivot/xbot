@@ -286,7 +286,6 @@ type FeishuConfig struct {
 // （AGENT_MAX_CONCURRENCY），导致"面板显示 100+、实际生效 5/7"
 // （2026-09-17 用户报告）。重复定义已删除。
 type AgentConfig struct {
-	MaxIterations  int    `json:"max_iterations"`
 	MemoryProvider string `json:"memory_provider"`
 	WorkDir        string `json:"work_dir"`
 	PromptFile     string `json:"prompt_file"`
@@ -445,7 +444,7 @@ func DBFilePath() string {
 type fieldType int
 
 const (
-	ftInt   fieldType = iota // int fields: port, max_iterations, etc.
+	ftInt   fieldType = iota // int fields: port, max_concurrency, etc.
 	ftInt64                  // int64 fields: max_body_size
 	ftFloat                  // float64 fields: compression_threshold
 	ftBool                   // bool fields: enabled, enable, active
@@ -477,7 +476,6 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"enabled": ftBool,
 	},
 	"agent": {
-		"max_iterations":        ftInt,
 		"max_concurrency":       ftInt,
 		"max_context_tokens":    ftInt,
 		"enable_auto_compress":  ftBool,
@@ -1015,7 +1013,6 @@ func applyEnvOverrides(cfg *Config) {
 	setStringEnv("PROMPT_FILE", &cfg.Agent.PromptFile)
 	// SINGLE_USER env var removed — singleUser normalization is no longer used
 	setStringEnv("MEMORY_PROVIDER", &cfg.Agent.MemoryProvider)
-	setIntEnv("AGENT_MAX_ITERATIONS", &cfg.Agent.MaxIterations)
 	// AGENT_MAX_CONCURRENCY removed — max_concurrency lives ONLY in the
 	// canonical user_settings row (channel.MaxConcurrencyChannel).
 	setDurationEnv("MCP_INACTIVITY_TIMEOUT", &cfg.Agent.MCPInactivityTimeout)
@@ -1148,9 +1145,6 @@ func Load() *Config {
 	}
 	if cfg.Agent.PromptFile == "" {
 		cfg.Agent.PromptFile = "prompt.md"
-	}
-	if cfg.Agent.MaxIterations == 0 {
-		cfg.Agent.MaxIterations = 2000
 	}
 	// max_concurrency default is NOT applied here: the knob has a single
 	// persisted source (canonical user_settings row) and its fallback lives in

@@ -19,6 +19,8 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { PluginRuntimeProvider, usePluginRuntime, type PluginRuntimeHost } from '@/plugin-runtime'
 import { FetchRpcTransport } from '@/plugin-runtime/rpc'
 import { usePluginViewRegistrySync } from './viewRegistrySync'
+import { parseEmbedQuery } from '@/workspace/panelRequest'
+import { resolveSessionIdentity } from './sessionIdentity'
 import { usePluginLocaleEvent } from './useLocale'
 
 /** 后端 web_plugin_list 返回的单个插件声明。 */
@@ -378,19 +380,49 @@ export function PluginRuntimeBootstrap() {
   const prevSessionKey = useRef<string | null>(null)
   useEffect(() => {
     const active = session.activeSession
-    if (!active) return
-    const key = `${active.channel}:${active.chatID}`
+    /**
+     * ⛔ **嵌入模式：宿主身份优先**（用户 2026-10-17 P0「git web 显示当前项目不是 git 目录，
+     *    原生却是对的」的真根因）。
+     *
+     *  嵌入页（`?xbot_embed=1`，原生鸿蒙 WebView 里）的会话身份由**宿主**在页面脚本之前注入
+     *  （原生 `runJavaScriptOnDocumentStart` → `window.__xbot_session__`）。
+     *  但本组件启动时会按**缓存的会话树**自动选中一个 `activeSession`（`useSessionStore.ts:945-949`：
+     *  `isCurrent` 或**第一个**非 synthetic 会话），若不判嵌入就写回全局 ⇒ 覆盖宿主身份 ⇒
+     *  插件 RPC 带着**另一个会话**的 (channel, chatID) 找后端 ⇒ 后端按那个会话注入 cwd
+     *  （非 repo）⇒ 面板显示"当前项目不是 git 目录"，而原生面板（自己带身份）是对的。
+     *
+     *  ⇒ 规则：**宿主注入过身份（`__xbot_session__.chatID` 存在）且当前是嵌入模式 ⇒ web 不得覆盖**。
+     *     浏览器直开 / 无宿主注入时行为逐字节不变。
+     */
+    const w = window as unknown as { __xbot_session__?: { channel: string; chatID: string } }
+    // 归属判定抽在**纯函数**里（`resolveSessionIdentity`，含判别力单测）：
+    // 嵌入 + 宿主已注入 ⇒ 宿主权威（web 不得覆盖，否则插件 RPC 拿错会话 ⇒ 错 cwd）。
+    const verdict = resolveSessionIdentity({
+      hostIdentity: w.__xbot_session__ ?? null,
+      active: active ? { channel: active.channel ?? 'web', chatID: active.chatID } : null,
+      embedded: parseEmbedQuery(window.location.search),
+    })
+    if (!verdict.identity) return
+    const effChannel = verdict.identity.channel
+    const effChatID = verdict.identity.chatID
+    const key = `${effChannel}:${effChatID}`
     if (prevSessionKey.current === key) return
     prevSessionKey.current = key
 
-    // 更新全局 session（插件 RPC 通过 resolveChat() 读取此值注入 cwd）
-    const w = window as unknown as { __xbot_session__?: { channel: string; chatID: string } }
-    w.__xbot_session__ = { channel: active.channel ?? 'web', chatID: active.chatID }
+    // 更新全局 session（插件 RPC 通过 resolveChat() 读取此值注入 cwd）——宿主权威时不覆盖
+    if (!verdict.hostOwns) {
+      w.__xbot_session__ = { channel: effChannel ?? 'web', chatID: effChatID }
+    }
+
+    if (verdict.hostOwns) {
+      // 真机可观测（原生 onConsole → hilog tag XBOTPROBE）：证明走的是**宿主身份优先**分支
+      console.debug(`[xbot] embed: host session identity wins ${effChannel}:${effChatID}`)
+    }
 
     // 发射通用 session.switched 事件——插件通过 ctx.events.on('session.switched', ...) 订阅
     const summary: SessionSummary = {
-      chatID: active.chatID,
-      title: active.chatID,
+      chatID: effChatID,
+      title: effChatID,
       model: '',
       busy: false,
       maxContext: 0,

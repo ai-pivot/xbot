@@ -185,7 +185,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
         {/* SubAgents */}
         <section className="flex flex-col gap-2">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
-            SubAgents
+            {t('sidebar.tasksSubAgents')}
           </h3>
           {hasSubAgents ? (
             <div className="flex flex-col gap-1.5">

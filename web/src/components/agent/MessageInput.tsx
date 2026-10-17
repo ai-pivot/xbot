@@ -960,6 +960,29 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               no overflow — icon only. */}
           <div className="flex min-w-0 items-center gap-1">
             {trailingControls}
+            {/* ⛔ 运行中必须有独立、永远可点的「停止」（P0，2026-10-12 用户报告
+                「cancel 之后会话还显示 busy」）。主按钮的 `canSend || !busy` 语义会在
+                输入框有内容（文字/附件/批注）时把点击变成「发送/排队」，运行中就**没有
+                任何可点的停止**；用户点的那一下被当成排队发送 ⇒ 取消发不出去、busy 常驻。
+                这里额外渲染一颗只走 onCancel 的破坏性按钮——保留「排队发送」能力，
+                绝不用"单按钮猜意图"实现两种语义。 */}
+            {busy && canSend && (
+              <Button
+                type="button"
+                size="icon-sm"
+                data-testid="composer-cancel"
+                aria-label={t('common.cancel')}
+                title={t('common.cancel')}
+                disabled={cancelling}
+                onClick={onCancel}
+                className={cn(
+                  'size-9 shrink-0 rounded-md bg-destructive text-destructive-foreground transition-all duration-150 hover:bg-destructive/90 active:scale-95',
+                  cancelling && 'opacity-40',
+                )}
+              >
+                {cancelling ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
+              </Button>
+            )}
             <Button
               type="button"
               size="icon-sm"

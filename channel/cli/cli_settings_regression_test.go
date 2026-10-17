@@ -49,7 +49,7 @@ func TestSaveSettings_MaxContextNotPassedToApplySettings(t *testing.T) {
 	// Simulate /settings save with max_context_tokens + a user-scoped key.
 	m.saveSettings(map[string]string{
 		"max_context_tokens": "100000",
-		"max_iterations":     "50",
+		"layout_mode":        "compact",
 	})
 
 	// max_context_tokens must NOT reach ApplySettings.
@@ -58,8 +58,8 @@ func TestSaveSettings_MaxContextNotPassedToApplySettings(t *testing.T) {
 			"not set the global contextManagerConfig.MaxContextTokens")
 	}
 	// User-scoped keys should still reach ApplySettings.
-	if !appliedKeys["max_iterations"] {
-		t.Error("max_iterations did not reach ApplySettings")
+	if !appliedKeys["layout_mode"] {
+		t.Error("layout_mode did not reach ApplySettings")
 	}
 
 	// Verify UpdatePerModelConfig was called for the right model with the right value.
