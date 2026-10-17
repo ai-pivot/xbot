@@ -371,6 +371,7 @@ export function MarketplacePanel() {
               const Icon = TYPE_ICONS[item.type] || Package
               const isInstalled = installed.has(`${item.type}:${item.name}`)
               const isThisInstalling = installing === item.name
+              const isThisUninstalling = uninstalling === item.name
               return (
                 <div
                   key={`${item.type}:${item.name}`}
