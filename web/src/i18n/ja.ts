@@ -1070,6 +1070,12 @@ const ja: Translations = {
     unknown: '不明なパネル：{{id}}',
   },
   layout: {
+    immersiveEnter: '没入モードを開始',
+    immersiveExit: '没入モードを終了',
+    immersiveHint: 'Esc で全画面を終了。OS のショートカット制限は引き続き適用されます',
+    immersiveUnavailable: 'このブラウザーは全画面表示に対応していません',
+    immersiveNoLock: '全画面のみ：キーボードロックを利用できないため、一部のキーはブラウザーが処理します',
+    immersiveFailed: '全画面操作に失敗しました。再試行してください。',
     activityBar: 'ツールパネル',
     connected: '接続済み',
     connecting: '接続中',

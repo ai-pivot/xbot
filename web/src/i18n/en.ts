@@ -1072,6 +1072,12 @@ const en: Translations = {
     unknown: 'Unknown panel: {{id}}',
   },
   layout: {
+    immersiveEnter: 'Enter immersive mode',
+    immersiveExit: 'Exit immersive mode',
+    immersiveHint: 'Esc exits fullscreen; OS shortcut restrictions still apply',
+    immersiveUnavailable: 'Fullscreen is unavailable in this browser',
+    immersiveNoLock: 'Fullscreen only: keyboard lock unavailable; some shortcuts remain browser-owned',
+    immersiveFailed: 'Fullscreen operation failed. Please try again.',
     activityBar: 'Tool panels',
     connected: 'Connected',
     connecting: 'Connecting',
