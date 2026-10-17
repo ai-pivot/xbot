@@ -1076,6 +1076,74 @@ func (wc *WebChannel) handleRegistryListInstalled(w http.ResponseWriter, r *http
 	}
 	writeJSON(w, http.StatusOK, result)
 }
+
+// handleRegistryConfigList handles POST /api/registry/config-list
+func (wc *WebChannel) handleRegistryConfigList(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var result struct {
+		Registries []struct {
+			Name   string `json:"name"`
+			URL    string `json:"url"`
+			Branch string `json:"branch,omitempty"`
+		} `json:"registries"`
+	}
+	if err := wc.rpcCallAs(r, "registry_config_list", map[string]any{}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleRegistryConfigAdd handles POST /api/registry/config-add
+func (wc *WebChannel) handleRegistryConfigAdd(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		Branch string `json:"branch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if err := wc.rpcCallAs(r, "registry_config_add", map[string]any{
+		"name": req.Name, "url": req.URL, "branch": req.Branch,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// handleRegistryConfigRemove handles POST /api/registry/config-remove
+func (wc *WebChannel) handleRegistryConfigRemove(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if err := wc.rpcCallAs(r, "registry_config_remove", map[string]any{
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// sanitizeExportName keeps only alphanumerics, '-', '_', '.' — everything else becomes '_'.
 // A result of "." or ".." (or anything that would traverse out of the zip root) is
 // replaced with "skill" — such a name would otherwise produce a path-traversal zip
 // entry (zip-slip) via filepath.Join(name, rel).

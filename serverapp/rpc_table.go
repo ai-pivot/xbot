@@ -3070,6 +3070,43 @@ func registerRegistryHandlers(t RPCTable, h *RPCContext) {
 		}
 		return map[string]any{"items": items}, nil
 	})
+
+	t["registry_config_list"] = rpc1(func(ctx context.Context, p struct{}) (any, error) {
+		xbotHome := config.XbotHome()
+		cfg, err := registry.LoadConfig(xbotHome)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"registries": cfg.Registries}, nil
+	})
+
+	t["registry_config_add"] = rpc1(func(ctx context.Context, p struct {
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		Branch string `json:"branch"`
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		if p.Name == "" || p.URL == "" {
+			return nil, fmt.Errorf("name and url are required")
+		}
+		if err := registry.AddRegistry(xbotHome, p.Name, p.URL, p.Branch); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+	})
+
+	t["registry_config_remove"] = rpc1(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		if p.Name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+		if err := registry.RemoveRegistry(xbotHome, p.Name); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+	})
 }
 
 // registryRemove removes an installed item by type and name.
