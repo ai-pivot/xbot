@@ -49,7 +49,7 @@ Before connecting, the user must:
 
 Build and focused test checks do **not** prove the deployed gate or authenticated browser-to-localhost connection. Real-browser gate, local-network permission/CORS, SSE, terminal WebSocket and resource acceptance remain **unverified**. Browser operation is paused under user control: do not open or automate a browser until the user explicitly says to continue. A follow-up PR may be published before this acceptance, but must state that user verification is still required; publication is not end-to-end approval.
 
-Security acceptance must include regression checks that preview grants cannot call credential-management or secret-export RPCs. Do not infer that protection from the gate UI or hosting checks. This connection delegates broad workspace abilities and is not a read-only sandbox.
+Security acceptance must include regression checks that preview grants cannot call credential-management or secret-export RPCs. Do not infer that protection from the gate UI or hosting checks. The `web_plugin_rpc` bridge is blocked entirely because it can recursively dispatch core RPCs and bypass outer method restrictions; plugin UI relying on that bridge is unavailable in preview mode. This connection delegates broad workspace abilities and is not a read-only sandbox or a guarantee that persistent secrets cannot be accessed through trusted tools/terminal.
 
 
 ### Preview build contract

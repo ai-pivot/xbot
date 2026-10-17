@@ -341,8 +341,12 @@ func previewRPCBlocked(method string) bool {
 	// These handlers return raw persistent credentials without a token/admin name.
 	// Masked subscription/storage reads remain available. This is a direct RPC
 	// guard, not a sandbox: the consented grant still has full workspace access.
+	// web_plugin_rpc can recursively dispatch core RPCs without re-entering this
+	// guard. Reject the entire wrapper, including plugin-prefixed calls; preview
+	// plugin UI that depends on that bridge is deliberately unavailable. This
+	// does not isolate secrets from trusted workspace tools or terminal access.
 	switch method {
-	case "export_subscriptions", "get_channel_config", "plugin_config":
+	case "export_subscriptions", "get_channel_config", "plugin_config", "web_plugin_rpc":
 		return true
 	}
 	return strings.HasPrefix(method, "runner_") || strings.Contains(method, "web_user") || strings.Contains(method, "admin") || strings.Contains(method, "token") || strings.HasPrefix(method, "auth_") || method == "apply_update" || method == "restart_server"

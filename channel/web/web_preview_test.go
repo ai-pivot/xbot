@@ -174,8 +174,8 @@ func TestPreviewCORSAndRPC(t *testing.T) {
 		called = true
 		return json.RawMessage(`{}`), nil
 	}
-	for _, method := range []string{"create_web_user", "delete_web_user", "runner_create", "restart_server", "apply_update", "export_subscriptions", "get_channel_config", "plugin_config"} {
-		w = previewReq(h, "POST", "/api/rpc", testPreviewOrigin, token, `{"method":"`+method+`"}`)
+	for _, method := range []string{"create_web_user", "delete_web_user", "runner_create", "restart_server", "apply_update", "export_subscriptions", "get_channel_config", "plugin_config", "web_plugin_rpc"} {
+		w = previewReq(h, "POST", "/api/rpc", testPreviewOrigin, token, `{"method":"`+method+`","params":{"method":"web_plugin_rpc","params":{"method":"export_subscriptions"}}}`)
 		if w.Code != 403 || called {
 			t.Fatalf("escalation %s %d", method, w.Code)
 		}
@@ -361,37 +361,41 @@ func TestPreviewResourceHeaderUsesParentIdentity(t *testing.T) {
 	}
 }
 func TestPreviewWebSocketRPCBlocksCredentialMint(t *testing.T) {
-	wc := previewTestChannel(t)
-	token := mintPreview(t, wc)
-	called := make(chan struct{}, 1)
-	wc.callbacks.RPCHandler = func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
-		called <- struct{}{}
-		return json.RawMessage(`{}`), nil
-	}
-	srv := httptest.NewServer(wc.newServeMux())
-	defer srv.Close()
-	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws?preview_token="+token, http.Header{"Origin": []string{testPreviewOrigin}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	if err = conn.WriteJSON(map[string]any{"type": "rpc", "id": "escalate", "method": "export_subscriptions", "params": map[string]any{}}); err != nil {
-		t.Fatal(err)
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-	for {
-		_, raw, e := conn.ReadMessage()
-		if e != nil {
-			t.Fatal(e)
-		}
-		if strings.Contains(string(raw), "preview cannot manage administrator credentials") {
-			break
-		}
-	}
-	select {
-	case <-called:
-		t.Fatal("credential RPC executed")
-	default:
+	for _, method := range []string{"export_subscriptions", "web_plugin_rpc"} {
+		t.Run(method, func(t *testing.T) {
+			wc := previewTestChannel(t)
+			token := mintPreview(t, wc)
+			called := make(chan struct{}, 1)
+			wc.callbacks.RPCHandler = func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
+				called <- struct{}{}
+				return json.RawMessage(`{}`), nil
+			}
+			srv := httptest.NewServer(wc.newServeMux())
+			defer srv.Close()
+			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws?preview_token="+token, http.Header{"Origin": []string{testPreviewOrigin}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err = conn.WriteJSON(map[string]any{"type": "rpc", "id": "escalate", "method": method, "params": map[string]any{"method": "web_plugin_rpc", "params": map[string]any{"method": "export_subscriptions"}}}); err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+			for {
+				_, raw, e := conn.ReadMessage()
+				if e != nil {
+					t.Fatal(e)
+				}
+				if strings.Contains(string(raw), "preview cannot manage administrator credentials") {
+					break
+				}
+			}
+			select {
+			case <-called:
+				t.Fatal("credential RPC executed")
+			default:
+			}
+		})
 	}
 }
 
@@ -419,7 +423,7 @@ func TestPreviewEnabledPreservesSameOriginIntegrationBearer(t *testing.T) {
 }
 
 func TestPreviewRPCSecretPolicy(t *testing.T) {
-	for _, method := range []string{"export_subscriptions", "get_channel_config", "plugin_config", "create_web_user", "runner_create", "restart_server", "apply_update"} {
+	for _, method := range []string{"export_subscriptions", "get_channel_config", "plugin_config", "web_plugin_rpc", "create_web_user", "runner_create", "restart_server", "apply_update"} {
 		t.Run(method, func(t *testing.T) {
 			if !previewRPCBlocked(method) {
 				t.Fatalf("secret/admin method %s allowed", method)
