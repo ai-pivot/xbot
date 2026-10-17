@@ -1,3 +1,4 @@
+import { backendFetch } from '@/lib/api'
 /**
  * Plugin widget API — web_ui_action RPC and related calls.
  *
@@ -5,6 +6,7 @@
  * routes it to the owning channel plugin (via its transport), a native plugin
  * handler, or falls back to injecting the action into the agent loop.
  */
+
 
 export interface WebUIActionResult {
   ok?: boolean
@@ -33,7 +35,7 @@ export async function sendWebUIAction(params: {
     ;(body.params as Record<string, unknown>).data = JSON.stringify(params.data)
   }
   try {
-    const res = await fetch('/api/rpc', {
+    const res = await backendFetch('/api/rpc', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

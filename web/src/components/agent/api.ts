@@ -7,6 +7,7 @@
  *
  * LLM subscription/model RPCs (Spec D) go through WSConnection.rpc → POST /api/rpc.
  */
+import { backendUrl, getPreviewToken, previewEnabled } from '@/lib/previewConnection'
 import type { WSConnection } from '@/types/ws'
 import type { ContextUsage, ModelEntry, PerModelConfig, ProgressEvent, SessionSelector, Subscription, TodoItem, WebIteration } from '@/types/shared'
 import { createStoredZip, type ZipFile } from '@/lib/zipStore'
@@ -635,7 +636,15 @@ export async function uploadFile(
 ): Promise<UploadResponse> {
   return new Promise<UploadResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/api/files/upload')
+    if (previewEnabled() && !getPreviewToken()) {
+      reject(new Error('preview-not-connected'))
+      return
+    }
+    xhr.open('POST', backendUrl('/api/files/upload'))
+    if (previewEnabled()) {
+      xhr.withCredentials = false
+      xhr.setRequestHeader('Authorization', `Bearer ${getPreviewToken()}`)
+    }
     xhr.responseType = 'json'
     xhr.setRequestHeader('Accept', 'application/json')
     if (onProgress) {

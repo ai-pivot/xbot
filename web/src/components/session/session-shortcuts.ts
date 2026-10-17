@@ -1,3 +1,4 @@
+import { appPath } from '@/lib/appUrl'
 import type { SessionInfo } from '@/types/shared'
 
 export const SESSION_SHORTCUTS = {
@@ -129,7 +130,7 @@ export function sessionShortcutLabel(action: SessionShortcutAction, platform = n
 }
 
 export function openSessionInBrowserTab(session: SessionInfo): void {
-  const url = new URL('/', window.location.origin)
+  const url = new URL(appPath('/'), window.location.origin)
   url.searchParams.set('session', `${session.channel || 'web'}:${session.chatID}`)
   window.open(url.href, '_blank', 'noopener')
 }

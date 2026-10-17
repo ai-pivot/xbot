@@ -1,3 +1,5 @@
+import { backendUrl, getPreviewToken, previewEnabled } from './previewConnection'
+
 export interface APIErrorBody {
   code: string
   message: string
@@ -32,7 +34,7 @@ export async function postAPI<T>(
   options: PostAPIOptions = {},
 ): Promise<T> {
   const isForm = body instanceof FormData
-  const response = await fetch(endpoint, {
+  const response = await backendFetch(endpoint, {
     method: 'POST',
     headers: isForm
       ? { Accept: 'application/json' }
@@ -59,7 +61,7 @@ export async function postRawAPI(
   body: unknown,
   options: PostAPIOptions = {},
 ): Promise<Response> {
-  const response = await fetch(endpoint, {
+  const response = await backendFetch(endpoint, {
     method: 'POST',
     headers: { Accept: '*/*', 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -85,4 +87,29 @@ async function readEnvelope<T>(response: Response): Promise<APIResponse<T>> {
       error: { code: 'invalid_response', message: 'server returned invalid JSON' },
     }
   }
+}
+
+/** Canonical API paths only: never forward preview authorization to user URLs. */
+export function backendFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  let canonical = path
+  if (!path.startsWith('/api/')) {
+    // Server metadata can contain an already resolved URL. Require an exact owned prefix.
+    const prefix = backendUrl('/api/')
+    if (!path.startsWith(prefix)) throw new Error('invalid-backend-api-url')
+    canonical = `/api/${path.slice(prefix.length)}`
+  }
+  const destination = backendUrl(canonical)
+  const resolved = new URL(destination, window.location.origin)
+  const apiRoot = new URL(backendUrl('/api/'), window.location.origin)
+  if (resolved.origin !== apiRoot.origin || !resolved.pathname.startsWith(apiRoot.pathname)) {
+    throw new Error('invalid-backend-api-url')
+  }
+  if (!previewEnabled()) return fetch(destination, init)
+  const token = getPreviewToken()
+  if (!token) throw new Error('preview-not-connected')
+  const headers = new Headers(init.headers)
+  headers.set('Authorization', `Bearer ${token}`)
+  return fetch(backendUrl(canonical), {
+    ...init, headers, credentials: 'omit', mode: 'cors', redirect: 'error',
+  })
 }

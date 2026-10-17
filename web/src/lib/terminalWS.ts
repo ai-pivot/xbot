@@ -24,6 +24,7 @@ import type {
   TerminalClientMessage,
   TerminalServerMessage,
 } from '@/types/terminal'
+import { backendStreamUrl } from './appUrl'
 
 const RECONNECT_BASE_MS = 500
 const RECONNECT_MAX_MS = 15_000
@@ -48,8 +49,9 @@ export interface TerminalWSCallbacks {
 
 /** Build the absolute ws:// or wss:// URL for `/ws/terminal?tid=<tid>`. */
 function buildTerminalWSUrl(tid: string): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${window.location.host}/ws/terminal?tid=${encodeURIComponent(tid)}`
+  const url = new URL(backendStreamUrl(`/ws/terminal?tid=${encodeURIComponent(tid)}`), window.location.origin)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.toString()
 }
 
 /* ── base64 helpers (binary-safe; atob/btoa are Latin-1) ── */

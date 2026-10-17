@@ -1,4 +1,5 @@
 import { postAPI } from '@/lib/api'
+import { backendStreamUrl } from '@/lib/appUrl'
 import {
   bumpProgressGeneration,
   clearProgressSnapshot,
@@ -210,7 +211,7 @@ export class SSEConnectionImpl implements WSConnection {
 
     let source: EventSource
     try {
-      source = new EventSource(`/api/sse?${params.toString()}`)
+      source = new EventSource(backendStreamUrl(`/api/sse?${params.toString()}`))
     } catch {
       this.startPolling()
       return

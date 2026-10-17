@@ -1,0 +1,40 @@
+.preview-shell { min-height: 100dvh; background: var(--bg-primary); color: var(--text-primary); }
+.preview-toolbar { min-height: 60px; padding: 12px clamp(16px, 4vw, 48px); display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); }
+.preview-wordmark { font-weight: 650; font-size: 20px; }
+.preview-wordmark span { margin-inline-start: 14px; color: var(--text-secondary); font-size: 10px; letter-spacing: .08em; }
+.preview-main { max-width: 720px; margin: 0 auto; padding: clamp(32px, 6vh, 76px) 24px 48px; }
+.preview-eyebrow { color: var(--accent); font-size: 11px; font-weight: 650; letter-spacing: .1em; }
+.preview-heading h1 { margin: 12px 0; font-size: clamp(28px, 4vw, 38px); font-weight: 600; letter-spacing: -.035em; line-height: 1.15; }
+.preview-heading > p:last-child { color: var(--text-secondary); line-height: 1.7; }
+.preview-settings { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--border); }
+.preview-settings label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.preview-shell input:not([type=checkbox]) { width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid var(--border-strong); background: var(--bg-primary); border-radius: 6px; font: inherit; color: inherit; }
+.preview-shell button, .preview-shell a { font-size: 13px; }
+.preview-shell button { min-height: 38px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 5px; cursor: pointer; background: var(--bg-primary); color: var(--text-primary); }
+.preview-shell button:hover:not(:disabled) { background: var(--bg-secondary); }
+.preview-shell button:disabled { opacity: .5; cursor: wait; }
+.preview-shell :is(input, button, a):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.preview-shell .preview-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-foreground); }
+.preview-shell .preview-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.preview-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0; }
+.preview-hint, .preview-result, .preview-notice p, .preview-warning p { font-size: 13px; line-height: 1.7; color: var(--text-secondary); overflow-wrap: anywhere; }
+.preview-hint { margin: 9px 0; }
+.preview-result { min-height: 24px; margin: 20px 0; }
+.preview-notice { background: var(--bg-secondary); padding: 18px 20px; border-inline-start: 3px solid var(--accent); }
+.preview-notice h2, .preview-warning h2 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.preview-warning { margin-top: 24px; }
+.preview-shell .preview-reset { margin-top: 24px; background: transparent; color: var(--text-secondary); }
+.preview-auth { margin: 24px 0; padding-top: 22px; border-top: 1px solid var(--border); }
+.preview-auth a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.preview-auth label { margin-top: 16px; }
+.preview-auth .preview-consent { display: flex; align-items: start; gap: 10px; font-weight: 400; font-size: 13px; line-height: 1.6; }
+.preview-consent input { margin-top: 4px; flex-shrink: 0; }
+@media (max-width: 480px) { .preview-wordmark span { display: none; } .preview-main { padding-inline: 18px; } }
+
+.preview-connected { height: 100dvh; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.preview-connected .preview-toolbar { flex-shrink: 0; }
+.preview-application { flex: 1; min-height: 0; overflow: hidden; position: relative; }
+.preview-application > * { max-height: 100%; }
+/* AppShell uses fixed inset-0 for iOS full bleed. Contain its fixed viewport
+   inside the remaining space so the permanent backend toolbar stays reachable. */
+.preview-application { transform: translateZ(0); }

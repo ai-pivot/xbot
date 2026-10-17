@@ -365,6 +365,7 @@ func (wc *WebChannel) handleLogout(w http.ResponseWriter, r *http.Request) {
 		wc.sessionsMu.Lock()
 		delete(wc.sessions, cookie.Value)
 		wc.sessionsMu.Unlock()
+		wc.revokePreviewParent(cookie.Value)
 	}
 
 	writeJSON(w, http.StatusOK, authResponse{OK: true})
@@ -411,7 +412,12 @@ func (wc *WebChannel) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if r.Method != http.MethodGet && r.URL.Path != "/api/files/upload" && r.URL.Path != "/api/plugin-files/upload" {
 			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		}
-		si := wc.validateSession(r)
+		var si *sessionInfo
+		if g := previewFromRequest(r); g != nil {
+			si = &g.session
+		} else {
+			si = wc.validateSession(r)
+		}
 		if si == nil {
 			jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
 			return
