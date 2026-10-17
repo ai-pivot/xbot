@@ -498,6 +498,14 @@ type Agent struct {
 	cancelStateMu sync.Mutex
 	chatCancelCh  sync.Map
 
+	// runGen：每个 chat 最近一次 Run 的**轮次代号**（单调递增）。
+	// ⛔ 存在的唯一理由（用户 2026-10-17 P0「后端乱发 session_idle」）：回合收尾的 defer 会在
+	//   processMessage 返回后**无条件**发 session(idle)。若用户在前一轮收尾前就发来下一条消息
+	//   （新一轮已 active），这条**迟到的旧轮 idle** 会落在新轮的 busy 之后 ⇒ 前端（web 与原生一致）
+	//   把正在跑的新轮误标 idle ⇒ 卡 busy / 界面冻结。⇒ 只有"仍是当前轮"的收尾才允许发 idle。
+	runGenMu sync.Mutex
+	runGen   map[string]uint64
+
 	// sessionOperationGates serializes Run/command turns with history rewind.
 	// Leases are reference counted under the map mutex so idle entries can be
 	// removed without an ABA window that creates two gates for one session.
@@ -1614,6 +1622,44 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	a.pendingCancel.Store(cancelKey, true)
 	a.cancelStateMu.Unlock()
 	log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
+}
+
+// bumpRunGen 标记该会话开始新一轮，返回本轮代号（单调递增）。
+func (a *Agent) bumpRunGen(chatKey string) uint64 {
+	a.runGenMu.Lock()
+	defer a.runGenMu.Unlock()
+	if a.runGen == nil {
+		a.runGen = make(map[string]uint64)
+	}
+	a.runGen[chatKey]++
+	return a.runGen[chatKey]
+}
+
+// isCurrentRunGen 该代号是否仍是该会话的当前轮（false ⇒ 这是一次**迟到**的旧轮收尾）。
+func (a *Agent) isCurrentRunGen(chatKey string, gen uint64) bool {
+	a.runGenMu.Lock()
+	defer a.runGenMu.Unlock()
+	if a.runGen == nil {
+		return false
+	}
+	return a.runGen[chatKey] == gen
+}
+
+// emitSessionIdleIfCurrent **唯一合法的 session(idle) 出口**：只有"仍是当前轮"才发。
+//
+// ⛔ 为什么必须在服务端修（而不是客户端打补丁 —— 用户 2026-10-17：「严禁做 hack，
+//
+//	后端乱发 session_idle 就必须修后端」）：会话的 busy/idle 是**服务端权威信号**，
+//	它一旦说谎，所有客户端只能猜（卡 busy / 界面冻结 / 历史闪烁）。
+func (a *Agent) emitSessionIdleIfCurrent(chatKey, channel, chatID, senderID string, gen uint64) {
+	if !a.isCurrentRunGen(chatKey, gen) {
+		log.WithFields(log.Fields{"chat": chatKey, "gen": gen, "reason": "stale-run-teardown"}).
+			Debug("Suppressed stale session(idle) — a newer run owns this chat")
+		return
+	}
+	a.emitSessionState(protocol.SessionEvent{
+		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
+	})
 }
 
 func (a *Agent) registerActiveCancelState(cancelKey string, cancelCh chan struct{}, reqCancel context.CancelFunc) bool {
@@ -3484,6 +3530,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// Execute the request, then atomically snapshot cancellation and unregister
 			// the active cancel state before another /cancel can target this chat.
 			wasCancelled := false
+			// 本轮代号：收尾时的 idle 只有"仍是当前轮"才允许发（见 emitSessionIdleIfCurrent）
+			runGen := a.bumpRunGen(chatKey)
 			func() {
 				defer func() {
 					// Panic 兜底：processMessage panic 时 goroutine 会被 clipanic.Go
@@ -3511,9 +3559,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					// reconnect can recover the in-flight turn.
 					isWaitingUser := response != nil && response.WaitingUser
 					if !isWaitingUser {
-						a.emitSessionState(protocol.SessionEvent{
-							Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
-						})
+						// ⛔ 只有"仍是当前轮"才发 idle：迟到的旧轮收尾不得把新一轮误标 idle
+						a.emitSessionIdleIfCurrent(cancelKey, msg.Channel, msg.ChatID, msg.SenderID, runGen)
 						key := qualifyChatID(msg.Channel, msg.ChatID)
 						a.lastProgressSnapshot.Delete(key)
 						a.iterationHistories.Delete(key)
