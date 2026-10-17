@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	log "xbot/logger"
@@ -90,23 +91,6 @@ func installPlugin(srcPath, name, xbotHome string) error {
 		id = name
 	}
 
-	// Binary-runtime plugins (stdio/grpc) require a compiled entry binary.
-	// A registry checkout carries source only — its go.mod replaces xbot's
-	// plugin/protocol via a repo-relative path that does not exist in the
-	// registry clone, so it cannot be built here. Refuse rather than install a
-	// plugin that will fail at activation ("no such file or directory").
-	if manifest.Runtime == "stdio" || manifest.Runtime == "grpc" {
-		entryBin := manifest.Executable
-		if entryBin == "" {
-			entryBin = manifest.Entry
-		}
-		if strings.HasPrefix(entryBin, "./") || strings.HasPrefix(entryBin, "../") {
-			if _, err := os.Stat(filepath.Join(srcPath, entryBin)); err != nil {
-				return fmt.Errorf("plugin %q needs a prebuilt binary at %q, but the registry only ships source; build it from the xbot repo (make plugins-install) instead", id, entryBin)
-			}
-		}
-	}
-
 	destDir := filepath.Join(xbotHome, "plugins", id)
 	if _, err := os.Stat(destDir); err == nil {
 		return fmt.Errorf("plugin %q already installed (remove it first or use --force)", id)
@@ -115,11 +99,152 @@ func installPlugin(srcPath, name, xbotHome string) error {
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		return fmt.Errorf("create plugins dir: %w", err)
 	}
+
+	// Binary-runtime plugins (stdio/grpc) need a compiled entry binary. The
+	// registry ships per-platform binaries under bin/<os>-<arch>/; pick the one
+	// matching this host and place it at the manifest's entry path. Source
+	// files are copied too (useful for auditing; they do not affect execution).
+	if manifest.Runtime == "stdio" || manifest.Runtime == "grpc" {
+		entryBin := manifest.Executable
+		if entryBin == "" {
+			entryBin = manifest.Entry
+		}
+		// Only path-like entries (./x, ../x) point at a bundled binary; a bare
+		// command name is resolved via PATH and needs no bundled file.
+		if strings.HasPrefix(entryBin, "./") || strings.HasPrefix(entryBin, "../") {
+			rel := filepath.Clean(strings.TrimPrefix(entryBin, "./"))
+			binarySrc, err := selectPlatformBinary(srcPath, rel)
+			if err != nil {
+				return fmt.Errorf("plugin %q: %w", id, err)
+			}
+			if err := copyPluginSource(srcPath, destDir); err != nil {
+				return fmt.Errorf("copy plugin: %w", err)
+			}
+			if err := copyFileMode(binarySrc, filepath.Join(destDir, rel), 0o755); err != nil {
+				return fmt.Errorf("install binary: %w", err)
+			}
+			log.WithFields(log.Fields{"plugin": id, "from": srcPath, "binary": binarySrc, "to": destDir}).Info("Installed plugin from registry")
+			return nil
+		}
+	}
+
+	// Script-runtime (or PATH-resolved) plugin: copy the source directory as-is.
 	if err := copyDir(srcPath, destDir); err != nil {
 		return fmt.Errorf("copy plugin: %w", err)
 	}
 	log.WithFields(log.Fields{"plugin": id, "from": srcPath, "to": destDir}).Info("Installed plugin from registry")
 	return nil
+}
+
+// selectPlatformBinary finds the per-platform binary for entryRel under
+// srcPath/bin/<goos>-<goarch>/, or a prebuilt binary already at srcPath/entryRel,
+// or a single-platform srcPath/bin/<base>. Returns an error naming the
+// available platforms when nothing matches this host.
+func selectPlatformBinary(srcPath, entryRel string) (string, error) {
+	base := filepath.Base(entryRel)
+	exe := base
+	if runtime.GOOS == "windows" && !strings.HasSuffix(exe, ".exe") {
+		exe += ".exe"
+	}
+
+	// 1. Prebuilt binary already at the entry path (single-platform layout).
+	if p := filepath.Join(srcPath, entryRel); isRegularFile(p) {
+		return p, nil
+	}
+	// 2. Per-platform: bin/<goos>-<goarch>/<exe>.
+	if p := filepath.Join(srcPath, "bin", runtime.GOOS+"-"+runtime.GOARCH, exe); isRegularFile(p) {
+		return p, nil
+	}
+	// 3. Single-platform under bin/.
+	if p := filepath.Join(srcPath, "bin", exe); isRegularFile(p) {
+		return p, nil
+	}
+
+	// Nothing matched — report which platforms the registry does provide.
+	available := "none"
+	if entries, err := os.ReadDir(filepath.Join(srcPath, "bin")); err == nil {
+		var plats []string
+		for _, e := range entries {
+			if e.IsDir() {
+				plats = append(plats, e.Name())
+			}
+		}
+		if len(plats) > 0 {
+			available = strings.Join(plats, ", ")
+		}
+	}
+	return "", fmt.Errorf("no prebuilt binary for %s-%s (entry %q); registry provides: %s", runtime.GOOS, runtime.GOARCH, entryRel, available)
+}
+
+func isRegularFile(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// copyPluginSource copies a plugin directory to dst, skipping the top-level
+// bin/ build-output subtree (platform binaries for other arches are large and
+// unnecessary once the matching binary is placed explicitly).
+func copyPluginSource(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if relPath == "." {
+			return os.MkdirAll(dst, 0o755)
+		}
+		// Skip the whole top-level bin/ subtree.
+		if relPath == "bin" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		targetPath := filepath.Join(dst, relPath)
+		fi, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, targetPath)
+		}
+		if d.IsDir() {
+			return os.MkdirAll(targetPath, fi.Mode())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(targetPath, data, fi.Mode())
+	})
+}
+
+// copyFileMode copies a single file and applies an explicit mode (e.g. 0755
+// for plugin binaries).
+func copyFileMode(src, dst string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	data, err := io.ReadAll(in)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, data, mode); err != nil {
+		return err
+	}
+	return os.Chmod(dst, mode)
 }
 
 // installPackage reads a package.json manifest from the registry clone and
