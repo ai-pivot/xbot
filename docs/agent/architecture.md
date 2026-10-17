@@ -225,7 +225,9 @@ Contract for the shutdown path (`serverapp/server.go`):
 1. `collectPendingResumes` — recovery markers written first (they must land in
    the main file too, otherwise "recorded" is only a WAL fact).
 2. `cancel()` — stop the agent loops.
-3. `webDB.CheckpointForShutdown()` — `PRAGMA wal_checkpoint(TRUNCATE)`, bounded
+3. `CheckpointForShutdown()` on the main DB handle (`ag.MultiSession().DB()`;
+   nil on the PG backend ⇒ the checkpoint is skipped) —
+   `PRAGMA wal_checkpoint(TRUNCATE)`, bounded
    by `busy_timeout` (10s), one retry, non-fatal, logged either way.
 4. Only then the hang-prone teardown: webhook, dispatcher, plugin deactivate.
 

@@ -11,6 +11,7 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/prompt"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
 )
@@ -46,7 +47,7 @@ type LettaMemory struct {
 	tenantID     int64
 	coreSvc      *sqlite.CoreMemoryService
 	archivalSvc  *vectordb.ArchivalService
-	memorySvc    *sqlite.MemoryService
+	memorySvc    storage.MemoryStore
 	toolIndexSvc *vectordb.ToolIndexService
 }
 
@@ -61,7 +62,7 @@ func (m *LettaMemory) Name() string { return "letta" }
 type Deps struct {
 	CoreSvc      *sqlite.CoreMemoryService
 	ArchivalSvc  *vectordb.ArchivalService
-	MemorySvc    *sqlite.MemoryService
+	MemorySvc    storage.MemoryStore
 	ToolIndexSvc *vectordb.ToolIndexService
 }
 
@@ -83,7 +84,7 @@ func init() {
 // New creates a LettaMemory instance.
 // NOTE: senderID is NOT passed here. Per-user human block is handled dynamically
 // via context (WithUserID/GetUserID) passed to Recall/Memorize at call time.
-func New(tenantID int64, coreSvc *sqlite.CoreMemoryService, archivalSvc *vectordb.ArchivalService, memorySvc *sqlite.MemoryService, toolIndexSvc *vectordb.ToolIndexService) *LettaMemory {
+func New(tenantID int64, coreSvc *sqlite.CoreMemoryService, archivalSvc *vectordb.ArchivalService, memorySvc storage.MemoryStore, toolIndexSvc *vectordb.ToolIndexService) *LettaMemory {
 	// Ensure default blocks exist (global, userID="")
 	// Per-user blocks are created on-demand when Recall/Memorize is called with userID in context
 	if err := coreSvc.InitBlocks(tenantID, ""); err != nil {
@@ -403,7 +404,7 @@ func (m *LettaMemory) ArchivalService() *vectordb.ArchivalService {
 }
 
 // MemoryService returns the underlying memory service (exposed for recall search).
-func (m *LettaMemory) MemoryService() *sqlite.MemoryService {
+func (m *LettaMemory) MemoryService() storage.MemoryStore {
 	return m.memorySvc
 }
 

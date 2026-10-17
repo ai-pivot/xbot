@@ -12,6 +12,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -23,8 +24,8 @@ import (
 //   - per-session 解析通过 ResolveLLM 从 DB (tenants + user_default_model) 读取，无内存缓存
 //   - per-model 配置（max_context, max_output_tokens, thinking_mode）从 subscription_models 表读取
 type LLMFactory struct {
-	subscriptionSvc *sqlite.LLMSubscriptionService
-	tenantSvc       *sqlite.TenantService // for per-session model restoration from DB
+	subscriptionSvc storage.SubscriptionBackend
+	tenantSvc       storage.TenantBackend // for per-session model restoration from DB
 	settingsSvc     *SettingsService
 
 	// sessionTokenResetter（v71 每会话一个 DB）：模型切换时清零会话库
@@ -105,7 +106,7 @@ func NewLLMFactory(defaultLLM llm.LLM, defaultModel string) *LLMFactory {
 func (f *LLMFactory) GetDefaultModel() string { return f.defaultModel }
 
 // GetSubscriptionSvc returns the subscription service.
-func (f *LLMFactory) GetSubscriptionSvc() *sqlite.LLMSubscriptionService {
+func (f *LLMFactory) GetSubscriptionSvc() storage.SubscriptionBackend {
 	return f.subscriptionSvc
 }
 
@@ -134,14 +135,14 @@ func (f *LLMFactory) SetGlobalMaxTokens(n int) {
 	f.mu.Unlock()
 }
 
-func (f *LLMFactory) SetSubscriptionSvc(svc *sqlite.LLMSubscriptionService) {
+func (f *LLMFactory) SetSubscriptionSvc(svc storage.SubscriptionBackend) {
 	f.subscriptionSvc = svc
 }
 
 // SetTenantSvc injects the TenantService for per-session model restoration.
 // Used by GetLLMForChat to recover per-session subscription+model from the
 // tenants table when the in-memory cache is empty (e.g. after server restart).
-func (f *LLMFactory) SetTenantSvc(svc *sqlite.TenantService) {
+func (f *LLMFactory) SetTenantSvc(svc storage.TenantBackend) {
 	f.tenantSvc = svc
 }
 
@@ -158,7 +159,7 @@ func (f *LLMFactory) SetSessionTokenResetter(fn func(channel, chatID string)) {
 }
 
 // GetTenantSvc returns the TenantService used for per-session model restoration.
-func (f *LLMFactory) GetTenantSvc() *sqlite.TenantService {
+func (f *LLMFactory) GetTenantSvc() storage.TenantBackend {
 	return f.tenantSvc
 }
 
@@ -188,7 +189,7 @@ func (f *LLMFactory) lookupSub(subID string) *sqlite.LLMSubscription {
 	if f.subscriptionSvc == nil || subID == "" {
 		return nil
 	}
-	sub, err := f.subscriptionSvc.Get(subID)
+	sub, err := f.subscriptionSvc.GetSubscription(subID)
 	if err != nil {
 		return nil
 	}
@@ -320,7 +321,7 @@ func (f *LLMFactory) GetLLMForChat(senderID, chatID string) (llm.LLM, string, in
 			subID, model, _ = f.tenantSvc.GetTenantSubscription("cli", chatID)
 		}
 		if subID != "" {
-			sub, err := f.subscriptionSvc.Get(subID)
+			sub, err := f.subscriptionSvc.GetSubscription(subID)
 			if err == nil && sub != nil && sub.BaseURL != "" {
 				if model == "" {
 					model = sub.Model
@@ -938,7 +939,7 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 	if subID == "" || model == "" {
 		return fmt.Errorf("SelectModel: subID and model are required")
 	}
-	sub, err := f.subscriptionSvc.Get(subID)
+	sub, err := f.subscriptionSvc.GetSubscription(subID)
 	if err != nil || sub == nil {
 		return fmt.Errorf("SelectModel: subscription %s not found", subID)
 	}
@@ -1104,7 +1105,7 @@ func (f *LLMFactory) SetUserDefaultModel(senderID, subID, model string) error {
 	if subID == "" {
 		return fmt.Errorf("SetUserDefaultModel: subID is required")
 	}
-	sub, err := f.subscriptionSvc.Get(subID)
+	sub, err := f.subscriptionSvc.GetSubscription(subID)
 	if err != nil || sub == nil {
 		return fmt.Errorf("SetUserDefaultModel: subscription %s not found", subID)
 	}
@@ -1469,7 +1470,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 		// Tier config with an explicit (subID, model) pair — the normal path
 		// since v62 (tier values are always "subID|model").
 		if f.subscriptionSvc != nil {
-			if sub, err := f.subscriptionSvc.Get(subID); err == nil && sub != nil && sub.Enabled {
+			if sub, err := f.subscriptionSvc.GetSubscription(subID); err == nil && sub != nil && sub.Enabled {
 				if client := f.createClientFromSub(sub, resolvedModel); client != nil {
 					source := "tier-pair"
 					if !fromTier {
@@ -1490,7 +1491,7 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 		// per-model 配置（max_context=0）当成了这个模型的配置。调用方必须传
 		// pair；传裸名不解析，直接回落到会话/部署默认。
 		if pairID, pairModel := parseTierValue(resolvedModel); pairID != "" && pairModel != "" {
-			if sub, err := f.subscriptionSvc.Get(pairID); err == nil && sub != nil && sub.Enabled {
+			if sub, err := f.subscriptionSvc.GetSubscription(pairID); err == nil && sub != nil && sub.Enabled {
 				if client := f.createClientFromSub(sub, pairModel); client != nil {
 					log.WithFields(log.Fields{"model": pairModel, "sub": sub.Name}).Info("[LLM] GetLLMForModel: matched explicit (subID, model) pair")
 					return client, sub.ID, pairModel, f.resolveEffectiveContext(pairModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true

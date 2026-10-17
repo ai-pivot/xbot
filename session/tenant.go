@@ -13,18 +13,29 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/memory"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
 // TenantSession represents a single tenant's conversation session
 type TenantSession struct {
-	tenantID   int64
-	channel    string
-	chatID     string
-	sessionSvc *sqlite.SessionService // 会话库（v71：session_messages/iteration_history —— 每会话独立 DB）
-	tenantSvc  *sqlite.TenantService  // 主库（v71：tenants 注册表 —— CWD/preview 等主库表操作）
-	memorySvc  *sqlite.MemoryService  // for consolidation state (LastConsolidated) —— 主库（tenant_state）
+	tenantID int64
+	channel  string
+	chatID   string
+	// sessionStore is the backend-agnostic session data accessor (messages +
+	// iteration history). SQLite: bound to the per-session DB (v71 one session,
+	// one DB); PG: the shared pool with tenant_id filtering. Concrete SQLite-only
+	// operations go through MultiTenantSession.SessionServiceForSQLite.
+	sessionStore storage.SessionStore
+	// tenantStore is the backend-agnostic tenant registry accessor (tenants
+	// table: CWD / preview / migration metadata). Lives in the main DB (SQLite)
+	// or the shared PG database.
+	tenantStore storage.TenantStore
+	// memorySvc is the SQLite-only memory service for consolidation state
+	// (LastConsolidated / tenant_state). nil on the PG backend, which forces the
+	// flat memory provider (the letta/xbot providers are SQLite-only).
+	memorySvc  storage.MemoryStore
 	memory     memory.MemoryProvider
 	mcpManager *tools.SessionMCPManager // 会话 MCP 管理器
 	lastActive time.Time                // 会话活跃时间
@@ -32,29 +43,29 @@ type TenantSession struct {
 	cwd        string                   // 当前工作目录（PWD 工具优化）
 }
 
-// SessionService 返回绑定该会话**会话库**的 SessionService（消息/迭代数据的
-// 读写入口）。v71 每会话一个 DB：直接构造点（agent/serverapp 里只有 tenantID
-// 的路径）经 MultiTenantSession.SessionServiceFor 收口；持有 TenantSession 的
-// 调用方用本访问器 —— 绝不再 sqlite.NewSessionService(主库)（那会读写主库的
-// 旧 session_messages，拆库后是错误目标）。
-func (s *TenantSession) SessionService() *sqlite.SessionService {
-	return s.sessionSvc
+// SessionService 返回该会话的**会话数据**读写入口（消息/迭代数据），后端无关。
+// v71 每会话一个 DB：SQLite 下它绑定该会话的独立库（直接构造点（agent/serverapp
+// 里只有 tenantID 的路径）经 MultiTenantSession.SessionServiceFor 收口）；PG 下
+// 是共享连接 + tenant_id 过滤。绝不再 sqlite.NewSessionService(主库)（那会读写
+// 主库的旧 session_messages，拆库后是错误目标）。
+func (s *TenantSession) SessionService() storage.SessionStore {
+	return s.sessionStore
 }
 
 // AddMessage adds a message to this tenant's session
 func (s *TenantSession) AddMessage(msg llm.ChatMessage) error {
-	return s.sessionSvc.AddMessage(s.tenantID, msg)
+	return s.sessionStore.AddMessage(s.tenantID, msg)
 }
 
 // AddMessageWithID adds a message and returns the DB auto-increment id.
 func (s *TenantSession) AddMessageWithID(msg llm.ChatMessage) (int64, error) {
-	return s.sessionSvc.AddMessageWithID(s.tenantID, msg)
+	return s.sessionStore.AddMessageWithID(s.tenantID, msg)
 }
 
 // AppendIterationHistory writes a structured iteration record (v54+).
 // Replaces Detail JSON as the authoritative source for iteration data.
 func (s *TenantSession) AppendIterationHistory(msgID int64, turnID uint64, rec sqlite.IterationRecord) error {
-	return s.sessionSvc.AppendIterationHistory(s.tenantID, msgID, turnID, rec)
+	return s.sessionStore.AppendIterationHistory(s.tenantID, msgID, turnID, rec)
 }
 
 // AppendIterationTool 把一个工具快照（JSON 对象）追加进【已落盘】的
@@ -62,7 +73,7 @@ func (s *TenantSession) AppendIterationHistory(msgID int64, turnID uint64, rec s
 // SessionService.AppendIterationTool 的完整契约）。found=false 表示该迭代
 // 记录尚未写库（迭代中途注入——工具由后续快照正常写入），调用方静默跳过。
 func (s *TenantSession) AppendIterationTool(turnID uint64, iteration int, toolJSON string) (bool, error) {
-	return s.sessionSvc.AppendIterationTool(s.tenantID, turnID, iteration, toolJSON)
+	return s.sessionStore.AppendIterationTool(s.tenantID, turnID, iteration, toolJSON)
 }
 
 // GetIterationHistoryByTurns 批量查询多个 turn 的迭代（一次 IN 查询）。
@@ -70,28 +81,28 @@ func (s *TenantSession) AppendIterationTool(turnID uint64, iteration int, toolJS
 // content 是历史遗留字段），回复文本从迭代取 —— 迭代 content 是权威数据源，
 // 没有才 fallback 到 msg.content。
 func (s *TenantSession) GetIterationHistoryByTurns(turnIDs []uint64) (map[uint64][]sqlite.IterationRecord, error) {
-	return s.sessionSvc.GetIterationHistoryByTurns(s.tenantID, turnIDs)
+	return s.sessionStore.GetIterationHistoryByTurns(s.tenantID, turnIDs)
 }
 
 // GetAllIterationHistory returns ALL iteration records for this tenant, ordered
 // by (turn_id, iteration). Used by session fork to copy per-iteration render
 // detail (content/reasoning/tools per iteration) into the fork target session.
 func (s *TenantSession) GetAllIterationHistory() ([]sqlite.IterationRecord, error) {
-	return s.sessionSvc.GetAllIterationHistory(s.tenantID)
+	return s.sessionStore.GetAllIterationHistory(s.tenantID)
 }
 
 // GetUsageStats aggregates this session's usage & performance from
 // iteration_history (v59: per-iteration input/cached tokens + model).
 // recentLimit caps the recent-iteration detail rows (0 = default 20, negative = skip).
 func (s *TenantSession) GetUsageStats(recentLimit int) (*sqlite.TenantUsageStats, error) {
-	return s.sessionSvc.GetTenantUsageStats(s.tenantID, recentLimit)
+	return s.sessionStore.GetTenantUsageStats(s.tenantID, recentLimit)
 }
 
 // AppendMessage appends a message and returns its stable history ID.
 // v71（每会话一个 DB）：追加落会话库；eligible 消息（user/assistant 非展示）
 // 同步更新主库 tenants.preview（跨会话列表读这一列 —— 拆库后主库没有消息数据）。
 func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
-	id, err := s.sessionSvc.AppendMessage(s.tenantID, msg)
+	id, err := s.sessionStore.AppendMessage(s.tenantID, msg)
 	if err == nil {
 		s.updatePreviewForMessage(msg)
 	}
@@ -104,14 +115,14 @@ func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
 // 目的是让命令行在**页面刷新后仍在**（刷新 = 从 DB 重建渲染状态，用户报告
 // 2026-09-21：「为什么 !cmd 消息的输入输出在页面刷新之后就消失了？」）。
 func (s *TenantSession) AppendCommandRow(role, content string) (int64, error) {
-	return s.sessionSvc.AppendCommandMessage(s.tenantID, role, content)
+	return s.sessionStore.AppendCommandMessage(s.tenantID, role, content)
 }
 
 // AppendMessages atomically appends a related message batch.
 // v71（每会话一个 DB）：追加落会话库；批内最后一条 eligible 消息（user/assistant
 // 非展示，id 单调递增 ⇒ 它就是最新一条）同步更新主库 tenants.preview。
 func (s *TenantSession) AppendMessages(messages []llm.ChatMessage) ([]int64, error) {
-	ids, err := s.sessionSvc.AppendMessages(s.tenantID, messages)
+	ids, err := s.sessionStore.AppendMessages(s.tenantID, messages)
 	if err == nil {
 		for i := len(messages) - 1; i >= 0; i-- {
 			if (messages[i].Role == "user" || messages[i].Role == "assistant") && !messages[i].DisplayOnly {
@@ -126,23 +137,23 @@ func (s *TenantSession) AppendMessages(messages []llm.ChatMessage) ([]int64, err
 // AppendMessagesAndAskQuestion atomically appends an AskUser tool exchange and
 // the control record that makes the question pending across restarts.
 func (s *TenantSession) AppendMessagesAndAskQuestion(messages []llm.ChatMessage, metadata map[string]string) ([]int64, int64, error) {
-	return s.sessionSvc.AppendMessagesAndAskQuestion(s.tenantID, messages, metadata)
+	return s.sessionStore.AppendMessagesAndAskQuestion(s.tenantID, messages, metadata)
 }
 
 func (s *TenantSession) AppendControl(recordType sqlite.HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
-	return s.sessionSvc.AppendControl(s.tenantID, recordType, targetHistoryID, data)
+	return s.sessionStore.AppendControl(s.tenantID, recordType, targetHistoryID, data)
 }
 
 func (s *TenantSession) AppendContextSnapshot(recordType sqlite.HistoryRecordType, messages []llm.ChatMessage) (int64, error) {
-	return s.sessionSvc.AppendContextSnapshot(s.tenantID, recordType, messages)
+	return s.sessionStore.AppendContextSnapshot(s.tenantID, recordType, messages)
 }
 
 func (s *TenantSession) AppendAskQuestion(metadata map[string]string) (int64, error) {
-	return s.sessionSvc.AppendAskQuestion(s.tenantID, metadata)
+	return s.sessionStore.AppendAskQuestion(s.tenantID, metadata)
 }
 
 func (s *TenantSession) AppendAskAnswer(answer string) (int64, error) {
-	return s.sessionSvc.AppendAskAnswer(s.tenantID, answer)
+	return s.sessionStore.AppendAskAnswer(s.tenantID, answer)
 }
 
 // AppendAskAnswerWithUserMessage atomically appends the ask_answer control record
@@ -150,7 +161,7 @@ func (s *TenantSession) AppendAskAnswer(answer string) (int64, error) {
 // v71（每会话一个 DB）：追加落会话库；answerMsg（user 消息）同步更新主库
 // tenants.preview。
 func (s *TenantSession) AppendAskAnswerWithUserMessage(answer string, answerMsg llm.ChatMessage) (int64, error) {
-	id, err := s.sessionSvc.AppendAskAnswerWithUserMessage(s.tenantID, answer, answerMsg)
+	id, err := s.sessionStore.AppendAskAnswerWithUserMessage(s.tenantID, answer, answerMsg)
 	if err == nil {
 		s.updatePreviewForMessage(answerMsg)
 	}
@@ -158,15 +169,15 @@ func (s *TenantSession) AppendAskAnswerWithUserMessage(answer string, answerMsg 
 }
 
 func (s *TenantSession) AppendMasks(mutations []sqlite.MaskMutation) error {
-	return s.sessionSvc.AppendMasks(s.tenantID, mutations)
+	return s.sessionStore.AppendMasks(s.tenantID, mutations)
 }
 
 func (s *TenantSession) Replay() (*sqlite.ReplayResult, error) {
-	return s.sessionSvc.Replay(s.tenantID)
+	return s.sessionStore.Replay(s.tenantID)
 }
 
 func (s *TenantSession) GetFullHistory() ([]sqlite.HistoryRecord, error) {
-	return s.sessionSvc.GetFullHistory(s.tenantID)
+	return s.sessionStore.GetFullHistory(s.tenantID)
 }
 
 // RewindToHistoryID 截断会话历史到指定用户消息节点。
@@ -176,15 +187,17 @@ func (s *TenantSession) GetFullHistory() ([]sqlite.HistoryRecord, error) {
 // 失败只 Warn 不阻塞 rewind。preview（主库 tenants.preview）同步重算（截断后
 // 最新一条 user/assistant 消息变化）。
 func (s *TenantSession) RewindToHistoryID(historyID int64) (llm.ChatMessage, int, error) {
-	target, turnIdx, promptTokens, err := s.sessionSvc.RewindToHistoryID(s.tenantID, historyID)
+	target, turnIdx, promptTokens, err := s.sessionStore.RewindToHistoryID(s.tenantID, historyID)
 	if err != nil {
 		return llm.ChatMessage{}, 0, err
 	}
 	// tenant_state 恢复（主库，尽力而为）：截断后剩余历史的最后一条用户消息的
 	// context_tokens。失败只 Warn —— 水位是派生缓存，不阻塞 rewind。
-	if err := s.memorySvc.SetTokenState(context.Background(), s.tenantID, promptTokens, 0); err != nil {
-		log.WithError(err).WithField("tenant_id", s.tenantID).
-			Warn("rewind: restore tenant_state token watermark failed (derived cache; self-heals on next message)")
+	if s.memorySvc != nil {
+		if err := s.memorySvc.SetTokenState(context.Background(), s.tenantID, promptTokens, 0); err != nil {
+			log.WithError(err).WithField("tenant_id", s.tenantID).
+				Warn("rewind: restore tenant_state token watermark failed (derived cache; self-heals on next message)")
+		}
 	}
 	// preview 重算（主库 tenants.preview）：截断后最新一条 user/assistant 消息变化。
 	s.recomputePreview()
@@ -197,15 +210,15 @@ func (s *TenantSession) RewindToHistoryID(historyID int64) (llm.ChatMessage, int
 // 追加的消息本身就是最新 eligible（id 单调递增），直接用消息内容更新（见
 // updatePreviewForMessage）。
 func (s *TenantSession) recomputePreview() {
-	if s.tenantSvc == nil {
+	if s.tenantStore == nil {
 		return
 	}
-	preview, err := s.sessionSvc.LatestPreview(s.tenantID)
+	preview, err := s.sessionStore.LatestPreview(s.tenantID)
 	if err != nil {
 		log.WithError(err).WithField("tenant_id", s.tenantID).Warn("recompute preview: query latest message failed")
 		return
 	}
-	if err := s.tenantSvc.SetTenantPreview(s.tenantID, preview); err != nil {
+	if err := s.tenantStore.SetTenantPreview(s.tenantID, preview); err != nil {
 		log.WithError(err).WithField("tenant_id", s.tenantID).Warn("recompute preview: update tenants.preview failed")
 	}
 }
@@ -216,7 +229,7 @@ func (s *TenantSession) recomputePreview() {
 // substr(?, 1, 256) 在 SQL 里截断（与旧子查询的 substr(sm.content, 1, 256) 同界）。
 // 失败只 Warn：preview 是展示性冗余（跨会话列表读主库这一列），不阻塞消息追加。
 func (s *TenantSession) updatePreviewForMessage(msg llm.ChatMessage) {
-	if s.tenantSvc == nil {
+	if s.tenantStore == nil {
 		return
 	}
 	if msg.Role != "user" && msg.Role != "assistant" {
@@ -225,7 +238,7 @@ func (s *TenantSession) updatePreviewForMessage(msg llm.ChatMessage) {
 	if msg.DisplayOnly {
 		return
 	}
-	if err := s.tenantSvc.SetTenantPreview(s.tenantID, msg.Content); err != nil {
+	if err := s.tenantStore.SetTenantPreview(s.tenantID, msg.Content); err != nil {
 		log.WithError(err).WithField("tenant_id", s.tenantID).Warn("update tenants.preview failed (display-only redundancy)")
 	}
 }
@@ -233,18 +246,18 @@ func (s *TenantSession) updatePreviewForMessage(msg llm.ChatMessage) {
 // ReplaceToolMessage updates the most recent matching tool-role message.
 // Empty toolName/toolCallID act as wildcards (match any).
 func (s *TenantSession) ReplaceToolMessage(toolName, toolCallID, content string) error {
-	return s.sessionSvc.ReplaceToolMessage(s.tenantID, toolName, toolCallID, content)
+	return s.sessionStore.ReplaceToolMessage(s.tenantID, toolName, toolCallID, content)
 }
 
 // GetHistory retrieves recent messages for LLM context window
 func (s *TenantSession) GetHistory(maxMessages int) ([]llm.ChatMessage, error) {
-	return s.sessionSvc.GetHistory(s.tenantID, maxMessages)
+	return s.sessionStore.GetHistory(s.tenantID, maxMessages)
 }
 
 // GetHistoryBefore returns up to maxMessages raw history messages before
 // beforeID.
 func (s *TenantSession) GetHistoryBefore(beforeID int64, maxMessages int) ([]llm.ChatMessage, error) {
-	return s.sessionSvc.GetHistoryBefore(s.tenantID, beforeID, maxMessages)
+	return s.sessionStore.GetHistoryBefore(s.tenantID, beforeID, maxMessages)
 }
 
 // GetHistoryBeforeForDisplay returns up to maxMessages messages (including
@@ -252,26 +265,29 @@ func (s *TenantSession) GetHistoryBefore(beforeID int64, maxMessages int) ([]llm
 // Used by the web frontend's history display — shows ALL messages from the
 // append-only session_messages table, not just the Replay() summary.
 func (s *TenantSession) GetHistoryBeforeForDisplay(beforeID int64, maxMessages int) ([]llm.ChatMessage, int, error) {
-	return s.sessionSvc.GetHistoryBeforeForDisplay(s.tenantID, beforeID, maxMessages)
+	return s.sessionStore.GetHistoryBeforeForDisplay(s.tenantID, beforeID, maxMessages)
 }
 
 // GetMessages retrieves all messages for this tenant
 func (s *TenantSession) GetMessages() ([]llm.ChatMessage, error) {
-	return s.sessionSvc.GetAllMessages(s.tenantID)
+	return s.sessionStore.GetAllMessages(s.tenantID)
 }
 
 // Len returns the number of messages in this tenant's session
 func (s *TenantSession) Len() (int, error) {
-	return s.sessionSvc.GetMessagesCount(s.tenantID)
+	return s.sessionStore.GetMessagesCount(s.tenantID)
 }
 
 // UserMessageCount returns the number of user-role messages (conversation turns).
 func (s *TenantSession) UserMessageCount() (int, error) {
-	return s.sessionSvc.GetUserMessageCount(s.tenantID)
+	return s.sessionStore.GetUserMessageCount(s.tenantID)
 }
 
 // LastConsolidated returns the last consolidated message index
 func (s *TenantSession) LastConsolidated() int {
+	if s.memorySvc == nil {
+		return 0
+	}
 	lastConsolidated, err := s.memorySvc.GetState(context.Background(), s.tenantID)
 	if err != nil {
 		// If error, return 0 as safe default
@@ -282,6 +298,9 @@ func (s *TenantSession) LastConsolidated() int {
 
 // SetLastConsolidated updates the last consolidated message index
 func (s *TenantSession) SetLastConsolidated(n int) error {
+	if s.memorySvc == nil {
+		return nil
+	}
 	return s.memorySvc.SetState(context.Background(), s.tenantID, n)
 }
 
@@ -289,7 +308,7 @@ func (s *TenantSession) SetLastConsolidated(n int) error {
 // v71（每会话一个 DB）：清空落会话库；preview（主库 tenants.preview）同步清空
 // （跨会话列表读这一列 —— 拆库后主库没有消息数据）。
 func (s *TenantSession) Clear() error {
-	if err := s.sessionSvc.Clear(s.tenantID); err != nil {
+	if err := s.sessionStore.Clear(s.tenantID); err != nil {
 		return err
 	}
 	s.recomputePreview()
@@ -299,13 +318,13 @@ func (s *TenantSession) Clear() error {
 // UpdateMessageContent updates the content of the Nth message (0-indexed) in this tenant's session.
 // Used by observation masking to persist masked content back to session.
 func (s *TenantSession) UpdateMessageContent(messageIndex int, content string) error {
-	return s.sessionSvc.UpdateMessageContent(s.tenantID, messageIndex, content)
+	return s.sessionStore.UpdateMessageContent(s.tenantID, messageIndex, content)
 }
 
 // UpdateMessageContentNonDisplayOnly updates the content of the Nth non-display-only
 // message (0-indexed). Aligns with GetAllMessages() ordering (both filter display_only).
 func (s *TenantSession) UpdateMessageContentNonDisplayOnly(messageIndex int, content string) error {
-	return s.sessionSvc.UpdateMessageContentNonDisplayOnly(s.tenantID, messageIndex, content)
+	return s.sessionStore.UpdateMessageContentNonDisplayOnly(s.tenantID, messageIndex, content)
 }
 
 // Memory returns the memory provider for this tenant
@@ -321,7 +340,7 @@ func (s *TenantSession) TenantID() int64 {
 // SaveContextTokens records the exact API prompt_tokens on the most recent
 // user message in this tenant's session.
 func (s *TenantSession) SaveContextTokens(promptTokens int64) error {
-	return s.sessionSvc.UpdateUserMessageContextTokens(s.tenantID, promptTokens)
+	return s.sessionStore.UpdateUserMessageContextTokens(s.tenantID, promptTokens)
 }
 
 // GetLastContextTokens returns the context_tokens of the most recent user message.
@@ -329,13 +348,13 @@ func (s *TenantSession) SaveContextTokens(promptTokens int64) error {
 // GetLastContextTokens returns the context_tokens from the most recent
 // non-display-only user message, used to restore the token tracker.
 func (s *TenantSession) GetLastContextTokens() (int64, error) {
-	return s.sessionSvc.GetLastUserMessageContextTokens(s.tenantID)
+	return s.sessionStore.GetLastUserMessageContextTokens(s.tenantID)
 }
 
 // GetMaxTurnID returns the highest turn_id for this tenant's messages.
 // Used to restore the per-session turn ID counter after a server restart.
 func (s *TenantSession) GetMaxTurnID() (uint64, error) {
-	return s.sessionSvc.GetMaxTurnID(s.tenantID)
+	return s.sessionStore.GetMaxTurnID(s.tenantID)
 }
 
 // GetLastUserMessageContent returns the content of the most recent user
@@ -343,14 +362,14 @@ func (s *TenantSession) GetMaxTurnID() (uint64, error) {
 // resume flows must read them here, not from the main DB). Returns "" when
 // there is no resumable user message.
 func (s *TenantSession) GetLastUserMessageContent() (string, error) {
-	return s.sessionSvc.GetLastUserMessageContent(s.tenantID)
+	return s.sessionStore.GetLastUserMessageContent(s.tenantID)
 }
 
 // HasAssistantReplyAfterLastUser reports whether the last user message
 // already has a final assistant reply after it — i.e. the turn completed
 // and there is nothing to resume.
 func (s *TenantSession) HasAssistantReplyAfterLastUser() (bool, error) {
-	return s.sessionSvc.HasAssistantReplyAfterLastUser(s.tenantID)
+	return s.sessionStore.HasAssistantReplyAfterLastUser(s.tenantID)
 }
 
 // GetLastUserTurnID returns the turn_id of the last non-display-only user
@@ -360,7 +379,7 @@ func (s *TenantSession) HasAssistantReplyAfterLastUser() (bool, error) {
 // Returns 0 when there is no resolvable user turn (no user message / legacy
 // rows without turn_id) — the caller falls back to a fresh turn id.
 func (s *TenantSession) GetLastUserTurnID() (uint64, error) {
-	return s.sessionSvc.GetLastUserTurnID(s.tenantID)
+	return s.sessionStore.GetLastUserTurnID(s.tenantID)
 }
 
 // GetMaxIterationForTurn returns the highest iteration number recorded for a
@@ -369,13 +388,13 @@ func (s *TenantSession) GetLastUserTurnID() (uint64, error) {
 // numbers are turn-scoped, so restarting at 1 would collide with the
 // interrupted Run's records. Returns 0 when the turn has no records.
 func (s *TenantSession) GetMaxIterationForTurn(turnID uint64) (int, error) {
-	return s.sessionSvc.GetMaxIterationForTurn(s.tenantID, turnID)
+	return s.sessionStore.GetMaxIterationForTurn(s.tenantID, turnID)
 }
 
 // MemoryService returns the underlying SQLite memory service for this tenant.
 // Used for tenant-level state operations (token state, consolidation state, etc.)
 // that are independent of the memory provider implementation.
-func (s *TenantSession) MemoryService() *sqlite.MemoryService {
+func (s *TenantSession) MemoryService() storage.MemoryStore {
 	return s.memorySvc
 }
 
@@ -471,14 +490,14 @@ func (s *TenantSession) GetCurrentDir() string {
 // SetCurrentDir 设置当前工作目录（PWD 工具优化），持久化到数据库。
 // The tenants.cwd column is the single authoritative store (file-based
 // session_cwd is retired — it was unreliable across restarts).
-// v71（每会话一个 DB）：tenants 是主库表 —— CWD 经 tenantSvc（主库）写，
-// 不再经 sessionSvc（现在绑定会话库，没有 tenants 表）。
+// v71（每会话一个 DB）：tenants 是主库表 —— CWD 经 tenantStore（主库）写，
+// 不再经 sessionStore（现在绑定会话库，没有 tenants 表）。
 func (s *TenantSession) SetCurrentDir(dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cwd = dir
-	if s.tenantSvc != nil {
-		_ = s.tenantSvc.SetTenantCWD(s.tenantID, dir)
+	if s.tenantStore != nil {
+		_ = s.tenantStore.SetTenantCWD(s.tenantID, dir)
 	}
 }
 
@@ -492,10 +511,10 @@ func sessionCwdFileName(channel, chatID string) string {
 
 // loadPersistedCWD reads the session's CWD from the database. Legacy file
 // based session_cwd entries (pre-v53) are ignored — the DB is authoritative.
-// v71（每会话一个 DB）：tenants 是主库表 —— 经 TenantService（主库）读，
-// 不再经 SessionService（现在绑定会话库，没有 tenants 表）。
-func loadPersistedCWD(tenantSvc *sqlite.TenantService, tenantID int64) string {
-	cwd, err := tenantSvc.GetTenantCWD(tenantID)
+// v71（每会话一个 DB）：tenants 是主库表 —— 经 TenantStore（主库）读，
+// 不再经 SessionStore（现在绑定会话库，没有 tenants 表）。
+func loadPersistedCWD(tenantStore storage.TenantStore, tenantID int64) string {
+	cwd, err := tenantStore.GetTenantCWD(tenantID)
 	if err != nil || cwd == "" {
 		return ""
 	}

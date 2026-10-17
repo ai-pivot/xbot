@@ -168,6 +168,15 @@ func (w WebConfig) IsInviteOnly() bool {
 
 // Config 应用配置
 // CLIConfig CLI 客户端配置（存储在 config.json，供 xbot-cli 读取）。
+// StorageConfig configures the storage backend.
+type StorageConfig struct {
+	// Type selects the backend: "sqlite" (default) or "pg".
+	Type string `json:"type,omitempty"`
+	// DSN is the PostgreSQL connection string (only used when Type="pg").
+	// Example: "postgres://user:pass@host:5432/xbot?sslmode=disable"
+	DSN string `json:"dsn,omitempty"`
+}
+
 type CLIConfig struct {
 	// ServerURL 指定远端 agent server 的 WebSocket 地址（如 ws://localhost:8080）。
 	// 若非空，xbot-cli 默认以 RemoteBackend 连接该 server，而非本地运行 agent。
@@ -208,6 +217,7 @@ type Config struct {
 	DisabledSkills []string             `json:"disabled_skills,omitempty"`
 	Subscriptions  []SubscriptionConfig `json:"subscriptions,omitempty"`
 	CLI            CLIConfig            `json:"cli,omitempty"`
+	Storage        StorageConfig        `json:"storage,omitempty"`
 	Plugins        PluginConfig         `json:"plugins,omitempty"`
 
 	// Channels 存储插件 channel 的配置。key 是 channel name（如 "telegram"）。

@@ -1360,7 +1360,11 @@ func (a *Agent) buildSubAgentMemory(
 		TenantID: subTenantID,
 		UserID:   parentCtx.UserID, // canonical owner — same user across all sessions
 		BaseDir:  memDir,
-		DB:       a.multiSession.DB().Conn(),
+	}
+	// ⚠️ PG 后端没有主库 *sqlite.DB（m.db == nil）—— flat provider 不依赖它
+	// （与 GetOrCreateSession 的同款守卫，见 multitenant.go）。
+	if db := a.multiSession.DB(); db != nil {
+		deps.DB = db.Conn()
 	}
 
 	// Letta-specific deps

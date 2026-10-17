@@ -5,7 +5,6 @@ package web
 import (
 	"context"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -25,6 +24,7 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/storage"
 	"xbot/tools"
 
 	"github.com/google/uuid"
@@ -68,12 +68,16 @@ type RPCIdentity struct {
 
 // WebChannelConfig Web 渠道配置（channel 包内部使用）
 type WebChannelConfig struct {
-	Host       string
-	Port       int
-	DB         *sql.DB // SQLite DB handle for user management and history
-	AdminToken string  // global admin token for privileged auth
-	InviteOnly bool    // 禁止自主注册，新账号只能由 admin 创建
-	PublicURL  string  // 对外访问地址，用于生成 Runner 连接命令
+	Host string
+	Port int
+	// Store is the backend-agnostic storage layer (SQLite adapter or PG). The
+	// web channel reads user settings, tenants, sessions and web-user auth
+	// through it, so the same code path serves both backends and the channel
+	// never touches a backend-specific *sql.DB.
+	Store      storage.Storage
+	AdminToken string // global admin token for privileged auth
+	InviteOnly bool   // 禁止自主注册，新账号只能由 admin 创建
+	PublicURL  string // 对外访问地址，用于生成 Runner 连接命令
 }
 
 // WebCallbacks holds callback functions for Web channel API endpoints.
@@ -374,6 +378,10 @@ type WebChannel struct {
 	sessions   map[string]sessionInfo // token → sessionInfo
 	sessionsMu sync.RWMutex
 
+	// store is the backend-agnostic storage layer (SQLite adapter or PG) — the
+	// single handle for user settings, tenants, sessions and web-user auth.
+	store storage.Storage
+
 	// Inbound request dedup
 	inboundRequests   map[inboundRequestKey]*inboundRequestState
 	inboundRequestsMu sync.Mutex
@@ -384,9 +392,6 @@ type WebChannel struct {
 	// time; TTL retention mirrors inboundRequests (swept on lookup).
 	interjectedRequests   map[string]time.Time
 	interjectedRequestsMu sync.Mutex
-
-	// DB
-	db *sql.DB
 
 	// Lifecycle
 	stopCh   chan struct{}
@@ -726,7 +731,7 @@ func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 		msgBus:              msgBus,
 		hub:                 newHub(),
 		sessions:            make(map[string]sessionInfo),
-		db:                  cfg.DB,
+		store:               cfg.Store,
 		stopCh:              make(chan struct{}),
 		ptyMgr:              newPtyManager(),
 		inboundRequests:     make(map[inboundRequestKey]*inboundRequestState),
@@ -736,6 +741,16 @@ func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 	wc.hub.seqFn = wc.stampAndBuffer
 	wc.hub.resetReplayFn = wc.clearReplayStream
 	return wc
+}
+
+// webAuth returns the backend-agnostic web-user auth store (web_users),
+// derived lazily from the wired storage layer. Nil when no storage was wired
+// (API-only test channels) — the auth endpoints require a store.
+func (wc *WebChannel) webAuth() storage.WebAuthStore {
+	if wc.store == nil {
+		return nil
+	}
+	return wc.store.Config()
 }
 
 // Hub returns the web channel's hub for sharing with other channels.
