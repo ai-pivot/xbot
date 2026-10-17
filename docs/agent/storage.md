@@ -63,15 +63,33 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
 
 - **`sql.ErrNoRows` ≠ `pgx.ErrNoRows`.** All PG code must check `pgx.ErrNoRows`; a
   `sql.ErrNoRows` check never fires → the "not found" branch is dead (silent wrong result).
-- **Native `BOOLEAN`, not `INTEGER 0/1`.** `pg_schema.go` declares real `BOOLEAN`; every
-  predicate must be `= true` / `= false` (or `COALESCE(col, false)`), and scans must target
-  `*bool`. `boolean = integer` raises SQLSTATE 42883.
+- **Native `BOOLEAN`, not `INTEGER 0/1` — in BOTH directions.** `pg_schema.go`
+  declares real `BOOLEAN`, so: scans must target `*bool` (scanning into `*int` fails
+  with `cannot scan bool (OID 16) into *int`), predicates must be `= true` / `= false`
+  (or `COALESCE(col, false)`), and **writes must use `true`/`false` literals**
+  (`SET migrated = 1` fails with `column "migrated" is of type boolean but expression
+  is of type integer`, SQLSTATE 42804). `COALESCE` on a boolean column is still
+  boolean — it does not make it int-scanable.
 - **One statement per prepared Exec.** pgx rejects multi-statement strings
   ("cannot insert multiple commands into a prepared statement"). Split them.
 - **`search_path` does not propagate across `pgxpool` connections.** Per-test isolation
   must use a *dedicated database* per test (see `pg_contract_test.go`), not `SET search_path`.
 - `json.Marshal(nil)` yields `"null"`; the message-tool JSON column must be `[]` so the
   `HasAssistantReplyAfterLastUser` / tool predicates match.
+- **PG `Clear` drops `session_messages` only**, SQLite's also drops `iteration_history`.
+  Tests that assert usage aggregates must therefore use baseline deltas or membership
+  checks rather than absolute counts.
+
+## One replay implementation, both backends
+
+The append-only history fold (compression snapshots → masks → context edits → AskUser,
+keyed off each record's history id) lives in **`sqlite.ApplyHistoryRecords`** and is
+exported precisely so the PG backend reuses it (`pgSessionStore.Replay` reads its rows
+into `[]sqlite.HistoryRecord` and calls the fold). Checkpoint selection likewise shares
+`sqlite.ValidCheckpointSnapshot`. Do **not** re-implement replay semantics in a backend:
+a second copy is how masks/context edits silently diverge (that is exactly what the
+contract suite caught). `pg_session.go` adds only the record reader (`pgHistoryRecords`),
+the checkpoint lookup (`pgLatestCheckpoint`) and a trivial occurrence lookup.
 
 ## Contract test suite
 

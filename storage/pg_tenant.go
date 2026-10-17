@@ -78,20 +78,20 @@ func (s *pgTenantStore) SetTenantDBPath(tenantID int64, dbPath string) error {
 
 func (s *pgTenantStore) SetTenantMigrated(tenantID int64) error {
 	ctx := context.Background()
-	_, err := s.pool.Exec(ctx, `UPDATE tenants SET migrated = 1 WHERE id = $1`, tenantID)
+	_, err := s.pool.Exec(ctx, `UPDATE tenants SET migrated = true WHERE id = $1`, tenantID)
 	return err
 }
 
 func (s *pgTenantStore) GetTenantDBInfo(tenantID int64) (sqlite.TenantDBInfo, error) {
 	ctx := context.Background()
 	var info sqlite.TenantDBInfo
-	var migratedInt int
+	var migrated bool
 	err := s.pool.QueryRow(ctx,
-		`SELECT db_path, migrated FROM tenants WHERE id = $1`, tenantID).Scan(&info.DBPath, &migratedInt)
+		`SELECT db_path, migrated FROM tenants WHERE id = $1`, tenantID).Scan(&info.DBPath, &migrated)
 	if err != nil {
 		return info, err
 	}
-	info.Migrated = migratedInt != 0
+	info.Migrated = migrated
 	return info, nil
 }
 

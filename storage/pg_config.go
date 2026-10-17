@@ -769,7 +769,12 @@ func (s *pgConfigStore) Update(sub *sqlite.LLMSubscription) error { return s.Upd
 func (s *pgConfigStore) Remove(id string) error                   { return s.RemoveSubscription(id) }
 func (s *pgConfigStore) Rename(id, name string) error             { return s.RenameSubscription(id, name) }
 func (s *pgConfigStore) SetDefault(id string) error               { return s.SetDefaultSubscription(id) }
-func (s *pgConfigStore) SetModel(id, model string) error          { return nil } // TODO: implement
+func (s *pgConfigStore) SetModel(id, model string) error {
+	ctx := context.Background()
+	_, err := s.pool.Exec(ctx,
+		`UPDATE user_llm_subscriptions SET model = $1, updated_at = now() WHERE id = $2`, model, id)
+	return err
+}
 func (s *pgConfigStore) SetModelMaxContext(subID, model string, maxCtx int) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE subscription_models SET max_context = $1 WHERE subscription_id = $2 AND model = $3`, maxCtx, subID, model)
@@ -797,14 +802,34 @@ func (s *pgConfigStore) SetModelVisionConfig(subID, model string, vision bool, v
 	_, err := s.pool.Exec(ctx, `UPDATE subscription_models SET vision = $1, vision_detail = $2 WHERE subscription_id = $3 AND model = $4`, vision, visionDetail, subID, model)
 	return err
 }
+
+// UpdatePerModelConfigs replaces ALL per-model overrides for a subscription —
+// the same contract as SQLite: the provided map is the complete new set (rows
+// absent from it are dropped, missing rows are created), and api_type carries
+// cfg.APIType (thinking_mode is not part of PerModelConfig).
 func (s *pgConfigStore) UpdatePerModelConfigs(id string, configs map[string]sqlite.PerModelConfig) error {
 	ctx := context.Background()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM subscription_models WHERE subscription_id = $1`, id); err != nil {
+		return fmt.Errorf("clear subscription_models: %w", err)
+	}
 	for model, cfg := range configs {
-		_, err := s.pool.Exec(ctx, `UPDATE subscription_models SET max_context = $1, max_output_tokens = $2, thinking_mode = $3, api_type = $4 WHERE subscription_id = $5 AND model = $6`,
-			cfg.MaxContext, cfg.MaxOutputTokens, cfg.APIType, "", id, model)
-		if err != nil {
-			return err
+		if _, err := tx.Exec(ctx, `INSERT INTO subscription_models
+			(id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, vision, vision_detail)
+			VALUES (md5(random()::text || clock_timestamp()::text), $1, $2, $3, $4, '', $5, $6, $7)
+			ON CONFLICT (subscription_id, model) DO UPDATE SET
+				max_context = excluded.max_context,
+				max_output_tokens = excluded.max_output_tokens,
+				thinking_mode = excluded.thinking_mode,
+				api_type = excluded.api_type,
+				updated_at = now()`,
+			id, model, cfg.MaxContext, cfg.MaxOutputTokens, cfg.APIType, cfg.Vision, cfg.VisionDetail); err != nil {
+			return fmt.Errorf("upsert model %s: %w", model, err)
 		}
 	}
-	return nil
+	return tx.Commit(ctx)
 }

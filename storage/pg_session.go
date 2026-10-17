@@ -421,19 +421,28 @@ func (s *pgSessionStore) AppendContextSnapshot(tenantID int64, recordType sqlite
 	return id, nil
 }
 
-// AppendAskQuestion appends the pending-question control record targeting the
-// newest AskUser tool result.
+// AppendAskQuestion appends the pending-question control record. Same contract
+// as SQLite: refuse when a question is already pending, and target the newest
+// AskUser tool result that is still ACTIVE in the replay (a tool row hidden by a
+// later snapshot/compression must not be re-asked against).
 func (s *pgSessionStore) AppendAskQuestion(tenantID int64, metadata map[string]string) (int64, error) {
 	ctx := context.Background()
-	var toolHistoryID int64
-	err := s.pool.QueryRow(ctx, `SELECT id FROM session_messages
-		WHERE tenant_id = $1 AND role = 'tool' AND tool_name = 'AskUser'
-		ORDER BY id DESC LIMIT 1`, tenantID).Scan(&toolHistoryID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, fmt.Errorf("append AskUser question: matching active tool result not found")
-	}
+	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return 0, fmt.Errorf("append AskUser question: %w", err)
+	}
+	if replay.PendingAskUser != nil {
+		return 0, fmt.Errorf("AskUser question %d is still pending", replay.PendingAskUser.HistoryID)
+	}
+	var toolHistoryID int64
+	for i := len(replay.Messages) - 1; i >= 0; i-- {
+		if replay.Messages[i].Role == "tool" && replay.Messages[i].ToolName == "AskUser" {
+			toolHistoryID = replay.Messages[i].ID
+			break
+		}
+	}
+	if toolHistoryID == 0 {
+		return 0, fmt.Errorf("append AskUser question: matching active tool result not found")
 	}
 	raw, err := json.Marshal(sqlite.AskQuestionRecord{Metadata: metadata, ToolHistoryID: toolHistoryID})
 	if err != nil {
@@ -535,10 +544,40 @@ func (s *pgSessionStore) pendingAskQuestion(ctx context.Context, tenantID int64)
 	return questionID, question.ToolHistoryID, nil
 }
 
-// AppendMasks is a no-op on PG: observation masking writes a control record that
-// the PG replay path does not fold in, so recording it would be dead data. The
-// PG backend forces the flat memory provider, which does not use masking.
+// AppendMasks records an observation-masking control record. Same contract as
+// SQLite: an empty mutation list is a no-op, every mutation must carry a history
+// id, and every target must still be ACTIVE in the replay — a mask aimed at a row
+// that a snapshot/compression removed is rejected rather than silently recorded.
+// Replay applies the record, so masked content is what the model sees.
 func (s *pgSessionStore) AppendMasks(tenantID int64, mutations []sqlite.MaskMutation) error {
+	if len(mutations) == 0 {
+		return nil
+	}
+	for _, mutation := range mutations {
+		if mutation.TargetHistoryID == 0 {
+			return fmt.Errorf("mask target has no history_id")
+		}
+	}
+	raw, err := json.Marshal(sqlite.MaskMutations{Mutations: mutations})
+	if err != nil {
+		return fmt.Errorf("marshal mask history data: %w", err)
+	}
+	replay, err := s.Replay(tenantID)
+	if err != nil {
+		return err
+	}
+	for _, mutation := range mutations {
+		if activeMessageIndexOccurrence(replay.Messages, mutation.TargetHistoryID, mutation.TargetOccurrence) < 0 {
+			return fmt.Errorf("mask target history_id %d is not active", mutation.TargetHistoryID)
+		}
+	}
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO session_messages
+		(tenant_id, role, content, display_only, record_type, record_data)
+		VALUES ($1, 'control', '', true, $2, $3)`,
+		tenantID, string(sqlite.HistoryRecordMask), string(raw)); err != nil {
+		return fmt.Errorf("append mask history record: %w", err)
+	}
 	return nil
 }
 
@@ -660,24 +699,144 @@ func (s *pgSessionStore) GetHistoryBeforeForDisplay(tenantID int64, beforeID int
 	return msgs, total, nil
 }
 
-// Replay reconstructs the LLM-visible message stream: control rows and
-// display-only rows are dropped (identical filter to SQLite's replayWith).
-// Compression snapshots / masks / context edits are NOT folded in — the PG
-// backend writes no mask records and is not used for long-lived compressed
-// sessions.
+// Replay reconstructs the LLM-visible message stream by folding the append-only
+// history through sqlite.ApplyHistoryRecords — the same implementation the
+// SQLite backend uses, so compression snapshots, masks, context edits and
+// AskUser control records can never drift between backends.
 func (s *pgSessionStore) Replay(tenantID int64) (*sqlite.ReplayResult, error) {
-	msgs, err := s.GetAllMessages(tenantID)
+	ctx := context.Background()
+	checkpointID, hasCheckpoint, err := s.pgLatestCheckpoint(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	result := &sqlite.ReplayResult{}
-	for _, msg := range msgs {
-		if msg.Role == "control" || msg.DisplayOnly {
+	fromHistoryID := int64(0)
+	if hasCheckpoint {
+		fromHistoryID = checkpointID
+	}
+	records, err := s.pgHistoryRecords(ctx, tenantID, fromHistoryID)
+	if err != nil {
+		return nil, err
+	}
+	return sqlite.ApplyHistoryRecords(records, hasCheckpoint)
+}
+
+// pgLatestCheckpoint returns the newest compress/prune snapshot that
+// sqlite.ValidCheckpointSnapshot accepts (mirrors SQLite's latestCheckpointWith).
+func (s *pgSessionStore) pgLatestCheckpoint(ctx context.Context, tenantID int64) (int64, bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, COALESCE(record_data, '') FROM session_messages
+		WHERE tenant_id = $1 AND record_type IN ($2, $3) ORDER BY id DESC`,
+		tenantID, string(sqlite.HistoryRecordCompress), string(sqlite.HistoryRecordPrune))
+	if err != nil {
+		return 0, false, fmt.Errorf("query replay checkpoints: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			return 0, false, fmt.Errorf("scan replay checkpoint: %w", err)
+		}
+		var snapshot sqlite.ContextSnapshot
+		if json.Unmarshal([]byte(raw), &snapshot) != nil || !sqlite.ValidCheckpointSnapshot(id, snapshot) {
 			continue
 		}
-		result.Messages = append(result.Messages, msg)
+		return id, true, nil
 	}
-	return result, nil
+	if err := rows.Err(); err != nil {
+		return 0, false, fmt.Errorf("iterate replay checkpoints: %w", err)
+	}
+	return 0, false, nil
+}
+
+// pgHistoryRecords reads the append-only history rows in id order, building the
+// same HistoryRecord shapes getHistoryFromWith produces for SQLite: control rows
+// carry Type/TargetHistoryID/Data, message and command rows also carry the
+// decoded Message (the fold keys everything off those fields).
+func (s *pgSessionStore) pgHistoryRecords(ctx context.Context, tenantID, fromHistoryID int64) ([]sqlite.HistoryRecord, error) {
+	query := `SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
+		       role, content, COALESCE(tool_call_id, ''), COALESCE(tool_name, ''), COALESCE(tool_arguments, ''),
+		       COALESCE(tool_calls, ''), COALESCE(detail, ''), reasoning_content, reasoning_items,
+		       display_only, internal_only, created_at, turn_id, iteration
+		FROM session_messages WHERE tenant_id = $1`
+	args := []any{tenantID}
+	if fromHistoryID > 0 {
+		query += ` AND id >= $2`
+		args = append(args, fromHistoryID)
+	}
+	query += ` ORDER BY id ASC`
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query full session history: %w", err)
+	}
+	defer rows.Close()
+	var records []sqlite.HistoryRecord
+	for rows.Next() {
+		var record sqlite.HistoryRecord
+		var rawData, role, content string
+		var toolCallID, toolName, toolArguments, toolCallsJSON, detail, reasoning, reasoningItems string
+		var displayOnly, internalOnly bool
+		var createdAt time.Time
+		var turnID, iteration int64
+		if err := rows.Scan(&record.HistoryID, &record.Type, &record.TargetHistoryID, &rawData,
+			&role, &content, &toolCallID, &toolName, &toolArguments, &toolCallsJSON, &detail,
+			&reasoning, &reasoningItems, &displayOnly, &internalOnly, &createdAt, &turnID, &iteration); err != nil {
+			return nil, fmt.Errorf("scan history record: %w", err)
+		}
+		record.CreatedAt = createdAt
+		record.Data = json.RawMessage(rawData)
+		if record.Type == sqlite.HistoryRecordMessage || record.Type == sqlite.HistoryRecordCommand {
+			msg := llm.ChatMessage{
+				ID: record.HistoryID, Role: role, Content: content,
+				DisplayOnly: displayOnly, Internal: internalOnly,
+				CommandRow:       record.Type == sqlite.HistoryRecordCommand,
+				Timestamp:        createdAt,
+				Iteration:        int(iteration),
+				TurnID:           uint64(turnID),
+				ToolCallID:       toolCallID,
+				ToolName:         toolName,
+				ToolArguments:    toolArguments,
+				Detail:           detail,
+				ReasoningContent: reasoning,
+			}
+			if toolCallsJSON != "" && toolCallsJSON != "null" {
+				if err := json.Unmarshal([]byte(toolCallsJSON), &msg.ToolCalls); err != nil {
+					return nil, fmt.Errorf("history_id %d: decode tool_calls: %w", record.HistoryID, err)
+				}
+			}
+			if reasoningItems != "" && reasoningItems != "null" {
+				if err := json.Unmarshal([]byte(reasoningItems), &msg.ReasoningItems); err != nil {
+					return nil, fmt.Errorf("history_id %d: decode reasoning_items: %w", record.HistoryID, err)
+				}
+			}
+			record.Message = msg
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate full session history: %w", err)
+	}
+	return records, nil
+}
+
+// activeMessageIndexOccurrence returns the index of the Nth (0-based) occurrence
+// of historyID in the replayed messages, or -1 when it is not active. Same
+// contract as sqlite's activeMessageIndexOccurrence: control-record targets are
+// validated against the folded message list, not the raw table.
+func activeMessageIndexOccurrence(messages []llm.ChatMessage, historyID int64, occurrence int) int {
+	if occurrence < 0 {
+		return -1
+	}
+	seen := 0
+	for i, msg := range messages {
+		if msg.ID != historyID {
+			continue
+		}
+		if seen == occurrence {
+			return i
+		}
+		seen++
+	}
+	return -1
 }
 
 // RewindToHistoryID truncates the tenant's history at the given user message
@@ -689,7 +848,7 @@ func (s *pgSessionStore) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 	}
 	ctx := context.Background()
 	var role, recordType, content string
-	var displayOnly int
+	var displayOnly bool
 	var createdAt time.Time
 	err := s.pool.QueryRow(ctx, `SELECT role, COALESCE(record_type, 'message'), content, COALESCE(display_only, false), created_at
 		FROM session_messages WHERE tenant_id = $1 AND id = $2`, tenantID, historyID).
@@ -700,7 +859,7 @@ func (s *pgSessionStore) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 	if err != nil {
 		return llm.ChatMessage{}, 0, 0, fmt.Errorf("load rewind target: %w", err)
 	}
-	if displayOnly != 0 || role != "user" || sqlite.HistoryRecordType(recordType) != sqlite.HistoryRecordMessage {
+	if displayOnly || role != "user" || sqlite.HistoryRecordType(recordType) != sqlite.HistoryRecordMessage {
 		return llm.ChatMessage{}, 0, 0, fmt.Errorf("history_id %d is not a rewindable user message", historyID)
 	}
 
@@ -775,23 +934,43 @@ func (s *pgSessionStore) GetLastUserMessageContextTokens(tenantID int64) (int64,
 	return tokens, nil
 }
 
-// UpdateMessageContentNonDisplayOnly rewrites the content of the Nth
-// non-display-only row (index aligned with the display-filtered ordering).
+// UpdateMessageContentNonDisplayOnly appends a context_edit control record that
+// rewrites the content of the Nth LLM-visible message. Same contract as SQLite:
+// the index is validated (out of range is an error, never a silent no-op), and
+// only the replayed LLM context changes — the raw rows and the display
+// projection keep the original text.
 func (s *pgSessionStore) UpdateMessageContentNonDisplayOnly(tenantID int64, messageIndex int, content string) error {
-	ctx := context.Background()
-	_, err := s.pool.Exec(ctx,
-		`UPDATE session_messages SET content = $1
-		 WHERE id = (SELECT id FROM session_messages
-		   WHERE tenant_id = $2 AND COALESCE(display_only, false) = false
-		   ORDER BY id ASC LIMIT 1 OFFSET $3)`,
-		content, tenantID, messageIndex)
+	replay, err := s.Replay(tenantID)
+	if err != nil {
+		return err
+	}
+	if messageIndex < 0 || messageIndex >= len(replay.Messages) {
+		return fmt.Errorf("no non-display-only message found at index %d for tenant %d", messageIndex, tenantID)
+	}
+	msg := replay.Messages[messageIndex]
+	msg.Content = content
+	occurrence := 0
+	for i := 0; i < messageIndex; i++ {
+		if replay.Messages[i].ID == msg.ID {
+			occurrence++
+		}
+	}
+	_, err = s.AppendControl(tenantID, sqlite.HistoryRecordContextEdit, msg.ID,
+		sqlite.MessageMutations{Mutations: []sqlite.MessageMutation{{
+			TargetHistoryID:  msg.ID,
+			TargetOccurrence: occurrence,
+			Message:          msg,
+		}}})
 	return err
 }
 
-// GetTenantUsageStats aggregates the session's usage from iteration_history
-// (the same source as SQLite). The per-model breakdown, recent-iteration rows
-// and tenants/tenant_state metadata are not populated on the PG backend —
-// iteration_history is the only PG-resident usage source.
+// GetTenantUsageStats aggregates the session's usage from iteration_history —
+// the same source, clamps and ordering as SQLite: main aggregate + per-
+// (subscription, model) breakdown (model=” rows excluded from the split but kept
+// in the aggregate) + recent iteration rows (recentLimit caps the detail list,
+// then the rows are reversed to chronological order). The tenants/tenant_state
+// watermark fields are filled by the caller — after the v71 split those live in
+// the main DB while this store is bound to the session data.
 func (s *pgSessionStore) GetTenantUsageStats(tenantID int64, recentLimit int) (*sqlite.TenantUsageStats, error) {
 	ctx := context.Background()
 	stats := &sqlite.TenantUsageStats{}
@@ -810,6 +989,64 @@ func (s *pgSessionStore) GetTenantUsageStats(tenantID int64, recentLimit int) (*
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get tenant usage stats: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT COALESCE(subscription_id, ''), COALESCE(model, ''), COUNT(*), COUNT(DISTINCT turn_id),
+		       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(tokens), 0), COALESCE(SUM(cached_tokens), 0),
+		       COALESCE(AVG(NULLIF(ttft_ms, 0)), 0), COALESCE(AVG(NULLIF(tpot_ms, 0)), 0)
+		FROM iteration_history WHERE tenant_id = $1 AND model != ''
+		GROUP BY subscription_id, model ORDER BY SUM(input_tokens) + SUM(tokens) DESC`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("get tenant usage by model: %w", err)
+	}
+	for rows.Next() {
+		var r sqlite.UsageModelRow
+		if err := rows.Scan(&r.SubscriptionID, &r.Model, &r.Iterations, &r.Turns, &r.InputTokens,
+			&r.OutputTokens, &r.CachedTokens, &r.AvgTTFTMs, &r.AvgTPOTMs); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan tenant usage by model: %w", err)
+		}
+		stats.ByModel = append(stats.ByModel, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tenant usage by model: %w", err)
+	}
+
+	if recentLimit != 0 {
+		if recentLimit < 0 || recentLimit > 500 {
+			recentLimit = 500
+		} else if recentLimit < 1 {
+			recentLimit = 20
+		}
+		rows, err := s.pool.Query(ctx, `
+			SELECT turn_id, iteration, input_tokens, tokens, cached_tokens, ttft_ms, tpot_ms, tokens_per_sec, total_ms,
+			       COALESCE(model, ''), COALESCE(created_at::text, ''), COALESCE(subscription_id, '')
+			FROM iteration_history WHERE tenant_id = $1
+			ORDER BY id DESC LIMIT $2`, tenantID, recentLimit)
+		if err != nil {
+			return nil, fmt.Errorf("get recent iterations: %w", err)
+		}
+		for rows.Next() {
+			var r sqlite.UsageIterationRow
+			var turnID int64
+			if err := rows.Scan(&turnID, &r.Iteration, &r.InputTokens, &r.OutputTokens, &r.CachedTokens,
+				&r.TTFTMs, &r.TPOTMs, &r.TokensPerSec, &r.TotalMs, &r.Model, &r.CreatedAt, &r.SubscriptionID); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan recent iteration: %w", err)
+			}
+			r.TurnID = uint64(turnID)
+			stats.RecentIterations = append(stats.RecentIterations, r)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate recent iterations: %w", err)
+		}
+		// Reverse to chronological order (oldest → newest).
+		for i, j := 0, len(stats.RecentIterations)-1; i < j; i, j = i+1, j-1 {
+			stats.RecentIterations[i], stats.RecentIterations[j] = stats.RecentIterations[j], stats.RecentIterations[i]
+		}
 	}
 	return stats, nil
 }
