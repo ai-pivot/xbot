@@ -387,6 +387,181 @@ func testTenantStoreContract(t *testing.T, factory StorageFactory) {
 			t.Errorf("ListPendingResumes still contains the cleared resume web/%s", chatID)
 		}
 	})
+
+	// ── P1 (v71 per-session-DB registry) ──
+	//
+	// db_path / migrated are the two registry columns that decide whether a
+	// session reads its own DB, and the v72 ordering contract (flag first, then
+	// delete the main-DB copy) depends on them being independently writable and
+	// readable. Both backends store them as NOT NULL columns on `tenants`
+	// (SQLite: TEXT '' / INTEGER 0, PG: TEXT '' / BOOLEAN false) and the getter
+	// reads them back by primary key.
+
+	t.Run("GetTenantDBInfo_DefaultsThenSetDBPath", func(t *testing.T) {
+		tenantID := createTestTenant(t, s, uniqueChatID(t))
+
+		// A freshly created tenant has no session DB assigned: callers rely on
+		// the empty path to mean "derive + persist on first open"
+		// (session/sessiondb.go: dbPath == "" ⇒ SessionDBRelPath + SetTenantDBPath).
+		info, err := ts.GetTenantDBInfo(tenantID)
+		if err != nil {
+			t.Fatalf("GetTenantDBInfo(fresh): %v", err)
+		}
+		if info.DBPath != "" {
+			t.Errorf("GetTenantDBInfo(fresh).DBPath = %q, want \"\"", info.DBPath)
+		}
+		if info.Migrated {
+			t.Errorf("GetTenantDBInfo(fresh).Migrated = true, want false")
+		}
+
+		dbPath := "sessions/web/bucket/" + uniqueChatID(t) + ".db"
+		if err := ts.SetTenantDBPath(tenantID, dbPath); err != nil {
+			t.Fatalf("SetTenantDBPath: %v", err)
+		}
+
+		info, err = ts.GetTenantDBInfo(tenantID)
+		if err != nil {
+			t.Fatalf("GetTenantDBInfo(after SetTenantDBPath): %v", err)
+		}
+		if info.DBPath != dbPath {
+			t.Errorf("GetTenantDBInfo.DBPath = %q, want %q", info.DBPath, dbPath)
+		}
+		// Assigning the path must NOT flip the migration flag: the two columns
+		// are independent, and this order (path first, flag only after the copy
+		// commits) is what the lazy-migration path writes.
+		if info.Migrated {
+			t.Errorf("GetTenantDBInfo.Migrated = true after SetTenantDBPath alone, want false")
+		}
+
+		// The registry column is the single authority after the first
+		// derivation, so a later write replaces the stored path verbatim.
+		reassigned := dbPath + ".reassigned"
+		if err := ts.SetTenantDBPath(tenantID, reassigned); err != nil {
+			t.Fatalf("SetTenantDBPath(reassign): %v", err)
+		}
+		info, err = ts.GetTenantDBInfo(tenantID)
+		if err != nil {
+			t.Fatalf("GetTenantDBInfo(after reassign): %v", err)
+		}
+		if info.DBPath != reassigned {
+			t.Errorf("GetTenantDBInfo.DBPath after reassign = %q, want %q", info.DBPath, reassigned)
+		}
+	})
+
+	t.Run("SetTenantMigrated", func(t *testing.T) {
+		tenantID := createTestTenant(t, s, uniqueChatID(t))
+
+		before, err := ts.GetTenantDBInfo(tenantID)
+		if err != nil {
+			t.Fatalf("GetTenantDBInfo(before): %v", err)
+		}
+		if before.Migrated {
+			t.Fatalf("fresh tenant %d already migrated: %+v", tenantID, before)
+		}
+
+		if err := ts.SetTenantMigrated(tenantID); err != nil {
+			t.Fatalf("SetTenantMigrated: %v", err)
+		}
+
+		after, err := ts.GetTenantDBInfo(tenantID)
+		if err != nil {
+			t.Fatalf("GetTenantDBInfo(after): %v", err)
+		}
+		if !after.Migrated {
+			t.Errorf("GetTenantDBInfo.Migrated = false after SetTenantMigrated, want true")
+		}
+		// Marking migrated must not touch the path column.
+		if after.DBPath != before.DBPath {
+			t.Errorf("SetTenantMigrated changed db_path: before=%q after=%q", before.DBPath, after.DBPath)
+		}
+
+		// Idempotent: re-marking is the crash-recovery re-run path and must stay
+		// a no-op success that keeps the flag set.
+		if err := ts.SetTenantMigrated(tenantID); err != nil {
+			t.Fatalf("SetTenantMigrated(second): %v", err)
+		}
+		again, err := ts.GetTenantDBInfo(tenantID)
+		if err != nil {
+			t.Fatalf("GetTenantDBInfo(after second mark): %v", err)
+		}
+		if !again.Migrated {
+			t.Errorf("GetTenantDBInfo.Migrated = false after repeated SetTenantMigrated, want true")
+		}
+	})
+
+	t.Run("GetTenantDBInfo_MissingTenant", func(t *testing.T) {
+		// The registry is read by primary key; an unknown tenant has no row, so
+		// the error (not a zero value) is what tells callers there is nothing to
+		// read — sessiondb's shutdown path only deletes the DB file when the
+		// call succeeds with a non-empty path.
+		const missingTenantID = int64(1) << 62
+
+		info, err := ts.GetTenantDBInfo(missingTenantID)
+		if err == nil {
+			t.Errorf("GetTenantDBInfo(missing tenant %d) = %+v, nil error; want an error", missingTenantID, info)
+		}
+		if info.DBPath != "" || info.Migrated {
+			t.Errorf("GetTenantDBInfo(missing tenant %d) returned non-zero value %+v alongside error", missingTenantID, info)
+		}
+	})
+
+	// ── P1 (sender identity) ──
+
+	t.Run("GetSessionSenderID", func(t *testing.T) {
+		senderID := "sender-" + uniqueChatID(t)
+
+		// Sender identity lives in the user_chats registry, not in tenants, so
+		// the row must come from CreateChat — the same path the Web channel uses
+		// when a chatroom is opened. (GetOrCreateTenantID alone is NOT enough;
+		// this subtest pins that distinction below.)
+		chatID, err := ts.CreateChat("web", senderID, "sender lookup")
+		if err != nil {
+			t.Fatalf("CreateChat: %v", err)
+		}
+
+		got, err := ts.GetSessionSenderID("web", chatID)
+		if err != nil {
+			t.Fatalf("GetSessionSenderID(existing): %v", err)
+		}
+		if got != senderID {
+			t.Errorf("GetSessionSenderID(web, %s) = %q, want %q", chatID, got, senderID)
+		}
+
+		// A tenants row without a user_chats row has no sender identity: the
+		// lookup must report the empty string rather than fabricate one
+		// (serverapp treats "" as "no resume identity").
+		tenantOnlyChatID := uniqueChatID(t)
+		if _, err := ts.GetOrCreateTenantID("web", tenantOnlyChatID); err != nil {
+			t.Fatalf("GetOrCreateTenantID: %v", err)
+		}
+		got, err = ts.GetSessionSenderID("web", tenantOnlyChatID)
+		if err != nil {
+			t.Fatalf("GetSessionSenderID(tenant without user_chats row): %v", err)
+		}
+		if got != "" {
+			t.Errorf("GetSessionSenderID(tenant-only chat %s) = %q, want \"\"", tenantOnlyChatID, got)
+		}
+
+		// Unknown chat: empty string, nil error (never an error — the caller
+		// distinguishes "no row" from a real failure by the error alone).
+		got, err = ts.GetSessionSenderID("web", uniqueChatID(t))
+		if err != nil {
+			t.Fatalf("GetSessionSenderID(unknown chat): %v", err)
+		}
+		if got != "" {
+			t.Errorf("GetSessionSenderID(unknown chat) = %q, want \"\"", got)
+		}
+
+		// Channel is part of the lookup key: the same chat id on another channel
+		// has no user_chats row.
+		got, err = ts.GetSessionSenderID("cli", chatID)
+		if err != nil {
+			t.Fatalf("GetSessionSenderID(other channel): %v", err)
+		}
+		if got != "" {
+			t.Errorf("GetSessionSenderID(cli, web chat %s) = %q, want \"\"", chatID, got)
+		}
+	})
 }
 
 // ─── Helpers (tenant contract) ───

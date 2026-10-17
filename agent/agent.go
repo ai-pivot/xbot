@@ -2145,10 +2145,8 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.registryManager = NewRegistryManager(a.skills, a.agents, cfg.WorkDir, cfg.XbotHome, cfg.Sandbox)
 
 	// Initialize UserSettingsService and SettingsService.
-	// ⚠️ PG 后端：UserSettingsService 是 SQLite 专属具体类型 ⇒ 跳过（settingsSvc
-	// 保持 nil，LanguageMiddleware / llm_factory / RPC handler 都有 nil 守卫）。
-	// SQLite path: use concrete UserSettingsService
-	// PG path: use Store().Config() which implements UserSettingsBackend
+	// SettingsService 走后端无关的 storage.ConfigStore：SQLite 用适配层包主库，
+	// PG 用 Store().Config()（同一套 ConfigStore 接口，无后端分支）。
 	if db := multiSession.DB(); db != nil {
 		a.userSys.settingsSvc = NewSettingsService(storage.NewSQLiteConfigStore(db))
 	} else if multiSession.Store() != nil {

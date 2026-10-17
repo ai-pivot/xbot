@@ -682,6 +682,631 @@ func testSessionStoreContract(t *testing.T, factory StorageFactory) {
 			t.Errorf("GetUserMessageCount = %d, want 3", count)
 		}
 	})
+
+	// ── Append-style control writes (snapshots, AskUser, masks, edits) ──
+	//
+	// Same isolation rules as above: each subtest Clear-s first, and iteration
+	// subtests use turn ids unique to the subtest (the 9000xx block). The
+	// control-path writes are verified by re-reading through the public read
+	// surface (Replay / GetFullHistory / GetAllIterationHistory) — never by
+	// poking SQL directly.
+
+	t.Run("AppendContextSnapshot_CompressSnapshotVisible", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		userID, err := ss.AddMessageWithID(tenantID, dummyMsg("user", "snap-user"))
+		if err != nil {
+			t.Fatalf("AddMessageWithID(user): %v", err)
+		}
+		assistantID, err := ss.AddMessageWithID(tenantID, dummyMsg("assistant", "snap-assistant"))
+		if err != nil {
+			t.Fatalf("AddMessageWithID(assistant): %v", err)
+		}
+		// Only compress/prune carry a context snapshot; any other record type is
+		// rejected before a row is written.
+		for _, bad := range []sqlite.HistoryRecordType{
+			sqlite.HistoryRecordMessage, sqlite.HistoryRecordContextEdit,
+			sqlite.HistoryRecordMask, sqlite.HistoryRecordAskQuestion,
+		} {
+			if _, err := ss.AppendContextSnapshot(tenantID, bad, nil); err == nil {
+				t.Errorf("AppendContextSnapshot(%q) succeeded, want error", bad)
+			}
+		}
+		snapshotID, err := ss.AppendContextSnapshot(tenantID, sqlite.HistoryRecordCompress, []llm.ChatMessage{
+			{ID: userID, Role: "user", Content: "snap-user"},
+			{ID: assistantID, Role: "assistant", Content: "snap-assistant"},
+		})
+		if err != nil {
+			t.Fatalf("AppendContextSnapshot(compress): %v", err)
+		}
+		if snapshotID <= 0 {
+			t.Fatalf("AppendContextSnapshot returned id %d, want > 0", snapshotID)
+		}
+		records, err := ss.GetFullHistory(tenantID)
+		if err != nil {
+			t.Fatalf("GetFullHistory: %v", err)
+		}
+		var snapshot *sqlite.HistoryRecord
+		for i := range records {
+			if records[i].HistoryID == snapshotID {
+				snapshot = &records[i]
+				break
+			}
+		}
+		if snapshot == nil {
+			t.Fatalf("snapshot history_id %d missing from GetFullHistory: %+v", snapshotID, records)
+		}
+		if snapshot.Type != sqlite.HistoryRecordCompress {
+			t.Errorf("snapshot type = %q, want %q", snapshot.Type, sqlite.HistoryRecordCompress)
+		}
+		if len(snapshot.Data) == 0 {
+			t.Errorf("snapshot record_data is empty, want the serialized ContextSnapshot payload")
+		}
+	})
+
+	t.Run("AppendAskQuestion_RequiresActiveAskUserTool", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		if err := ss.AddMessage(tenantID, dummyMsg("user", "ask-user")); err != nil {
+			t.Fatalf("AddMessage(user): %v", err)
+		}
+		// No active AskUser tool result in the history yet ⇒ nothing to attach
+		// the question to, so the append must fail.
+		if _, err := ss.AppendAskQuestion(tenantID, map[string]string{"question": "no tool"}); err == nil {
+			t.Fatalf("AppendAskQuestion with no AskUser tool result succeeded, want error")
+		}
+		toolID, err := ss.AddMessageWithID(tenantID, llm.ChatMessage{
+			Role: "tool", ToolName: "AskUser", ToolCallID: "call_ask_q", Content: "{}", TurnID: 1,
+		})
+		if err != nil {
+			t.Fatalf("AddMessageWithID(AskUser tool): %v", err)
+		}
+		questionID, err := ss.AppendAskQuestion(tenantID, map[string]string{"question": "pick one"})
+		if err != nil {
+			t.Fatalf("AppendAskQuestion: %v", err)
+		}
+		if questionID <= 0 {
+			t.Fatalf("AppendAskQuestion returned id %d, want > 0", questionID)
+		}
+		records, err := ss.GetFullHistory(tenantID)
+		if err != nil {
+			t.Fatalf("GetFullHistory: %v", err)
+		}
+		var question *sqlite.HistoryRecord
+		for i := range records {
+			if records[i].HistoryID == questionID {
+				question = &records[i]
+				break
+			}
+		}
+		if question == nil {
+			t.Fatalf("ask_question history_id %d missing from GetFullHistory: %+v", questionID, records)
+		}
+		if question.Type != sqlite.HistoryRecordAskQuestion {
+			t.Errorf("question type = %q, want %q", question.Type, sqlite.HistoryRecordAskQuestion)
+		}
+		if question.TargetHistoryID != toolID {
+			t.Errorf("question target = %d, want the AskUser tool row %d", question.TargetHistoryID, toolID)
+		}
+	})
+
+	t.Run("AppendAskQuestion_PendingGuardAndReplayState", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		if err := ss.AddMessage(tenantID, dummyMsg("user", "ask-user-pending")); err != nil {
+			t.Fatalf("AddMessage(user): %v", err)
+		}
+		toolID, err := ss.AddMessageWithID(tenantID, llm.ChatMessage{
+			Role: "tool", ToolName: "AskUser", ToolCallID: "call_ask_pending", Content: "{}", TurnID: 1,
+		})
+		if err != nil {
+			t.Fatalf("AddMessageWithID(AskUser tool): %v", err)
+		}
+		questionID, err := ss.AppendAskQuestion(tenantID, map[string]string{"question": "pick one"})
+		if err != nil {
+			t.Fatalf("AppendAskQuestion: %v", err)
+		}
+		replay, err := ss.Replay(tenantID)
+		if err != nil {
+			t.Fatalf("Replay: %v", err)
+		}
+		if replay.PendingAskUser == nil {
+			t.Fatalf("Replay().PendingAskUser = nil after an unanswered question, want the pending prompt")
+		}
+		if replay.PendingAskUser.HistoryID != questionID {
+			t.Errorf("pending history_id = %d, want the ask_question row %d", replay.PendingAskUser.HistoryID, questionID)
+		}
+		if replay.PendingAskUser.ToolHistoryID != toolID {
+			t.Errorf("pending tool target = %d, want the AskUser tool row %d", replay.PendingAskUser.ToolHistoryID, toolID)
+		}
+		if got := replay.PendingAskUser.Metadata["question"]; got != "pick one" {
+			t.Errorf("pending metadata[question] = %q, want %q", got, "pick one")
+		}
+		// A second question while one is still pending must be rejected.
+		if _, err := ss.AppendAskQuestion(tenantID, map[string]string{"question": "second"}); err == nil {
+			t.Errorf("AppendAskQuestion while a question is pending succeeded, want error")
+		}
+	})
+
+	t.Run("AppendAskAnswer_ResolvesPendingQuestion", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		if err := ss.AddMessage(tenantID, dummyMsg("user", "answer-user")); err != nil {
+			t.Fatalf("AddMessage(user): %v", err)
+		}
+		if _, err := ss.AddMessageWithID(tenantID, llm.ChatMessage{
+			Role: "tool", ToolName: "AskUser", ToolCallID: "call_ask_answer", Content: "{}", TurnID: 1,
+		}); err != nil {
+			t.Fatalf("AddMessageWithID(AskUser tool): %v", err)
+		}
+		questionID, err := ss.AppendAskQuestion(tenantID, map[string]string{"question": "pick one"})
+		if err != nil {
+			t.Fatalf("AppendAskQuestion: %v", err)
+		}
+		answerID, err := ss.AppendAskAnswer(tenantID, "choice A")
+		if err != nil {
+			t.Fatalf("AppendAskAnswer: %v", err)
+		}
+		if answerID <= 0 {
+			t.Fatalf("AppendAskAnswer returned id %d, want > 0", answerID)
+		}
+		records, err := ss.GetFullHistory(tenantID)
+		if err != nil {
+			t.Fatalf("GetFullHistory: %v", err)
+		}
+		var answer *sqlite.HistoryRecord
+		for i := range records {
+			if records[i].HistoryID == answerID {
+				answer = &records[i]
+				break
+			}
+		}
+		if answer == nil {
+			t.Fatalf("ask_answer history_id %d missing from GetFullHistory: %+v", answerID, records)
+		}
+		if answer.Type != sqlite.HistoryRecordAskAnswer {
+			t.Errorf("answer type = %q, want %q", answer.Type, sqlite.HistoryRecordAskAnswer)
+		}
+		if answer.TargetHistoryID != questionID {
+			t.Errorf("answer target = %d, want the pending question row %d", answer.TargetHistoryID, questionID)
+		}
+		replay, err := ss.Replay(tenantID)
+		if err != nil {
+			t.Fatalf("Replay: %v", err)
+		}
+		if replay.PendingAskUser != nil {
+			t.Errorf("Replay().PendingAskUser = %+v after the answer, want nil", replay.PendingAskUser)
+		}
+		// Answering again with nothing pending must fail.
+		if _, err := ss.AppendAskAnswer(tenantID, "again"); err == nil {
+			t.Errorf("AppendAskAnswer with no pending question succeeded, want error")
+		}
+	})
+
+	t.Run("AppendAskAnswerWithUserMessage_AddsAnswerRow", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		if err := ss.AddMessage(tenantID, dummyMsg("user", "answer-with-user")); err != nil {
+			t.Fatalf("AddMessage(user): %v", err)
+		}
+		if _, err := ss.AddMessageWithID(tenantID, llm.ChatMessage{
+			Role: "tool", ToolName: "AskUser", ToolCallID: "call_ask_pair", Content: "{}", TurnID: 1,
+		}); err != nil {
+			t.Fatalf("AddMessageWithID(AskUser tool): %v", err)
+		}
+		questionID, err := ss.AppendAskQuestion(tenantID, map[string]string{"question": "pick one"})
+		if err != nil {
+			t.Fatalf("AppendAskQuestion: %v", err)
+		}
+		answerID, err := ss.AppendAskAnswerWithUserMessage(tenantID, "choice B", dummyMsg("user", "choice B"))
+		if err != nil {
+			t.Fatalf("AppendAskAnswerWithUserMessage: %v", err)
+		}
+		if answerID <= 0 {
+			t.Fatalf("AppendAskAnswerWithUserMessage returned id %d, want > 0", answerID)
+		}
+		records, err := ss.GetFullHistory(tenantID)
+		if err != nil {
+			t.Fatalf("GetFullHistory: %v", err)
+		}
+		var answerControl bool
+		var answerUserRow bool
+		for _, rec := range records {
+			if rec.HistoryID == answerID {
+				if rec.Type != sqlite.HistoryRecordAskAnswer {
+					t.Errorf("answer control type = %q, want %q", rec.Type, sqlite.HistoryRecordAskAnswer)
+				}
+				if rec.TargetHistoryID != questionID {
+					t.Errorf("answer control target = %d, want the question row %d", rec.TargetHistoryID, questionID)
+				}
+				answerControl = true
+			}
+			if rec.Type == sqlite.HistoryRecordMessage && rec.Message.Role == "user" && rec.Message.Content == "choice B" {
+				answerUserRow = true
+			}
+		}
+		if !answerControl {
+			t.Fatalf("ask_answer control row %d missing from GetFullHistory: %+v", answerID, records)
+		}
+		if !answerUserRow {
+			t.Errorf("the answer user message is missing from GetFullHistory: %+v", records)
+		}
+		replay, err := ss.Replay(tenantID)
+		if err != nil {
+			t.Fatalf("Replay: %v", err)
+		}
+		if replay.PendingAskUser != nil {
+			t.Errorf("Replay().PendingAskUser = %+v after the answer, want nil", replay.PendingAskUser)
+		}
+		// With no pending question left the pair-append must fail.
+		if _, err := ss.AppendAskAnswerWithUserMessage(tenantID, "stale", dummyMsg("user", "stale")); err == nil {
+			t.Errorf("AppendAskAnswerWithUserMessage with no pending question succeeded, want error")
+		}
+	})
+
+	t.Run("AppendMessagesAndAskQuestion_AtomicBatch", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		// A batch with no AskUser tool result is rejected up-front.
+		if _, _, err := ss.AppendMessagesAndAskQuestion(tenantID, []llm.ChatMessage{dummyMsg("user", "orphan")}, nil); err == nil {
+			t.Errorf("AppendMessagesAndAskQuestion without an AskUser tool result succeeded, want error")
+		}
+		batch := []llm.ChatMessage{
+			{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "call_ask_batch", Name: "AskUser", Arguments: "{}"}}, TurnID: 1},
+			{Role: "tool", ToolName: "AskUser", ToolCallID: "call_ask_batch", Content: "{}", TurnID: 1},
+		}
+		ids, questionID, err := ss.AppendMessagesAndAskQuestion(tenantID, batch, map[string]string{"question": "batch"})
+		if err != nil {
+			t.Fatalf("AppendMessagesAndAskQuestion: %v", err)
+		}
+		if len(ids) != len(batch) {
+			t.Fatalf("AppendMessagesAndAskQuestion returned %d ids, want %d", len(ids), len(batch))
+		}
+		for i, id := range ids {
+			if id <= 0 {
+				t.Errorf("AppendMessagesAndAskQuestion ids[%d] = %d, want > 0", i, id)
+			}
+		}
+		if questionID <= 0 {
+			t.Fatalf("AppendMessagesAndAskQuestion returned question id %d, want > 0", questionID)
+		}
+		records, err := ss.GetFullHistory(tenantID)
+		if err != nil {
+			t.Fatalf("GetFullHistory: %v", err)
+		}
+		var question *sqlite.HistoryRecord
+		for i := range records {
+			if records[i].HistoryID == questionID {
+				question = &records[i]
+				break
+			}
+		}
+		if question == nil {
+			t.Fatalf("ask_question history_id %d missing from GetFullHistory: %+v", questionID, records)
+		}
+		if question.Type != sqlite.HistoryRecordAskQuestion {
+			t.Errorf("question type = %q, want %q", question.Type, sqlite.HistoryRecordAskQuestion)
+		}
+		// The question targets the batch's AskUser tool row, which is the last
+		// element of the batch.
+		if question.TargetHistoryID != ids[len(ids)-1] {
+			t.Errorf("question target = %d, want the batch's AskUser tool row %d", question.TargetHistoryID, ids[len(ids)-1])
+		}
+		msgs, err := ss.GetHistory(tenantID, 10)
+		if err != nil {
+			t.Fatalf("GetHistory: %v", err)
+		}
+		var sawTool bool
+		for _, m := range msgs {
+			if m.Role == "tool" && m.ToolName == "AskUser" {
+				sawTool = true
+			}
+		}
+		if !sawTool {
+			t.Errorf("the batch's AskUser tool row is missing from GetHistory: %+v", msgs)
+		}
+	})
+
+	t.Run("AppendMasks_RewritesReplayContentOnly", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		msgID, err := ss.AddMessageWithID(tenantID, dummyMsg("user", "mask-original"))
+		if err != nil {
+			t.Fatalf("AddMessageWithID: %v", err)
+		}
+		// Empty mutation list is a no-op, not an error.
+		if err := ss.AppendMasks(tenantID, nil); err != nil {
+			t.Errorf("AppendMasks(nil) = %v, want nil (no-op)", err)
+		}
+		// A mask targeting a non-active history_id must be rejected.
+		if err := ss.AppendMasks(tenantID, []sqlite.MaskMutation{{TargetHistoryID: 999999999, Content: "x"}}); err == nil {
+			t.Errorf("AppendMasks with an unknown target succeeded, want error")
+		}
+		if err := ss.AppendMasks(tenantID, []sqlite.MaskMutation{{TargetHistoryID: msgID, Content: "[REDACTED]"}}); err != nil {
+			t.Fatalf("AppendMasks: %v", err)
+		}
+		replay, err := ss.Replay(tenantID)
+		if err != nil {
+			t.Fatalf("Replay: %v", err)
+		}
+		var masked bool
+		for _, m := range replay.Messages {
+			if m.ID == msgID {
+				masked = true
+				if m.Content != "[REDACTED]" {
+					t.Errorf("replayed content = %q, want the masked %q", m.Content, "[REDACTED]")
+				}
+			}
+		}
+		if !masked {
+			t.Fatalf("masked message %d missing from Replay: %+v", msgID, replay.Messages)
+		}
+		// The mask is LLM-context only: the append-only/display history keeps
+		// the original content.
+		records, err := ss.GetFullHistory(tenantID)
+		if err != nil {
+			t.Fatalf("GetFullHistory: %v", err)
+		}
+		if got := recordContent(records, msgID); got != "mask-original" {
+			t.Errorf("display content = %q, want the untouched %q", got, "mask-original")
+		}
+	})
+
+	t.Run("UpdateMessageContentNonDisplayOnly_EditsLLMContextOnly", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		msgID, err := ss.AddMessageWithID(tenantID, dummyMsg("user", "edit-original"))
+		if err != nil {
+			t.Fatalf("AddMessageWithID(user): %v", err)
+		}
+		if err := ss.AddMessage(tenantID, dummyMsg("assistant", "edit-assistant")); err != nil {
+			t.Fatalf("AddMessage(assistant): %v", err)
+		}
+		// messageIndex is 0-based over the non-display-only messages.
+		if err := ss.UpdateMessageContentNonDisplayOnly(tenantID, 0, "edit-updated"); err != nil {
+			t.Fatalf("UpdateMessageContentNonDisplayOnly: %v", err)
+		}
+		replay, err := ss.Replay(tenantID)
+		if err != nil {
+			t.Fatalf("Replay: %v", err)
+		}
+		if len(replay.Messages) == 0 || replay.Messages[0].ID != msgID || replay.Messages[0].Content != "edit-updated" {
+			t.Errorf("replayed first message = %+v, want id %d with content %q", replay.Messages, msgID, "edit-updated")
+		}
+		// An out-of-range index must be rejected.
+		if err := ss.UpdateMessageContentNonDisplayOnly(tenantID, 99, "nope"); err == nil {
+			t.Errorf("UpdateMessageContentNonDisplayOnly(index=99) succeeded, want error")
+		}
+		// The edit is LLM-context only: the append-only/display history keeps
+		// the original content.
+		records, err := ss.GetFullHistory(tenantID)
+		if err != nil {
+			t.Fatalf("GetFullHistory: %v", err)
+		}
+		if got := recordContent(records, msgID); got != "edit-original" {
+			t.Errorf("display content = %q, want the untouched %q", got, "edit-original")
+		}
+	})
+
+	t.Run("GetTenantUsageStats_AggregatesIterationHistory", func(t *testing.T) {
+		const turnA, turnB = uint64(9041), uint64(9042)
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		msgID, err := ss.AddMessageWithID(tenantID, dummyMsg("assistant", "usage"))
+		if err != nil {
+			t.Fatalf("AddMessageWithID: %v", err)
+		}
+		// Baseline: not every backend's Clear drops iteration_history, so the
+		// aggregates are asserted as deltas.
+		before, err := ss.GetTenantUsageStats(tenantID, 0)
+		if err != nil {
+			t.Fatalf("GetTenantUsageStats(baseline): %v", err)
+		}
+		for _, rec := range []sqlite.IterationRecord{
+			{Iteration: 1, Content: "usage-a1", Tokens: 10, InputTokens: 100, CachedTokens: 5, TotalMs: 200, TTFTMs: 50, TPOTMs: 20, TokensPerSec: 30, Model: "m1", SubscriptionID: "s1"},
+			{Iteration: 2, Content: "usage-a2", Tokens: 20, InputTokens: 50, TotalMs: 100, TTFTMs: 60, TPOTMs: 25, TokensPerSec: 40, Model: "m1", SubscriptionID: "s1"},
+		} {
+			if err := ss.AppendIterationHistory(tenantID, msgID, turnA, rec); err != nil {
+				t.Fatalf("AppendIterationHistory(turn %d iter %d): %v", turnA, rec.Iteration, err)
+			}
+		}
+		if err := ss.AppendIterationHistory(tenantID, msgID, turnB, sqlite.IterationRecord{
+			Iteration: 1, Content: "usage-b1", Tokens: 7, InputTokens: 30, Model: "m2", SubscriptionID: "s2",
+		}); err != nil {
+			t.Fatalf("AppendIterationHistory(turn %d): %v", turnB, err)
+		}
+		after, err := ss.GetTenantUsageStats(tenantID, 2)
+		if err != nil {
+			t.Fatalf("GetTenantUsageStats: %v", err)
+		}
+		for _, tc := range []struct {
+			name      string
+			got, want int64
+			wantDelta int64
+		}{
+			{"iteration_count", after.IterationCount, before.IterationCount, 3},
+			{"turn_count", after.TurnCount, before.TurnCount, 2},
+			{"input_tokens", after.InputTokens, before.InputTokens, 180},
+			{"output_tokens", after.OutputTokens, before.OutputTokens, 37},
+			{"cached_tokens", after.CachedTokens, before.CachedTokens, 5},
+			{"llm_total_ms", after.LLMTotalMs, before.LLMTotalMs, 300},
+		} {
+			if got := tc.got - tc.want; got != tc.wantDelta {
+				t.Errorf("%s delta = %d, want %d (before=%d after=%d)", tc.name, got, tc.wantDelta, tc.want, tc.got)
+			}
+		}
+		// recentLimit caps the RecentIterations detail rows, returned in
+		// chronological order (oldest → newest).
+		if len(after.RecentIterations) != 2 {
+			t.Fatalf("RecentIterations = %d rows (recentLimit=2), want 2: %+v", len(after.RecentIterations), after.RecentIterations)
+		}
+		newest := after.RecentIterations[len(after.RecentIterations)-1]
+		if newest.TurnID != turnB || newest.Iteration != 1 {
+			t.Errorf("newest recent iteration = {turn %d iter %d}, want {turn %d iter 1}",
+				newest.TurnID, newest.Iteration, turnB)
+		}
+		// All three rows carry a model, so the per-(subscription, model)
+		// breakdown must attribute them (m1: 2 iterations / 150 input tokens).
+		var modelM1, modelM2 *sqlite.UsageModelRow
+		for i := range after.ByModel {
+			switch after.ByModel[i].Model {
+			case "m1":
+				modelM1 = &after.ByModel[i]
+			case "m2":
+				modelM2 = &after.ByModel[i]
+			}
+		}
+		if modelM1 == nil {
+			t.Fatalf("ByModel is missing the m1 breakdown: %+v", after.ByModel)
+		}
+		if modelM1.Iterations != 2 || modelM1.Turns != 1 || modelM1.InputTokens != 150 || modelM1.OutputTokens != 30 {
+			t.Errorf("m1 breakdown = %+v, want 2 iterations / 1 turn / 150 input / 30 output", *modelM1)
+		}
+		if modelM2 == nil {
+			t.Fatalf("ByModel is missing the m2 breakdown: %+v", after.ByModel)
+		}
+		if modelM2.Iterations != 1 || modelM2.InputTokens != 30 || modelM2.OutputTokens != 7 {
+			t.Errorf("m2 breakdown = %+v, want 1 iteration / 30 input / 7 output", *modelM2)
+		}
+	})
+
+	t.Run("GetAllIterationHistory_ReturnsEveryTurn", func(t *testing.T) {
+		const turnA, turnB = uint64(9051), uint64(9052)
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		msgID, err := ss.AddMessageWithID(tenantID, dummyMsg("assistant", "all-iters"))
+		if err != nil {
+			t.Fatalf("AddMessageWithID: %v", err)
+		}
+		if err := ss.AppendIterationHistory(tenantID, msgID, turnA, sqlite.IterationRecord{Iteration: 1, Content: "all-iters-A"}); err != nil {
+			t.Fatalf("AppendIterationHistory(turn %d): %v", turnA, err)
+		}
+		if err := ss.AppendIterationHistory(tenantID, msgID, turnB, sqlite.IterationRecord{Iteration: 1, Content: "all-iters-B"}); err != nil {
+			t.Fatalf("AppendIterationHistory(turn %d): %v", turnB, err)
+		}
+		recs, err := ss.GetAllIterationHistory(tenantID)
+		if err != nil {
+			t.Fatalf("GetAllIterationHistory: %v", err)
+		}
+		indexA, indexB := -1, -1
+		for i := range recs {
+			switch recs[i].Content {
+			case "all-iters-A":
+				indexA = i
+			case "all-iters-B":
+				indexB = i
+			}
+		}
+		if indexA < 0 || indexB < 0 {
+			t.Fatalf("GetAllIterationHistory is missing a turn (A=%d B=%d): %+v", indexA, indexB, recs)
+		}
+		// Ordered by (turn_id, iteration): turnA (9051) precedes turnB (9052).
+		if indexA > indexB {
+			t.Errorf("iteration order A=%d B=%d, want the lower turn id first", indexA, indexB)
+		}
+	})
+
+	t.Run("RewindToHistoryID_TruncatesAtUserMessage", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		u1, err := ss.AddMessageWithID(tenantID, dummyMsg("user", "rw-u1"))
+		if err != nil {
+			t.Fatalf("AddMessageWithID(u1): %v", err)
+		}
+		a1, err := ss.AddMessageWithID(tenantID, dummyMsg("assistant", "rw-a1"))
+		if err != nil {
+			t.Fatalf("AddMessageWithID(a1): %v", err)
+		}
+		// Stamp u1's prompt-token watermark: it becomes the restored watermark
+		// once the rewind drops the newer user row (u2).
+		if err := ss.UpdateUserMessageContextTokens(tenantID, 456); err != nil {
+			t.Fatalf("UpdateUserMessageContextTokens: %v", err)
+		}
+		u2msg := dummyMsg("user", "rw-u2")
+		u2msg.TurnID = 2
+		u2, err := ss.AddMessageWithID(tenantID, u2msg)
+		if err != nil {
+			t.Fatalf("AddMessageWithID(u2): %v", err)
+		}
+		a2msg := dummyMsg("assistant", "rw-a2")
+		a2msg.TurnID = 2
+		a2, err := ss.AddMessageWithID(tenantID, a2msg)
+		if err != nil {
+			t.Fatalf("AddMessageWithID(a2): %v", err)
+		}
+		// A turn-2 iteration record so the rewind also exercises the
+		// iteration_history truncation branch.
+		if err := ss.AppendIterationHistory(tenantID, a2, 2, sqlite.IterationRecord{Iteration: 1, Content: "rw-iter-turn2"}); err != nil {
+			t.Fatalf("AppendIterationHistory(turn 2): %v", err)
+		}
+		// Only a non-display-only user message row is a valid rewind target.
+		if _, _, _, err := ss.RewindToHistoryID(tenantID, 0); err == nil {
+			t.Errorf("RewindToHistoryID(0) succeeded, want error")
+		}
+		if _, _, _, err := ss.RewindToHistoryID(tenantID, a1); err == nil {
+			t.Errorf("RewindToHistoryID(assistant row) succeeded, want error")
+		}
+		if _, _, _, err := ss.RewindToHistoryID(tenantID, 999999999); err == nil {
+			t.Errorf("RewindToHistoryID(unknown history_id) succeeded, want error")
+		}
+		target, turnIdx, promptTokens, err := ss.RewindToHistoryID(tenantID, u2)
+		if err != nil {
+			t.Fatalf("RewindToHistoryID: %v", err)
+		}
+		if target.ID != u2 || target.Role != "user" || target.Content != "rw-u2" {
+			t.Errorf("rewind target = %+v, want the u2 user row (id %d)", target, u2)
+		}
+		if turnIdx != 2 {
+			t.Errorf("rewind turn index = %d, want 2 (u1 and u2 are the first two user rows)", turnIdx)
+		}
+		if promptTokens != 456 {
+			t.Errorf("rewind prompt tokens = %d, want the surviving u1 watermark 456", promptTokens)
+		}
+		records, err := ss.GetFullHistory(tenantID)
+		if err != nil {
+			t.Fatalf("GetFullHistory: %v", err)
+		}
+		for _, rec := range records {
+			if rec.HistoryID >= u2 {
+				t.Errorf("history row %d survived a rewind that truncated at %d", rec.HistoryID, u2)
+			}
+		}
+		if len(records) != 2 {
+			t.Fatalf("after rewind %d history rows remain, want 2 (u1 + a1): %+v", len(records), records)
+		}
+		if got := recordContent(records, u1); got != "rw-u1" {
+			t.Errorf("surviving u1 content = %q, want %q", got, "rw-u1")
+		}
+		iters, err := ss.GetIterationHistoryByTurn(tenantID, 2)
+		if err != nil {
+			t.Fatalf("GetIterationHistoryByTurn: %v", err)
+		}
+		if len(iters) != 0 {
+			t.Errorf("turn 2 iteration_history rows survived the rewind: %+v", iters)
+		}
+	})
 }
 
 // findIterationByContent returns a pointer to the first iteration record whose

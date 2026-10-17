@@ -725,6 +725,509 @@ func testConfigStoreContract(t *testing.T, factory StorageFactory) {
 			t.Errorf("GetModel.VisionDetail = %q, want %q", m.VisionDetail, "high")
 		}
 	})
+
+	// ── ConfigStore-style subscription verbs + remaining SubscriptionBackend gaps ──
+	//
+	// ConfigStore carries the subscription API under TWO naming families: the
+	// SubscriptionBackend-style verbs (Add/List/Update/Remove/SetDefault/…,
+	// covered above) and the ConfigStore-style verbs
+	// (AddSubscription/ListSubscriptions/UpdateSubscription/GetDefaultSubscription/
+	// SetDefaultSubscription/RemoveSubscription). The SQLite adapter implements the
+	// latter as one-line wrappers over the former (sqlite_adapter.go), but PG
+	// implements them independently (pg_config.go), so they need their own
+	// coverage. Every case below asserts through a SEQUENCE of operations
+	// (write → re-read / re-list) rather than trusting a single call, because the
+	// stored row — not the return value — is what callers end up reading.
+
+	t.Run("Subscriptions_ConfigStoreStyle_CRUD", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+		cs := s.Config()
+		sender := configTestID(t)
+
+		mkSub := func(id, name, model string) *sqlite.LLMSubscription {
+			return &sqlite.LLMSubscription{
+				ID:       id,
+				SenderID: sender,
+				Name:     name,
+				Provider: "openai",
+				BaseURL:  "https://api.example.com",
+				APIKey:   "sk-contract-test",
+				Model:    model,
+			}
+		}
+		hasID := func(subs []*sqlite.LLMSubscription, id string) bool {
+			for _, sub := range subs {
+				if sub.ID == id {
+					return true
+				}
+			}
+			return false
+		}
+
+		first := mkSub(configTestID(t)+"-first", "Contract First", "gpt-4o")
+		if err := cs.AddSubscription(first); err != nil {
+			t.Fatalf("AddSubscription(first): %v", err)
+		}
+
+		list, err := cs.ListSubscriptions(sender)
+		if err != nil {
+			t.Fatalf("ListSubscriptions: %v", err)
+		}
+		if len(list) != 1 {
+			t.Fatalf("ListSubscriptions returned %d subscriptions, want 1", len(list))
+		}
+		if list[0].ID != first.ID {
+			t.Errorf("ListSubscriptions[0].ID = %q, want %q", list[0].ID, first.ID)
+		}
+		if list[0].Name != "Contract First" {
+			t.Errorf("ListSubscriptions[0].Name = %q, want %q", list[0].Name, "Contract First")
+		}
+
+		// Adding a subscription must NOT silently mint a default: user_default_model
+		// is written only by an explicit selection, and inventing one here would
+		// make the reader resolve a model the operator never chose.
+		def, err := cs.GetDefaultSubscription(sender)
+		if err != nil {
+			t.Fatalf("GetDefaultSubscription before any selection: %v", err)
+		}
+		if def != nil {
+			t.Errorf("GetDefaultSubscription before any selection = %+v, want nil", def)
+		}
+
+		second := mkSub(configTestID(t)+"-second", "Contract Second", "gpt-4o-mini")
+		if err := cs.AddSubscription(second); err != nil {
+			t.Fatalf("AddSubscription(second): %v", err)
+		}
+		list, err = cs.ListSubscriptions(sender)
+		if err != nil {
+			t.Fatalf("ListSubscriptions after second add: %v", err)
+		}
+		if len(list) != 2 {
+			t.Fatalf("ListSubscriptions returned %d subscriptions, want 2", len(list))
+		}
+		if !hasID(list, first.ID) || !hasID(list, second.ID) {
+			t.Errorf("ListSubscriptions is missing an added subscription: %+v", list)
+		}
+
+		if err := cs.SetDefaultSubscription(first.ID); err != nil {
+			t.Fatalf("SetDefaultSubscription(first): %v", err)
+		}
+		def, err = cs.GetDefaultSubscription(sender)
+		if err != nil {
+			t.Fatalf("GetDefaultSubscription after SetDefaultSubscription: %v", err)
+		}
+		if def == nil {
+			t.Fatalf("GetDefaultSubscription = nil after SetDefaultSubscription")
+		}
+		if def.ID != first.ID {
+			t.Errorf("GetDefaultSubscription.ID = %q, want %q", def.ID, first.ID)
+		}
+
+		// "At most one default per sender": switching the default must REPLACE the
+		// pointer, never accumulate a second row for the same sender.
+		if err := cs.SetDefaultSubscription(second.ID); err != nil {
+			t.Fatalf("SetDefaultSubscription(second): %v", err)
+		}
+		def, err = cs.GetDefaultSubscription(sender)
+		if err != nil {
+			t.Fatalf("GetDefaultSubscription after switching default: %v", err)
+		}
+		if def == nil {
+			t.Fatalf("GetDefaultSubscription = nil after switching the default")
+		}
+		if def.ID != second.ID {
+			t.Errorf("GetDefaultSubscription.ID after switch = %q, want %q", def.ID, second.ID)
+		}
+	})
+
+	t.Run("UpdateSubscription", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+		cs := s.Config()
+		sender := configTestID(t)
+
+		sub := &sqlite.LLMSubscription{
+			ID:       configTestID(t),
+			SenderID: sender,
+			Name:     "Before Update",
+			Provider: "openai",
+			BaseURL:  "https://api.example.com",
+			APIKey:   "sk-contract-test",
+			Model:    "gpt-4o",
+		}
+		if err := cs.AddSubscription(sub); err != nil {
+			t.Fatalf("AddSubscription: %v", err)
+		}
+
+		got, err := cs.GetSubscription(sub.ID)
+		if err != nil {
+			t.Fatalf("GetSubscription: %v", err)
+		}
+		if got == nil {
+			t.Fatalf("GetSubscription(%q) = nil after AddSubscription", sub.ID)
+		}
+
+		// Round-trip the fetched struct: this is how callers (RPC handlers) edit a
+		// subscription, so the update must not depend on out-of-band fields.
+		got.Name = "After Update"
+		got.Model = "gpt-4o-mini"
+		got.Provider = "anthropic"
+		if err := cs.UpdateSubscription(got); err != nil {
+			t.Fatalf("UpdateSubscription: %v", err)
+		}
+
+		refetched, err := cs.GetSubscription(sub.ID)
+		if err != nil {
+			t.Fatalf("GetSubscription after UpdateSubscription: %v", err)
+		}
+		if refetched == nil {
+			t.Fatalf("GetSubscription(%q) = nil after UpdateSubscription", sub.ID)
+		}
+		if refetched.Name != "After Update" {
+			t.Errorf("Name after update = %q, want %q", refetched.Name, "After Update")
+		}
+		if refetched.Model != "gpt-4o-mini" {
+			t.Errorf("Model after update = %q, want %q", refetched.Model, "gpt-4o-mini")
+		}
+		if refetched.Provider != "anthropic" {
+			t.Errorf("Provider after update = %q, want %q", refetched.Provider, "anthropic")
+		}
+
+		// The list reader must observe the very same row (no second cache/copy).
+		list, err := cs.ListSubscriptions(sender)
+		if err != nil {
+			t.Fatalf("ListSubscriptions after update: %v", err)
+		}
+		if len(list) != 1 {
+			t.Fatalf("ListSubscriptions returned %d subscriptions, want 1", len(list))
+		}
+		if list[0].Name != "After Update" || list[0].Model != "gpt-4o-mini" {
+			t.Errorf("ListSubscriptions[0] = {Name:%q Model:%q}, want {Name:%q Model:%q}",
+				list[0].Name, list[0].Model, "After Update", "gpt-4o-mini")
+		}
+	})
+
+	t.Run("SetDefaultSubscription_RemoveSubscription", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+		cs := s.Config()
+		sender := configTestID(t)
+
+		mkSub := func(id, name string) *sqlite.LLMSubscription {
+			return &sqlite.LLMSubscription{
+				ID:       id,
+				SenderID: sender,
+				Name:     name,
+				Provider: "openai",
+				BaseURL:  "https://api.example.com",
+				APIKey:   "sk-contract-test",
+				Model:    "gpt-4o",
+			}
+		}
+		keep := mkSub(configTestID(t)+"-keep", "Contract Keep")
+		drop := mkSub(configTestID(t)+"-drop", "Contract Drop")
+		for _, sub := range []*sqlite.LLMSubscription{keep, drop} {
+			if err := cs.AddSubscription(sub); err != nil {
+				t.Fatalf("AddSubscription(%s): %v", sub.Name, err)
+			}
+		}
+
+		if err := cs.SetDefaultSubscription(drop.ID); err != nil {
+			t.Fatalf("SetDefaultSubscription: %v", err)
+		}
+		def, err := cs.GetDefaultSubscription(sender)
+		if err != nil {
+			t.Fatalf("GetDefaultSubscription: %v", err)
+		}
+		if def == nil || def.ID != drop.ID {
+			t.Fatalf("GetDefaultSubscription = %+v, want id %q", def, drop.ID)
+		}
+
+		if err := cs.RemoveSubscription(drop.ID); err != nil {
+			t.Fatalf("RemoveSubscription: %v", err)
+		}
+
+		gone, err := cs.GetSubscription(drop.ID)
+		if err != nil {
+			t.Fatalf("GetSubscription after RemoveSubscription: %v", err)
+		}
+		if gone != nil {
+			t.Errorf("GetSubscription(%q) after RemoveSubscription = %+v, want nil", drop.ID, gone)
+		}
+
+		list, err := cs.ListSubscriptions(sender)
+		if err != nil {
+			t.Fatalf("ListSubscriptions after RemoveSubscription: %v", err)
+		}
+		if len(list) != 1 {
+			t.Fatalf("ListSubscriptions returned %d subscriptions, want 1", len(list))
+		}
+		if list[0].ID != keep.ID {
+			t.Errorf("ListSubscriptions[0].ID = %q, want %q (the survivor)", list[0].ID, keep.ID)
+		}
+
+		// The default pointer must not survive the subscription it points at:
+		// resolving a deleted row as "the default" would hand callers a nil
+		// subscription (or a stale model) instead of falling back.
+		defAfter, err := cs.GetDefaultSubscription(sender)
+		if err != nil {
+			t.Fatalf("GetDefaultSubscription after removing the default: %v", err)
+		}
+		if defAfter != nil {
+			t.Errorf("GetDefaultSubscription after removing the default = %+v, want nil", defAfter)
+		}
+	})
+
+	t.Run("ListAll", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+		cs := s.Config()
+
+		a := &sqlite.LLMSubscription{
+			ID:       configTestID(t) + "-a",
+			SenderID: configTestID(t) + "-sender-a",
+			Name:     "Sub A",
+			Provider: "openai",
+			BaseURL:  "https://api.example.com",
+			APIKey:   "sk-a",
+			Model:    "gpt-4o",
+		}
+		b := &sqlite.LLMSubscription{
+			ID:       configTestID(t) + "-b",
+			SenderID: configTestID(t) + "-sender-b",
+			Name:     "Sub B",
+			Provider: "deepseek",
+			BaseURL:  "https://api.example.com",
+			APIKey:   "sk-b",
+			Model:    "deepseek-chat",
+		}
+		if err := cs.AddSubscription(a); err != nil {
+			t.Fatalf("AddSubscription(a): %v", err)
+		}
+		if err := cs.AddSubscription(b); err != nil {
+			t.Fatalf("AddSubscription(b): %v", err)
+		}
+
+		// ListAll is the sender-agnostic view (the admin/console listing): both
+		// subscriptions must show up no matter who owns them.
+		all, err := cs.ListAll()
+		if err != nil {
+			t.Fatalf("ListAll: %v", err)
+		}
+		if len(all) < 2 {
+			t.Fatalf("ListAll returned %d subscriptions, want >= 2", len(all))
+		}
+		found := map[string]bool{}
+		for _, sub := range all {
+			found[sub.ID] = true
+		}
+		if !found[a.ID] || !found[b.ID] {
+			t.Errorf("ListAll is missing a subscription: has %v, want both %q and %q", found, a.ID, b.ID)
+		}
+	})
+
+	t.Run("Rename_SetModel", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+		cs := s.Config()
+		sub := addTestSubscription(t, cs, configTestID(t))
+
+		if err := cs.Rename(sub.ID, "Renamed Via Backend"); err != nil {
+			t.Fatalf("Rename: %v", err)
+		}
+		renamed, err := cs.GetSubscription(sub.ID)
+		if err != nil {
+			t.Fatalf("GetSubscription after Rename: %v", err)
+		}
+		if renamed == nil {
+			t.Fatalf("GetSubscription(%q) = nil after Rename", sub.ID)
+		}
+		if renamed.Name != "Renamed Via Backend" {
+			t.Errorf("Name after Rename = %q, want %q", renamed.Name, "Renamed Via Backend")
+		}
+
+		// SetModel is the shared SubscriptionBackend verb used by the RPC layer to
+		// repoint a subscription at a different default model. It must persist the
+		// new default: a silently-successful no-op would leave the picker and the
+		// stored subscription disagreeing.
+		if err := cs.SetModel(sub.ID, "claude-3-opus"); err != nil {
+			t.Fatalf("SetModel: %v", err)
+		}
+		repointed, err := cs.GetSubscription(sub.ID)
+		if err != nil {
+			t.Fatalf("GetSubscription after SetModel: %v", err)
+		}
+		if repointed == nil {
+			t.Fatalf("GetSubscription(%q) = nil after SetModel", sub.ID)
+		}
+		if repointed.Model != "claude-3-opus" {
+			t.Errorf("Model after SetModel = %q, want %q", repointed.Model, "claude-3-opus")
+		}
+		// SetModel is model-scoped: the display name touched by Rename must survive.
+		if repointed.Name != "Renamed Via Backend" {
+			t.Errorf("Name after SetModel = %q, want %q (SetModel must not clobber it)",
+				repointed.Name, "Renamed Via Backend")
+		}
+	})
+
+	t.Run("SetModelMaxContext_SetModelMaxOutput", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+		cs := s.Config()
+		sub := addTestSubscription(t, cs, configTestID(t))
+
+		if err := cs.UpsertModel(sub.ID, "gpt-4o", 128000, 4096, "", ""); err != nil {
+			t.Fatalf("UpsertModel: %v", err)
+		}
+
+		if err := cs.SetModelMaxContext(sub.ID, "gpt-4o", 200000); err != nil {
+			t.Fatalf("SetModelMaxContext: %v", err)
+		}
+		m, err := cs.GetModel(sub.ID, "gpt-4o")
+		if err != nil {
+			t.Fatalf("GetModel after SetModelMaxContext: %v", err)
+		}
+		if m == nil {
+			t.Fatalf("GetModel(%q, gpt-4o) = nil after SetModelMaxContext", sub.ID)
+		}
+		if m.MaxContext != 200000 {
+			t.Errorf("MaxContext after SetModelMaxContext = %d, want 200000", m.MaxContext)
+		}
+		// The setter is single-column: the sibling budget must survive untouched.
+		if m.MaxOutputTokens != 4096 {
+			t.Errorf("MaxOutputTokens after SetModelMaxContext = %d, want 4096 (must be preserved)", m.MaxOutputTokens)
+		}
+
+		if err := cs.SetModelMaxOutput(sub.ID, "gpt-4o", 8192); err != nil {
+			t.Fatalf("SetModelMaxOutput: %v", err)
+		}
+		m2, err := cs.GetModel(sub.ID, "gpt-4o")
+		if err != nil {
+			t.Fatalf("GetModel after SetModelMaxOutput: %v", err)
+		}
+		if m2 == nil {
+			t.Fatalf("GetModel(%q, gpt-4o) = nil after SetModelMaxOutput", sub.ID)
+		}
+		if m2.MaxOutputTokens != 8192 {
+			t.Errorf("MaxOutputTokens after SetModelMaxOutput = %d, want 8192", m2.MaxOutputTokens)
+		}
+		if m2.MaxContext != 200000 {
+			t.Errorf("MaxContext after SetModelMaxOutput = %d, want 200000 (must be preserved)", m2.MaxContext)
+		}
+	})
+
+	t.Run("RemoveModel", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+		cs := s.Config()
+		sub := addTestSubscription(t, cs, configTestID(t))
+
+		if err := cs.UpsertModel(sub.ID, "model-a", 1000, 100, "", ""); err != nil {
+			t.Fatalf("UpsertModel(model-a): %v", err)
+		}
+		if err := cs.UpsertModel(sub.ID, "model-b", 2000, 200, "", ""); err != nil {
+			t.Fatalf("UpsertModel(model-b): %v", err)
+		}
+
+		if err := cs.RemoveModel(sub.ID, "model-a"); err != nil {
+			t.Fatalf("RemoveModel: %v", err)
+		}
+
+		gone, err := cs.GetModel(sub.ID, "model-a")
+		if err != nil {
+			t.Fatalf("GetModel after RemoveModel: %v", err)
+		}
+		if gone != nil {
+			t.Errorf("GetModel(%q, model-a) after RemoveModel = %+v, want nil", sub.ID, gone)
+		}
+
+		models, err := cs.GetModels(sub.ID)
+		if err != nil {
+			t.Fatalf("GetModels after RemoveModel: %v", err)
+		}
+		if len(models) != 1 {
+			t.Fatalf("GetModels returned %d models, want 1", len(models))
+		}
+		if models[0].Model != "model-b" {
+			t.Errorf("GetModels[0].Model = %q, want %q (the survivor)", models[0].Model, "model-b")
+		}
+
+		// Deleting a model that is already gone is idempotent, not an error —
+		// concurrent removals (UI + catalog refresh) must not fail the caller.
+		if err := cs.RemoveModel(sub.ID, "model-a"); err != nil {
+			t.Errorf("RemoveModel on an already-removed model: %v", err)
+		}
+	})
+
+	t.Run("UpdatePerModelConfigs", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+		cs := s.Config()
+		sub := addTestSubscription(t, cs, configTestID(t))
+
+		// The model rows are registered first: UpdatePerModelConfigs writes the
+		// per-model config of models that exist (registering a model is the job of
+		// UpsertModel/EnsureModel, not of this call).
+		if err := cs.UpsertModel(sub.ID, "model-a", 1000, 100, "", ""); err != nil {
+			t.Fatalf("UpsertModel(model-a): %v", err)
+		}
+		if err := cs.UpsertModel(sub.ID, "model-b", 2000, 200, "", ""); err != nil {
+			t.Fatalf("UpsertModel(model-b): %v", err)
+		}
+
+		if err := cs.UpdatePerModelConfigs(sub.ID, map[string]sqlite.PerModelConfig{
+			"model-a": {MaxContext: 111000, MaxOutputTokens: 111, APIType: "responses"},
+			"model-b": {MaxContext: 222000, MaxOutputTokens: 222},
+		}); err != nil {
+			t.Fatalf("UpdatePerModelConfigs: %v", err)
+		}
+
+		mA, err := cs.GetModel(sub.ID, "model-a")
+		if err != nil {
+			t.Fatalf("GetModel(model-a): %v", err)
+		}
+		if mA == nil {
+			t.Fatalf("GetModel(%q, model-a) = nil after UpdatePerModelConfigs", sub.ID)
+		}
+		if mA.MaxContext != 111000 {
+			t.Errorf("model-a MaxContext = %d, want 111000", mA.MaxContext)
+		}
+		if mA.MaxOutputTokens != 111 {
+			t.Errorf("model-a MaxOutputTokens = %d, want 111", mA.MaxOutputTokens)
+		}
+		// APIType is the per-model override for the API dialect: it must land in
+		// the api_type column ("" means "inherit the subscription default"), never
+		// in thinking_mode.
+		if mA.APIType != "responses" {
+			t.Errorf("model-a APIType = %q, want %q", mA.APIType, "responses")
+		}
+
+		mB, err := cs.GetModel(sub.ID, "model-b")
+		if err != nil {
+			t.Fatalf("GetModel(model-b): %v", err)
+		}
+		if mB == nil {
+			t.Fatalf("GetModel(%q, model-b) = nil after UpdatePerModelConfigs", sub.ID)
+		}
+		if mB.MaxContext != 222000 {
+			t.Errorf("model-b MaxContext = %d, want 222000", mB.MaxContext)
+		}
+		if mB.MaxOutputTokens != 222 {
+			t.Errorf("model-b MaxOutputTokens = %d, want 222", mB.MaxOutputTokens)
+		}
+		if mB.APIType != "" {
+			t.Errorf("model-b APIType = %q, want %q (unset means inherit)", mB.APIType, "")
+		}
+
+		models, err := cs.GetModels(sub.ID)
+		if err != nil {
+			t.Fatalf("GetModels after UpdatePerModelConfigs: %v", err)
+		}
+		if len(models) != 2 {
+			t.Fatalf("GetModels returned %d models, want 2", len(models))
+		}
+	})
 }
 
 // configTestID returns a per-subtest unique identifier. ConfigStore rows are

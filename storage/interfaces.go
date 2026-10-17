@@ -303,11 +303,3 @@ type ConfigStore interface {
 	GetAllUsage() ([]sqlite.UserTokenUsage, error)
 	GetDailyUsageSummary(senderID string, days int) ([]sqlite.DailyTokenUsage, error)
 }
-
-// UserSettingsBackend is the storage interface for SettingsService.
-// Implemented by both sqlite.UserSettingsService (via adapter) and pgConfigStore.
-type UserSettingsBackend interface {
-	Get(channel, senderID string) (map[string]string, error)
-	Set(channel, senderID, key, value string) error
-	Delete(channel, senderID, key string) error
-}

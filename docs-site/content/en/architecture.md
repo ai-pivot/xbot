@@ -360,6 +360,11 @@ Layer 4: ContextEdit → precise delete/truncate/replace
 
 Single SQLite file, WAL mode, `MaxOpenConns=1` (SQLite single-writer model), `BusyTimeout=5000ms`. Schema Version 21.
 
+The storage layer is backend-agnostic: every read/write goes through the
+`storage.Storage` interfaces (`Session`/`Tenant`/`Memory`/`Config`), so a
+PostgreSQL backend (`storage.type = "pg"`, `storage/pg_*.go`) serves the same
+data model without any change to agent behaviour. SQLite remains the default.
+
 | Table | Purpose |
 |-------|---------|
 | `tenants` | Tenants (channel+chatID → tenantID) |
