@@ -8,6 +8,8 @@ import { UserSettingsProvider } from '@/providers/UserSettingsProvider'
 import { ThemeProvider } from '@/providers/theme'
 import { I18nProvider } from '@/providers/i18n'
 import { registerSW } from '@/components/PWAUpdatePrompt'
+import { PreviewGate } from '@/components/preview/PreviewGate'
+import { previewEnabled } from '@/lib/previewConnection'
 
 // Disable browser scroll restoration — the app manages scroll position
 // (virtualizer + scheduleFollow). Browser restoration fights our scroll,
@@ -18,7 +20,7 @@ if ('scrollRestoration' in history) {
 
 // Register Service Worker (PWA auto-update). Dev build has no SW (PWA disabled),
 // so skip registration to avoid a 404 noise on /sw2.js.
-if (import.meta.env.PROD) {
+if (import.meta.env.PROD && __PWA_ENABLED__ && !previewEnabled()) {
   registerSW()
 }
 
@@ -102,16 +104,20 @@ class CrashBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
+const backendApplication = (
+  <AuthProvider>
+    <UserSettingsProvider>
+      <ThemeProvider>
+        <I18nProvider>
+          <App />
+        </I18nProvider>
+      </ThemeProvider>
+    </UserSettingsProvider>
+  </AuthProvider>
+)
+
 createRoot(document.getElementById('root')!).render(
   <CrashBoundary>
-    <AuthProvider>
-      <UserSettingsProvider>
-        <ThemeProvider>
-          <I18nProvider>
-            <App />
-          </I18nProvider>
-        </ThemeProvider>
-      </UserSettingsProvider>
-    </AuthProvider>
+    {previewEnabled() ? <PreviewGate>{backendApplication}</PreviewGate> : backendApplication}
   </CrashBoundary>,
 )

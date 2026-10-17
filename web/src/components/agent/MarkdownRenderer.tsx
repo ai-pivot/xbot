@@ -28,6 +28,7 @@ import {
   type ComponentPropsWithoutRef,
 } from "react";
 import Markdown from "react-markdown";
+import { usePreviewResource, usePreviewResourceLink } from "@/hooks/usePreviewResource";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -261,7 +262,11 @@ const IMG_PLACEHOLDER_MIN_HEIGHT = 140
 
 function MarkdownImage({ node: _node, alt, ...props }: ComponentPropsWithoutRef<"img"> & { node?: unknown }) {
   const [failed, setFailed] = useState(false)
-  const src = typeof props.src === 'string' ? props.src : ''
+  const original = typeof props.src === 'string' ? props.src : ''
+  const resource = usePreviewResource(original)
+  const src = resource.src
+  useEffect(() => setFailed(false), [original])
+  if (resource.loading) return <span role="status">Loading image…</span>
   if (failed || !src) {
     return (
       <span
@@ -269,7 +274,7 @@ function MarkdownImage({ node: _node, alt, ...props }: ComponentPropsWithoutRef<
         className="my-2 inline-flex items-center gap-1.5 rounded-md border border-border bg-bg-tertiary px-2 py-1 text-xs text-text-muted"
       >
         <span aria-hidden>🖼</span>
-        <span className="max-w-[30ch] truncate">{alt || 'image'}</span>
+        <span className="max-w-[30ch] truncate">{resource.error || alt || 'image'}</span>
         {src ? (
           <a href={src} target="_blank" rel="noopener noreferrer" className="underline hover:text-text-secondary" style={{ color: 'var(--md-link)' }}>
             link
@@ -290,7 +295,7 @@ function MarkdownImage({ node: _node, alt, ...props }: ComponentPropsWithoutRef<
         alt={alt ?? ''}
         className="my-2 max-h-[400px] max-w-full cursor-zoom-in rounded object-contain"
         loading="lazy"
-        onClick={() => openLightbox(src, alt ?? '')}
+        onClick={() => openLightbox(original, alt ?? '')}
         onError={() => setFailed(true)}
         onLoad={(e) => {
           // 记住实测高度（含缩放后）⇒ 同一 src 后续渲染零跳变
@@ -299,27 +304,35 @@ function MarkdownImage({ node: _node, alt, ...props }: ComponentPropsWithoutRef<
         }}
         style={remembered ? { height: remembered } : undefined}
         {...props}
+        src={src}
       />
     </span>
   )
+}
+
+/** Protected links require an explicit bounded fetch; never navigate to an unauthenticated API URL. */
+function MarkdownResourceLink({ node: _node, children, ...props }: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
+  const resource = usePreviewResourceLink(props.href || '')
+  return <>
+    <a target="_blank" rel="noopener noreferrer" className="underline" style={{ color: 'var(--md-link)' }}
+      {...props} href={resource.src || (resource.protectedResource ? '#' : undefined)} download={resource.protectedResource && resource.src ? (props.download || true) : props.download}
+      onClick={event => {
+        if (resource.protectedResource && !resource.src) {
+          event.preventDefault()
+          resource.prepare()
+        } else props.onClick?.(event)
+      }}>
+      {children}{resource.loading ? ' (Loading…)' : resource.protectedResource && resource.src ? ' (Ready — click to download)' : ''}
+    </a>
+    {resource.error && <span role="alert"> {resource.error}</span>}
+  </>
 }
 
 /** Custom component map applied to the Markdown tree. */
 const COMPONENTS = {
   code: CodeBlock,
   // Open links in a new tab safely; render anchor styling inline.
-  a: ({
-    node: _node,
-    ...props
-  }: ComponentPropsWithoutRef<"a"> & { node?: unknown }) => (
-    <a
-      target="_blank"
-      rel="noopener noreferrer"
-      className="underline"
-      style={{ color: "var(--md-link)" }}
-      {...props}
-    />
-  ),
+  a: MarkdownResourceLink,
   // MarkdownImage: height-constrained, click opens the lightbox (module-level
   // host — no per-renderer state, keeps the memoized markdown tree untouched),
   // load failure degrades to a compact placeholder with the original link

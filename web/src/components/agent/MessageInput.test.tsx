@@ -1,3 +1,4 @@
+import { activatePreviewConnection, clearPreviewConnection } from '@/lib/previewConnection'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
@@ -66,6 +67,18 @@ async function setEditorContent(content: string) {
 }
 
 describe('MessageInput', () => {
+  it('renders preview images under the base path but stores canonical attachment references', async () => {
+    vi.stubEnv('BASE_URL', '/xbot/session-shortcuts/')
+    const { container } = renderWithProviders(
+      <MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />,
+    )
+    await setEditorContent('![photo](/api/files/download?key=uploads%2Fa.png&inline=1)')
+    expect(container.querySelector('img[src]')?.getAttribute('src')).toBe('/xbot/session-shortcuts/api/files/download?key=uploads%2Fa.png&inline=1')
+    const editor = __getTestEditor()!
+    const markdown = (editor.storage as unknown as { markdown: { getMarkdown: () => string } }).markdown.getMarkdown()
+    expect(markdown).toBe('![photo](/api/files/download?key=uploads%2Fa.png&inline=1)')
+  })
+
   it('bounds composer thumbnails in both dimensions without cropping', () => {
     const rule = readFileSync('src/index.css', 'utf8').match(/\.ProseMirror\.xbot-editor img\s*\{([^}]+)\}/)?.[1]
     expect(rule).toBeDefined()
@@ -681,5 +694,76 @@ describe('MessageInput links & file paste', () => {
       act(() => { editor.commands.clearContent() })
       await waitFor(() => expect(screen.queryByTestId('bang-command-hint')).not.toBeInTheDocument())
     })
+  })
+})
+
+describe('composer protected preview images', () => {
+  afterEach(() => {
+    clearPreviewConnection()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  async function insertImage(src: string) {
+    const editor = await waitFor(() => {
+      const current = __getTestEditor()
+      if (!current) throw new Error('Editor not ready')
+      return current
+    })
+    act(() => { editor.commands.setImage({ src, alt: 'composer-photo' }) })
+    return editor
+  }
+
+  it('fetches a protected image with bearer auth, rendering only a Blob while preserving canonical Markdown', async () => {
+    vi.stubGlobal('__PREVIEW_ENABLED__', true)
+    activatePreviewConnection('https://backend.example/xbot', 'composer-secret')
+    let resolveResponse!: (response: Response) => void
+    const fetchMock = vi.fn((url: string) => url.includes('/api/files/')
+      ? new Promise<Response>(resolve => { resolveResponse = resolve })
+      : Promise.resolve(new Response(JSON.stringify({ ok: true, data: [] }))))
+    vi.stubGlobal('fetch', fetchMock)
+    const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:composer-photo')
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    const view = renderWithProviders(<MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />)
+    const canonical = '/api/files/download?key=uploads%2Fphoto.png&inline=1'
+    const editor = await insertImage(canonical)
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url.includes('/api/files/'))).toHaveLength(1))
+    expect(view.container.querySelector('[data-composer-image] img')).toBeNull()
+    expect(screen.getByRole('status')).toHaveTextContent('Loading image preview')
+    expect(fetchMock).toHaveBeenCalledWith(`https://backend.example/xbot${canonical}`, expect.objectContaining({
+      headers: { Authorization: 'Bearer composer-secret' }, credentials: 'omit', redirect: 'error',
+    }))
+    act(() => { resolveResponse(new Response('image', { headers: { 'Content-Type': 'image/png' } })) })
+    await waitFor(() => expect(view.container.querySelector('[data-composer-image] img')).toHaveAttribute('src', 'blob:composer-photo'))
+    expect(create).toHaveBeenCalledOnce()
+    const markdown = (editor.storage as unknown as { markdown: { getMarkdown: () => string } }).markdown.getMarkdown()
+    expect(markdown).toContain(canonical)
+    expect(markdown).not.toContain('blob:')
+    expect(markdown).not.toContain('composer-secret')
+    expect(editor.getHTML()).toContain('/api/files/download?key=uploads%2Fphoto.png')
+    expect(editor.getHTML()).not.toContain('blob:')
+    view.unmount()
+    expect(revoke).toHaveBeenCalledWith('blob:composer-photo')
+  })
+
+  it('shows actionable failure instead of an unauthorized raw image', async () => {
+    vi.stubGlobal('__PREVIEW_ENABLED__', true)
+    activatePreviewConnection('https://backend.example', 'secret')
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })))
+    const view = renderWithProviders(<MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />)
+    await insertImage('/api/files/download?key=denied')
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Reconnect to the preview backend'))
+    expect(view.container.querySelector('[data-composer-image] img')).toBeNull()
+  })
+
+  it('leaves external image rendering untouched and never authorizes its URL', async () => {
+    vi.stubGlobal('__PREVIEW_ENABLED__', true)
+    activatePreviewConnection('https://backend.example', 'secret')
+    const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify({ ok: true, data: [] })))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = renderWithProviders(<MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />)
+    await insertImage('https://images.example/photo.png')
+    await waitFor(() => expect(view.container.querySelector('[data-composer-image] img')).toHaveAttribute('src', 'https://images.example/photo.png'))
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('https://images.example/'))).toBe(false)
   })
 })

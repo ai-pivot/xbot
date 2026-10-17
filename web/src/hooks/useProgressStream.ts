@@ -1,3 +1,4 @@
+import { backendFetch } from '@/lib/api'
 /**
  * useProgressStream — subscribes a ProgressStore to the SSE event stream for one
  * chatID and exposes the live progress + streaming-preview message (Spec 3/4).
@@ -1736,7 +1737,7 @@ function handleProgressMessage(
             error = e instanceof Error ? e.message : String(e)
           }
           // Report result back to backend
-          fetch('/api/rpc', {
+          backendFetch('/api/rpc', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1746,7 +1747,7 @@ function handleProgressMessage(
           }).catch(() => {})
         }).catch(() => {
           // sucrase/react import failed — report success (don't block)
-          fetch('/api/rpc', {
+          backendFetch('/api/rpc', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

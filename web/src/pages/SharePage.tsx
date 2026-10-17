@@ -1,3 +1,4 @@
+import { backendFetch } from '@/lib/api'
 /**
  * SharePage —— 公开分享页（**无需登录**：token 即凭据）。
  *
@@ -14,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { I18nProvider } from '@/providers/i18n'
 import type { ShareRendererContribution, SharedArtifact } from '@/plugin-api'
+import { appResourceUrl } from '@/lib/appUrl'
 
 interface ShareResponse {
   token: string
@@ -37,7 +39,7 @@ export function SharePage({ token }: { token: string }) {
     let cancelled = false
     const run = async () => {
       try {
-        const res = await fetch(`/api/share/${encodeURIComponent(token)}`, {
+        const res = await backendFetch(`/api/share/${encodeURIComponent(token)}`, {
           headers: { Accept: 'application/json' },
         })
         const envelope = (await res.json()) as { ok?: boolean; data?: ShareResponse; error?: { message?: string } }
@@ -61,7 +63,7 @@ export function SharePage({ token }: { token: string }) {
         // 加载产出插件并让它注册渲染器。ctx 只提供它需要的两项：
         // contributes.register（声明式贡献点）与 share.registerRenderer。
         const renderers: ShareRendererContribution[] = []
-        const mod = (await import(/* @vite-ignore */ data.module_url)) as {
+        const mod = (await import(/* @vite-ignore */ appResourceUrl(data.module_url))) as {
           activate?: (ctx: unknown) => unknown
         }
         const minimalCtx = {

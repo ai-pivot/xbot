@@ -20,6 +20,7 @@ import { PluginRuntimeProvider, usePluginRuntime, type PluginRuntimeHost } from 
 import { FetchRpcTransport } from '@/plugin-runtime/rpc'
 import { usePluginViewRegistrySync } from './viewRegistrySync'
 import { usePluginLocaleEvent } from './useLocale'
+import { appResourceUrl } from '@/lib/appUrl'
 
 /** 后端 web_plugin_list 返回的单个插件声明。 */
 export interface WebPluginDecl {
@@ -68,7 +69,7 @@ async function loadPluginViewComponent(
     return loadBuiltinView(view.entry.slice('builtin:'.length))
   }
   const base = `/plugins/${pluginId}/web`
-  const url = view.entry.startsWith('/') ? view.entry : `${base}/${view.entry}`
+  const url = appResourceUrl(view.entry.startsWith('/') ? view.entry : `${base}/${view.entry}`)
   // cache-bust token：activate/reload 时 bump（见 pluginLoadTokens 注释）。
   // 无 token（异常路径）时退化为无参数 URL，行为同旧版。
   const token = pluginLoadTokens.get(pluginId)
@@ -171,7 +172,7 @@ export function usePluginRuntimeHost(): PluginRuntimeHost {
   return useMemo<PluginRuntimeHost>(
     () => ({
       rpcTransport: new FetchRpcTransport(),
-      moduleBaseUrl: (pluginId: string) => `/plugins/${pluginId}/web`,
+      moduleBaseUrl: (pluginId: string) => appResourceUrl(`/plugins/${pluginId}/web`),
       loadViewComponent: (pluginId, view) => loadPluginViewComponent(pluginId, view),
       ui: {
         showToast: () => {},

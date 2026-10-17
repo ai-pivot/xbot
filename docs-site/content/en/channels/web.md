@@ -55,6 +55,30 @@ For manual installation, download the web release archive and extract it to
 
 After starting the server, open `http://your-server:8082` in a browser.
 
+## Frontend Feature Previews
+
+Build a frontend for a path such as `/xbot/session-shortcuts/`:
+
+```bash
+cd web
+XBOT_WEB_BASE_PATH=/xbot/session-shortcuts/ npm run build
+```
+
+Serve that build at the same path. Forward its `api/`, `ws/`, and `plugins/`
+requests to the existing Web backend after removing the feature prefix. Keep
+SSE unbuffered and preserve WebSocket upgrades. Rewrite backend cookie paths
+to the preview namespace (and use Secure cookies over HTTPS) so preview login
+does not overwrite a root deployment's login. Unknown features/assets return
+404; SPA routes such as `login` serve that feature's `index.html`.
+
+The default build base remains `/`. Subpath builds disable PWA caching and
+worker updates. Login, page reloads and session browser tabs keep the feature
+path; stored attachment references remain independent of the preview version.
+This is a **frontend preview, not a separate data environment**: using the same
+backend means edits and deletion affect real conversations. No backend restart
+is needed. A local backend exposed through an SSH reverse tunnel requires the
+local machine to remain online.
+
 ## Message Composer
 
 > **New session**: you may pick a working directory; **a missing directory is created automatically** (including parent directories). If a regular file blocks the path (or permissions fail), the panel reports "failed to set working directory" instead of silently using a wrong one.
@@ -128,7 +152,9 @@ actions and menu labels, persist on refresh, and sync with your account.
 Custom Control and Command keys remain distinct; `Mod` accepts Ctrl/Cmd on
 Mac/Linux and Ctrl only on Windows.
 Unmodified text/navigation keys are not accepted (F1-F24 are supported).
-Escape cancels recording; IME and held-key events are ignored. System/browser
+Escape cancels recording; IME and held-key events are ignored. Generic events
+named `keydown` are ignored; programmatic shortcut input must use `KeyboardEvent`.
+System/browser
 reserved combinations may never reach the page: enter a different binding
 manually when recording cannot capture one. The table below lists defaults.
 

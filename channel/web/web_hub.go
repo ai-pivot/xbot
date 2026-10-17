@@ -630,6 +630,7 @@ const (
 
 // Client represents a single connected transport client.
 type Client struct {
+	preview          bool
 	connType         string
 	wsConn           *websocket.Conn
 	w                http.ResponseWriter

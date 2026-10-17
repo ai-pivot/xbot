@@ -13,10 +13,13 @@
  * a plain string — zero interface change for downstream consumers.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { useEditor, EditorContent, type Editor } from '@tiptap/react'
+import { useEditor, EditorContent, ReactNodeViewRenderer, NodeViewWrapper, type NodeViewProps, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
 import Image from '@tiptap/extension-image'
+import { appResourceUrl } from '@/lib/appUrl'
+import { previewEnabled } from '@/lib/previewConnection'
+import { usePreviewResource } from '@/hooks/usePreviewResource'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
 import { Loader2, Mail, Paperclip, Send, Square, Target, X, Zap, Clock, Terminal } from 'lucide-react'
@@ -40,6 +43,26 @@ import { openLightbox } from './Lightbox'
 import { useCompletion, type CompletionKeyEvent } from '@/hooks/useCompletion'
 import type { TodoState } from '@/hooks/useTodos'
 import type { GoalInfo, TodoItem } from '@/types/shared'
+
+/** Render-only preview resolution: never write the temporary Blob URL into the document. */
+function ComposerImageNodeView({ node }: NodeViewProps) {
+  const original = typeof node.attrs.src === 'string' ? node.attrs.src : ''
+  const resource = usePreviewResource(original)
+  const alt = typeof node.attrs.alt === 'string' ? node.attrs.alt : ''
+  return (
+    <NodeViewWrapper as="span" contentEditable={false} className="inline-block" data-composer-image>
+      {resource.src ? (
+        <img src={resource.src} alt={alt} title={node.attrs.title ?? undefined} />
+      ) : resource.error ? (
+        <span role="alert" className="text-xs text-muted-foreground">
+          Image preview unavailable: {resource.error}. Reconnect to the preview backend or open the image in the backend application.
+        </span>
+      ) : (
+        <span role="status" className="text-xs text-muted-foreground">Loading image preview…</span>
+      )}
+    </NodeViewWrapper>
+  )
+}
 
 interface MessageInputProps {
   /** True while the agent is producing output; shows the cancel button. */
@@ -261,7 +284,22 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       // Paste-markdown image rendering: pasted/uploaded images insert as ![name](url)
       // markdown — this extension makes tiptap render them inline in the composer
       // (tiptap-markdown parses ![alt](src) into image nodes when the schema has one).
-      Image.extend({ selectable: false }).configure({ inline: true }),
+      Image.extend({
+        selectable: false,
+        addNodeView() {
+          return previewEnabled() ? ReactNodeViewRenderer(ComposerImageNodeView, { as: 'span' }) : null
+        },
+        addAttributes() {
+          const attributes = this.parent!()
+          return {
+            ...attributes,
+            src: {
+              default: null,
+              renderHTML: ({ src }) => ({ src: typeof src === 'string' && !previewEnabled() ? appResourceUrl(src) : src }),
+            },
+          }
+        },
+      }).configure({ inline: true }),
       EditorLink,
       Placeholder.configure({
         placeholder: () => placeholderRef.current,

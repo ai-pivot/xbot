@@ -20,6 +20,7 @@ import { MermaidDiagram } from '@/components/agent/MermaidDiagram'
 import { FrontmatterCard } from '@/components/file/FrontmatterCard'
 import { parseFrontmatter } from '@/lib/markdown'
 import { joinPath } from '@/hooks/useFileSystem'
+import { appResourceUrl } from '@/lib/appUrl'
 
 import 'katex/dist/katex.min.css'
 import './markdown-preview.css'
@@ -74,13 +75,13 @@ function isCodeBlock(className: string | undefined, children: ReactNode): boolea
 function resolveImgSrc(src: string | undefined, baseDir?: string): string | undefined {
   if (!src) return src
   // Already a full URL or data/blob URI — leave as-is.
-  if (/^(https?:|data:|blob:|\/api\/)/.test(src)) return src
+  if (/^(https?:|data:|blob:|\/api\/)/.test(src)) return appResourceUrl(src)
   if (!baseDir) return src
 
   // Normalize: strip leading "./" but keep subdirectory paths intact.
   const cleanSrc = src.replace(/^\.\//, '')
   const absPath = src.startsWith('/') ? src : joinPath(baseDir, cleanSrc)
-  return `/api/fs/raw?path=${encodeURIComponent(absPath)}`
+  return appResourceUrl(`/api/fs/raw?path=${encodeURIComponent(absPath)}`)
 }
 
 export const MarkdownPreview = memo(function MarkdownPreview({

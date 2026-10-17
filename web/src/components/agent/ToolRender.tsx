@@ -25,6 +25,7 @@ import {
 import { toast } from 'sonner'
 import type { WebToolProgress } from '@/types/shared'
 import { postAPI } from '@/lib/api'
+import { appResourceUrl } from '@/lib/appUrl'
 import { dispatchBgTaskPromoted } from '@/lib/sessionEvents'
 import { ToolCallBlock } from './ToolCallBlock'
 import { DiffView, extractDiffSource } from './DiffView'
@@ -239,7 +240,7 @@ function ShareFileRender({
 
   const copyLink = useCallback(async () => {
     if (!parsed) return
-    const full = parsed.url.startsWith('http') ? parsed.url : `${window.location.origin}${parsed.url}`
+    const full = new URL(appResourceUrl(parsed.url), window.location.origin).href
     try {
       await navigator.clipboard.writeText(full)
     } catch {
@@ -283,7 +284,7 @@ function ShareFileRender({
 
       {parsed.isImage && (
         <a
-          href={parsed.url}
+          href={appResourceUrl(parsed.url)}
           target="_blank"
           rel="noreferrer"
           data-testid="share-file-preview"
@@ -291,7 +292,7 @@ function ShareFileRender({
           style={{ border: '1px solid var(--border)' }}
         >
           <img
-            src={parsed.url}
+            src={appResourceUrl(parsed.url)}
             alt={parsed.name}
             loading="lazy"
             className="max-h-72 w-auto max-w-full"
@@ -317,7 +318,7 @@ function ShareFileRender({
           {copied ? t('agent.tool.copied') : t('agent.tool.copyLink')}
         </button>
         <a
-          href={parsed.url}
+          href={appResourceUrl(parsed.url)}
           target="_blank"
           rel="noreferrer"
           data-testid="share-file-open"

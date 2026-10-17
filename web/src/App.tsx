@@ -22,6 +22,7 @@ import { RegisterPage } from '@/pages/RegisterPage'
 import { SharePage } from '@/pages/SharePage'
 import { ImageLightboxHost } from '@/components/agent/Lightbox'
 import { registerBuiltinLayoutItems } from '@/plugin-runtime/layoutRegistry'
+import { appPath } from '@/lib/appUrl'
 
 // Register built-in layout items once at app startup (session/view buttons etc).
 registerBuiltinLayoutItems()
@@ -36,7 +37,7 @@ function SharePageRoute() {
 export default function App() {
   return (
     <TooltipProvider delayDuration={200}>
-      <BrowserRouter>
+      <BrowserRouter basename={appPath('/')}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />

@@ -74,9 +74,17 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
 })
 
 describe('SSEConnectionImpl', () => {
+  it('keeps authenticated streams under the feature preview base', () => {
+    vi.stubEnv('BASE_URL', '/xbot/session-shortcuts/')
+    const connection = new SSEConnectionImpl()
+    connection.subscribe('chat-preview', 'cli')
+    expect(MockEventSource.instances[0].url).toBe('/xbot/session-shortcuts/api/sse?chat_id=chat-preview&channel=cli')
+    connection.dispose()
+  })
   it('omits a replay cursor on cold startup, registers all events, and closes the prior stream', () => {
     const connection = new SSEConnectionImpl()
     connection.subscribe('chat-a')
