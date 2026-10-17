@@ -349,9 +349,9 @@ func TestRESTCancelCarriesAskUserCancelMarker(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
 	msgBus.EnableDeliveryAcknowledgement()
-	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, db)}, msgBus)
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
+	if _, err := db.Conn().Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
 

@@ -24,6 +24,7 @@ import (
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 
@@ -48,6 +49,12 @@ type RPCContext struct {
 	// pluginWidgetsMu serializes plugin_widgets RPC calls so concurrent
 	// sessions don't race on the shared PluginContext.workingDir.
 	pluginWidgetsMu sync.Mutex
+}
+
+// webAuthStore returns the backend-agnostic web-user store (SQLite or PG),
+// sourced from the agent's storage layer (Config() embeds WebAuthStore).
+func (h *RPCContext) webAuthStore() storage.WebAuthStore {
+	return h.Ag.MultiSession().Store().Config()
 }
 
 // broadcastPluginEnablement 向所有 web 客户端广播插件启用/禁用事件，实现热加载。
@@ -177,7 +184,7 @@ func (h *RPCContext) resolveOwnedHistorySession(ctx context.Context, channel, ch
 // subOwnedByUser reports whether sub is manageable by the caller. After the
 // multi-user removal there is a single operator: every subscription belongs
 // to them (sender 'cli_user' post-v63 sender collapse).
-func (h *RPCContext) subOwnedByUser(ctx context.Context, svc *sqlite.LLMSubscriptionService, sub *sqlite.LLMSubscription) bool {
+func (h *RPCContext) subOwnedByUser(ctx context.Context, svc storage.SubscriptionBackend, sub *sqlite.LLMSubscription) bool {
 	if isAdmin(ctx) {
 		return true
 	}
@@ -203,7 +210,7 @@ func (h *RPCContext) requireLLMFactory() error {
 	return nil
 }
 
-func (h *RPCContext) requireSubscriptionSvc() (*sqlite.LLMSubscriptionService, error) {
+func (h *RPCContext) requireSubscriptionSvc() (storage.SubscriptionBackend, error) {
 	if err := h.requireLLMFactory(); err != nil {
 		return nil, err
 	}
@@ -250,8 +257,8 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 	}
 
 	// v71（每会话一个 DB）：session_messages.context_tokens 在会话库 —— 经
-	// SessionServiceFor（tenantID → 会话库）读取，绝不再 NewSessionService(主库)。
-	sessionSvc, err := h.Ag.MultiSession().SessionServiceFor(tenantID)
+	// SessionServiceForSQLite（tenantID → 会话库）读取，绝不再 NewSessionService(主库)。
+	sessionSvc, err := h.Ag.MultiSession().SessionServiceForSQLite(tenantID)
 	if err != nil {
 		return usage, err
 	}
@@ -1396,13 +1403,9 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
 		// because ChatRenameFn writes labels with cliSenderID, not the WS auth identity.
 		senderID := bizID
-		if db := h.Ag.MultiSession().DB(); db != nil {
-			cs := sqlite.NewChatService(db)
-			if err := cs.DeleteChat(p.Channel, senderID, p.ChatID); err != nil {
-				return nil, fmt.Errorf("delete chat: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("database not available")
+		tenantStore := h.Ag.MultiSession().Store().Tenant()
+		if err := tenantStore.DeleteChat(p.Channel, senderID, p.ChatID); err != nil {
+			return nil, fmt.Errorf("delete chat: %w", err)
 		}
 		// Clean up offload files for the deleted session.
 		h.Ag.CleanupSessionFiles(p.Channel, p.ChatID)
@@ -1431,13 +1434,9 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
 		// consistent with ChatRenameFn which writes labels with cliSenderID.
 		senderID := bizID
-		if db := h.Ag.MultiSession().DB(); db != nil {
-			cs := sqlite.NewChatService(db)
-			if err := cs.RenameChat(p.Channel, senderID, p.ChatID, p.NewName); err != nil {
-				return nil, fmt.Errorf("rename chat: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("database not available")
+		tenantStore := h.Ag.MultiSession().Store().Tenant()
+		if err := tenantStore.RenameChat(p.Channel, senderID, p.ChatID, p.NewName); err != nil {
+			return nil, fmt.Errorf("rename chat: %w", err)
 		}
 		return map[string]string{"status": "ok"}, nil
 	})
@@ -1935,19 +1934,19 @@ func registerAdminHandlers(t RPCTable, h *RPCContext) {
 	t["create_web_user"] = h.requireAdmin(rpc1(func(ctx context.Context, p struct {
 		Username string `json:"username"`
 	}) (any, error) {
-		_, password, err := web.CreateWebUser(h.Ag.MultiSession().DB().Conn(), p.Username)
+		_, password, err := web.CreateWebUser(h.webAuthStore(), p.Username)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]string{"password": password}, nil
 	}))
 	t["list_web_users"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
-		return web.ListWebUsers(h.Ag.MultiSession().DB().Conn())
+		return web.ListWebUsers(h.webAuthStore())
 	}))
 	t["delete_web_user"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Username string `json:"username"`
 	}) error {
-		return web.DeleteWebUser(h.Ag.MultiSession().DB().Conn(), p.Username)
+		return web.DeleteWebUser(h.webAuthStore(), p.Username)
 	}))
 }
 

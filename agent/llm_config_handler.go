@@ -526,7 +526,7 @@ func (a *Agent) GetUserMaxContextForSubModel(senderID, subID, model string) int 
 		return 0
 	}
 	svc := a.userSys.llmFactory.GetSubscriptionSvc()
-	sub, err := svc.Get(subID)
+	sub, err := svc.GetSubscription(subID)
 	if err != nil || sub == nil {
 		return 0
 	}
@@ -571,7 +571,7 @@ func (a *Agent) GetUserMaxOutputTokensForSubModel(senderID, subID, model string)
 		return 0
 	}
 	svc := a.userSys.llmFactory.GetSubscriptionSvc()
-	sub, err := svc.Get(subID)
+	sub, err := svc.GetSubscription(subID)
 	if err != nil || sub == nil {
 		return 0
 	}

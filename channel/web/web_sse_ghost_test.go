@@ -5,13 +5,15 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"xbot/storage/sqlite"
 )
 
-// tenantExists 直接查 tenants 表（newTestDB 返回的是标准库 *sql.DB）。
-func tenantExists(t *testing.T, db *sql.DB, channel, chatID string) bool {
+// tenantExists 直接查 tenants 表（newTestDB 返回的是 *sqlite.DB）。
+func tenantExists(t *testing.T, db *sqlite.DB, channel, chatID string) bool {
 	t.Helper()
 	var id int64
-	err := db.QueryRow("SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", channel, chatID).Scan(&id)
+	err := db.Conn().QueryRow("SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", channel, chatID).Scan(&id)
 	if err == sql.ErrNoRows {
 		return false
 	}

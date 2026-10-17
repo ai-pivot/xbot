@@ -31,6 +31,7 @@ import (
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -1254,11 +1255,18 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	}
 	// Resolve again before replay: deletion may have happened after the probe.
 	// Never use GetOrCreateSession on this read-only recovery path.
-	tenantID, err := sqlite.NewTenantService(a.multiSession.DB()).GetTenantIDByChannelChatID(ch, chatID)
+	// ⚠️ PG 后端没有主库 *sqlite.DB（TenantService 是 SQLite 专属具体类型）——
+	// 跳过本恢复路径（它的下一步 SessionServiceForSQLite().Replay 在 PG 上同样
+	// 不可用，见该方法注释）。
+	db := a.multiSession.DB()
+	if db == nil {
+		return key, nil
+	}
+	tenantID, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil || tenantID == 0 {
 		return key, nil
 	}
-	if svc, err := a.multiSession.SessionServiceFor(tenantID); err == nil {
+	if svc, err := a.multiSession.SessionServiceForSQLite(tenantID); err == nil {
 		if replay, err := svc.Replay(tenantID); err == nil && replay.PendingAskUser != nil {
 			event := &protocol.ProgressEvent{}
 			metadata := replay.PendingAskUser.Metadata
@@ -1362,7 +1370,7 @@ func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqli
 		return 0, "", true
 	}
 	// AskUser records live in the per-session DB, not the main registry.
-	svc, err := a.multiSession.SessionServiceFor(tenantID)
+	svc, err := a.multiSession.SessionServiceForSQLite(tenantID)
 	if err != nil {
 		return 0, "", false
 	}
@@ -1776,9 +1784,12 @@ type Config struct {
 	Model          string
 	MaxIterations  int    // 单次对话最大工具调用迭代次数
 	MaxConcurrency int    // 最大并发会话处理数（默认 3）
-	DBPath         string // SQLite 数据库路径（空则使用默认路径）
-	SkillsDir      string // Skills 目录
-	AgentsDir      string // Agents 目录（空则使用 WorkDir/.xbot/agents）
+	DBPath         string // SQLite 数据库路径（空则使用默认路径）；PG 后端时为 DSN
+	// StorageType 选择存储后端："sqlite"（默认，按 DBPath 文件打开）或 "pg"。
+	// 也可省略 —— DBPath 为 "postgres://..." DSN 时自动走 PG。
+	StorageType string
+	SkillsDir   string // Skills 目录
+	AgentsDir   string // Agents 目录（空则使用 WorkDir/.xbot/agents）
 	// DisabledSkills 全局 skill 黑名单：这些 skill 不会出现在 available_skills
 	// catalog 中（LLM 不可见、不可激活）。
 	DisabledSkills []string
@@ -1923,8 +1934,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 
 // initSession 初始化多租户会话管理器。
 func initSession(cfg Config) (*session.MultiTenantSession, error) {
-	multiSession, err := session.NewMultiTenant(
-		cfg.DBPath,
+	opts := []session.MultiTenantOption{
 		session.WithMCPTimeout(cfg.MCPInactivityTimeout),
 		session.WithCleanupInterval(cfg.MCPCleanupInterval),
 		session.WithSessionCacheTimeout(cfg.SessionCacheTimeout),
@@ -1940,7 +1950,19 @@ func initSession(cfg Config) (*session.MultiTenantSession, error) {
 			LLMModel:   cfg.Model,
 			TokenModel: cfg.Model,
 		}),
-	)
+	}
+
+	// 存储后端选择：StorageType=="pg" 或 DBPath 是 postgres:// DSN → PG。
+	// （PG 路径内部强制 flat 记忆 provider，见 session.NewMultiTenantPG。）
+	if cfg.StorageType == "pg" || strings.HasPrefix(cfg.DBPath, "postgres://") {
+		multiSession, err := session.NewMultiTenantPG(cfg.DBPath, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("initialize multi-tenant session (pg): %w", err)
+		}
+		return multiSession, nil
+	}
+
+	multiSession, err := session.NewMultiTenant(cfg.DBPath, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("initialize multi-tenant session: %w", err)
 	}
@@ -1990,28 +2012,43 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.commands = NewCommandRegistry()
 	registerBuiltinCommands(a.commands)
 
-	// 初始化 Cron 服务和调度器
-	cronSvc := sqlite.NewCronService(multiSession.DB())
-	cronSch := cron.NewScheduler(cronSvc)
+	// 初始化 Cron 服务和调度器。
+	// ⚠️ PG 后端没有主库 *sqlite.DB（m.db == nil）—— cron 服务/调度器依赖它是
+	// SQLite 专属（cron_jobs 表经 sqlite.NewCronService 访问）。PG 路径为后端
+	// 对齐/测试用途，cron 不在其范围内 ⇒ 整段跳过（a.cronSvc/a.cronSch 保持 nil，
+	// 所有使用点都有 nil 守卫，见 Run()）。
+	if db := multiSession.DB(); db != nil {
+		cronSvc := sqlite.NewCronService(db)
+		cronSch := cron.NewScheduler(cronSvc)
 
-	// 从旧的 JSON 文件迁移数据（如果需要）
-	if err := cronSvc.MigrateFromJSON(cfg.WorkDir); err != nil {
-		log.WithError(err).Warn("Failed to migrate cron jobs from JSON")
+		// 从旧的 JSON 文件迁移数据（如果需要）
+		if err := cronSvc.MigrateFromJSON(cfg.WorkDir); err != nil {
+			log.WithError(err).Warn("Failed to migrate cron jobs from JSON")
+		}
+
+		// 注册 CronTool（核心工具，始终可用）
+		registry.RegisterCore(tools.NewCronTool(cronSvc))
+
+		a.cronSvc = cronSvc
+		a.cronSch = cronSch
 	}
-
-	// 注册 CronTool（核心工具，始终可用）
-	registry.RegisterCore(tools.NewCronTool(cronSvc))
-
-	a.cronSvc = cronSvc
-	a.cronSch = cronSch
 
 	// LLM factory: per-user subscriptions are the single source for custom LLM.
 	if a.userSys == nil {
 		a.userSys = &userSystem{}
 	}
 	a.userSys.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
-	a.userSys.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
-	a.userSys.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
+	// ⚠️ PG 后端：订阅/租户服务是 SQLite 专属具体类型（*sqlite.LLMSubscriptionService
+	// / *sqlite.TenantService），PG 走 storage.ConfigStore/TenantStore 接口 —— 此处
+	// 不接线（PG 路径为后端对齐/测试用途，LLM 配置不在其范围内）。消费点都有
+	// nil 守卫（如 llm_factory.go 的 settingsSvc/subSvc 检查）。
+	if db := multiSession.DB(); db != nil {
+		a.userSys.llmFactory.SetSubscriptionSvc(storage.NewSQLiteConfigStore(db))
+		a.userSys.llmFactory.SetTenantSvc(storage.NewSQLiteTenantStore(db))
+	} else if multiSession.Store() != nil {
+		a.userSys.llmFactory.SetSubscriptionSvc(multiSession.Store().Config())
+		a.userSys.llmFactory.SetTenantSvc(multiSession.Store().Tenant())
+	}
 	// v71（每会话一个 DB）：模型切换时清零会话库的 token 基线（session_messages
 	// .context_tokens —— 不同模型上下文大小不同）。tenant_state 半边（主库）由
 	// SetTenantSubscription 清；session_messages 半边（会话库）经本钩子路由。
@@ -2107,16 +2144,24 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	// Initialize RegistryManager
 	a.registryManager = NewRegistryManager(a.skills, a.agents, cfg.WorkDir, cfg.XbotHome, cfg.Sandbox)
 
-	// Initialize UserSettingsService and SettingsService
-	userSettingsSvc := sqlite.NewUserSettingsService(multiSession.DB())
-	a.userSys.settingsSvc = NewSettingsService(userSettingsSvc)
+	// Initialize UserSettingsService and SettingsService.
+	// ⚠️ PG 后端：UserSettingsService 是 SQLite 专属具体类型 ⇒ 跳过（settingsSvc
+	// 保持 nil，LanguageMiddleware / llm_factory / RPC handler 都有 nil 守卫）。
+	// SQLite path: use concrete UserSettingsService
+	// PG path: use Store().Config() which implements UserSettingsBackend
+	if db := multiSession.DB(); db != nil {
+		a.userSys.settingsSvc = NewSettingsService(storage.NewSQLiteConfigStore(db))
+	} else if multiSession.Store() != nil {
+		a.userSys.settingsSvc = NewSettingsService(multiSession.Store().Config())
+	}
 
 	// Initialize LLMSemaphoreManager and inject dependencies
 	llmSemMgr := llm.NewLLMSemaphoreManager()
 	a.userSys.llmFactory.SetLLMSemaphoreManager(llmSemMgr)
 	a.userSys.llmFactory.SetSettingsService(a.userSys.settingsSvc)
 
-	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它）
+	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它 ——
+	// nil 时 LanguageMiddleware 自行短路，见其 Process 的 nil 守卫）
 	a.initPipelines(memoryProvider)
 }
 
@@ -2808,20 +2853,23 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.multiSession.StartCleanupRoutine()
 
-	a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
-		sessionKey := channel + ":" + chatID
-		// nil-guard: bare &Agent{} construction (no New() Store) must not
-		// panic on a cron trigger — same contract as the interactive.go read
-		// sites. Normal chain stores the manager before cron starts.
-		if mgr := a.bgTaskMgr.Load(); mgr != nil {
-			mgr.SendCronFired(&tools.CronFired{
-				Key:     sessionKey,
-				Sid:     senderID,
-				Message: message,
-			})
-		}
-	})
-	a.cronSch.StartDelayed(3 * time.Second)
+	// nil 守卫：PG 后端不初始化 cron（见 initServices）—— 无调度器可启动。
+	if a.cronSch != nil {
+		a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
+			sessionKey := channel + ":" + chatID
+			// nil-guard: bare &Agent{} construction (no New() Store) must not
+			// panic on a cron trigger — same contract as the interactive.go read
+			// sites. Normal chain stores the manager before cron starts.
+			if mgr := a.bgTaskMgr.Load(); mgr != nil {
+				mgr.SendCronFired(&tools.CronFired{
+					Key:     sessionKey,
+					Sid:     senderID,
+					Message: message,
+				})
+			}
+		})
+		a.cronSch.StartDelayed(3 * time.Second)
+	}
 
 	// SetInjectFunc is now called in SetEventRouter (before Run starts),
 	// so a.eventRouter is guaranteed to have the inject function wired.
@@ -2831,7 +2879,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.agentCtx, a.agentCancel = context.WithCancel(ctx)
 	defer func() {
 		a.agentCancel() // cancel all bg subagents when Agent exits
-		a.cronSch.Stop()
+		if a.cronSch != nil {
+			a.cronSch.Stop()
+		}
 		a.multiSession.StopCleanupRoutine()
 	}()
 

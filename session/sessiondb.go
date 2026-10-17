@@ -39,6 +39,7 @@ import (
 
 	log "xbot/logger"
 
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
@@ -172,10 +173,35 @@ func (m *MultiTenantSession) recomputeSessionPreview(sdb *sqlite.DB, tenantID in
 	}
 }
 
-// SessionServiceFor 返回绑定 tenantID 会话库的 SessionService（直接构造点收口：
-// rpc contextUsage / usage stats / rewind 等只有 tenantID、不经 TenantSession 的路径）。
-// 打开（含惰性迁移）经 sessionDB 池 —— 与 TenantSession 共享同一实例。
-func (m *MultiTenantSession) SessionServiceFor(tenantID int64) (*sqlite.SessionService, error) {
+// SessionServiceFor 返回绑定 tenantID 会话存储的 storage.SessionStore
+// （后端无关：SQLite 走每会话 DB 池，PG 走共享连接 + tenant_id 过滤）。这是只有
+// tenantID、不经 TenantSession 的直接构造点收口（rpc contextUsage / 内部工具）。
+//
+// ⚠️ 只暴露 storage.SessionStore 契约内的方法。需要 SQLite 专属操作
+// （usage 统计 / rewind / replay / AskUser 控制记录）的调用方用
+// SessionServiceForSQLite。
+func (m *MultiTenantSession) SessionServiceFor(tenantID int64) (storage.SessionStore, error) {
+	return m.store.Session(tenantID)
+}
+
+// sessionDBAsSessionStore 是 SQLite storage.Storage 的会话工厂：打开（含惰性迁移）
+// 该租户的会话库并返回 storage.SessionStore（*sqlite.SessionService 已满足该接口）。
+// 由 NewMultiTenant 注入 storage.NewSQLiteStorage。
+func (m *MultiTenantSession) sessionDBAsSessionStore(tenantID int64) (storage.SessionStore, error) {
+	db, err := m.sessionDB(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return sqlite.NewSessionService(db), nil
+}
+
+// SessionServiceForSQLite 返回绑定 tenantID 会话库的具体 *sqlite.SessionService。
+// SQLite 专属：暴露 storage.SessionStore 契约之外的会话操作（usage 统计 / rewind /
+// replay / AskUser 控制记录）——PG 后端无对应实现，返回明确错误（绝不静默降级）。
+func (m *MultiTenantSession) SessionServiceForSQLite(tenantID int64) (*sqlite.SessionService, error) {
+	if m.db == nil {
+		return nil, fmt.Errorf("sqlite session service unavailable on the PG backend")
+	}
 	db, err := m.sessionDB(tenantID)
 	if err != nil {
 		return nil, err

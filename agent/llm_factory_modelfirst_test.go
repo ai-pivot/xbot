@@ -6,12 +6,13 @@ import (
 	"xbot/config"
 	"xbot/llm"
 	"xbot/protocol"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
 // newModelFirstTestFactory builds a DB-backed factory wired with subscription +
 // tenant services, ready for ResolveLLM/SelectModel tests.
-func newModelFirstTestFactory(t *testing.T) (*LLMFactory, *sqlite.LLMSubscriptionService, *sqlite.TenantService) {
+func newModelFirstTestFactory(t *testing.T) (*LLMFactory, storage.SubscriptionBackend, storage.TenantStore) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XBOT_HOME", dir)
@@ -20,8 +21,8 @@ func newModelFirstTestFactory(t *testing.T) (*LLMFactory, *sqlite.LLMSubscriptio
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	subSvc := sqlite.NewLLMSubscriptionService(db)
-	tenantSvc := sqlite.NewTenantService(db)
+	subSvc := storage.NewSQLiteConfigStore(db)
+	tenantSvc := storage.NewSQLiteTenantStore(db)
 	f := NewLLMFactory(&llm.MockLLM{}, "system-default-model")
 	f.SetSubscriptionSvc(subSvc)
 	f.SetTenantSvc(tenantSvc)
@@ -139,7 +140,7 @@ func TestResolveLLM_ThinkingMode_GlobalUserSetting(t *testing.T) {
 		t.Fatalf("open db2: %v", err)
 	}
 	t.Cleanup(func() { db2.Close() })
-	settingsSvc := NewSettingsService(sqlite.NewUserSettingsService(db2))
+	settingsSvc := NewSettingsService(storage.NewSQLiteConfigStore(db2))
 	f.SetSettingsService(settingsSvc)
 
 	sub := &sqlite.LLMSubscription{
@@ -216,7 +217,7 @@ func TestResolveLLM_NonCLIChannel_InheritsTierConfig(t *testing.T) {
 		t.Fatalf("open db2: %v", err)
 	}
 	t.Cleanup(func() { db2.Close() })
-	settingsSvc := NewSettingsService(sqlite.NewUserSettingsService(db2))
+	settingsSvc := NewSettingsService(storage.NewSQLiteConfigStore(db2))
 	f.SetSettingsService(settingsSvc)
 
 	sub := &sqlite.LLMSubscription{
