@@ -502,9 +502,11 @@ func (a *Agent) buildMainRunConfig(
 	if !streamDisabled {
 		cfg.Stream = true
 		if a.channelFinder != nil {
-			var progressSeq atomic.Uint64
-			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc, cfg.ResetStreamTiming = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
+			// ⛔ per-session 持久 seq（不是 per-Run 局部变量）：resume 后新 run 的
+			//    seq 必须继续高于客户端水位，否则事件会被误判"重放"丢弃。
+			progressSeq := a.progressSeqFor(cfg.SessionKey)
+			cfg.ProgressSeq = progressSeq
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc, cfg.ResetStreamTiming = a.buildStreamCallbacks(chatID, channel, progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
 		}
 	}
 

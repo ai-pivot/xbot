@@ -271,6 +271,10 @@ func (g *stdioPlugin) makeRemoteEnricher(name string) ContextEnricher {
 				"enricherName": name,
 			},
 		}
+		if g.process == nil {
+			// 插件已停用/启动失败 ⇒ 该 enricher 应被视作"无内容"，而不是让整轮失败
+			return "", fmt.Errorf("plugin %q enricher %q unavailable: plugin process not started", g.manifest.ID, name)
+		}
 		resp, err := g.process.Call(ctx, req)
 		if err != nil {
 			return "", err
@@ -461,6 +465,15 @@ func (p *StdioPluginProcess) SetInboundHandler(handler InboundHandler) {
 // Thread-safe: only one Call can be in-flight at a time (stdin is sequential).
 // The readLoop goroutine delivers the response.
 func (p *StdioPluginProcess) Call(ctx context.Context, req *PluginRequest) (*PluginResponse, error) {
+	// ⛔ **nil 接收者保护**（用户 2026-10-17 报 panic，栈实锤）：
+	//    插件**未启动 / 已停用**时 `stdioPlugin.process` 为 nil，而它的 enricher / hook
+	//    **仍留在注册表里** ⇒ 之后每条消息走到这里都会在 `p.mu.Lock()` 上解引用 nil：
+	//      plugin.(*StdioPluginProcess).Call → makeRemoteEnricher.func3 → EnricherRegistry.RunAll
+	//      → pluginEnricherMiddleware.Process → buildPrompt → processMessage（panic recovered）
+	//    ⇒ 该会话的**每一轮**都直接失败。未运行的插件必须**返回错误**（fail-soft），绝不许崩。
+	if p == nil {
+		return nil, fmt.Errorf("plugin process not started")
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

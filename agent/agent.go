@@ -552,6 +552,16 @@ type Agent struct {
 	// key: "channel:chatID" -> *atomic.Uint64
 	builtinProgressSeq sync.Map
 
+	// progressSeq stores **per-session** structured-progress seq counters.
+	//
+	// ⛔ 2026-10-17：此前每个 Run 在 buildMainRunConfig 里新建 `var progressSeq
+	// atomic.Uint64` ⇒ **每次 resume 都从 1 重计**。客户端的重放水位（lastSeq）
+	// 是 per-turn 的 ⇒ 新 run 的 seq ≤ 旧水位，事件被误判"重放"丢弃
+	// （用户症状：迭代不再更新 / 内容回退）。改为 per-session 持久计数器，
+	// 首次以 UnixMilli 播种（跨进程重启也单调），此后只增不减。
+	// key: "channel:chatID" -> *atomic.Uint64
+	progressSeq sync.Map
+
 	// interactiveSubAgents stores interactive SubAgent sessions
 	// key: "channel:chatID/roleName" -> *interactiveAgent
 	// sync.Map provides atomic Load/Store/Delete/LoadOrStore, no additional mutex needed
@@ -1639,6 +1649,26 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	a.pendingCancel.Store(cancelKey, true)
 	a.cancelStateMu.Unlock()
 	log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
+}
+
+// progressSeqFor returns the **per-session** structured-progress seq counter.
+//
+// ⛔ 2026-10-17（resume 丢事件的真根因）：此前 buildMainRunConfig 每个 Run 新建
+// `var progressSeq atomic.Uint64` ⇒ resume/新 run 从 1 重计，而客户端重放水位
+// （lastSeq）是 per-turn 的 ⇒ 新 run 的 seq ≤ 旧水位，被误判"重放"丢弃
+// （用户症状：迭代不再更新 / 内容回退）。
+// 现在按 `channel:chatID` 持久化，首次以 UnixMilli 播种（跨进程重启也单调；
+// 1.7e12 远小于 JS 安全整数 9e15），此后只增不减。
+// 注意：这与 SSE 帧自己的 `eventStream.nextSeq()`（重放缓存的游标）是**两套**
+// 计数器 —— 改这里不会影响 SSE Last-Event-ID 的连续性。
+func (a *Agent) progressSeqFor(sessionKey string) *atomic.Uint64 {
+	if sessionKey == "" {
+		sessionKey = "default"
+	}
+	fresh := &atomic.Uint64{}
+	fresh.Store(uint64(time.Now().UnixMilli()))
+	actual, _ := a.progressSeq.LoadOrStore(sessionKey, fresh)
+	return actual.(*atomic.Uint64)
 }
 
 // bumpRunGen 标记该会话开始新一轮，返回本轮代号（单调递增）。

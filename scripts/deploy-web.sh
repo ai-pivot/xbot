@@ -43,14 +43,14 @@ echo "== 3/5 部署前校验源产物（防把混合态再传一遍）=="
 BUNDLE_REL="$(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' "$SRC/index.html" | head -1)"
 [ -n "$BUNDLE_REL" ] || { echo "❌ 产物 index.html 里找不到 assets/index-*.js 引用" >&2; exit 1; }
 if [ ! -f "$SRC/$BUNDLE_REL" ]; then
-  echo "❌ index.html 引用 $BUNDLE_REL，但产物里没有这个文件（**混合态产物**）⇒ 拒绝部署" >&2
+  echo "❌ index.html 引用 ${BUNDLE_REL}，但产物里没有这个文件（**混合态产物**）⇒ 拒绝部署" >&2
   exit 1
 fi
 if ! grep -q "$PROBE" "$SRC/$BUNDLE_REL"; then
   echo "❌ 产物 bundle $BUNDLE_REL 里没有探针符号 '$PROBE' ⇒ 这份产物不含深链支持，拒绝部署" >&2
   exit 1
 fi
-echo "  ✅ 源产物一致：index.html → $BUNDLE_REL（含 $PROBE）"
+echo "  ✅ 源产物一致：index.html → ${BUNDLE_REL}（含 ${PROBE}）"
 
 echo "== 4/5 整体替换（旧目录 mv 让位，⛔ 不 merge、不 rm -rf）=="
 mkdir -p "$XBOT_HOME/web"
@@ -64,10 +64,10 @@ cp -R "$SRC" "$DEST"
 echo "== 5/5 部署后校验（线上 index.html + 引用 bundle）=="
 LIVE_REL="$(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' "$DEST/index.html" | head -1)"
 [ "$LIVE_REL" = "$BUNDLE_REL" ] || {
-  echo "❌ 部署后 index.html 指向 $LIVE_REL，期望 $BUNDLE_REL" >&2; exit 1; }
+  echo "❌ 部署后 index.html 指向 ${LIVE_REL}，期望 $BUNDLE_REL" >&2; exit 1; }
 grep -q "$PROBE" "$DEST/$LIVE_REL" || {
   echo "❌ 部署后 bundle 里没有 '$PROBE'" >&2; exit 1; }
-echo "  ✅ $DEST/index.html → $LIVE_REL（含 $PROBE）"
+echo "  ✅ $DEST/index.html → ${LIVE_REL}（含 ${PROBE}）"
 
 echo "== 完成 =="
 echo "  ⚠️ 服务端若在跑：静态目录是**每次请求读盘**（无需重启）；但浏览器/WebView 可能缓存"

@@ -292,6 +292,26 @@ function unreachableGapSig(
   return ''
 }
 
+/** 迭代列表的**结构等价**（O(N) 整数比较，⛔ 不做全文字符串比较）。
+ *
+ * 权威重放（同一段 progress_history 再送一次）必须幂等 ⇒ 返回原引用。
+ * 判据只用离散元数据：迭代号、正文/思考长度、工具数、轻/完整形态。
+ */
+function sameIterationShapes(a: readonly WebIteration[], b: readonly WebIteration[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]
+    const y = b[i]
+    if (x === y) continue
+    if (x.iteration !== y.iteration) return false
+    if ((x.content ?? '').length !== (y.content ?? '').length) return false
+    if ((x.reasoning ?? '').length !== (y.reasoning ?? '').length) return false
+    if ((x.tools !== undefined ? x.tools.length : 0) !== (y.tools !== undefined ? y.tools.length : 0)) return false
+    if ((x.toolsFolded === true) !== (y.toolsFolded === true)) return false
+  }
+  return true
+}
+
 function joinSig(acc: string, sig: string): string {
   if (sig === '') return acc
   return acc === '' ? sig : `${acc},${sig}`
@@ -519,22 +539,32 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // ⛔ 权威按 `sessionRunning` 判定（不变量：输入框 = cancel ⇒ 上面必须显示
       // 进行中信号）。`session(idle)` / `agent-idle` 是 **coarse 会话级**信号
       //（不带 turn 身份），可能来自 SSE 重连的 last_event_id 回放窗口或
-      // restoreActiveProgress 竞态 —— 与"真 idle"无法区分。服务端 reconcile 后
-      // 的 running 仍为 true 时，这条 idle 必然是陈旧/误传的 ⇒ **不得**冻结
-      // 运行中的 turn（否则输入框仍 cancel、列表却渲染成 idle 内容）。
-      // 真结束时 running 会由会话状态对账翻成 false，那条 `session_running(false)`
-      // 才是权威收尾（内容保留，不 wipe）。
+      // restoreActiveProgress 竞态 —— 与"真 idle"无法区分。
       if (s.sessionRunning) return s
       if (s.activeTurn === null) return s // 幂等：无活跃 turn ⇒ 原 state（零渲染）
-      const turns = new Map(s.turns)
-      const t = turns.get(s.activeTurn)
-      if (t && t.phase.kind === 'live') {
-        turns.set(s.activeTurn, {
-          ...t,
-          phase: { kind: 'frozen', data: { ...t.phase.data, streaming: false } },
-        })
+      const t = s.turns.get(s.activeTurn)
+      if (!t || t.phase.kind !== 'live') return s
+      // 无产出 = 真空壳：收尾（保留 user 行；无 user 行则删槽）。
+      if (!hasOutput(t.phase.data)) {
+        const turns = new Map(s.turns)
+        if (t.user !== null && t.user !== undefined) {
+          turns.set(t.id, { ...t, phase: { kind: 'frozen', data: { ...t.phase.data, streaming: false } } })
+        } else {
+          turns.delete(t.id)
+        }
+        return { ...s, turns, activeTurn: null }
       }
-      return { ...s, turns, activeTurn: null, lastSeq: null }
+      // ⛔ **有产出时绝不转 frozen**：frozen 会让后续 `stream`/`iteration` 因
+      //   `ev.iter > maxIter` 不成立被整批丢弃 ⇒ 一条迟到/陈旧 idle 就能让长迭代
+      //   **永久冻结**。新语义：只停 streaming，**保持 live**；真正收尾由
+      //   `text_final` / 下一 `turn_started` 完成。lastSeq 保留（防重放）。
+      const liveData = t.phase.data
+      if (!liveData.streaming) return s // 幂等：已停流 ⇒ 原引用
+      const next = withTurn(s, t.id, (tt) => ({
+        ...tt,
+        phase: { kind: 'live', data: { ...liveData, streaming: false } },
+      }))
+      return withLiveAhead(next, t.id, liveData)
     }
 
     // ── session_running：会话 running（服务端 reconcile 权威）─────────────
@@ -551,16 +581,27 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // 伪装成 live ⇒ composer 幽灵 busy + 占位符被抑制 ⇒ 普通切换会话就必现
       // 「cancel + 看不到任何进行中信号」）。live-ness 只由真实信号决定。
       if (ev.running) return flagged
-      // 权威收尾：running=false 而 turn 还是 live ⇒ 定格（绝不 wipe 内容）。
+      // running=false：**权威"没在跑"**。但同样不能在**有产出**时转 frozen ——
+      // frozen 会丢弃后续同迭代帧（见 session_idle 的同一论证）。只停 streaming。
       if (s.activeTurn === null) return flagged
       const t = s.turns.get(s.activeTurn)
       if (!t || t.phase.kind !== 'live') return flagged
-      const turns = new Map(s.turns)
-      turns.set(s.activeTurn, {
-        ...t,
-        phase: { kind: 'frozen', data: { ...t.phase.data, streaming: false } },
-      })
-      return { ...flagged, turns, activeTurn: null, lastSeq: null }
+      if (!hasOutput(t.phase.data)) {
+        const turns = new Map(s.turns)
+        if (t.user !== null && t.user !== undefined) {
+          turns.set(t.id, { ...t, phase: { kind: 'frozen', data: { ...t.phase.data, streaming: false } } })
+        } else {
+          turns.delete(t.id)
+        }
+        return { ...flagged, turns, activeTurn: null }
+      }
+      const liveData = t.phase.data
+      if (!liveData.streaming) return flagged
+      const next = withTurn(flagged, t.id, (tt) => ({
+        ...tt,
+        phase: { kind: 'live', data: { ...liveData, streaming: false } },
+      }))
+      return withLiveAhead(next, t.id, liveData)
     }
 
     case 'turn_started': {
@@ -779,7 +820,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const prev = t.phase.data
       // I5：重放丢弃（seq ≤ 水位 **且** 无新迭代信息 —— 见 isStaleSeq 的 Run 重启说明）。
       if (isStaleSeq(s.lastSeq, ev.seq, prev, { iter: ev.iter, iterationsDelta: ev.iterationsDelta })) return s
-      const advanced = ev.iter > prev.iter
+      // ⛔ ev.iter === null = 事件未携带迭代号（不是迭代 1）：保留 prev.iter，
+      //   不触发 advanced、不参与 gap 判据。
+      const evIter: IterNum | null = ev.iter
+      const advanced = evIter !== null && evIter > prev.iter
       // ── 迭代 commit（history append 且 iteration 未前进）──
       // 事件 A（snapshotCompletedIteration）：iterationsDelta append 了刚完成
       // 的迭代，但 ev.iter 还停在 N（前进事件后到）。live 的流式文本已随迭代
@@ -802,11 +846,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const committedNow = !advanced && appendedNew && appendedMax === prev.iter
       const data: LiveSnapshot = {
         ...prev,
+        // 流式帧 = 活动证据 ⇒ streaming 恢复 true（权威 idle 之后仍有事件 ⇒ 重新显示进行中）。
+        streaming: true,
         // ⚠️ 迭代号**单调不回退**（gap 修复 delta 可能携带更早的迭代号 —— 后端
         // attachIterationDelta 附的是"前一个"迭代）：回退会让"进行中迭代"落到一个
         // 已渲染成历史块的迭代上 ⇒ LiveIteration / MessageList 的「思考中…」与上方
         // 已完成的「思考 N 字」同时出现（用户 2026-09-20 报告的矛盾画面）。
-        iter: advanced ? ev.iter : prev.iter,
+        iter: advanced ? evIter as IterNum : prev.iter,
         // progressPhase（后端 structuredProgress.Phase 透传——'compressing' 等）：
         // 事件携带时更新；undefined 保留 prev（同 LiveSnapshot 其他字段的覆盖
         // 语义——phase 缺失不回退初始值）。这是 web 端压缩提示（agent.compressing
@@ -951,6 +997,8 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const advanced = ev.iteration !== null && ev.iteration > prev.iter
       const data: LiveSnapshot = {
         ...prev,
+        // 流式帧 = 活动证据 ⇒ streaming 恢复 true（陈旧 idle 之后仍有流 ⇒ 重新显示进行中）。
+        streaming: true,
         iter: advanced ? ev.iteration : prev.iter,
         content: advanced ? (ev.content ?? '') : (ev.content !== undefined ? ev.content : prev.content),
         reasoning: advanced ? (ev.reasoning ?? '') : (ev.reasoning !== undefined ? ev.reasoning : prev.reasoning),
@@ -1009,10 +1057,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             ? (tt.phase.payload.iterations ?? [])
             : (tt.phase.data.iterations ?? [])
           const mergedIts = mergeIterations(its, [ev.finalIteration])
-          const changed =
-            mergedIts.length !== its.length ||
-            mergedIts.some((it, i) => (it.content ?? '') !== (its[i]?.content ?? ''))
-          if (changed) {
+          // ⛔ 引用判等（不比较 content 字符串）：无变化时 mergeIterations 返回 base。
+          // ⛔ 引用判等 + 结构等价（整数，不做全文字符串比较）。
+          if (mergedIts !== its && !sameIterationShapes(its, mergedIts)) {
             const turnsPatched = new Map(s.turns)
             if (tt.phase.kind === 'committed') {
               const payload = { ...tt.phase.payload, iterations: mergedIts } as typeof tt.phase.payload
@@ -1126,14 +1173,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         // （同号以权威覆盖、append-only）；无实际变化时仍返回原 state（幂等、零渲染）。
         const prevIts = t.phase.payload.iterations ?? []
         const mergedIts = mergeIterations(prevIts, ev.progressHistory ?? [])
-        const changed =
-          mergedIts.length !== prevIts.length ||
-          mergedIts.some(
-            (it, i) =>
-              (it.content ?? '') !== (prevIts[i]?.content ?? '') ||
-              (it.tools?.length ?? 0) !== (prevIts[i]?.tools?.length ?? 0),
-          )
-        if (!changed) return s
+        // ⛔ 引用判等（O(1)，不比较内容字符串）：mergeIterations 无变化时返回 base。
+        // ⛔ 引用判等（O(1)）+ 结构等价（O(N) 整数，不做全文字符串比较）。
+        if (mergedIts === prevIts || sameIterationShapes(prevIts, mergedIts)) return s
         const payload = { ...t.phase.payload, iterations: mergedIts } as typeof t.phase.payload
         const turnsPatched = new Map(s.turns)
         turnsPatched.set(target, { ...t, phase: { kind: 'committed', payload } })
@@ -1267,22 +1309,16 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       if (!t || t.phase.kind !== 'live') return s.busy ? { ...s, busy: false } : s
       const live = t.phase.data
       if (hasOutput(live)) {
-        // 有产出：frozen 定格（text 迟到仍可 commit —— turnID 匹配 frozen）。
-        // [TURNDROP] 诊断：idle 在 activeTurn 还是 live 时到达（mid-turn idle
-        // —— text_final/PhaseDone 之前）。正常时序 text_final 先 commit
-        //（activeTurn=null，上面已 return）。此路径会把 live 冻结 + 后续
-        // iteration/stream 事件因 kind!=='live' 被丢弃（"live progress 消失
-        // 再也不更新"的 reduce 层形态）。捕获触发证据。
-        console.warn('[TURNDROP] session(idle) froze a LIVE turn mid-flight', {
-          chatID: s.chatID, turnID: t.id, lastSeq: s.lastSeq,
-          contentLen: live.content.length, reasoningLen: live.reasoning.length,
-          iterations: live.iterations.length, iter: live.iter, streaming: live.streaming,
-        })
-        const turns = new Map(s.turns)
-        turns.set(t.id, { ...t, phase: { kind: 'frozen', data: { ...live, streaming: false } } })
-        // ⛔ 同一判据：定格时若 live 窗口明显落后于迭代计数器 ⇒ 触发权威重载（否则
-        //    定格成短窗口后渲染层的在飞合成块消失，界面永久少一截迭代）。
-        return withLiveAhead({ ...s, turns, activeTurn: null, busy: false }, t.id, live)
+        // ⛔ 与 session_idle/session_running(false) 同一新语义：**有产出时不转 frozen**
+        //   （frozen 会丢弃后续同迭代帧 ⇒ 长迭代永久冻结）。只停 streaming，保持 live。
+        if (!live.streaming) {
+          return s.busy ? { ...s, busy: false } : s
+        }
+        const next = withTurn(s, t.id, (tt) => ({
+          ...tt,
+          phase: { kind: 'live', data: { ...live, streaming: false } },
+        }))
+        return { ...withLiveAhead(next, t.id, live), busy: false }
       }
       // 无产出：**必须区分两种空壳**（P0#2，2026-09-16 用户报告：「切会话后两个 turn
       // 之间的 notification（user 形式）不渲染，两侧 assistant 消息粘连」）：
@@ -2002,7 +2038,9 @@ function sameCompactions(a?: readonly WebCompaction[], b?: readonly WebCompactio
   const B = b ?? []
   if (A.length !== B.length) return false
   for (let i = 0; i < A.length; i++) {
-    if (A[i].afterIteration !== B[i].afterIteration || A[i].content !== B[i].content) return false
+    // ⛔ 不做全文字符串比较：只用离散元数据（长度 + afterIteration + 正文长度）。
+    if (A[i].afterIteration !== B[i].afterIteration) return false
+    if ((A[i].content ?? '').length !== (B[i].content ?? '').length) return false
   }
   return true
 }
