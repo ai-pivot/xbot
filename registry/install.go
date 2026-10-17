@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	log "xbot/logger"
 	"xbot/tools"
@@ -66,9 +67,49 @@ func installAgent(srcPath, name, workDir, senderID string) error {
 }
 
 func installPlugin(srcPath, name, xbotHome string) error {
-	destDir := filepath.Join(xbotHome, "plugins", name)
+	// Read plugin.json to get the canonical plugin ID and runtime. The repo
+	// directory name (e.g. "xbot-ssh-runner") is not the plugin ID
+	// (e.g. "xbot.ssh-runner"); plugins must be installed under their ID dir
+	// so the runtime's data/logs dirs and the plugin loader agree.
+	manifestPath := filepath.Join(srcPath, "plugin.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read plugin.json: %w", err)
+	}
+	var manifest struct {
+		ID         string `json:"id"`
+		Runtime    string `json:"runtime"`
+		Entry      string `json:"entry"`
+		Executable string `json:"executable"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return fmt.Errorf("parse plugin.json: %w", err)
+	}
+	id := manifest.ID
+	if id == "" {
+		id = name
+	}
+
+	// Binary-runtime plugins (stdio/grpc) require a compiled entry binary.
+	// A registry checkout carries source only — its go.mod replaces xbot's
+	// plugin/protocol via a repo-relative path that does not exist in the
+	// registry clone, so it cannot be built here. Refuse rather than install a
+	// plugin that will fail at activation ("no such file or directory").
+	if manifest.Runtime == "stdio" || manifest.Runtime == "grpc" {
+		entryBin := manifest.Executable
+		if entryBin == "" {
+			entryBin = manifest.Entry
+		}
+		if strings.HasPrefix(entryBin, "./") || strings.HasPrefix(entryBin, "../") {
+			if _, err := os.Stat(filepath.Join(srcPath, entryBin)); err != nil {
+				return fmt.Errorf("plugin %q needs a prebuilt binary at %q, but the registry only ships source; build it from the xbot repo (make plugins-install) instead", id, entryBin)
+			}
+		}
+	}
+
+	destDir := filepath.Join(xbotHome, "plugins", id)
 	if _, err := os.Stat(destDir); err == nil {
-		return fmt.Errorf("plugin %q already installed (remove it first or use --force)", name)
+		return fmt.Errorf("plugin %q already installed (remove it first or use --force)", id)
 	}
 	pluginsDir := filepath.Join(xbotHome, "plugins")
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
@@ -77,7 +118,7 @@ func installPlugin(srcPath, name, xbotHome string) error {
 	if err := copyDir(srcPath, destDir); err != nil {
 		return fmt.Errorf("copy plugin: %w", err)
 	}
-	log.WithFields(log.Fields{"plugin": name, "from": srcPath, "to": destDir}).Info("Installed plugin from registry")
+	log.WithFields(log.Fields{"plugin": id, "from": srcPath, "to": destDir}).Info("Installed plugin from registry")
 	return nil
 }
 
