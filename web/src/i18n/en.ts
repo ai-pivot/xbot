@@ -358,7 +358,6 @@ const en: Translations = {
     // Avoid the forbidden key words (collapseAll*/collapseLevel*/mergeTools*/processed)
     // — `noLegacyFoldFormat.test.tsx` asserts they never come back.
     regions: {
-      loadEarlier: '{{count}} earlier region(s)',
       loading: 'Loading earlier regions…',
       retry: 'Load failed · Retry',
       detailLoading: 'Loading details…',
