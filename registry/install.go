@@ -247,82 +247,32 @@ func copyFileMode(src, dst string, mode os.FileMode) error {
 	return os.Chmod(dst, mode)
 }
 
-// installPackage reads a package.json manifest and installs it: dependencies
-// first (recursive, cycle-guarded, skipped if already present), then the
-// package's own contents (skill/agent/plugin, referenced by name from the
-// catalog or, as an escape hatch, bundled via `source`).
+// installPackage installs a package's items: a flat subscription list of base
+// components (skill/agent/plugin) resolved from this registry's catalog.
+// Already-installed components are skipped, so several packages can reference
+// the same shared component (e.g. the github skill) without duplicating it.
 func installPackage(cloneDir string, entry *Entry, xbotHome, workDir, senderID string) error {
-	return installPackageRec(cloneDir, entry, xbotHome, workDir, senderID, map[string]bool{})
-}
-
-func installPackageRec(cloneDir string, entry *Entry, xbotHome, workDir, senderID string, seen map[string]bool) error {
-	key := "package:" + entry.Name
-	if seen[key] {
-		return fmt.Errorf("dependency cycle detected at package %q", entry.Name)
-	}
-	seen[key] = true
-	defer delete(seen, key)
-
 	manifest, err := loadPackageManifest(filepath.Join(cloneDir, entry.Path))
 	if err != nil {
 		return err
 	}
-	catalog, catalogErr := loadIndex(cloneDir)
-
-	// 1) Dependencies first (may reference another package → recurse).
-	for _, dep := range manifest.Dependencies {
-		if catalogErr != nil {
-			return fmt.Errorf("package %q: cannot resolve dependency %q (registry.json unreadable: %v)", entry.Name, dep.Name, catalogErr)
-		}
-		item := findCatalogItem(catalog, dep.Type, dep.Name)
+	catalog, err := loadIndex(cloneDir)
+	if err != nil {
+		return fmt.Errorf("package %q: registry.json unreadable: %w", entry.Name, err)
+	}
+	for _, it := range manifest.Items {
+		item := findCatalogItem(catalog, it.Type, it.Name)
 		if item == nil {
-			return fmt.Errorf("package %q: dependency %s %q is not a catalog item in this registry", entry.Name, dep.Type, dep.Name)
+			return fmt.Errorf("package %q: item %s %q is not a catalog component in this registry", entry.Name, it.Type, it.Name)
 		}
 		if item.Type == "package" {
-			if err := installPackageRec(cloneDir, item, xbotHome, workDir, senderID, seen); err != nil {
-				return fmt.Errorf("package %q dependency %q: %w", entry.Name, dep.Name, err)
-			}
-			continue
+			return fmt.Errorf("package %q: item %q is a package; packages may only list base components (skill/agent/plugin)", entry.Name, it.Name)
 		}
 		if err := installResolved(item.Type, item.Name, filepath.Join(cloneDir, item.Path), xbotHome, workDir, senderID, true); err != nil {
-			return fmt.Errorf("package %q dependency %q: %w", entry.Name, dep.Name, err)
-		}
-	}
-
-	// 2) Contents (skill/agent/plugin only).
-	pkgDir := filepath.Join(cloneDir, entry.Path)
-	for _, c := range manifest.Contents {
-		var srcPath string
-		if c.Source != "" {
-			// Escape hatch: package-private component bundled under the package
-			// dir. Discouraged for shared components (duplicates them).
-			srcPath = filepath.Join(pkgDir, c.Source)
-		} else {
-			if catalogErr != nil {
-				return fmt.Errorf("package %q: cannot resolve %q (registry.json unreadable: %v)", entry.Name, c.Name, catalogErr)
-			}
-			item := findCatalogItem(catalog, c.Type, c.Name)
-			if item == nil {
-				return fmt.Errorf("package %q: referenced %s %q is not a catalog item in this registry; publish it standalone or add a source path", entry.Name, c.Type, c.Name)
-			}
-			if item.Type == "package" {
-				return fmt.Errorf("package %q: content %q must be skill/agent/plugin; reference other packages via dependencies", entry.Name, c.Name)
-			}
-			srcPath = filepath.Join(cloneDir, item.Path)
-			if c.Type == "" {
-				c.Type = item.Type
-			}
-		}
-		if err := installResolved(c.Type, c.Name, srcPath, xbotHome, workDir, senderID, true); err != nil {
 			return fmt.Errorf("package %q: %w", entry.Name, err)
 		}
 	}
-
-	log.WithFields(log.Fields{
-		"package": entry.Name,
-		"items":   len(manifest.Contents),
-		"deps":    len(manifest.Dependencies),
-	}).Info("Installed package from registry")
+	log.WithFields(log.Fields{"package": entry.Name, "items": len(manifest.Items)}).Info("Installed package from registry")
 	return nil
 }
 
@@ -380,25 +330,17 @@ func findCatalogItem(idx *Index, itemType, name string) *Entry {
 
 // Local package.json structs (kept here to avoid importing agent, which would
 // introduce a cycle via tools).
-type pkgContent struct {
-	Type   string `json:"type"`
-	Name   string `json:"name"`
-	Source string `json:"source"`
-}
-
-type pkgDependency struct {
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	Version string `json:"version"`
+type pkgItem struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
 }
 
 type pkgManifest struct {
-	Schema       int             `json:"schema"`
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	Version      string          `json:"version"`
-	Contents     []pkgContent    `json:"contents"`
-	Dependencies []pkgDependency `json:"dependencies"`
+	Schema  int       `json:"schema"`
+	ID      string    `json:"id"`
+	Name    string    `json:"name"`
+	Version string    `json:"version"`
+	Items   []pkgItem `json:"items"`
 }
 
 func loadPackageManifest(pkgDir string) (*pkgManifest, error) {
