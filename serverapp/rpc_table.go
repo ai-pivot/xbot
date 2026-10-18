@@ -547,6 +547,13 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		h.Ag.SetMaxConcurrency(p.N)
 		return nil
 	}))
+	// 兼容旧客户端：max_iterations 已移除，不再有行为；返回成功而不是 unknown method。
+	t["set_max_iterations"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
+		N int `json:"n"`
+	}) error {
+		log.WithField("n", p.N).Warn("set_max_iterations is removed; request ignored")
+		return nil
+	}))
 	t["set_compression_threshold"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Threshold float64 `json:"threshold"`
 	}) error {

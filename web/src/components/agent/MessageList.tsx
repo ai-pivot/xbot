@@ -33,7 +33,6 @@ import { MessageUserNav } from './MessageUserNav'
 import { ShimmerThinking } from './ShimmerThinking'
 import { liveIterationInFlight } from './progressStore'
 import { PrependAnchorContext } from './PrependAnchorContext'
-import { ScrollRootContext } from './ScrollRootContext'
 import { bindTurnIDs, orderMessageRows } from './messageOrder'
 import { useI18n } from '@/providers/i18n'
 import { commands } from '@/lib/commandRouter'
@@ -664,8 +663,6 @@ export const MessageList = memo(function MessageList({
     /** 锚所在的**虚拟行**（key 稳定、prepend 不卸载）—— 其高度增量 = 本轮插入的真实高度。 */
     rowEl: HTMLElement
     rowHeight: number
-    /** 拍锚时的滚动内容总高（prepend 后 `scrollHeight` 增量是跨行的插入高度）。 */
-    scrollHeight: number
   } | null>(null)
   // 供 observer effect 现读（observer 只按 hasMore 建一次，绝不因回调身份变化重建）。
   const beginPrependAnchorRef = useRef<() => void>(() => {})
@@ -1438,7 +1435,6 @@ export const MessageList = memo(function MessageList({
       // **总高估算**驱动、滞后于行内真实插入 ⇒ 首帧为 0，会把合法的 417px 误判成越界）。
       rowEl,
       rowHeight: rowEl.getBoundingClientRect().height,
-      scrollHeight: (scrollRef.current ?? el).scrollHeight,
       applied: 0,
       stable: 0,
       // 安全上限：请求失败（段永不到达）也不能让锚永久粘住视口。它只负责**清理**，
@@ -1465,14 +1461,10 @@ export const MessageList = memo(function MessageList({
       prependAnchorRef.current = null
       return
     }
-    const rowGrowth = snap.rowEl.isConnected ? snap.rowEl.getBoundingClientRect().height - snap.rowHeight : 0
-    // ⛔ P1 2026-10-18 审查：段不一定落在**锚行**内部（预取/自动追赶时锚行是更晚的一行），
-    //   只看 rowGrowth=0 会把合法位移判成越界并弃锚。`scrollHeight` 增量是本轮 prepend 的
-    //   跨行插入高度（虚拟列表的行高变化也会反映到内容总高），与锚行是哪一行无关。
-    const contentGrowth = Math.max(0, el.scrollHeight - snap.scrollHeight)
-    const growth = Math.max(rowGrowth, contentGrowth)
+    const growth = snap.rowEl.isConnected ? snap.rowEl.getBoundingClientRect().height - snap.rowHeight : 0
     // 锚还活着 ⇒ 用它（精确）；锚被 React 重新分组/卸载（tool-only run 的 head 变化会让旧块
-    // 消失）⇒ 回退到 `growth`：段恒在**视口上方**插入 ⇒ 内容长高多少，视口下方就被推下多少。
+    // 消失）⇒ 回退到 `growth`：段恒在**视口上方**、**在该行内部**插入 ⇒「这一行长高了多少」
+    // 就是「视口下方的内容被推下去多少」，等价且免疫重挂载。
     const moved = snap.el.isConnected ? snap.el.getBoundingClientRect().top - snap.top : null
     const delta = moved ?? growth
     devAnchorDebugSettle(delta, isSanePrependDelta(delta, growth), growth)
@@ -1689,7 +1681,6 @@ export const MessageList = memo(function MessageList({
   }, [resumeFollowing, scheduleFollow])
 
   return (
-    <ScrollRootContext.Provider value={scrollRef}>
     <div className="relative min-h-0 flex-1 overflow-hidden">
       <div
         ref={scrollRef}
@@ -1914,7 +1905,6 @@ export const MessageList = memo(function MessageList({
         onNavigate={navigateToRow}
       />
     </div>
-    </ScrollRootContext.Provider>
   )
 })
 

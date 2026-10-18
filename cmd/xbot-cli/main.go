@@ -978,16 +978,23 @@ func writeCLIUsageTo(w io.Writer) {
 // 是**纯函数** ⇒ 可单测（main() 本身无法单测；此前用「构建真实二进制再 exec」的测法在 CI
 // 冷缓存下首次 exec 会超时，已弃用）。
 func cliEarlyExitFlag(args []string, stdout io.Writer) (handled bool, code int) {
-	if len(args) == 0 {
-		return false, 0
-	}
-	switch args[0] {
-	case "--version", "-v", "-V":
-		fmt.Fprintln(stdout, version.Version)
-		return true, 0
-	case "--help", "-h":
-		writeCLIUsageTo(stdout)
-		return true, 0
+	// 扫描「首个非 --flag 参数之前」的机器可读 flag：`--local --version` 必须可用；
+	// `setup --help` 仍交给子命令自己的 help（遇到 setup 立即停止扫描）。
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "-") {
+			break
+		}
+		switch a {
+		case "--version", "-v", "-V":
+			fmt.Fprintln(stdout, version.Version)
+			return true, 0
+		case "--help", "-h":
+			writeCLIUsageTo(stdout)
+			return true, 0
+		}
 	}
 	return false, 0
 }
