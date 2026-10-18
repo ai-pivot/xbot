@@ -24,6 +24,7 @@ import (
 	"xbot/oauth"
 	"xbot/oauth/providers"
 	"xbot/plugin"
+	"xbot/registry"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	"xbot/storage"
@@ -576,6 +577,22 @@ func Run(args []string) error {
 	if err != nil {
 		log.WithError(err).Fatal("Failed to init server")
 	}
+
+	// Refresh component registries once at startup (best-effort, async). This is
+	// the ONLY automatic refresh: registry search/install read the local cache,
+	// and a manual refresh (marketplace button / `xbot-cli registry update`)
+	// forces a pull. No periodic timer.
+	go func() {
+		rcfg, err := registry.LoadConfig(xbotDir)
+		if err != nil || len(rcfg.Registries) == 0 {
+			return
+		}
+		if _, err := registry.Refresh(xbotDir); err != nil {
+			log.WithError(err).Warn("startup registry refresh failed")
+		} else {
+			log.WithField("registries", len(rcfg.Registries)).Info("registry cache refreshed on startup")
+		}
+	}()
 
 	// Multi-user removal: the canonical IdentityResolver (users/
 	// user_identities/link_codes tables) was removed. Admin rights come from

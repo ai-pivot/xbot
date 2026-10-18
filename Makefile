@@ -1,4 +1,4 @@
-.PHONY: fmt lint test build run dev clean ci clean-memory web-build web-lint web-dev install-cli plugins-build plugins-install plugins-install-builtin plugins-clean plugins-web plugins-package setup
+.PHONY: fmt lint test build run dev clean ci clean-memory web-build web-install web-lint web-dev install-cli plugins-build plugins-install plugins-install-builtin plugins-clean plugins-web plugins-package setup
 
 BINARY_NAME := xbot
 
@@ -42,6 +42,15 @@ clean-memory:
 
 web-build:
 	cd web && yarn build
+
+# Build web frontend and install the dist to $(XBOT_HOME)/web/dist, which is
+# where resolveStaticDir() looks when config.Web.StaticDir is empty. Use this
+# after frontend changes so the running server serves the new bundle.
+web-install: web-build
+	rm -rf $(XBOT_HOME)/web/dist
+	mkdir -p $(XBOT_HOME)/web/dist
+	cp -R web/dist/. $(XBOT_HOME)/web/dist/
+	@echo "Web dist installed to $(XBOT_HOME)/web/dist"
 
 web-lint:
 	cd web && yarn lint

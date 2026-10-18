@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -12,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"path/filepath"
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
@@ -23,6 +23,7 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/registry"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -296,7 +297,8 @@ func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher
 	registerCommandHandlers(t, h)
 	registerPluginHandlers(t, h)
 	registerRunnerHandlers(t, h)
-	registerAppHandlers(t, h)
+	registerSkillHandlers(t, h)
+	registerRegistryHandlers(t, h)
 	registerGenUIHandlers(t, h)
 	registerChannelOpsHandlers(t, h)
 	return t
@@ -2973,6 +2975,297 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 
 }
 
+// --- Registry RPC handlers ---
+
+func registerRegistryHandlers(t RPCTable, h *RPCContext) {
+
+	t["registry_search"] = rpc1(func(ctx context.Context, p struct {
+		Query   string `json:"query"`
+		Type    string `json:"type"`    // optional filter: skill/agent/plugin/package
+		Refresh bool   `json:"refresh"` // force git pull instead of using cache
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		var idx *registry.Index
+		var err error
+		if p.Refresh {
+			idx, err = registry.Refresh(xbotHome)
+		} else {
+			idx, err = registry.Fetch(xbotHome)
+		}
+		if err != nil {
+			return nil, err
+		}
+		results := registry.Search(idx, p.Query)
+		if p.Type != "" {
+			var filtered []registry.Entry
+			for _, e := range results {
+				if e.Type == p.Type {
+					filtered = append(filtered, e)
+				}
+			}
+			results = filtered
+		}
+		return map[string]any{"items": results}, nil
+	})
+
+	t["registry_install"] = rpc1(func(ctx context.Context, p struct {
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		workDir := h.Cfg.Agent.WorkDir
+		if workDir == "" {
+			workDir = xbotHome
+		}
+		senderID := rpcAuthID(ctx)
+
+		idx, err := registry.Fetch(xbotHome)
+		if err != nil {
+			return nil, err
+		}
+		entry := registry.FindEntry(idx, p.Name)
+		if entry == nil {
+			return nil, fmt.Errorf("item %q not found in any registry", p.Name)
+		}
+
+		if p.Force {
+			registryRemove(xbotHome, workDir, senderID, entry.Type, entry.Name)
+		}
+
+		if err := registry.Install(xbotHome, workDir, senderID, entry); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"type":    entry.Type,
+			"name":    entry.Name,
+			"version": entry.Version,
+		}, nil
+	})
+
+	t["registry_list_installed"] = rpc1(func(ctx context.Context, p struct {
+		Type string `json:"type"` // optional filter
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		workDir := h.Cfg.Agent.WorkDir
+		if workDir == "" {
+			workDir = xbotHome
+		}
+		senderID := rpcAuthID(ctx)
+
+		type installedItem struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}
+		var items []installedItem
+
+		if p.Type == "" || p.Type == "skill" {
+			for _, n := range listUserInstalled(xbotHome, workDir, senderID, "skill") {
+				items = append(items, installedItem{Type: "skill", Name: n})
+			}
+		}
+		if p.Type == "" || p.Type == "agent" {
+			for _, n := range listUserInstalled(xbotHome, workDir, senderID, "agent") {
+				items = append(items, installedItem{Type: "agent", Name: n})
+			}
+		}
+		if p.Type == "" || p.Type == "plugin" {
+			for _, n := range listUserInstalled(xbotHome, workDir, senderID, "plugin") {
+				items = append(items, installedItem{Type: "plugin", Name: n})
+			}
+		}
+		return map[string]any{"items": items}, nil
+	})
+
+	t["registry_config_list"] = rpc1(func(ctx context.Context, p struct{}) (any, error) {
+		xbotHome := config.XbotHome()
+		cfg, err := registry.LoadConfig(xbotHome)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"registries": cfg.Registries}, nil
+	})
+
+	t["registry_config_add"] = rpc1(func(ctx context.Context, p struct {
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		Branch string `json:"branch"`
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		if p.Name == "" || p.URL == "" {
+			return nil, fmt.Errorf("name and url are required")
+		}
+		if err := registry.AddRegistry(xbotHome, p.Name, p.URL, p.Branch); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+	})
+
+	t["registry_config_remove"] = rpc1(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		if p.Name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+		if err := registry.RemoveRegistry(xbotHome, p.Name); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+	})
+
+	t["registry_uninstall"] = rpc1(func(ctx context.Context, p struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}) (any, error) {
+		if p.Name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+		xbotHome := config.XbotHome()
+		senderID := rpcAuthID(ctx)
+
+		switch p.Type {
+		case "skill":
+			rm := h.Ag.RegistryManager()
+			if rm == nil {
+				return nil, fmt.Errorf("registry manager not initialized")
+			}
+			if err := rm.UninstallSkill(p.Name, senderID); err != nil {
+				return nil, err
+			}
+		case "agent":
+			rm := h.Ag.RegistryManager()
+			if rm == nil {
+				return nil, fmt.Errorf("registry manager not initialized")
+			}
+			if err := rm.UninstallAgent(p.Name, senderID); err != nil {
+				return nil, err
+			}
+		case "plugin":
+			// Resolve the plugin ID (manifest id or directory name), then
+			// uninstall through the plugin manager for proper deactivation
+			// (hooks/widgets/runtime torn down before files are removed).
+			id := resolveInstalledPluginID(xbotHome, p.Name)
+			if id == "" {
+				return nil, fmt.Errorf("plugin %q is not installed", p.Name)
+			}
+			if pm := h.Ag.PluginManager(); pm != nil {
+				if err := pm.UninstallPlugin(ctx, id); err != nil {
+					return nil, err
+				}
+			} else {
+				_ = os.RemoveAll(filepath.Join(xbotHome, "plugins", id))
+			}
+		default:
+			return nil, fmt.Errorf("unknown type %q (expected skill, agent, or plugin)", p.Type)
+		}
+		return map[string]any{"ok": true}, nil
+	})
+}
+
+// resolveInstalledPluginID maps a user-supplied plugin name (directory name or
+// manifest id) to the plugin's install directory name (== its manifest id).
+// Returns "" when no installed plugin matches.
+func resolveInstalledPluginID(xbotHome, name string) string {
+	pluginsDir := filepath.Join(xbotHome, "plugins")
+	// Direct directory match (covers name == id, the common case).
+	if info, err := os.Stat(filepath.Join(pluginsDir, name)); err == nil && info.IsDir() {
+		return name
+	}
+	// Scan manifests for a matching id (name may be the id while the dir
+	// differs, or vice versa).
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(pluginsDir, e.Name(), "plugin.json"))
+		if err != nil {
+			continue
+		}
+		var m struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(data, &m) == nil && m.ID == name {
+			return e.Name()
+		}
+	}
+	return ""
+}
+
+// registryRemove removes an installed item by type and name.
+func registryRemove(xbotHome, workDir, senderID, itemType, name string) {
+	switch itemType {
+	case "skill":
+		_ = os.RemoveAll(filepath.Join(tools.UserSkillsRoot(workDir, senderID), name))
+	case "agent":
+		_ = os.Remove(filepath.Join(tools.UserAgentsRoot(workDir, senderID), name+".md"))
+	case "plugin":
+		_ = os.RemoveAll(filepath.Join(xbotHome, "plugins", name))
+	}
+}
+
+// listUserInstalled returns names of installed items of the given type.
+func listUserInstalled(xbotHome, workDir, senderID, itemType string) []string {
+	var dir string
+	switch itemType {
+	case "skill":
+		dir = tools.UserSkillsRoot(workDir, senderID)
+	case "agent":
+		dir = tools.UserAgentsRoot(workDir, senderID)
+	case "plugin":
+		dir = filepath.Join(xbotHome, "plugins")
+	default:
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var names []string
+	add := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, e := range entries {
+		switch itemType {
+		case "agent":
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+				add(strings.TrimSuffix(e.Name(), ".md"))
+			}
+		case "plugin":
+			// Only count real plugins (dirs containing plugin.json) and report
+			// the manifest id — registry entries use ids, so installed status
+			// matches correctly (e.g. xbot.ssh-runner, not the repo dir name).
+			if !e.IsDir() {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, e.Name(), "plugin.json"))
+			if err != nil {
+				continue
+			}
+			var m struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(data, &m) == nil && m.ID != "" {
+				add(m.ID)
+			} else {
+				add(e.Name())
+			}
+		default: // skill
+			if e.IsDir() {
+				add(e.Name())
+			}
+		}
+	}
+	return names
+}
+
 // ── Helpers ──
 
 func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
@@ -3041,107 +3334,9 @@ func marshalBgTasks(tasks []*tools.BackgroundTask) []bgTaskJSON {
 	return result
 }
 
-// --- App RPC handlers ---
+// --- Skill RPC handlers ---
 
-// appPackOutputPath builds the app_pack zip output path from a user-supplied
-// name. The name is sanitized to its base component — a traversal name
-// ("../../etc/cron.d/x") must never escape os.TempDir().
-func appPackOutputPath(name string) string {
-	return filepath.Join(os.TempDir(), filepath.Base(name)+".xbot.zip")
-}
-
-func registerAppHandlers(t RPCTable, h *RPCContext) {
-
-	t["app_pack"] = rpc1(func(ctx context.Context, p struct {
-		Name  string `json:"name"`
-		Items []struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
-		} `json:"items"`
-		Author string `json:"author"`
-	}) (any, error) {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return nil, fmt.Errorf("registry manager not initialized")
-		}
-		items := make([]agent.AppItem, len(p.Items))
-		for i, it := range p.Items {
-			items[i] = agent.AppItem{Type: it.Type, Name: it.Name}
-		}
-		outputPath := appPackOutputPath(p.Name)
-		if err := rm.PackApp(items, outputPath, p.Author); err != nil {
-			return nil, err
-		}
-		return map[string]string{"path": outputPath}, nil
-	})
-
-	t["app_install_file"] = rpc1(func(ctx context.Context, p struct {
-		ZipPath  string `json:"zip_path"`
-		SenderID string `json:"sender_id"`
-		Force    bool   `json:"force"`
-	}) (any, error) {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return nil, fmt.Errorf("registry manager not initialized")
-		}
-		result, err := rm.InstallAppFromFile(p.ZipPath, p.SenderID, p.Force)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"name":      result.Manifest.Name,
-			"version":   result.Manifest.Version,
-			"installed": result.Installed,
-			"skipped":   result.Skipped,
-		}, nil
-	})
-
-	t["app_install_url"] = rpc1(func(ctx context.Context, p struct {
-		URL      string `json:"url"`
-		SenderID string `json:"sender_id"`
-		Force    bool   `json:"force"`
-	}) (any, error) {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return nil, fmt.Errorf("registry manager not initialized")
-		}
-		result, err := rm.InstallAppFromURL(p.URL, p.SenderID, p.Force)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"name":      result.Manifest.Name,
-			"version":   result.Manifest.Version,
-			"installed": result.Installed,
-			"skipped":   result.Skipped,
-		}, nil
-	})
-
-	t["app_uninstall"] = rpc1void(func(ctx context.Context, p struct {
-		Type     string `json:"type"`
-		Name     string `json:"name"`
-		SenderID string `json:"sender_id"`
-	}) error {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return fmt.Errorf("registry manager not initialized")
-		}
-		return rm.Uninstall(p.Type, p.Name, p.SenderID)
-	})
-
-	t["app_list"] = rpc1(func(ctx context.Context, p struct {
-		SenderID string `json:"sender_id"`
-	}) (any, error) {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return nil, fmt.Errorf("registry manager not initialized")
-		}
-		return map[string]any{
-			"skills":  rm.ListInstalledSkills(p.SenderID),
-			"agents":  rm.ListInstalledAgents(p.SenderID),
-			"plugins": rm.ListInstalledPlugins(p.SenderID),
-		}, nil
-	})
+func registerSkillHandlers(t RPCTable, h *RPCContext) {
 
 	t["skill_list"] = rpc1(func(ctx context.Context, p struct {
 		ProjectDir string `json:"project_dir"`
@@ -3216,6 +3411,42 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 			return nil, fmt.Errorf("skill store not initialized")
 		}
 		return map[string]bool{"valid": ss.IsKnownSkillPathFor(rpcAuthID(ctx), p.Path)}, nil
+	})
+
+	t["skill_uninstall"] = rpc1void(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) error {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return fmt.Errorf("registry manager not initialized")
+		}
+		return rm.UninstallSkill(p.Name, rpcAuthID(ctx))
+	})
+
+	t["agent_install_file"] = rpc1(func(ctx context.Context, p struct {
+		MDPath string `json:"md_path"`
+		Name   string `json:"name"`
+		Force  bool   `json:"force"`
+	}) (any, error) {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return nil, fmt.Errorf("registry manager not initialized")
+		}
+		name, err := rm.InstallAgentFromFile(p.MDPath, p.Name, rpcAuthID(ctx), p.Force)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"name": name}, nil
+	})
+
+	t["agent_uninstall"] = rpc1void(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) error {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return fmt.Errorf("registry manager not initialized")
+		}
+		return rm.UninstallAgent(p.Name, rpcAuthID(ctx))
 	})
 
 }

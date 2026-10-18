@@ -106,12 +106,14 @@ import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
 import { SkillManagerPanel } from '@/plugins/xbot-skill-manager/SkillManagerPanel'
 import { SessionStatsPanel } from '@/plugins/session-stats/SessionStatsPanel'
+import { MarketplacePanel } from '@/plugins/xbot-marketplace/MarketplacePanel'
 
 const builtinViews = new Map<string, React.ComponentType>()
 builtinViews.set('xbot.plugin-manager.panel', PluginManagerPanel)
 builtinViews.set('git-info.status', GitStatusPanel)
 builtinViews.set('xbot.skill-manager.panel', SkillManagerPanel)
 builtinViews.set('xbot.session-stats.panel', SessionStatsPanel)
+builtinViews.set('xbot.marketplace.panel', MarketplacePanel)
 
 async function loadBuiltinView(id: string): Promise<React.ComponentType | null> {
   const comp = builtinViews.get(id)
@@ -275,6 +277,17 @@ export function PluginRuntimeBootstrap() {
           )
         } catch (error) {
           console.error('[plugin-runtime] 激活内置会话统计插件失败', error)
+        }
+      })(),
+      (async () => {
+        try {
+          const marketplace = await import('@/plugins/xbot-marketplace/marketplace')
+          await runtime.activateBuiltin(
+            marketplace.manifest,
+            marketplace as unknown as import('./loader').PluginModule,
+          )
+        } catch (error) {
+          console.error('[plugin-runtime] 激活内置市场插件失败', error)
         }
       })(),
     ])

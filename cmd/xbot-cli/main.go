@@ -945,6 +945,16 @@ func writeCLIUsageTo(w io.Writer) {
 		"  --server <ws-url>   Force remote mode and connect to server",
 		"  serve               Run server mode in the same binary",
 		"",
+		"Subcommands:",
+		"  registry add <name> <url> [branch]  Add a component registry",
+		"  registry remove <name>              Remove a registry",
+		"  registry list                       List configured registries",
+		"  registry update                     Re-fetch all registries",
+		"  search [query] [--type skill|agent|plugin]  Search registries",
+		"  install <name> [--force]            Install a component from registry",
+		"  uninstall <name>                    Uninstall a component",
+		"  list-installed                       List installed skills/agents/plugins",
+		"",
 		"Options:",
 		"  --version, -v, -V   Print version and exit",
 		"  --help, -h          Show this help",
@@ -1035,9 +1045,37 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "install":
-			fmt.Println("install 子命令已不再主推，请使用 scripts/install.sh")
-			fmt.Println("例如: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash")
-			fmt.Println("安装完成后可用 'xbot-cli setup' 补齐 Web UI / 内置插件 / channel 激活配置")
+			suppressLog()
+			if err := runInstallFromRegistry(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "install: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "uninstall":
+			if err := runUninstallCmd(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "uninstall: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "registry":
+			suppressLog()
+			if err := runRegistryCmd(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "registry: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "search":
+			suppressLog()
+			if err := runSearchCmd(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "search: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "list-installed":
+			if err := runListInstalled(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "list-installed: %v\n", err)
+				os.Exit(1)
+			}
 			return
 		case "setup":
 			// One-command post-install setup: web dist + built-in plugins +
