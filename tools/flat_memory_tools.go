@@ -90,8 +90,10 @@ func (t *MemoryWriteTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 // 每个会话的提示词（自我污染，而且越写越"像真的"）。实证：模型确实往记忆里写过 system reminder。
 //
 // 判据只钉**高置信度的注入/日志特征**（宁可漏过，也不误伤正常笔记）：
-//   · 注入块标记：`<system-reminder` / `<user-msg` / `<dynamic-context` / `<goal status=`
-//   · 桥/工具回执标记：`tool_call_id`
+//
+//	· 注入块标记：`<system-reminder` / `<user-msg` / `<dynamic-context` / `<goal status=`
+//	· 桥/工具回执标记：`tool_call_id`
+//
 // 命中 ⇒ 返回人类可读理由（调用方作为**错误**返回给模型，模型据此改写成客观事实）。
 func memoryContentRejectReason(content string) string {
 	lower := strings.ToLower(content)
