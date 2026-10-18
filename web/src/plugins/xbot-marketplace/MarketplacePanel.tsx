@@ -23,6 +23,7 @@ import {
   Trash2,
   X,
   RefreshCw,
+  Boxes,
 } from 'lucide-react'
 
 interface RegistryItem {
@@ -219,10 +220,11 @@ export function MarketplacePanel() {
   }, [handleAddRegistry])
 
   const filterTabs = [
-    { label: '全部', value: '' },
-    { label: 'Skills', value: 'skill' },
-    { label: 'Agents', value: 'agent' },
-    { label: 'Plugins', value: 'plugin' },
+    { label: '全部', value: '', Icon: Boxes },
+    { label: 'Skills', value: 'skill', Icon: Sparkles },
+    { label: 'Agents', value: 'agent', Icon: Bot },
+    { label: 'Plugins', value: 'plugin', Icon: Puzzle },
+    { label: 'Packages', value: 'package', Icon: Package },
   ]
 
   const noRegistries = registries.length === 0
@@ -271,12 +273,13 @@ export function MarketplacePanel() {
             <button
               key={tab.value}
               onClick={() => setTypeFilter(tab.value)}
-              className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+              className={`flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
                 typeFilter === tab.value
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-muted'
               }`}
             >
+              <tab.Icon className="h-3 w-3" />
               {tab.label}
             </button>
           ))}

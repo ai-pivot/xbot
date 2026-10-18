@@ -27,7 +27,7 @@ export const manifest = {
       get title() {
         return i18n.t('marketplace.manifest.title', { defaultValue: '市场' })
       },
-      icon: 'store',
+      icon: 'basket',
       entry: 'builtin:xbot.marketplace.panel',
     },
   ],
