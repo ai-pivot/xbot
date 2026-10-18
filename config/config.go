@@ -478,11 +478,9 @@ var configTypeSchema = map[string]map[string]fieldType{
 	},
 	"agent": {
 		"max_iterations":        ftInt,
-		"max_concurrency":       ftInt,
 		"max_context_tokens":    ftInt,
 		"enable_auto_compress":  ftBool,
 		"compression_threshold": ftFloat,
-		"purge_old_messages":    ftBool,
 		"max_sub_agent_depth":   ftInt,
 		"llm_retry_attempts":    ftInt,
 	},
