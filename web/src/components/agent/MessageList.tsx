@@ -33,6 +33,7 @@ import { MessageUserNav } from './MessageUserNav'
 import { ShimmerThinking } from './ShimmerThinking'
 import { liveIterationInFlight } from './progressStore'
 import { PrependAnchorContext } from './PrependAnchorContext'
+import { ScrollRootContext } from './ScrollRootContext'
 import { bindTurnIDs, orderMessageRows } from './messageOrder'
 import { useI18n } from '@/providers/i18n'
 import { commands } from '@/lib/commandRouter'
@@ -1688,6 +1689,7 @@ export const MessageList = memo(function MessageList({
   }, [resumeFollowing, scheduleFollow])
 
   return (
+    <ScrollRootContext.Provider value={scrollRef}>
     <div className="relative min-h-0 flex-1 overflow-hidden">
       <div
         ref={scrollRef}
@@ -1912,6 +1914,7 @@ export const MessageList = memo(function MessageList({
         onNavigate={navigateToRow}
       />
     </div>
+    </ScrollRootContext.Provider>
   )
 })
 

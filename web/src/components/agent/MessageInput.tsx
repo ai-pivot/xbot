@@ -910,7 +910,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               aria-label={t('agent.attach')}
               disabled={uploading || submitting}
               onClick={() => fileRef.current?.click()}
-              className={cn('size-9 rounded-md', uploading && 'opacity-40')}
+              className={cn('size-11 rounded-md', uploading && 'opacity-40')}
             >
               {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
             </Button>
@@ -924,7 +924,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               aria-label={t('agent.goalModeAria')}
               onClick={() => setGoalMode((v) => !v)}
               className={cn(
-                'size-9 rounded-md transition-all',
+                'size-11 rounded-md transition-all',
                 goalMode
                   ? 'bg-accent/15 text-accent ring-1 ring-accent/40 shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]'
                   : 'text-text-muted hover:text-text-primary',
@@ -976,7 +976,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 disabled={cancelling}
                 onClick={onCancel}
                 className={cn(
-                  'size-9 shrink-0 rounded-md bg-destructive text-destructive-foreground transition-all duration-150 hover:bg-destructive/90 active:scale-95',
+                  'size-11 shrink-0 rounded-md bg-destructive text-destructive-foreground transition-all duration-150 hover:bg-destructive/90 active:scale-95',
                   cancelling && 'opacity-40',
                 )}
               >
@@ -990,7 +990,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               disabled={sendDisabled}
               onClick={canSend || !busy ? submit : onCancel}
               className={cn(
-                'size-9 shrink-0 rounded-md transition-all duration-150 active:scale-95',
+                'size-11 shrink-0 rounded-md transition-all duration-150 active:scale-95',
                 canSend || !busy
                   ? goalMode
                     ? 'bg-accent text-accent-foreground shadow-[0_0_12px_rgba(var(--accent-rgb),0.4)]'

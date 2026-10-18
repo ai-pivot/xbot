@@ -57,7 +57,7 @@ export const RegionsDivider = memo(function RegionsDivider({
       data-regions-before={count}
       className={
         status === 'error'
-          ? 'flex h-7 w-full items-center justify-center'
+          ? 'flex h-11 w-full items-center justify-center'
           : 'h-px w-full bg-transparent'
       }
     >
@@ -66,7 +66,7 @@ export const RegionsDivider = memo(function RegionsDivider({
           type="button"
           data-testid="regions-divider-retry"
           onClick={onRetry}
-          className="mx-auto flex h-7 min-w-0 items-center justify-center gap-1.5 px-1 text-[11.5px] text-text-muted transition-colors hover:text-text-secondary"
+          className="mx-auto flex h-11 min-w-0 items-center justify-center gap-1.5 px-1 text-[11.5px] text-text-muted transition-colors hover:text-text-secondary"
         >
           <TriangleAlert aria-hidden className="size-3" />
           <span>{t('agent.regions.retry')}</span>

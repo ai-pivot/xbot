@@ -216,7 +216,7 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
         persisted: true,
         // ⚠️ dbID 必须取 **user 行自己**的 id —— 绝不能回落成 assistant 行的 id，
         // 否则 rewind 会把这条 user msg 回滚到 assistant 行上（CR 抓到的 bug）。
-        dbID: tu.id ?? (i + 1),
+        dbID: typeof tu.id === 'number' ? tu.id : undefined,
       })
     }
 
