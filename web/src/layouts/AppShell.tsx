@@ -40,6 +40,7 @@ import { commands } from '@/lib/commandRouter'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
 import type { SettingsCategory } from '@/components/settings/SettingsDialog'
 import { UpdateReminder } from '@/components/UpdateReminder'
+import { SessionSearchDialog } from '@/components/session/SessionSearchDialog'
 
 // 内置面板（core.*）注册——模块级幂等调用（同 id 覆盖，与
 // registerBuiltinLayoutItems 在 App.tsx 模块级注册的模式一致）。
@@ -373,6 +374,11 @@ export function AppShell() {
 
       {/* Floating panel layer — 窗口内浮层（根容器内 absolute inset-0，非 body portal），
           floating 面板 pointer-events-auto，其余透明不拦截。 */}
+
+      <SessionSearchDialog onSelect={(session) => {
+        openAgentSessionTab(tabManager, session.chatID, session.channel, session.label)
+        sessionStore.activateSession(session.chatID, session.channel)
+      }} />
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
       <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>

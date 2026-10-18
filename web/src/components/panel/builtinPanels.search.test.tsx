@@ -87,54 +87,22 @@ vi.mock('@/components/ui/scroll-area', () => ({
 const tabManagerMock = { openTab: vi.fn(), closeTab: vi.fn(), setActiveTab: vi.fn() }
 const ctx = { tabManager: tabManagerMock } as never
 
-describe('CoreSessionsPanel — 会话搜索收起/展开（同行横向挤压）', () => {
-  it('默认收起：输入框不在可达性树中；新建会话按钮与开关在同一行工具栏内', () => {
+describe('CoreSessionsPanel — global search entry', () => {
+  it('keeps the new-session label and search button without an inline input', () => {
     renderWithProviders(<CoreSessionsPanel ctx={ctx} />)
-
-    // 收起：输入框不在可达性树（aria-hidden + tabIndex=-1，实际是被 0 宽裁切）。
-    expect(screen.queryByRole('textbox')).toBeNull()
-
     const toolbar = screen.getByTestId('session-list-toolbar')
-    const toggle = screen.getByTestId('session-search-toggle')
-    const newBtn = screen.getByRole('button', { name: /新建会话|New Session|新しいセッション/ })
-
-    // 同一行：新建会话按钮 / 搜索框槽位 / 开关都在工具栏容器内。
-    // 输入框若被移到工具栏【之外】（纵向展开成独立一行）此断言即失败。
-    expect(toolbar).toContainElement(newBtn)
-    expect(toolbar).toContainElement(toggle)
-    expect(toolbar).toContainElement(screen.getByLabelText(/^搜索$|^Search$/i, { selector: 'input' }))
+    expect(toolbar.querySelector('input')).toBeNull()
+    expect(toolbar).toContainElement(screen.getByTestId('session-search-toggle'))
+    expect(toolbar).toContainElement(screen.getByRole('button', { name: /新建会话|New Session|新しいセッション/ }))
   })
-
-  it('点击按钮展开输入框并自动聚焦；再次点击收起', () => {
+  it('dispatches the global search request instead of expanding the sidebar', () => {
+    const show = vi.fn()
+    window.addEventListener('xbot:session-search', show)
     renderWithProviders(<CoreSessionsPanel ctx={ctx} />)
-
     fireEvent.click(screen.getByTestId('session-search-toggle'))
-
-    const input = screen.getByRole('textbox')
-    expect(input).toBeInTheDocument()
-    // 展开即聚焦（点击后可直接输入）。
-    expect(document.activeElement).toBe(input)
-    expect(screen.getByTestId('session-search-toggle')).toHaveAttribute('aria-expanded', 'true')
-
-    // 再次点击 → 收起。
-    fireEvent.click(screen.getByTestId('session-search-toggle'))
+    expect(show).toHaveBeenCalledOnce()
     expect(screen.queryByRole('textbox')).toBeNull()
-  })
-
-  it('Esc 收起且清空查询（隐藏的过滤条件不能让列表莫名变短）', () => {
-    renderWithProviders(<CoreSessionsPanel ctx={ctx} />)
-
-    fireEvent.click(screen.getByTestId('session-search-toggle'))
-    const input = screen.getByRole('textbox')
-    fireEvent.change(input, { target: { value: '我的' } })
-    expect(input).toHaveValue('我的')
-
-    fireEvent.keyDown(input, { key: 'Escape' })
-    expect(screen.queryByRole('textbox')).toBeNull()
-
-    // 重新展开 → 查询已清空（复位为未过滤状态）。
-    fireEvent.click(screen.getByTestId('session-search-toggle'))
-    expect(screen.getByRole('textbox')).toHaveValue('')
+    window.removeEventListener('xbot:session-search', show)
   })
 })
 
