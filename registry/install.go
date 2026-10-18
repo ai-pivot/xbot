@@ -247,85 +247,170 @@ func copyFileMode(src, dst string, mode os.FileMode) error {
 	return os.Chmod(dst, mode)
 }
 
-// installPackage reads a package.json manifest from the registry clone and
-// installs each content item (skill/agent/plugin) individually.
+// installPackage reads a package.json manifest and installs it: dependencies
+// first (recursive, cycle-guarded, skipped if already present), then the
+// package's own contents (skill/agent/plugin, referenced by name from the
+// catalog or, as an escape hatch, bundled via `source`).
 func installPackage(cloneDir string, entry *Entry, xbotHome, workDir, senderID string) error {
-	manifestPath := filepath.Join(cloneDir, entry.Path, "package.json")
-	data, err := os.ReadFile(manifestPath)
+	return installPackageRec(cloneDir, entry, xbotHome, workDir, senderID, map[string]bool{})
+}
+
+func installPackageRec(cloneDir string, entry *Entry, xbotHome, workDir, senderID string, seen map[string]bool) error {
+	key := "package:" + entry.Name
+	if seen[key] {
+		return fmt.Errorf("dependency cycle detected at package %q", entry.Name)
+	}
+	seen[key] = true
+	defer delete(seen, key)
+
+	manifest, err := loadPackageManifest(filepath.Join(cloneDir, entry.Path))
 	if err != nil {
-		return fmt.Errorf("read package.json: %w", err)
+		return err
 	}
-
-	// Use the agent package's PackageManifest type via a local struct
-	// to avoid a circular dependency (agent → tools, registry → tools).
-	type pkgContent struct {
-		Type   string `json:"type"`
-		Name   string `json:"name"`
-		Source string `json:"source"`
-	}
-	type pkgManifest struct {
-		Schema   int          `json:"schema"`
-		ID       string       `json:"id"`
-		Name     string       `json:"name"`
-		Version  string       `json:"version"`
-		Contents []pkgContent `json:"contents"`
-	}
-
-	var manifest pkgManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return fmt.Errorf("parse package.json: %w", err)
-	}
-
-	pkgDir := filepath.Join(cloneDir, entry.Path)
 	catalog, catalogErr := loadIndex(cloneDir)
+
+	// 1) Dependencies first (may reference another package → recurse).
+	for _, dep := range manifest.Dependencies {
+		if catalogErr != nil {
+			return fmt.Errorf("package %q: cannot resolve dependency %q (registry.json unreadable: %v)", entry.Name, dep.Name, catalogErr)
+		}
+		item := findCatalogItem(catalog, dep.Type, dep.Name)
+		if item == nil {
+			return fmt.Errorf("package %q: dependency %s %q is not a catalog item in this registry", entry.Name, dep.Type, dep.Name)
+		}
+		if item.Type == "package" {
+			if err := installPackageRec(cloneDir, item, xbotHome, workDir, senderID, seen); err != nil {
+				return fmt.Errorf("package %q dependency %q: %w", entry.Name, dep.Name, err)
+			}
+			continue
+		}
+		if err := installResolved(item.Type, item.Name, filepath.Join(cloneDir, item.Path), xbotHome, workDir, senderID, true); err != nil {
+			return fmt.Errorf("package %q dependency %q: %w", entry.Name, dep.Name, err)
+		}
+	}
+
+	// 2) Contents (skill/agent/plugin only).
+	pkgDir := filepath.Join(cloneDir, entry.Path)
 	for _, c := range manifest.Contents {
 		var srcPath string
 		if c.Source != "" {
-			// Escape hatch: a package-private component bundled under the package
+			// Escape hatch: package-private component bundled under the package
 			// dir. Discouraged for shared components (duplicates them).
 			srcPath = filepath.Join(pkgDir, c.Source)
 		} else {
-			// Default (extension-pack model): resolve the referenced component
-			// from this registry's catalog by name (+ optional type), so shared
-			// skills like "github" are defined once and referenced, not copied.
 			if catalogErr != nil {
 				return fmt.Errorf("package %q: cannot resolve %q (registry.json unreadable: %v)", entry.Name, c.Name, catalogErr)
 			}
-			var found *Entry
-			for i := range catalog.Items {
-				it := &catalog.Items[i]
-				if it.Name == c.Name && (c.Type == "" || it.Type == c.Type) {
-					found = it
-					break
-				}
-			}
-			if found == nil {
+			item := findCatalogItem(catalog, c.Type, c.Name)
+			if item == nil {
 				return fmt.Errorf("package %q: referenced %s %q is not a catalog item in this registry; publish it standalone or add a source path", entry.Name, c.Type, c.Name)
 			}
-			srcPath = filepath.Join(cloneDir, found.Path)
+			if item.Type == "package" {
+				return fmt.Errorf("package %q: content %q must be skill/agent/plugin; reference other packages via dependencies", entry.Name, c.Name)
+			}
+			srcPath = filepath.Join(cloneDir, item.Path)
 			if c.Type == "" {
-				c.Type = found.Type
+				c.Type = item.Type
 			}
 		}
-		switch c.Type {
-		case "skill":
-			if err := installSkill(srcPath, c.Name, workDir, senderID); err != nil {
-				return fmt.Errorf("package %q: %w", entry.Name, err)
-			}
-		case "agent":
-			if err := installAgent(srcPath, c.Name, workDir, senderID); err != nil {
-				return fmt.Errorf("package %q: %w", entry.Name, err)
-			}
-		case "plugin":
-			if err := installPlugin(srcPath, c.Name, xbotHome); err != nil {
-				return fmt.Errorf("package %q: %w", entry.Name, err)
-			}
-		default:
-			return fmt.Errorf("package %q: unsupported content type %q (allowed: skill, agent, plugin)", entry.Name, c.Type)
+		if err := installResolved(c.Type, c.Name, srcPath, xbotHome, workDir, senderID, true); err != nil {
+			return fmt.Errorf("package %q: %w", entry.Name, err)
 		}
 	}
-	log.WithFields(log.Fields{"package": entry.Name, "items": len(manifest.Contents)}).Info("Installed package from registry")
+
+	log.WithFields(log.Fields{
+		"package": entry.Name,
+		"items":   len(manifest.Contents),
+		"deps":    len(manifest.Dependencies),
+	}).Info("Installed package from registry")
 	return nil
+}
+
+// installResolved installs one skill/agent/plugin from an absolute source path.
+// When skipIfPresent is true (package content/dependency install), an
+// already-installed component is skipped instead of failing — several packages
+// may reference the same shared component.
+func installResolved(itemType, name, srcPath, xbotHome, workDir, senderID string, skipIfPresent bool) error {
+	if skipIfPresent && isItemInstalled(itemType, name, xbotHome, workDir, senderID) {
+		log.WithFields(log.Fields{"type": itemType, "name": name}).Debug("Component already installed, skipping")
+		return nil
+	}
+	switch itemType {
+	case "skill":
+		return installSkill(srcPath, name, workDir, senderID)
+	case "agent":
+		return installAgent(srcPath, name, workDir, senderID)
+	case "plugin":
+		return installPlugin(srcPath, name, xbotHome)
+	default:
+		return fmt.Errorf("unsupported content type %q (allowed: skill, agent, plugin)", itemType)
+	}
+}
+
+// isItemInstalled reports whether a skill/agent/plugin is already installed for
+// this user. Best-effort (plugins are keyed by manifest id / dir name).
+func isItemInstalled(itemType, name, xbotHome, workDir, senderID string) bool {
+	switch itemType {
+	case "skill":
+		_, err := os.Stat(filepath.Join(tools.UserSkillsRoot(workDir, senderID), name))
+		return err == nil
+	case "agent":
+		_, err := os.Stat(filepath.Join(tools.UserAgentsRoot(workDir, senderID), name+".md"))
+		return err == nil
+	case "plugin":
+		info, err := os.Stat(filepath.Join(xbotHome, "plugins", name))
+		return err == nil && info.IsDir()
+	}
+	return false
+}
+
+// findCatalogItem finds a catalog entry by name (+ optional type).
+func findCatalogItem(idx *Index, itemType, name string) *Entry {
+	if idx == nil {
+		return nil
+	}
+	for i := range idx.Items {
+		it := &idx.Items[i]
+		if it.Name == name && (itemType == "" || it.Type == itemType) {
+			return it
+		}
+	}
+	return nil
+}
+
+// Local package.json structs (kept here to avoid importing agent, which would
+// introduce a cycle via tools).
+type pkgContent struct {
+	Type   string `json:"type"`
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+type pkgDependency struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type pkgManifest struct {
+	Schema       int             `json:"schema"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Version      string          `json:"version"`
+	Contents     []pkgContent    `json:"contents"`
+	Dependencies []pkgDependency `json:"dependencies"`
+}
+
+func loadPackageManifest(pkgDir string) (*pkgManifest, error) {
+	data, err := os.ReadFile(filepath.Join(pkgDir, "package.json"))
+	if err != nil {
+		return nil, fmt.Errorf("read package.json: %w", err)
+	}
+	var m pkgManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parse package.json: %w", err)
+	}
+	return &m, nil
 }
 
 // copyDir copies a directory tree from src to dst, preserving file modes.
