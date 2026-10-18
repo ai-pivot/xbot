@@ -1063,5 +1063,3 @@ func (c *Client) RenameChat(ch, senderID, chatID, newName string) error {
 	})
 	return err
 }
-
-

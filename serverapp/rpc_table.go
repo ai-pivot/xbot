@@ -3123,10 +3123,6 @@ func registerRegistryHandlers(t RPCTable, h *RPCContext) {
 			return nil, fmt.Errorf("name is required")
 		}
 		xbotHome := config.XbotHome()
-		workDir := h.Cfg.Agent.WorkDir
-		if workDir == "" {
-			workDir = xbotHome
-		}
 		senderID := rpcAuthID(ctx)
 
 		switch p.Type {

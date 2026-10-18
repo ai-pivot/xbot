@@ -26,11 +26,11 @@ type Index struct {
 
 // Entry describes a single distributable item in a registry.
 type Entry struct {
-	Type        string   `json:"type"` // skill | agent | plugin | package
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Author      string   `json:"author"`
-	Version     string   `json:"version"`
+	Type        string `json:"type"` // skill | agent | plugin | package
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Author      string `json:"author"`
+	Version     string `json:"version"`
 	Path        string `json:"path"` // relative path inside the registry repo
 
 	// Registry is the source registry name (set after fetch, not serialized).

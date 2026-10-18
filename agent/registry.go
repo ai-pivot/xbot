@@ -13,7 +13,6 @@ import (
 	"time"
 
 	log "xbot/logger"
-	"xbot/plugin"
 	"xbot/tools"
 )
 
@@ -35,11 +34,6 @@ func NewRegistryManager(store *SkillStore, agentStore *AgentStore, workDir, xbot
 		xbotHome:   xbotHome,
 		sandbox:    sandbox,
 	}
-}
-
-// pluginsDir returns the global plugins directory (~/.xbot/plugins/).
-func (rm *RegistryManager) pluginsDir() string {
-	return filepath.Join(rm.xbotHome, "plugins")
 }
 
 // useSandbox 判断是否应使用 Sandbox 访问用户文件。
@@ -64,89 +58,6 @@ func (rm *RegistryManager) userAgentsDir(senderID string) string {
 		return filepath.Join(rm.sandbox.Workspace(senderID), "agents")
 	}
 	return tools.UserAgentsRoot(rm.workDir, senderID)
-}
-
-// --- Find ---
-
-func (rm *RegistryManager) findSkillDir(name string) string {
-	for _, dir := range rm.store.globalDirs {
-		path := filepath.Join(dir, name)
-		if _, err := os.Stat(filepath.Join(path, "SKILL.md")); err == nil {
-			return path
-		}
-	}
-	return ""
-}
-
-func (rm *RegistryManager) findSkillDirForUser(name, senderID string) string {
-	if dir := rm.findSkillDir(name); dir != "" {
-		return dir
-	}
-	if senderID != "" {
-		path := filepath.Join(rm.userSkillsDir(senderID), name)
-		if rm.useSandbox() {
-			ctx, cancel := rm.sandboxCtx()
-			defer cancel()
-			if _, err := rm.sandbox.Stat(ctx, filepath.Join(path, "SKILL.md"), senderID); err == nil {
-				return path
-			}
-		} else {
-			if _, err := os.Stat(filepath.Join(path, "SKILL.md")); err == nil {
-				return path
-			}
-		}
-	}
-	return ""
-}
-
-func (rm *RegistryManager) findAgentFile(name, senderID string) string {
-	if rm.agentStore != nil && rm.agentStore.globalDir != "" {
-		path := filepath.Join(rm.agentStore.globalDir, name+".md")
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-	if senderID != "" {
-		path := filepath.Join(rm.userAgentsDir(senderID), name+".md")
-		if rm.useSandbox() {
-			ctx, cancel := rm.sandboxCtx()
-			defer cancel()
-			if _, err := rm.sandbox.Stat(ctx, path, senderID); err == nil {
-				return path
-			}
-		} else {
-			if _, err := os.Stat(path); err == nil {
-				return path
-			}
-		}
-	}
-	return ""
-}
-
-// findPluginDir locates a plugin directory by ID or name.
-func (rm *RegistryManager) findPluginDir(name string) string {
-	pluginsDir := rm.pluginsDir()
-	entries, err := os.ReadDir(pluginsDir)
-	if err != nil {
-		return ""
-	}
-	for _, ent := range entries {
-		if !ent.IsDir() {
-			continue
-		}
-		pluginDir := filepath.Join(pluginsDir, ent.Name())
-		manifest, err := plugin.LoadManifest(pluginDir)
-		if err != nil {
-			continue
-		}
-		if manifest.ID == name || manifest.Name == name {
-			return pluginDir
-		}
-		if ent.Name() == name {
-			return pluginDir
-		}
-	}
-	return ""
 }
 
 // --- Sandbox helpers ---

@@ -713,7 +713,6 @@ func (wc *WebChannel) handleLLMModelSet(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, llmConfigResponse{OK: true})
 }
 
-
 type skillsExportRequest struct {
 	Path string `json:"path"`
 	Name string `json:"name"`

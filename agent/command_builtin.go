@@ -684,4 +684,3 @@ func (a *pluginCmdAdapter) Execute(ctx context.Context, ag *Agent, msg bus.Inbou
 		Content: result,
 	}, nil
 }
-

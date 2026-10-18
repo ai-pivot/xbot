@@ -1164,6 +1164,15 @@ const ja: Translations = {
       },
     },
   },
+  marketplace: {
+    search: 'コンポーネントを検索…',
+    empty: '利用可能なコンポーネントはありません',
+    manifest: {
+      name: 'マーケットプレイス',
+      title: 'マーケット',
+      description: 'スキル・エージェント・プラグインを閲覧・検索・インストール',
+    },
+  },
 }
 
 export default ja

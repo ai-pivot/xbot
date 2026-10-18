@@ -1160,6 +1160,15 @@ const zhCN = {
       },
     },
   },
+  marketplace: {
+    search: '搜索组件…',
+    empty: '暂无可用组件',
+    manifest: {
+      name: '组件市场',
+      title: '市场',
+      description: '浏览、搜索并安装技能、代理、插件',
+    },
+  },
 }
 
 export default zhCN

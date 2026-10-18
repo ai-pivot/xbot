@@ -1166,6 +1166,15 @@ const en: Translations = {
       },
     },
   },
+  marketplace: {
+    search: 'Search components…',
+    empty: 'No components available',
+    manifest: {
+      name: 'Marketplace',
+      title: 'Market',
+      description: 'Browse, search, and install skills, agents, and plugins',
+    },
+  },
 }
 
 export default en
