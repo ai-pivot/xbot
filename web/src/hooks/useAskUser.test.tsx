@@ -8,7 +8,7 @@
  * store wiring (event handler → askUserPrompts → useAskUser.prompt).
  */
 import { createElement, useEffect } from 'react'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -21,13 +21,18 @@ let sessionHandler:
   | ((event: { channel?: string; chat_id?: string; action?: string }) => void)
   | null = null
 
+/** 发送通道（P1 2026-10-18：失败路径要能把问题放回面板 ⇒ 必须能注入 reject）。 */
+const wsMocks = vi.hoisted(() => ({
+  send: vi.fn(async () => ({ ok: true, data: {} })),
+}))
+
 vi.mock('@/hooks/useWSConnection', () => ({
   useWSConnection: () => ({
     connected: true,
     subscribe: vi.fn(),
     disconnect: vi.fn(),
     rpc: vi.fn(),
-    send: vi.fn(async () => ({ ok: true, data: {} })),
+    send: wsMocks.send,
     onSession: vi.fn((handler) => {
       sessionHandler = handler
       return vi.fn()
@@ -64,7 +69,7 @@ vi.mock('@/lib/api', () => ({
 }))
 
 function Probe({ chatID, channel }: { chatID: string; channel: string }) {
-  const { prompt } = useAskUser({ chatID, channel })
+  const { prompt, respond, cancel } = useAskUser({ chatID, channel })
   const store = useSessionStore()
   // 模块级 storeRef 的赋值必须发生在 render 之外（react-hooks/globals：
   // render 期间改外部变量是不纯的副作用）。用 effect 同步即可。
@@ -76,6 +81,8 @@ function Probe({ chatID, channel }: { chatID: string; channel: string }) {
       <div data-testid="panel">{prompt ? 'panel-visible' : 'panel-hidden'}</div>
       <div data-testid="prompt-count">{String(store.askUserPrompts.size)}</div>
       <div data-testid="session-count">{String(store.sessions.length)}</div>
+      <button data-testid="answer" type="button" onClick={() => respond({ Proceed: 'yes' })}>answer</button>
+      <button data-testid="cancel-ask" type="button" onClick={cancel}>cancel</button>
     </div>
   )
 }
@@ -243,6 +250,44 @@ describe('useAskUser panel mirrors the server state', () => {
 
     expect(screen.getByTestId('prompt-count').textContent).toBe('0')
     expect(screen.getByTestId('panel').textContent).toBe('panel-hidden')
+  })
+
+  // ── P1（2026-10-18 审查）：发送失败必须把问题**放回面板** ─────────────────────
+  // 旧实现：点击即清 + `.catch` 只弹 toast、只撤销闪回抑制 ⇒ 服务端仍在等这条
+  // `ask_user_response`，而 `hydrate` 只在会话切换/行对账时跑 ⇒ 用户再也看不到面板
+  //（会话卡 waiting_input，只能刷新页面）。判别力：删掉 `hydrateAskUserPrompt(...)`
+  // 那一行 ⇒ 下面两条必红（只"撤销抑制"不会让面板自己回来）。
+  it('★ respond 失败 ⇒ 面板必须重新可见（问题还在服务端 pending）', async () => {
+    await renderProbe()
+    act(() => {
+      messageHandler?.(askUserEvent())
+    })
+    expect(screen.getByTestId('panel').textContent).toBe('panel-visible')
+
+    wsMocks.send.mockRejectedValueOnce(new Error('network down'))
+    act(() => {
+      fireEvent.click(screen.getByTestId('answer'))
+    })
+    // 点击即清（用户 2026-10-16 要求的"立刻消失"语义保持不变）
+    expect(screen.getByTestId('panel').textContent).toBe('panel-hidden')
+    // 失败 ⇒ 放回，且是**同一条**问题（不能拿空/新 requestId 伪造）
+    await waitFor(() => expect(screen.getByTestId('panel').textContent).toBe('panel-visible'))
+    expect(storeRef?.askUserPrompts.get('web:web-chat-1')?.requestId).toBe('r-panel')
+  })
+
+  it('★ cancel 失败 ⇒ 同样放回（两条发送路径同一契约）', async () => {
+    await renderProbe()
+    act(() => {
+      messageHandler?.(askUserEvent())
+    })
+    expect(screen.getByTestId('panel').textContent).toBe('panel-visible')
+
+    wsMocks.send.mockRejectedValueOnce(new Error('network down'))
+    act(() => {
+      fireEvent.click(screen.getByTestId('cancel-ask'))
+    })
+    expect(screen.getByTestId('panel').textContent).toBe('panel-hidden')
+    await waitFor(() => expect(screen.getByTestId('panel').textContent).toBe('panel-visible'))
   })
 })
 

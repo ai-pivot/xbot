@@ -555,10 +555,6 @@ func (c *Client) SetSubscriptionEnabled(subID string, enabled bool) error {
 // Runtime config (via RPC)
 // ---------------------------------------------------------------------------
 
-func (c *Client) SetMaxIterations(n int) {
-	c.callVoid(MethodSetMaxIterations, setMaxIterationsReq{N: n})
-}
-
 func (c *Client) SetMaxConcurrency(n int) {
 	c.callVoid(MethodSetMaxConcurrency, setMaxConcurrencyReq{N: n})
 }

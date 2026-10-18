@@ -21,7 +21,7 @@ To add a new runtime setting:
 ### Scope Classification: `channel/setting_keys.go`
 Every setting key has a scope:
 - `ScopeSubscription`: stored in subscription (provider, key, model, max_context via PerModelConfigs)
-- `ScopeUser`: stored in user_settings DB (max_iterations, language, etc.)
+- `ScopeUser`: stored in user_settings DB (layout_mode, language, etc.)
 - `ScopeGlobal`: stored in config.json (sandbox_mode)
 
 ## Data Flow
@@ -105,4 +105,18 @@ The #1 goal of this refactoring was eliminating credential loss bugs. The protec
 4. **`cli_settings.go:saveSettings` only writes PerModelConfigs** — subscription field
    updates (provider, key, model) go through `ApplySettings` → `updateActiveSubscription`
    which has its own masked-key protection.
+
+## 迭代次数上限：已彻底移除（2026-10-14，用户要求「以后不加这种限制」）
+
+`max_iterations` / `AgentConfig.MaxIterations` / `RunConfig.MaxIterations` /
+`DefaultMaxIterations`（原 2000）/ `AGENT_MAX_ITERATIONS` 环境变量 /
+`set_max_iterations` RPC / `Agent.SetMaxIterations` / `user_settings` 行 /
+设置面板条目（`channel/setting_keys.go` + `channel/i18n.go` 三语）**全部删除**。
+
+- 引擎主循环现在是 `for n := 1; ; n++`（`agent/engine.go`）—— **没有次数上限**，
+  直到 LLM 给出最终回答、用户取消、或其它既有熔断（迭代循环检测等）触发。
+- ⛔ **不要重新引入任何「每 turn 迭代次数上限」**。长 turn（数千次工具迭代）是正常负载：
+  上限曾导致 ① 迭代记录在 2000 条后**停止落库**（`iteration_history` 断流，UI 看不到
+  后半段迭代）；② 压缩点（`[Compacted context]`）失去可定位的迭代时间戳，前端只能把
+  它们堆在 turn 末尾。判别测试 `TestRun_NoIterationCap`（agent/engine_test.go）。
 

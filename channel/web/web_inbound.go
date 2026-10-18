@@ -114,6 +114,11 @@ func (wc *WebChannel) inboundIdentityFromRequest(r *http.Request) inboundIdentit
 
 func (wc *WebChannel) resolveInboundSession(ctx context.Context, identity inboundIdentity, channelName, chatID string) (SessionSelector, error) {
 	sel := wc.GetCurrentSession(identity.SenderID)
+	// ⛔ 入站 chat_id 规范化（2026-10-17）：客户端可能把**全键**（`web:chat_X`）
+	//    当作 chat_id 发来；会话键是 `channel:chatID` ⇒ 不剥前缀会落到
+	//    `web:web:chat_X` 幽灵会话（send 与 cancel 打不同会话的根因）。
+	//    在传输边界统一成裸 id，与 history/cancel/SSE 同一形态。
+	chatID = canonicalChatID(channelName, chatID)
 	if channelName != "" && chatID != "" {
 		sel = SessionSelector{Channel: channelName, ChatID: chatID}
 	}

@@ -428,10 +428,9 @@ func (ss *bgSessionState) setActiveTurn(id uint64) {
 
 // Agent 核心 Agent 引擎
 type Agent struct {
-	bus           *bus.MessageBus
-	multiSession  *session.MultiTenantSession // Multi-tenant session manager
-	tools         *tools.Registry
-	maxIterations int
+	bus          *bus.MessageBus
+	multiSession *session.MultiTenantSession // Multi-tenant session manager
+	tools        *tools.Registry
 
 	skills             *SkillStore
 	agents             *AgentStore
@@ -499,6 +498,14 @@ type Agent struct {
 	cancelStateMu sync.Mutex
 	chatCancelCh  sync.Map
 
+	// runGen：每个 chat 最近一次 Run 的**轮次代号**（单调递增）。
+	// ⛔ 存在的唯一理由（用户 2026-10-17 P0「后端乱发 session_idle」）：回合收尾的 defer 会在
+	//   processMessage 返回后**无条件**发 session(idle)。若用户在前一轮收尾前就发来下一条消息
+	//   （新一轮已 active），这条**迟到的旧轮 idle** 会落在新轮的 busy 之后 ⇒ 前端（web 与原生一致）
+	//   把正在跑的新轮误标 idle ⇒ 卡 busy / 界面冻结。⇒ 只有"仍是当前轮"的收尾才允许发 idle。
+	runGenMu sync.Mutex
+	runGen   map[string]uint64
+
 	// sessionOperationGates serializes Run/command turns with history rewind.
 	// Leases are reference counted under the map mutex so idle entries can be
 	// removed without an ABA window that creates two gates for one session.
@@ -540,10 +547,15 @@ type Agent struct {
 	// On turn end, the entry is deleted.
 	iterationHistories sync.Map
 
-	// builtinProgressSeq stores per-chat atomic seq counters for builtin commands
-	// (/compress, /new) that bypass engine.Run but still need progress events.
+	// progressSeq stores **per-session** structured-progress seq counters.
+	//
+	// ⛔ 2026-10-17：此前每个 Run 在 buildMainRunConfig 里新建 `var progressSeq
+	// atomic.Uint64` ⇒ **每次 resume 都从 1 重计**。客户端的重放水位（lastSeq）
+	// 是 per-turn 的 ⇒ 新 run 的 seq ≤ 旧水位，事件被误判"重放"丢弃
+	// （用户症状：迭代不再更新 / 内容回退）。改为 per-session 持久计数器，
+	// 首次以 UnixMilli 播种（跨进程重启也单调），此后只增不减。
 	// key: "channel:chatID" -> *atomic.Uint64
-	builtinProgressSeq sync.Map
+	progressSeq sync.Map
 
 	// interactiveSubAgents stores interactive SubAgent sessions
 	// key: "channel:chatID/roleName" -> *interactiveAgent
@@ -1604,9 +1616,7 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 			state.(*bgSessionState).busy.Store(false)
 		}
 		tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
-		a.emitSessionState(protocol.SessionEvent{
-			Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
-		})
+		a.emitSessionIdleIfNoActiveRun(cancelKey, msg.Channel, msg.ChatID, msg.SenderID)
 		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
 		return
@@ -1632,6 +1642,67 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	a.pendingCancel.Store(cancelKey, true)
 	a.cancelStateMu.Unlock()
 	log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
+}
+
+// progressSeqFor returns the **per-session** structured-progress seq counter.
+//
+// ⛔ 2026-10-17（resume 丢事件的真根因）：此前 buildMainRunConfig 每个 Run 新建
+// `var progressSeq atomic.Uint64` ⇒ resume/新 run 从 1 重计，而客户端重放水位
+// （lastSeq）是 per-turn 的 ⇒ 新 run 的 seq ≤ 旧水位，被误判"重放"丢弃
+// （用户症状：迭代不再更新 / 内容回退）。
+// 现在按 `channel:chatID` 持久化，首次以 UnixMilli 播种（跨进程重启也单调；
+// 1.7e12 远小于 JS 安全整数 9e15），此后只增不减。
+// 注意：这与 SSE 帧自己的 `eventStream.nextSeq()`（重放缓存的游标）是**两套**
+// 计数器 —— 改这里不会影响 SSE Last-Event-ID 的连续性。
+func (a *Agent) progressSeqFor(sessionKey string) *atomic.Uint64 {
+	if sessionKey == "" {
+		sessionKey = "default"
+	}
+	if v, ok := a.progressSeq.Load(sessionKey); ok {
+		return v.(*atomic.Uint64)
+	}
+	fresh := &atomic.Uint64{}
+	fresh.Store(uint64(time.Now().UnixMilli()))
+	actual, _ := a.progressSeq.LoadOrStore(sessionKey, fresh)
+	return actual.(*atomic.Uint64)
+}
+
+// bumpRunGen 标记该会话开始新一轮，返回本轮代号（单调递增）。
+func (a *Agent) bumpRunGen(chatKey string) uint64 {
+	a.runGenMu.Lock()
+	defer a.runGenMu.Unlock()
+	if a.runGen == nil {
+		a.runGen = make(map[string]uint64)
+	}
+	a.runGen[chatKey]++
+	return a.runGen[chatKey]
+}
+
+// isCurrentRunGen 该代号是否仍是该会话的当前轮（false ⇒ 这是一次**迟到**的旧轮收尾）。
+func (a *Agent) isCurrentRunGen(chatKey string, gen uint64) bool {
+	a.runGenMu.Lock()
+	defer a.runGenMu.Unlock()
+	if a.runGen == nil {
+		return false
+	}
+	return a.runGen[chatKey] == gen
+}
+
+// emitSessionIdleIfCurrent **唯一合法的 session(idle) 出口**：只有"仍是当前轮"才发。
+//
+// ⛔ 为什么必须在服务端修（而不是客户端打补丁 —— 用户 2026-10-17：「严禁做 hack，
+//
+//	后端乱发 session_idle 就必须修后端」）：会话的 busy/idle 是**服务端权威信号**，
+//	它一旦说谎，所有客户端只能猜（卡 busy / 界面冻结 / 历史闪烁）。
+func (a *Agent) emitSessionIdleIfCurrent(chatKey, channel, chatID, senderID string, gen uint64) {
+	if !a.isCurrentRunGen(chatKey, gen) {
+		log.WithFields(log.Fields{"chat": chatKey, "gen": gen, "reason": "stale-run-teardown"}).
+			Debug("Suppressed stale session(idle) — a newer run owns this chat")
+		return
+	}
+	a.emitSessionState(protocol.SessionEvent{
+		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
+	})
 }
 
 func (a *Agent) registerActiveCancelState(cancelKey string, cancelCh chan struct{}, reqCancel context.CancelFunc) bool {
@@ -1688,10 +1759,21 @@ func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, last
 		ss.busy.Store(false)
 	}
 	if i := strings.Index(chatKey, ":"); i > 0 {
-		a.emitSessionState(protocol.SessionEvent{
-			Channel: chatKey[:i], ChatID: chatKey[i+1:], Action: "idle", SenderID: lastSenderID,
-		})
+		a.emitSessionIdleIfNoActiveRun(chatKey, chatKey[:i], chatKey[i+1:], lastSenderID)
 	}
+}
+
+// emitSessionIdleIfNoActiveRun 是 idle 的受控出口：有活跃 cancel/Run 时不得发 idle。
+// P2 2026-10-18：interceptCancel / cleanupStaleCancelState 里的两处无条件 idle 会在
+// 「pending prompt 存在但该会话已有新一轮」时冻结新轮。
+func (a *Agent) emitSessionIdleIfNoActiveRun(chatKey, channel, chatID, senderID string) {
+	if _, active := a.chatCancelCh.Load(chatKey); active {
+		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active run owns this chat")
+		return
+	}
+	a.emitSessionState(protocol.SessionEvent{
+		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
+	})
 }
 
 // dispatchWaitingUser 把 WaitingUser 出站消息投递到 bus，返回是否真的送达。
@@ -1774,7 +1856,6 @@ type Config struct {
 	Bus            *bus.MessageBus
 	LLM            llm.LLM
 	Model          string
-	MaxIterations  int    // 单次对话最大工具调用迭代次数
 	MaxConcurrency int    // 最大并发会话处理数（默认 3）
 	DBPath         string // SQLite 数据库路径（空则使用默认路径）
 	SkillsDir      string // Skills 目录
@@ -2123,9 +2204,6 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 // New 创建 Agent
 func New(cfg Config) (*Agent, error) {
 	// 1. 设置配置默认值
-	if cfg.MaxIterations == 0 {
-		cfg.MaxIterations = 2000
-	}
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 3
 	}
@@ -2178,7 +2256,6 @@ func New(cfg Config) (*Agent, error) {
 		bus:                    cfg.Bus,
 		multiSession:           multiSession,
 		tools:                  registry,
-		maxIterations:          cfg.MaxIterations,
 		maxConcurrency:         cfg.MaxConcurrency,
 		deltaPush:              cfg.DeltaPush,
 		iterationLoopDetection: cfg.IterationLoopDetection,
@@ -2408,11 +2485,6 @@ func (a *Agent) SetContextMode(mode string) error {
 	return nil
 }
 
-func (a *Agent) SetMaxIterations(n int) {
-	a.contextManagerMu.Lock()
-	a.maxIterations = n
-	a.contextManagerMu.Unlock()
-}
 func (a *Agent) SetMaxConcurrency(n int) {
 	a.contextManagerMu.Lock()
 	a.maxConcurrency = n
@@ -2432,12 +2504,6 @@ func (a *Agent) SetCompressionThreshold(f float64) {
 	a.contextManagerMu.Lock()
 	a.contextManagerConfig.CompressionThreshold = f
 	a.contextManagerMu.Unlock()
-}
-
-func (a *Agent) getMaxIterations() int {
-	a.contextManagerMu.RLock()
-	defer a.contextManagerMu.RUnlock()
-	return a.maxIterations
 }
 
 func (a *Agent) getMaxConcurrency() int {
@@ -3055,6 +3121,13 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 	ss.msgCh = msgCh // reorder path re-projects the queue order onto this channel
 	a.bgSessionStates.Store(chatKey, ss)
 	defer a.bgSessionStates.Delete(chatKey)
+	// P2 2026-10-18：runGen 只在 worker 生命周期内有效；worker 退出必须清理，避免长驻
+	// server 上每会话残留一条。
+	defer func() {
+		a.runGenMu.Lock()
+		delete(a.runGen, chatKey)
+		a.runGenMu.Unlock()
+	}()
 
 	// Restore the per-session turn ID counter from DB SYNCHRONOUSLY, BEFORE
 	// the processLoop goroutine starts and BEFORE the main loop can admit any
@@ -3501,6 +3574,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// Execute the request, then atomically snapshot cancellation and unregister
 			// the active cancel state before another /cancel can target this chat.
 			wasCancelled := false
+			// 本轮代号：收尾时的 idle 只有"仍是当前轮"才允许发（见 emitSessionIdleIfCurrent）
+			runGen := a.bumpRunGen(chatKey)
 			func() {
 				defer func() {
 					// Panic 兜底：processMessage panic 时 goroutine 会被 clipanic.Go
@@ -3528,9 +3603,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					// reconnect can recover the in-flight turn.
 					isWaitingUser := response != nil && response.WaitingUser
 					if !isWaitingUser {
-						a.emitSessionState(protocol.SessionEvent{
-							Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
-						})
+						// ⛔ 只有"仍是当前轮"才发 idle：迟到的旧轮收尾不得把新一轮误标 idle
+						a.emitSessionIdleIfCurrent(cancelKey, msg.Channel, msg.ChatID, msg.SenderID, runGen)
 						key := qualifyChatID(msg.Channel, msg.ChatID)
 						a.lastProgressSnapshot.Delete(key)
 						a.iterationHistories.Delete(key)
@@ -4578,8 +4652,8 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 		}
 	}
 
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 
 	payload := &protocol.ProgressEvent{
 		ChatID: progressKey,
@@ -4615,8 +4689,8 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 
 	// Get or create per-chat seq counter. Start at 1 so the first event
 	// is not discarded by the CLI's seq monotonic check (initial lastProgressSeq=0).
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
@@ -4655,8 +4729,8 @@ func (a *Agent) emitGoalProgress(chName, chatID string) {
 	if goal == nil {
 		return
 	}
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
 		Phase:     "",
@@ -4686,11 +4760,8 @@ func (a *Agent) emitGoalProgress(chName, chatID string) {
 func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *protocol.TokenUsage, historyCompacted bool) {
 	progressKey := qualifyChatID(chName, chatID)
 
-	seqPtr, ok := a.builtinProgressSeq.Load(progressKey)
-	if !ok {
-		return
-	}
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 
 	payload := &protocol.ProgressEvent{
 		ChatID:           progressKey,
@@ -4711,7 +4782,6 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 	}
 
 	a.lastProgressSnapshot.Delete(progressKey)
-	a.builtinProgressSeq.Delete(progressKey)
 }
 
 // 首次发送创建新消息（如有入站 message_id 则回复该消息），后续发送 Patch 更新同一条消息。

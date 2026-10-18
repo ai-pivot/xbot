@@ -200,7 +200,6 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 ```json
 {
   "agent": {
-    "max_iterations": 2000,
     "memory_provider": "flat",
     "work_dir": ".",
     "prompt_file": "prompt.md",
@@ -222,7 +221,6 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_iterations` | int | `2000` | Max tool calls per conversation turn |
 | `max_concurrency` | int | `5` | Concurrency cap. ⚠️ **Not a config.json key** — a per-user setting stored in the `user_settings` table; change it from the settings panel (`/settings`, range 1–100) or the Web LLM console |
 | `memory_provider` | string | `"flat"` | Memory system: `flat` or `letta` |
 | `work_dir` | string | `"."` | Working directory |

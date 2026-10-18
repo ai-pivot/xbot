@@ -167,7 +167,6 @@ func (a *Agent) buildBaseRunConfig(
 		InitialCWD:       a.workDir, // absolute-resolved at buildToolContext time
 
 		// 循环控制
-		MaxIterations:   a.getMaxIterations(),
 		MaxOutputTokens: maxOutputTokens,
 
 		// Auto worktree: read via GetEffectiveSetting — the single correct
@@ -503,9 +502,11 @@ func (a *Agent) buildMainRunConfig(
 	if !streamDisabled {
 		cfg.Stream = true
 		if a.channelFinder != nil {
-			var progressSeq atomic.Uint64
-			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc, cfg.ResetStreamTiming = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
+			// ⛔ per-session 持久 seq（不是 per-Run 局部变量）：resume 后新 run 的
+			//    seq 必须继续高于客户端水位，否则事件会被误判"重放"丢弃。
+			progressSeq := a.progressSeqFor(cfg.SessionKey)
+			cfg.ProgressSeq = progressSeq
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc, cfg.ResetStreamTiming = a.buildStreamCallbacks(chatID, channel, progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
 		}
 	}
 
@@ -870,7 +871,6 @@ func (a *Agent) buildSubAgentRunConfig(
 		// (Already computed above before system prompt construction.)
 		IsWorktreeIsolated: isWorktreeIsolated,
 
-		MaxIterations: a.getMaxIterations(), // 继承主 Agent 配置
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
 		// Agent-lifecycle background tasks (async Pre/Post compress memory hooks

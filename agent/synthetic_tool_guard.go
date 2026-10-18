@@ -30,14 +30,19 @@ func isSyntheticToolName(name string) bool {
 
 // syntheticToolResult returns a friendly tool result for a mimic-call of a
 // synthetic notification tool. Instead of an "unknown tool" error (which the
-// model cannot act on), this result tells the model exactly what happened
-// and what to do — keeping the loop running.
+// model cannot act on), this result tells the model exactly what happened —
+// keeping the loop running.
+//
+// ⚠️ 2026-10-14 用户定向：「去掉多余的关于不要调用的提示」。旧文案结尾带一条命令式指令
+// （"Do NOT call this tool — continue with your actual task using the real tools available to
+// you."）—— 陈述清楚"这是系统自动注入的通知通道、不是可调用工具"之后，命令是多余的：
+// 它挤占指令位，还强化"我调错工具了"这个错误关注点。⇒ 只保留事实（含 AUTO-INJECTS 强调）。
 func syntheticToolResult(tc llm.ToolCall) (*tools.ToolResult, error) {
 	msg := fmt.Sprintf(
-		"This is a system notification channel (%s), not a callable tool. "+
-			"It appears in conversation history when the system injects background "+
-			"task results, cron triggers, or other asynchronous notifications. "+
-			"Do NOT call this tool — continue with your actual task using the real tools available to you.",
+		"This is a system notification channel (%s), not a callable tool: the xbot runtime "+
+			"AUTO-INJECTS it into the conversation history to carry background task results, "+
+			"cron triggers, and other asynchronous notifications. Treat it as history, not as "+
+			"something you invoked.",
 		tc.Name,
 	)
 	return &tools.ToolResult{

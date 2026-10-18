@@ -218,7 +218,7 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 		return "flat"
 	}()
 	// ScopeGlobal keys: only fallback to config.json when DB has no value.
-	// Same pattern as max_iterations/max_concurrency/max_context_tokens below.
+	// Same pattern as max_concurrency/max_context_tokens below.
 	if _, ok := vals["compression_threshold"]; !ok {
 		vals["compression_threshold"] = func() string {
 			if app.cfg.Agent.CompressionThreshold > 0 {
@@ -231,17 +231,9 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 	if _, ok := vals["tavily_api_key"]; !ok {
 		vals["tavily_api_key"] = app.cfg.TavilyAPIKey
 	}
-	// ScopeUser keys (max_iterations, max_concurrency, max_context_tokens):
+	// ScopeUser keys (max_concurrency, max_context_tokens):
 	// Primary source is the user_settings DB (written by /set). Only fallback
 	// to config.json when DB has no value (first-run or never changed).
-	if _, ok := vals["max_iterations"]; !ok {
-		vals["max_iterations"] = func() string {
-			if app.cfg.Agent.MaxIterations > 0 {
-				return fmt.Sprintf("%d", app.cfg.Agent.MaxIterations)
-			}
-			return "30"
-		}()
-	}
 	// max_concurrency is NOT seeded from config.json — its single source is the
 	// canonical user_settings row (channel.MaxConcurrencyChannel).
 	if _, ok := vals["max_context_tokens"]; !ok {
@@ -289,7 +281,7 @@ func saveCLIConfig(cfg *config.Config) error {
 			return fmt.Errorf("config file parse error, not overwriting")
 		}
 	}
-	// Agent settings: always write back (max_iterations, max_concurrency, etc.)
+	// Agent settings: always write back (memory_provider, context_mode, etc.)
 	merged.Agent = cfg.Agent
 
 	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode):
@@ -864,7 +856,7 @@ func newCLIApp(serverURL, token string, forceLocal bool, maxContextTokens, maxOu
 		// Sync runtime settings from DB to the Agent.
 		// The Agent's ContextManager and other runtime state were created from
 		// config.json values during InitServer. But user settings (enable_auto_compress,
-		// context_mode, max_iterations, etc.) live in the DB and may differ.
+		// context_mode, compression_threshold, etc.) live in the DB and may differ.
 		// Without this sync, the Agent runs with stale config.json defaults — e.g.
 		// noopManager (mode=none) even though DB says "Auto Compress: On".
 		if dbSettings, err := client.GetSettings("cli", "cli_user"); err == nil && len(dbSettings) > 0 {
@@ -942,6 +934,81 @@ func handleAskUserResolvedBroadcast(cliCh *cli.CLIChannel, env protocol.EventEnv
 	})
 }
 
+// writeCLIUsageTo 打印 CLI 用法（`--help` 与「未知 flag 报错」共用）。
+func writeCLIUsageTo(w io.Writer) {
+	for _, line := range []string{
+		"Usage: xbot-cli [options] [prompt]",
+		"",
+		"Modes:",
+		"  default             Auto mode: use remote server if cli.server_url is configured",
+		"  --local             Force in-process transport (Go channels, no server needed)",
+		"  --server <ws-url>   Force remote mode and connect to server",
+		"  serve               Run server mode in the same binary",
+		"",
+		"Subcommands:",
+		"  registry add <name> <url> [branch]  Add a component registry",
+		"  registry remove <name>              Remove a registry",
+		"  registry list                       List configured registries",
+		"  registry update                     Re-fetch all registries",
+		"  search [query] [--type skill|agent|plugin]  Search registries",
+		"  install <name> [--force]            Install a component from registry",
+		"  uninstall <name>                    Uninstall a component",
+		"  list-installed                       List installed skills/agents/plugins",
+		"",
+		"Options:",
+		"  --version, -v, -V   Print version and exit",
+		"  --help, -h          Show this help",
+		"  --new, --new-session  Start a new isolated session (auto-named)",
+		"  --ephemeral         Ephemeral mode: no persistence, clean state for benchmarking",
+		"  --resume            Resume last session (default)",
+		"  --max-context N     Override max context tokens (e.g. 128000, 1000000)",
+		"  --max-tokens N      Override max output tokens (e.g. 8192)",
+		"  --thinking-mode <json>  Override LLM thinking_mode (e.g. {\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"max\"})",
+		"  -p <prompt>         Non-interactive single prompt",
+		"  --export-session <file>  Export current session (full history) to JSON and exit",
+		"  --import-session <file>  Import session JSON before running (combine with --ephemeral for bench)",
+		"  --export-after <file>    Export session JSON after task completes (bench: no re-run needed)",
+		"  --token <token>     Token for remote server",
+		"  --workspace <path>  Override workspace",
+		"  --sidebar-width N   Set sidebar width (16-40, default 20)",
+		"  --no-sidebar       Disable sidebar",
+	} {
+		fmt.Fprintln(w, line)
+	}
+}
+
+// cliEarlyExitFlag 处理「打印即退出」的机器可读 flag（版本 / 帮助）。
+//
+// ⛔ 必须在**任何**会话 / 传输初始化之前调用并退出：`xbot-cli --version` 绝不能启动 xbot
+// （2026-10-12 用户报告；根因是未知 flag 在 flag 循环的 `default` 里被静默吞掉，随后照常走
+// 默认路径拉起 TUI / 恢复上次会话）。返回 handled=true ⇒ 调用方立刻退出（code≠0 用
+// os.Exit，code=0 用 return 以保留 defer 清理）。
+//
+// 只看 `args[0]`（与 `xbot-cli --version` 语义一致；`setup --help` 这类子命令帮助不受影响）。
+// 是**纯函数** ⇒ 可单测（main() 本身无法单测；此前用「构建真实二进制再 exec」的测法在 CI
+// 冷缓存下首次 exec 会超时，已弃用）。
+func cliEarlyExitFlag(args []string, stdout io.Writer) (handled bool, code int) {
+	// 扫描「首个非 --flag 参数之前」的机器可读 flag：`--local --version` 必须可用；
+	// `setup --help` 仍交给子命令自己的 help（遇到 setup 立即停止扫描）。
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "-") {
+			break
+		}
+		switch a {
+		case "--version", "-v", "-V":
+			fmt.Fprintln(stdout, version.Version)
+			return true, 0
+		case "--help", "-h":
+			writeCLIUsageTo(stdout)
+			return true, 0
+		}
+	}
+	return false, 0
+}
+
 func main() {
 	// CJK width: ensureCJKWidth is now a no-op (see comment above).
 	// Kept as a call site for forward compatibility if we need to re-enable
@@ -951,8 +1018,18 @@ func main() {
 	xbotHome := config.XbotHome()
 	clipanic.EnableFileLogging(filepath.Join(xbotHome, "logs", "cli-panic.log"))
 	defer clipanic.Recover("main.main", nil, true)
-	// Version banner: suppressed for the "setup" subcommand (machine-parseable
-	// output for install scripts / CI assertions).
+
+	// ⛔ 机器可读 flag（`--version` / `--help`）必须在**这里**处理并退出 —— 早于 banner、
+	// 子命令分发与一切会话/传输初始化 ⇒ 结构上不可能出现「`--version` 起了 xbot」。
+	if handled, code := cliEarlyExitFlag(os.Args[1:], os.Stdout); handled {
+		if code != 0 {
+			os.Exit(code)
+		}
+		return
+	}
+
+	// Version banner: suppressed for the `setup` sub-command（机器可读输出，供 install 脚本
+	// / CI 断言）。`--version` / `--help` 已在上面 return，不会走到这里。
 	if len(os.Args) <= 1 || os.Args[1] != "setup" {
 		fmt.Printf("xbot CLI %s\n", version.Version)
 	}
@@ -962,42 +1039,7 @@ func main() {
 	// Both are in different scopes, so we use a closure variable at main scope.
 	var pluginWidgetSyncFn func(string)
 
-	printHelp := func() {
-		fmt.Println("Usage: xbot-cli [options] [prompt]")
-		fmt.Println()
-		fmt.Println("Modes:")
-		fmt.Println("  default             Auto mode: use remote server if cli.server_url is configured")
-		fmt.Println("  --local             Force in-process transport (Go channels, no server needed)")
-		fmt.Println("  --server <ws-url>   Force remote mode and connect to server")
-		fmt.Println("  serve               Run server mode in the same binary")
-		fmt.Println()
-		fmt.Println("Subcommands:")
-		fmt.Println("  registry add <name> <url> [branch]  Add a component registry")
-		fmt.Println("  registry remove <name>              Remove a registry")
-		fmt.Println("  registry list                       List configured registries")
-		fmt.Println("  registry update                     Re-fetch all registries")
-		fmt.Println("  search [query] [--type skill|agent|plugin]  Search registries")
-		fmt.Println("  install <name> [--force]            Install a component from registry")
-		fmt.Println("  uninstall <name>                    Uninstall a component")
-		fmt.Println("  list-installed                       List installed skills/agents/plugins")
-		fmt.Println()
-		fmt.Println("Options:")
-		fmt.Println("  --help, -h          Show this help")
-		fmt.Println("  --new, --new-session  Start a new isolated session (auto-named)")
-		fmt.Println("  --ephemeral         Ephemeral mode: no persistence, clean state for benchmarking")
-		fmt.Println("  --resume            Resume last session (default)")
-		fmt.Println("  --max-context N     Override max context tokens (e.g. 128000, 1000000)")
-		fmt.Println("  --max-tokens N      Override max output tokens (e.g. 8192)")
-		fmt.Println("  --thinking-mode <json>  Override LLM thinking_mode (e.g. {\"thinking\":{\"type\":\"enabled\"},\"reasoning_effort\":\"max\"})")
-		fmt.Println("  -p <prompt>         Non-interactive single prompt")
-		fmt.Println("  --export-session <file>  Export current session (full history) to JSON and exit")
-		fmt.Println("  --import-session <file>  Import session JSON before running (combine with --ephemeral for bench)")
-		fmt.Println("  --export-after <file>    Export session JSON after task completes (bench: no re-run needed)")
-		fmt.Println("  --token <token>     Token for remote server")
-		fmt.Println("  --workspace <path>  Override workspace")
-		fmt.Println("  --sidebar-width N  Set sidebar width (16-40, default 20)")
-		fmt.Println("  --no-sidebar       Disable sidebar")
-	}
+	printHelp := func() { writeCLIUsageTo(os.Stdout) }
 
 	// Sub-commands: handled before flag parsing.
 	if len(os.Args) > 1 {
@@ -1202,9 +1244,16 @@ func main() {
 				i++
 			}
 		default:
-			if !strings.HasPrefix(os.Args[i], "-") {
-				prompt = os.Args[i]
+			if strings.HasPrefix(os.Args[i], "-") {
+				// ⛔ 未知 flag 必须**立刻报错退出**，绝不静默吞掉后照常起会话
+				//（2026-10-12 用户报告：`xbot-cli --version` 会启动 xbot —— 根因就是
+				// 这里的 default 把未知 flag 当成"没看见"，随后走默认路径拉起 TUI /
+				// 恢复上次会话）。拼错的 flag 同理：宁可报错，也不要静默做错事。
+				fmt.Fprintf(os.Stderr, "xbot-cli: unknown flag %q\n\n", os.Args[i])
+				printHelp()
+				os.Exit(2)
 			}
+			prompt = os.Args[i]
 		}
 	}
 	if prompt == "" && !isatty.IsTerminal(os.Stdin.Fd()) {

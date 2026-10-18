@@ -30,6 +30,7 @@ import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import { DEFAULT_SESSION_CATEGORY, groupSessions, isSessionCategory, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
 import { rememberRecentWorkDir } from '@/lib/recent-workdirs'
+import { initialActiveSession, isEmbeddedHostPage, readHostIdentity } from '@/plugin-runtime/sessionIdentity'
 import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus, TodoItem } from '@/types/shared'
 import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
@@ -174,6 +175,11 @@ export interface SessionStore {
   reorderSessions: (channel: string, orderedIDs: string[]) => Promise<boolean>
   /** Clear the AskUser prompt for a session (after answer/cancel). */
   clearAskUserPrompt: (channel: string, chatID: string) => void
+  /**
+   * 记下刚答过的 prompt `requestId`（闪回防线）；传空串 = 撤销抑制。见 store 内实现注释。
+   * ⛔ 必须与 `clearAskUserPrompt` **同时**在点击那一刻调用（不要等 `ws.send` 往返）。
+   */
+  markAskUserAnswered: (channel: string, chatID: string, requestId: string) => void
   /**
    * Store a server-authoritative pending AskUser prompt (hydration of a missed
    * live event). Presence is authoritative (a pending prompt ALWAYS yields a
@@ -938,9 +944,18 @@ export function useSessionStoreImpl(): SessionStore {
   const [sessions, setSessions] = useState<SessionInfo[]>(() => cachedTree?.sessions ?? [])
   const [subAgents, setSubAgents] = useState<SessionInfo[]>(() => cachedTree?.subAgents ?? [])
   const [activeSession, setActiveSession] = useState<SessionSelector | null>(() => {
-    const active = cachedTree?.sessions.find((session) => session.isCurrent && !session.synthetic)
+    const cachedActive = cachedTree?.sessions.find((session) => session.isCurrent && !session.synthetic)
       ?? cachedTree?.sessions.find((session) => !session.synthetic)
-    return active ? { channel: active.channel, chatID: active.chatID } : null
+    // ⛔ P0（2026-10-18 审查）：嵌入态的会话身份必须与**插件 RPC 同源**（宿主注入的
+    //   `window.__xbot_session__`）。旧实现只按**缓存会话树**自动选中 ⇒ `EmbedPanelShell`
+    //   的 SSE 订阅与面板 REST 快照落在一个**与宿主不同**的会话上（任务/终端/文件面板显示
+    //   别人的数据），而同一页面的插件 RPC 已经是宿主身份 ⇒ 一页两身份。
+    //   判定复用纯函数 `resolveSessionIdentity`（与 `usePluginRuntimeHost` 同一真源）。
+    return initialActiveSession({
+      cached: cachedActive ? { channel: cachedActive.channel, chatID: cachedActive.chatID } : null,
+      hostIdentity: readHostIdentity(),
+      embedded: isEmbeddedHostPage(),
+    })
   })
   const [starredIds, setStarredIds] = useState<string[]>(loadStarred)
   const [category, setCategoryState] = useState<SessionCategory>(loadCategory)
@@ -965,6 +980,17 @@ export function useSessionStoreImpl(): SessionStore {
    * that was REQUESTED before a prompt was stored cannot judge that prompt (the
    * server may have answered the request before the prompt was registered). */
   const askUserPromptTsRef = useRef(new Map<string, number>())
+  /**
+   * key → **已答/已取消**的那个 prompt 的 `requestId`（闪回防线）。
+   *
+   * ⛔ 用户亲报（2026-10-16）：「ask user **提交或者 cancel 后必须立刻消失**，现在消失了**还会出现一瞬间**，
+   *    严重 bug」。根因两层：① `useAskUser.respond/cancel` 旧实现清在 `ws.send().then()` **之后**
+   *    ⇒ 往返期间面板仍在；② 该窗口内任何 `ask_user` 重发（服务端收尾期会重播 pending 问题）
+   *    或行驱动 hydrate 都会把**同一个** prompt 写回 ⇒ 面板"消失又冒出来一下"。
+   *   ⇒ 记下刚答过的 requestId：**同一 prompt 一律不再入库**；模型随后问新问题（新 requestId）
+   *     照常弹出（判据是**身份**，⛔ 不是时间窗）。`ask_user_resolved` 到达 = 服务端确认 ⇒ 清抑制。
+   */
+  const askAnsweredRef = useRef(new Map<string, string>())
 
   // Re-read starred/category from localStorage when server sync updates values.
   useEffect(() => {
@@ -1051,7 +1077,14 @@ export function useSessionStoreImpl(): SessionStore {
       saveSessionTreeCache(cachedSessions, cachedAgents)
       setSessions((prev) => (sameSessionList(prev, cachedSessions) ? prev : cachedSessions))
       setSubAgents((prev) => (sameSessionList(prev, cachedAgents) ? prev : cachedAgents))
-      if (active) setActiveSession(active)
+      // 嵌入态：宿主身份权威（原生 `onChatIdChanged` 会**原地重注入** `__xbot_session__`，
+      // 不重载页面 ⇒ 必须每次对账复查，否则切了会话后本页仍订阅旧会话 = 面板数据陈旧/串会话）。
+      // 非嵌入态：行为逐字节不变（只走 `reconcileActiveSession`）。
+      const host = isEmbeddedHostPage() ? readHostIdentity() : null
+      if (host) {
+        const hostSelector: SessionSelector = { channel: host.channel, chatID: host.chatID }
+        if (!sameSession(hostSelector, activeSessionRef.current)) setActiveSession(hostSelector)
+      } else if (active) setActiveSession(active)
     } catch (e) {
       if (seq !== refreshSeqRef.current) return
       setError(e instanceof Error ? e.message : 'network error')
@@ -1820,7 +1853,11 @@ export function useSessionStoreImpl(): SessionStore {
         const channel = msg.channel
           ?? (chatID === wsRef.current.chatID ? wsRef.current.channel : null)
           ?? (fallback && chatID === fallback.chatID ? fallback.channel : DEFAULT_CHANNEL)
-        if (chatID) dropAskUserPrompt(`${channel}:${chatID}`)
+        if (chatID) {
+          // 服务端确认该问题不再 pending ⇒ 撤销闪回抑制（此后同一 requestId 若真再来 = 真新问题）
+          askAnsweredRef.current.delete(`${channel}:${chatID}`)
+          dropAskUserPrompt(`${channel}:${chatID}`)
+        }
         return
       }
       if (msg.type !== 'ask_user') return
@@ -1850,9 +1887,12 @@ export function useSessionStoreImpl(): SessionStore {
         // A question-less payload is not a prompt (see parseAskUserPrompt) —
         // leave the store alone instead of fabricating an empty panel.
         if (prompt) {
+          const key = `${channel}:${chatID}`
+          // ⛔ 闪回防线（用户 2026-10-16 亲报「取消/提交后消失了一瞬间又出现」）：服务端在收尾期
+          //   会重播**同一个** pending 问题 ⇒ 刚答过的 requestId 一律不再入库；新问题 id 不同 ⇒ 照常弹。
+          if (askAnsweredRef.current.get(key) === prompt.requestId) return
           setStatus({ channel, chatID }, 'waiting_input')
           // Store the prompt so it survives session switch.
-          const key = `${channel}:${chatID}`
           askUserPromptTsRef.current.set(key, Date.now())
           setAskUserPrompts((prev) => {
             const next = new Map(prev)
@@ -1874,6 +1914,21 @@ export function useSessionStoreImpl(): SessionStore {
     dropAskUserPrompt(`${channel}:${chatID}`)
   }, [dropAskUserPrompt])
 
+  /**
+   * 记下**刚答过**的 prompt 身份（`requestId`）—— 闪回防线（用户 2026-10-16 亲报严重 bug）。
+   * 传空串 = 撤销抑制（提交失败要把问题还回来）。⛔ 与 `clearAskUserPrompt` 一起在**点击那一刻**调用，
+   * 不要等 `ws.send` 往返（那正是"消失了一瞬间又出现"的窗口）。
+   */
+  const markAskUserAnswered = useCallback((channel: string, chatID: string, requestId: string) => {
+    if (!channel || !chatID) return
+    const key = `${channel}:${chatID}`
+    if (requestId) {
+      askAnsweredRef.current.set(key, requestId)
+    } else {
+      askAnsweredRef.current.delete(key)
+    }
+  }, [])
+
   /** Server-authoritative hydration for a MISSED live ask_user event.
    *
    * The panel's only carrier used to be the live SSE event: if the session had
@@ -1893,6 +1948,8 @@ export function useSessionStoreImpl(): SessionStore {
   const hydrateAskUserPrompt = useCallback((channel: string, chatID: string, prompt: AskUserPrompt) => {
     if (!channel || !chatID) return
     const key = `${channel}:${chatID}`
+    // ⛔ 闪回防线（与 `ask_user` 事件同一条判据）：刚答过的那个 requestId 不得再入库。
+    if (askAnsweredRef.current.get(key) === prompt.requestId) return
     askUserPromptTsRef.current.set(key, Date.now())
     setAskUserPrompts((prev) => {
       const current = prev.get(key)
@@ -1939,9 +1996,10 @@ export function useSessionStoreImpl(): SessionStore {
     deleteSession,
     reorderSessions,
     clearAskUserPrompt,
+    markAskUserAnswered,
     hydrateAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, collapsedGroupSet, toggleGroupCollapsed, setGroupsCollapsed, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt, hydrateAskUserPrompt])
+    askUserPrompts, setCategory, collapsedGroupSet, toggleGroupCollapsed, setGroupsCollapsed, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt, markAskUserAnswered, hydrateAskUserPrompt])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {

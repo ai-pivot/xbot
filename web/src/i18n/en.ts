@@ -39,6 +39,7 @@ const en: Translations = {
     tasks: 'Tasks',
     tasksCron: 'Cron Jobs',
     tasksBg: 'Background Commands',
+    tasksSubAgents: 'Sub-Agents',
     cronSchedule: 'Schedule',
     cronNext: 'Next run',
     cronTarget: 'Target session',
@@ -357,7 +358,6 @@ const en: Translations = {
     // Avoid the forbidden key words (collapseAll*/collapseLevel*/mergeTools*/processed)
     // — `noLegacyFoldFormat.test.tsx` asserts they never come back.
     regions: {
-      loadEarlier: '{{count}} earlier region(s)',
       loading: 'Loading earlier regions…',
       retry: 'Load failed · Retry',
       detailLoading: 'Loading details…',

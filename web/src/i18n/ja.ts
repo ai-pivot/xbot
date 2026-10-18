@@ -39,6 +39,7 @@ const ja: Translations = {
     tasks: 'タスク',
     tasksCron: 'スケジュールタスク',
     tasksBg: 'バックグラウンドコマンド',
+    tasksSubAgents: 'サブエージェント',
     cronSchedule: 'スケジュール',
     cronNext: '次回実行',
     cronTarget: '対象セッション',
@@ -357,7 +358,6 @@ const ja: Translations = {
     // 禁止キーワード（collapseAll*/collapseLevel*/mergeTools*/processed）は使わない
     // —— noLegacyFoldFormat.test.tsx が監視している。
     regions: {
-      loadEarlier: '以前の {{count}} 個の領域',
       loading: '以前の領域を読み込み中…',
       retry: '読み込み失敗 · 再試行',
       detailLoading: '詳細を読み込み中…',

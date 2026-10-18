@@ -579,11 +579,16 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 	if err != nil {
 		return err
 	}
-	_, err = conn.Exec(`
-		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs, rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)
-	if err != nil {
+	// ⚠️ 时间表示铁律（2026-10-14「压缩分隔条堆一摞」事故）：created_at 必须
+	// 显式写带时区偏移的 canonical 形态（与 session_messages 的 Go 写侧同款），
+	// ⛔ 绝不依赖 DDL 默认 —— `CURRENT_TIMESTAMP` 产出的是 **UTC 裸串**，与本仓
+	// 其它表「RFC3339 带本地偏移」混存；读侧一旦按 local 猜裸串 = 8 小时级错位，
+	// 压缩标记整体"晚于"迭代时间线 ⇒ compactionAnchor 退化（全部分隔条堆到
+	// 最后一个 turn 末尾）。判据见 iteration_created_at_tz_test.go。
+	if _, err := conn.Exec(`
+		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs, rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID, canonicalTimestamp(time.Now())); err != nil {
 		return fmt.Errorf("append iteration_history: %w", err)
 	}
 	return nil
@@ -740,7 +745,7 @@ func (s *SessionService) GetIterationHistoryByNumber(tenantID int64, turnID uint
 	if err != nil {
 		return IterationRecord{}, false, fmt.Errorf("get iteration_history by number: %w", err)
 	}
-	rec.CreatedAt = parseSQLiteTime(createdAt)
+	rec.CreatedAt = parseIterationTime(createdAt)
 	return rec, true, nil
 }
 
@@ -780,7 +785,7 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID, &createdAt); err != nil {
 			continue
 		}
-		rec.CreatedAt = parseSQLiteTime(createdAt)
+		rec.CreatedAt = parseIterationTime(createdAt)
 		result[rec.TurnID] = append(result[rec.TurnID], rec)
 	}
 	return result, nil
@@ -875,7 +880,7 @@ func (s *SessionService) GetIterationAnchorsByTurn(tenantID int64, turnID uint64
 		if err := rows.Scan(&rec.Iteration, &createdAt); err != nil {
 			continue
 		}
-		rec.CreatedAt = parseSQLiteTime(createdAt)
+		rec.CreatedAt = parseIterationTime(createdAt)
 		anchors = append(anchors, rec)
 	}
 	if err := rows.Err(); err != nil {
@@ -892,7 +897,7 @@ func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {
 		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID, &createdAt); err != nil {
 			continue
 		}
-		rec.CreatedAt = parseSQLiteTime(createdAt)
+		rec.CreatedAt = parseIterationTime(createdAt)
 		records = append(records, rec)
 	}
 	return records, nil

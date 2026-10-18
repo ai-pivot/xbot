@@ -1286,7 +1286,6 @@ func saveServerConfig(cfg *config.Config) error {
 	// are user-configured (per-model) and must not be overwritten by server defaults.
 	// MaxConcurrency is NOT here: its single source is the canonical
 	// user_settings row (channel.MaxConcurrencyChannel).
-	merged.Agent.MaxIterations = cfg.Agent.MaxIterations
 	merged.Agent.CompressionThreshold = cfg.Agent.CompressionThreshold
 	merged.Agent.ContextMode = cfg.Agent.ContextMode
 	// Auto-compress: only write back if explicitly set at runtime
