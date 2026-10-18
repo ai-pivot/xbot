@@ -2895,12 +2895,4 @@ func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m
 	return err
 }
 
-// buildMaxIterOutput creates the output for when max iterations is reached.
-func (s *runState) buildMaxIterOutput() *RunOutput {
-	return s.buildOutput(&channel.OutboundMsg{
-		Channel:   s.cfg.Channel,
-		ChatID:    s.cfg.ChatID,
-		Content:   "已达到最大迭代次数，请重新描述你的需求。",
-		ToolsUsed: s.toolsUsed,
-	})
-}
+// (buildMaxIterOutput removed with max_iterations: the main loop has no iteration cap.)
