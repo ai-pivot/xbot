@@ -605,6 +605,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     }
 
     case 'turn_started': {
+      // ⛔ 2026-10-18：notification turn 不得在已有 live turn 时抢 activeTurn ——
+      //   否则主 turn 被收尸成空壳、随后无 turn_id 的 stream/text 落到通知 turn
+      //   （两条 user 行粘在一起 / 通知 turn 永不收尾 ⇒ busy 卡死）。
+      const activeLive: Turn | undefined = s.activeTurn !== null ? s.turns.get(s.activeTurn) : undefined
+      if (ev.trigger === 'notification' && activeLive !== undefined && activeLive.phase.kind === 'live') {
+        return attachNotificationWhileLive(s, ev)
+      }
       // I5：seq 属于 per-run —— 新 turn 重置。
       let next: ChatState = { ...s, activeTurn: ev.turnID, lastSeq: null }
 
@@ -1941,6 +1948,48 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       return { ...s, queue: ev.queue }
     }
   }
+}
+
+/** 已有 live turn 时的 notification turn_started：只加 user 行，不抢 activeTurn。 */
+function attachNotificationWhileLive(
+  s: ChatState,
+  ev: Extract<DomainEvent, { type: 'turn_started' }>,
+): ChatState {
+  const content = nonEmptyStr(ev.content)
+  if (content === null) {
+    return s
+  }
+  const row: NonNullable<Turn['user']> = {
+    id: `notif-${ev.turnID}`,
+    content,
+    timestamp: new Date().toISOString(),
+    isNotification: true,
+    queued: false,
+    sending: false,
+    requestID: null,
+    turnHint: undefined,
+    dbID: undefined,
+  }
+  if (ev.turnID === s.activeTurn) {
+    return { ...s, pendingUsers: [...s.pendingUsers, row] }
+  }
+  const existing = s.turns.get(ev.turnID)
+  if (existing !== undefined) {
+    if (existing.user !== null) {
+      return s
+    }
+    const turns = new Map(s.turns)
+    turns.set(ev.turnID, { ...existing, user: row })
+    return { ...s, turns }
+  }
+  const turns = new Map(s.turns)
+  turns.set(ev.turnID, {
+    id: ev.turnID,
+    user: row,
+    phase: { kind: 'frozen', data: { ...EMPTY_LIVE, streaming: false } },
+    requestID: ev.requestID,
+  })
+  return { ...s, turns }
 }
 
 /** in-flight 工具折叠（"已渲染内容永不消失"）—— foldPhase（turn_started 收尸）
