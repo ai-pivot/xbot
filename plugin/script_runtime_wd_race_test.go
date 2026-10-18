@@ -96,16 +96,15 @@ func TestScriptPlugin_HookWorkDirSnapshotBeatsPctxRace(t *testing.T) {
 		t.Fatalf("hook handler failed: %v", err)
 	}
 
-	// The handler must have pinned the snapshot dirA into pendingDirs
-	// (BEFORE any pctx read — that's the race fix).
-	sp.pendingMu.Lock()
-	_, pinned := sp.pendingDirs[dirA]
-	nPending := len(sp.pendingDirs)
-	sp.pendingMu.Unlock()
-	if !pinned {
-		t.Fatalf("hook handler must pin hp.WorkDir (dirA) into pendingDirs; pendingDirs(%d)=%v", nPending, sp.pendingDirs)
-	}
-
+	// Do NOT assert on pendingDirs here. The handler pins the snapshot and then
+	// pokes triggerCh; the refresh loop's consumer (runAndUpdate) drains that set
+	// with `p.pendingDirs = nil` from its OWN goroutine. Nothing orders that drain
+	// against this goroutine, so reading the set back is a race — and it lost it
+	// in CI (`pendingDirs(0)=map[]`) whenever the consumer got scheduled first.
+	//
+	// The pin is observed through its CONTRACT instead: the script output lands
+	// under the dirA key (below), which is the entire reason the pin exists.
+	//
 	// Wait for the async refresh loop to consume the pinned dir and produce
 	// output under the dirA key (NOT dirB).
 	deadline := time.After(5 * time.Second)
@@ -177,9 +176,16 @@ func TestScriptPlugin_HookSnapshotMissingFallsBackToPctx(t *testing.T) {
 	sp.pendingMu.Lock()
 	_, pinned := sp.pendingDirs[dirB]
 	nPending := len(sp.pendingDirs)
+	// Copy the set while the lock is held: the refresh loop assigns
+	// p.pendingDirs = nil from its own goroutine, so reading the map for the
+	// failure message outside the lock would itself be a data race.
+	pendingSnapshot := make([]string, 0, nPending)
+	for d := range sp.pendingDirs {
+		pendingSnapshot = append(pendingSnapshot, d)
+	}
 	sp.pendingMu.Unlock()
 	if pinned {
-		t.Fatalf("payload without WorkDir must not pin anything (pctx dir ran via the refresh-loop fallback); pendingDirs(%d)=%v", nPending, sp.pendingDirs)
+		t.Fatalf("payload without WorkDir must not pin anything (pctx dir ran via the refresh-loop fallback); pendingDirs(%d)=%v", nPending, pendingSnapshot)
 	}
 
 	// Drive the refresh synchronously (the async trigger-loop path is
