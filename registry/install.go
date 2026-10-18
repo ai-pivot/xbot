@@ -277,8 +277,36 @@ func installPackage(cloneDir string, entry *Entry, xbotHome, workDir, senderID s
 	}
 
 	pkgDir := filepath.Join(cloneDir, entry.Path)
+	catalog, catalogErr := loadIndex(cloneDir)
 	for _, c := range manifest.Contents {
-		srcPath := filepath.Join(pkgDir, c.Source)
+		var srcPath string
+		if c.Source != "" {
+			// Escape hatch: a package-private component bundled under the package
+			// dir. Discouraged for shared components (duplicates them).
+			srcPath = filepath.Join(pkgDir, c.Source)
+		} else {
+			// Default (extension-pack model): resolve the referenced component
+			// from this registry's catalog by name (+ optional type), so shared
+			// skills like "github" are defined once and referenced, not copied.
+			if catalogErr != nil {
+				return fmt.Errorf("package %q: cannot resolve %q (registry.json unreadable: %v)", entry.Name, c.Name, catalogErr)
+			}
+			var found *Entry
+			for i := range catalog.Items {
+				it := &catalog.Items[i]
+				if it.Name == c.Name && (c.Type == "" || it.Type == c.Type) {
+					found = it
+					break
+				}
+			}
+			if found == nil {
+				return fmt.Errorf("package %q: referenced %s %q is not a catalog item in this registry; publish it standalone or add a source path", entry.Name, c.Type, c.Name)
+			}
+			srcPath = filepath.Join(cloneDir, found.Path)
+			if c.Type == "" {
+				c.Type = found.Type
+			}
+		}
 		switch c.Type {
 		case "skill":
 			if err := installSkill(srcPath, c.Name, workDir, senderID); err != nil {
@@ -293,7 +321,7 @@ func installPackage(cloneDir string, entry *Entry, xbotHome, workDir, senderID s
 				return fmt.Errorf("package %q: %w", entry.Name, err)
 			}
 		default:
-			return fmt.Errorf("package %q: unsupported content type %q", entry.Name, c.Type)
+			return fmt.Errorf("package %q: unsupported content type %q (allowed: skill, agent, plugin)", entry.Name, c.Type)
 		}
 	}
 	log.WithFields(log.Fields{"package": entry.Name, "items": len(manifest.Contents)}).Info("Installed package from registry")
