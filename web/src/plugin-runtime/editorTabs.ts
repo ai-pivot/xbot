@@ -38,6 +38,11 @@ export function registerEditorTabOpener(fn: EditorTabOpener | null): void {
   opener = fn
 }
 
+/** 打开器是否已注册 —— 宿主可触发的打开（URL 深链 / JS 钩子）据此决定"立刻开"还是"排队"。 */
+export function hasEditorTabOpener(): boolean {
+  return opener !== null
+}
+
 /**
  * 打开一个插件 view 的主编辑区 tab。返回 tab id（opener 未注册时返回空串）。
  * 校验 viewId 存在性由宿主 openTab 之后的渲染链负责（查不到 view 渲染为

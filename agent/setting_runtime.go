@@ -107,19 +107,8 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 			_ = ag.SetContextMode(value)
 		},
 	},
-	"max_iterations": {
-		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.Agent.MaxIterations = cli.ParseSettingInt(value, cfg.Agent.MaxIterations)
-		},
-		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
-			if ag == nil {
-				return
-			}
-			if n, err := strconv.Atoi(value); err == nil && n > 0 {
-				ag.SetMaxIterations(n)
-			}
-		},
-	},
+	// max_iterations: 上限已彻底移除（用户要求，2026-10-14）——引擎循环不再有
+	// 任何迭代次数上限，见 agent/engine.go 的 Main loop。
 	// max_concurrency: ONE canonical row (user_settings, channel
 	// channel.MaxConcurrencyChannel). There is deliberately NO ApplyConfig —
 	// config.json is not a storage location for this knob (duplicate definition

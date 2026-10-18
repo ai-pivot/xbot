@@ -1,8 +1,9 @@
 import { act, fireEvent, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
+import i18n from '@/i18n'
 import { TasksPanel } from './TasksPanel'
 import { registerMobileAgentOpener } from '@/lib/mobileNav'
 import type { TabManager } from '@/hooks/useTabManager'
@@ -79,6 +80,12 @@ vi.mock('@/hooks/useTasks', () => ({
 vi.mock('@/hooks/useSessionStore', () => ({
   useSessionStore: () => mocks.sessionStore,
 }))
+
+// 默认语言在 jsdom 里由 `navigator.language` 探测（= en）⇒ 断言中文串前显式固定语言
+// （仓内惯例，见 `PanelLayout.test.tsx:30`）。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN')
+})
 
 describe('TasksPanel', () => {
   beforeEach(() => {
@@ -192,6 +199,24 @@ describe('TasksPanel', () => {
         taskChatID: '/repo:Agent-main',
       }),
     }))
+  })
+})
+
+describe('TasksPanel section headers are localized (regression)', () => {
+  it('renders the SubAgents header through i18n instead of the hardcoded English literal', () => {
+    mocks.useTasks.mockReturnValue({
+      cronTasks: [],
+      bgTasks: [],
+      loading: false,
+      killBgTask: vi.fn(),
+      removeCronTask: vi.fn(),
+    })
+    renderWithProviders(<TasksPanel />)
+
+    // 回归：该标题此前**硬编码** `SubAgents`（同面板另两个标题都走 `t('sidebar.tasksCron')`
+    // / `t('sidebar.tasksBg')`）+ CSS `uppercase` ⇒ 中文界面里渲染成 “SUBAGENTS”。
+    expect(screen.getByText('子代理')).toBeInTheDocument()
+    expect(screen.queryByText('SubAgents')).not.toBeInTheDocument()
   })
 })
 

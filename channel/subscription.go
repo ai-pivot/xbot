@@ -417,6 +417,10 @@ func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIter
 	// 解析入口，合并后的记录经它自然流入两条装配路径（fold 与 full）。
 	turnIterMap = MergeSyntheticToolPairs(msgs, toolResults, turnIterMap)
 
+	// 压缩点归属用的**全局迭代时间线**（见 compactionAnchor 的长注释：压缩必须归到
+	// "压缩发生那一刻正在跑的 turn"，否则同一 turn 的压缩点全部退化到同一个锚点 ⇒ 前端堆叠）。
+	turnSpans := buildTurnSpans(turnIterMap)
+
 	var cmdAnchor uint64
 	for _, m := range msgs {
 		if m.TurnID > cmdAnchor {
@@ -442,11 +446,17 @@ func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIter
 			// ⚠️ 绝不占用任何 turn 的 user 槽位（否则前端「每 turn 取第一条 user」会
 			// 顶掉用户真实消息 —— P0 2026-09-26）。
 			//
+			// ⛔ 2026-10-14 修：归属改用**时间线**（`compactionAnchor`）—— 见该函数长注释。
+			//    旧实现用 `cmdAnchor`（标记在流里的位置所属 turn）⇒ 压缩点落到**被压缩内容的
+			//    最后一个 turn**，而压缩其实发生在**更晚**的 turn 里 ⇒ 时间戳晚于归属 turn 的
+			//    全部迭代 ⇒ `afterIteration` 一律退化成"该 turn 的最大迭代号" ⇒ 前端把同一 turn
+			//    的 N 条压缩点**堆在同一个迭代边界**（用户 2026-10-14 亲报的截图）。
+			//
 			// 老数据（无结构化迭代 / 迭代无时间戳）无法定位 ⇒ 回落为独立的
 			// standalone 标记行（基本兼容，前端仍支持）。
-			if after, ok := compactionIteration(turnIterMap, cmdAnchor, m.Timestamp); ok {
+			if owner, after, ok := compactionAnchor(turnIterMap, turnSpans, cmdAnchor, m.Timestamp); ok {
 				pendingCompactions = append(pendingCompactions, pendingCompaction{
-					turnID: cmdAnchor, afterIteration: after,
+					turnID: owner, afterIteration: after,
 					content: m.Content, markerID: m.ID, timestamp: m.Timestamp,
 				})
 			} else {
@@ -694,7 +704,65 @@ func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIter
 	}
 	flushPending()
 	history = attachCompactions(history, pendingCompactions)
+	if foldView {
+		// ⛔ 消息不连续零容忍（用户 2026-10-11；AGENTS.md 最高优先级）：**未完整下发**
+		// 的 turn（RegionsBefore > 0，只带了尾部区域窗口）**绝不在消息流里携带它的
+		// user 行** —— 否则任何「照着数组渲染」的消费者都会把 user msg 渲染在一个尚未
+		// 加载的缺口上方（`user → 跳 y 条 → iter`）。user 行改挂到该 turn 的 assistant
+		// 行上（TurnUser），客户端在边缘还原；是否渲染由「窗口未覆盖迭代 1 ⇒ 不渲染」
+		// 的规则决定。全量视图（CLI/RPC）**不走这里** ⇒ 载荷逐字节不变（R5）。
+		history = relocateIncompleteTurnUsers(history)
+	}
 	return history
+}
+
+// relocateIncompleteTurnUsers 把「未完整下发」（RegionsBefore > 0）的 turn 的 user 行
+// 从消息流里摘下，挂到该 turn 的 assistant 行（TurnUser）上 —— 见调用点的不变量注释。
+// 只影响这些 turn；其余行原样保留（含命令行 standalone 行、legacy 行）。
+func relocateIncompleteTurnUsers(history []HistoryMessage) []HistoryMessage {
+	incomplete := make(map[uint64]bool)
+	for i := range history {
+		if history[i].Role == "assistant" && history[i].TurnID > 0 && history[i].RegionsBefore > 0 {
+			incomplete[history[i].TurnID] = true
+		}
+	}
+	if len(incomplete) == 0 {
+		return history
+	}
+	// 每个 turn 只摘一条 user 行（前端模型：一个 turn 一条 user）。
+	users := make(map[uint64]HistoryMessage, len(incomplete))
+	for _, h := range history {
+		if h.Role != "user" || h.TurnID == 0 || !incomplete[h.TurnID] || h.Standalone {
+			continue
+		}
+		if _, ok := users[h.TurnID]; !ok {
+			users[h.TurnID] = h
+		}
+	}
+	if len(users) == 0 {
+		return history
+	}
+	out := make([]HistoryMessage, 0, len(history))
+	for _, h := range history {
+		if h.Role == "user" && h.TurnID > 0 && !h.Standalone {
+			// 只摘**实际搬走的那一条** user 行；同 turn 的第 2+ 条必须留在流里，
+			// 否则会从载荷彻底消失（P2 2026-10-18）。
+			if u, ok := users[h.TurnID]; ok && u.ID == h.ID {
+				continue
+			}
+		}
+		out = append(out, h)
+	}
+	for i := range out {
+		if out[i].Role != "assistant" || out[i].TurnID == 0 || out[i].RegionsBefore <= 0 {
+			continue
+		}
+		if u, ok := users[out[i].TurnID]; ok {
+			uu := u
+			out[i].TurnUser = &uu
+		}
+	}
+	return out
 }
 
 // windowTurnIterations 折叠视图（D2 区域窗口 + D3 工具轻字段化）的装配：
@@ -817,6 +885,108 @@ func compactionIteration(turnIterMap map[uint64][]sqlite.IterationRecord, turnID
 		return 0, false
 	}
 	return after, true
+}
+
+// ── 压缩点归属（2026-10-14 用户亲报「一串『上下文已压缩』堆在一起」的根因修复）─────────
+//
+// 症状：一个会话的历史里，同一个 turn 的**全部**压缩点 `after_iteration` 完全相同
+//（实测：turn128 的 15 条全是 2000、turn129 的 16 条全是 2000、turn76 的 13 条全是 1737…）
+// ⇒ 前端按 `after_iteration` 归位（`TurnBody`/`IterationBlock` 把压缩点渲在迭代之间）
+// ⇒ N 条挤在同一个迭代边界 = 用户看到的那一串堆叠的「上下文已压缩」。
+//
+// 根因：压缩点原先按**标记在消息流里的位置**归属（`cmdAnchor` = 走到该标记时已知的最大
+// turn_id）。但压缩标记（`[Compacted context]`）在回放里落在**被替换区间的起点**
+//（它代表"这里被压缩了"），于是归属落到了**被压缩内容的最后一个 turn**，而不是
+// 「压缩真正发生时正在跑的那个 turn」。实测 144 条压缩点**没有一条**的时间戳落在其归属
+// turn 的迭代区间内（如 10:26 的压缩被算进 turn128，而 turn128 的迭代区间是 01:58→06:05）。
+// 归属一旦错，`compactionIteration` 的「找 ts 之前最大的迭代号」就退化成"该 turn 的最大
+// 迭代号"（时间戳晚于该 turn 所有迭代）⇒ 所有压缩点拿到同一个锚点。
+//
+// 修法：用**全局迭代时间线**（turn → 首/末迭代时刻）把压缩点归属到 ts 时刻真正在跑的
+// turn，再在该 turn 内用既有 `compactionIteration` 求锚点（时间戳落进该 turn 区间 ⇒ 锚点
+// 互不相同）。⛔ 不改「压缩发生在哪」的语义，只把归属从"流位置"改成"时间"。
+
+// turnSpan 是某个 turn 的**迭代时间范围**（首/末迭代的落库时刻）。
+type turnSpan struct {
+	turnID uint64
+	first  time.Time
+	last   time.Time
+}
+
+// buildTurnSpans 把 turn → 迭代记录表压成**按 first 升序**的时间线。
+// 无任何时间戳的 turn 不进时间线（无法定位 ⇒ 调用方回落旧行为）。
+func buildTurnSpans(turnIterMap map[uint64][]sqlite.IterationRecord) []turnSpan {
+	spans := make([]turnSpan, 0, len(turnIterMap))
+	for turnID, recs := range turnIterMap {
+		var first, last time.Time
+		for _, rec := range recs {
+			if rec.CreatedAt.IsZero() {
+				continue
+			}
+			if first.IsZero() || rec.CreatedAt.Before(first) {
+				first = rec.CreatedAt
+			}
+			if last.IsZero() || rec.CreatedAt.After(last) {
+				last = rec.CreatedAt
+			}
+		}
+		if first.IsZero() {
+			continue
+		}
+		spans = append(spans, turnSpan{turnID: turnID, first: first, last: last})
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].first.Before(spans[j].first) })
+	return spans
+}
+
+// compactionAnchor 决定一个压缩点该挂到哪个 turn 的哪个迭代边界（渲染在「迭代 N 与 N+1 之间」）。
+//
+// 返回 (turnID, afterIteration, ok)；`ok=false` ⇒ 调用方回落为 standalone 标记行（信息绝不丢）。
+// 归属规则（按优先级）：
+//  1. ts 落在某个 turn 的迭代区间 [first,last] 内 ⇒ **那个 turn**（压缩发生时它正在跑）；
+//  2. 否则取**最后一个 first ≤ ts** 的 turn（压缩发生在该 turn 结束后的空隙里 —— 语义上
+//     仍属它，锚点落它的末尾）；⛔ 不能用"第一个 first > ts 的 turn"，那会把压缩前移一个 turn。
+//  3. 时间线为空 / ts 为零 ⇒ 回落 `fallbackTurn`（= 旧行为 cmdAnchor），保持老数据兼容。
+func compactionAnchor(
+	turnIterMap map[uint64][]sqlite.IterationRecord,
+	spans []turnSpan,
+	fallbackTurn uint64,
+	ts time.Time,
+) (uint64, int, bool) {
+	owner := uint64(0)
+	if !ts.IsZero() {
+		// 选**包含 ts 的候选中 first 最大者**（最近仍在跑的 turn）；旧实现遇重叠 span
+		// 停在"先开始"的 turn，锚点退化。同 first 取 turnID 大者。
+		var ownerFirst time.Time
+		for _, s := range spans {
+			if ts.Before(s.first) || ts.After(s.last) {
+				continue
+			}
+			if owner == 0 || s.first.After(ownerFirst) ||
+				(s.first.Equal(ownerFirst) && s.turnID > owner) {
+				owner = s.turnID
+				ownerFirst = s.first
+			}
+		}
+		if owner == 0 {
+			for _, s := range spans {
+				if !ts.Before(s.first) {
+					owner = s.turnID
+				}
+			}
+		}
+	}
+	if owner == 0 {
+		owner = fallbackTurn
+	}
+	if owner == 0 {
+		return 0, 0, false
+	}
+	after, ok := compactionIteration(turnIterMap, owner, ts)
+	if !ok {
+		return 0, 0, false
+	}
+	return owner, after, true
 }
 
 func deriveTurnIDs(msgs []llm.ChatMessage) {

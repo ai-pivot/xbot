@@ -83,7 +83,6 @@ const (
 	MethodExportSession                = "export_session"
 	MethodImportSession                = "import_session"
 	MethodListTenants                  = "list_tenants"
-	MethodSetMaxIterations             = "set_max_iterations"
 	MethodSetMaxConcurrency            = "set_max_concurrency"
 	MethodSetCompressionThreshold      = "set_compression_threshold"
 	MethodApplyRuntimeSettings         = "apply_runtime_settings"
@@ -131,10 +130,6 @@ type setCWDReq struct {
 
 type setContextModeReq struct {
 	Mode string `json:"mode"`
-}
-
-type setMaxIterationsReq struct {
-	N int `json:"n"`
 }
 
 type setMaxConcurrencyReq struct {

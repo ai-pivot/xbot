@@ -315,12 +315,34 @@ function assistantRow(t: Turn): Row | null {
         iterations: t.phase.payload.iterations,
         iterationsTruncated: t.phase.payload.iterationsTruncated ?? 0,
         // turn 内压缩点：透传引用（payload 引用稳定 ⇒ memo 不失效）。
-        compactions: t.phase.payload.compactions,
+        // ⛔ 消息不连续零容忍（用户 2026-10-11，判据 A）：`afterIteration=0`（压缩发生在
+        // 该 turn 第一条迭代**之前** ⇒ 紧随 user msg）的横线，只有窗口**覆盖到迭代 1**
+        // （regionsBefore 归零 ⇒ 上面已加载）时才允许渲染；否则它会浮在一个**尚未加载的
+        // 缺口**正上方（缺口 [1..a-1] 就在横线下面）= 又一处不连续。与下面 user 行的隐藏
+        // 规则同源同处（都在 derive）⇒ 任何时刻「要么完整时间线，要么什么都不渲染」。
+        compactions: windowCompactions(t.phase.payload.compactions, t.phase.payload.regionsBefore),
         // 更早未下发的展示区域数（D1 线的 RegionsDivider 消费；>0 渲染分隔条）。
         regionsBefore: t.phase.payload.regionsBefore,
       }
     }
   }
+}
+
+/**
+ * 压缩点的**窗口可见性**过滤（「消息不连续」零容忍的判据 A，用户 2026-10-11）：
+ * `afterIteration=0` 的压缩点位于该 turn 第一条迭代**之前**（紧随 user msg）—— 它只有在
+ * 窗口覆盖到迭代 1（`regionsBefore` 归零 ⇒ 上面已加载）时才允许渲染，否则它会浮在一个
+ * **尚未加载的缺口**正上方（缺口 [1..a-1] 就在它下面）。`regionsBefore > 0` 时把这类
+ * 压缩点滤掉；`afterIteration>0` 的锚定由 `TurnBody` 的「锚定迭代必须已渲染」规则兜住。
+ */
+function windowCompactions(
+  compactions: readonly WebCompaction[] | undefined,
+  regionsBefore: number | undefined,
+): readonly WebCompaction[] | undefined {
+  if (!compactions || compactions.length === 0) return undefined
+  if (regionsBefore === undefined || regionsBefore <= 0) return compactions
+  const kept = compactions.filter((c) => c.afterIteration > 0)
+  return kept.length > 0 ? kept : undefined
 }
 
 function userRowOf(t: Turn): UserRowView {

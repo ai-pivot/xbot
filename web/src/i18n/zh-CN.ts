@@ -36,6 +36,7 @@ const zhCN = {
     tasks: '任务',
     tasksCron: '定时任务',
     tasksBg: '后台命令',
+    tasksSubAgents: '子代理',
     cronSchedule: '调度',
     cronNext: '下次运行',
     cronTarget: '目标会话',
@@ -354,7 +355,6 @@ const zhCN = {
     // 禁用词（collapseAll*/collapseLevel*/mergeTools*/processed —— noLegacyFoldFormat
     // 守护测试会红）；`{{count}}` 必须双花括号（单括号不替换）。
     regions: {
-      loadEarlier: '更早的 {{count}} 个区域',
       loading: '正在加载更早区域…',
       retry: '加载失败 · 重试',
       detailLoading: '正在加载详情…',

@@ -266,26 +266,29 @@ type WebCallbacks struct {
 // UserChatWithPreview is a chatroom with metadata for API responses.
 // This mirrors storage/sqlite.UserChatWithPreview to avoid channel→storage dependency.
 type UserChatWithPreview struct {
-	ChatID        string                `json:"chat_id"`
-	Channel       string                `json:"channel,omitempty"` // channel name (e.g. "web", "cli", "feishu")
-	Label         string                `json:"label"`
-	WorkDir       string                `json:"work_dir,omitempty"`
-	LastActive    string                `json:"last_active"` // RFC3339
-	Preview       string                `json:"preview"`
-	IsCurrent     bool                  `json:"is_current"`
-	CreatedAt     string                `json:"created_at,omitempty"` // RFC3339
-	SortOrder     int                   `json:"sort_order,omitempty"`
-	Type          string                `json:"type,omitempty"` // "agent" for historical SubAgent tenant rows
-	FullKey       string                `json:"full_key,omitempty"`
-	Role          string                `json:"role,omitempty"`
-	Instance      string                `json:"instance,omitempty"`
-	ParentChatID  string                `json:"parent_chat_id,omitempty"`
-	ParentChannel string                `json:"parent_channel,omitempty"`
-	Historical    bool                  `json:"historical,omitempty"`
-	Running       bool                  `json:"running,omitempty"`
-	Status        string                `json:"status,omitempty"`
-	Synthetic     bool                  `json:"synthetic,omitempty"`
-	Children      []UserChatWithPreview `json:"children,omitempty"`
+	ChatID        string `json:"chat_id"`
+	Channel       string `json:"channel,omitempty"` // channel name (e.g. "web", "cli", "feishu")
+	Label         string `json:"label"`
+	WorkDir       string `json:"work_dir,omitempty"`
+	LastActive    string `json:"last_active"` // RFC3339
+	Preview       string `json:"preview"`
+	IsCurrent     bool   `json:"is_current"`
+	CreatedAt     string `json:"created_at,omitempty"` // RFC3339
+	SortOrder     int    `json:"sort_order,omitempty"`
+	Type          string `json:"type,omitempty"` // "agent" for historical SubAgent tenant rows
+	FullKey       string `json:"full_key,omitempty"`
+	Role          string `json:"role,omitempty"`
+	Instance      string `json:"instance,omitempty"`
+	ParentChatID  string `json:"parent_chat_id,omitempty"`
+	ParentChannel string `json:"parent_channel,omitempty"`
+	Historical    bool   `json:"historical,omitempty"`
+	// Running 必须**总是**序列化（false 也要在）：客户端用 `/api/session-tree`
+	// 的 running 做权威对账；`omitempty` 会让 false 缺字段 ⇒ 客户端只能猜
+	// "unknown"（丢一条 idle 就永久卡 busy）。缺字段 ≠ false 的历史口径已废弃。
+	Running   bool                  `json:"running"`
+	Status    string                `json:"status,omitempty"`
+	Synthetic bool                  `json:"synthetic,omitempty"`
+	Children  []UserChatWithPreview `json:"children,omitempty"`
 }
 
 // SessionTreeNode is a Web-only sidebar row. Children are SubAgent rows
@@ -606,6 +609,9 @@ func webWidgetZonesEqual(a, b plugin.WebWidgetZones) bool {
 // never reaches it — the sidebar only updated on the next tree refresh (user
 // report: "侧边栏会话状态经常落后 / 有了 subagent 侧边栏不显示").
 func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
+	// 出站也统一规范化：事件可能由内部以全键构造；消费方（客户端 chat 过滤、
+	// 路由键、会话树）只认裸 id。保持"同一会话只有一种字符串形态"。
+	ev.ChatID = canonicalChatID(ev.Channel, ev.ChatID)
 	// Top-level ChatID: the message is SELF-DESCRIBING — every consumer
 	// (normalizeEvent's chat filter, matchesChatID Layer 1, debugging/DB dumps)
 	// resolves ownership from the top level without knowing where the event
@@ -649,6 +655,7 @@ func isSidebarSessionEvent(ev protocol.SessionEvent) bool {
 // queue snapshot (Staging Tray data source) to the session's SSE/WS
 // subscribers. Full-snapshot semantics: the frontend replaces, never merges.
 func (wc *WebChannel) SendQueueState(channelName, chatID string, payload *protocol.QueueStatePayload) {
+	chatID = canonicalChatID(channelName, chatID)
 	// Top-level ChatID: self-describing message (same contract as
 	// SendSessionState — consumers resolve ownership from the top level).
 	msg := protocol.WSMessage{
@@ -1675,11 +1682,30 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			log.WithError(err).Debug("WS invalid message")
 			continue
 		}
+		// ⛔ 所有 WS 路径（message/cancel/ask_user/sync/subscribe）共用同一个规范化入站 id。
+		// 不在这里剥，`hub.subscribe` / `InboundMessage.ChatID` 会落到 `web:web:chat_X`
+		// 幽灵会话，而出站事件已按裸 id 发布 ⇒「有网但发消息无反应 / live 永不动」。
+		normalizeWSInboundChatID(&msg)
 
 		// Handle message type (default to "message" for backward compatibility)
 		if msg.Type == "" {
 			msg.Type = "message"
 		}
+
+		// ⛔ ONE canonical form at the transport boundary (2026-10-17): every WS
+		// client message (message / cancel / ask_user_response / sync / subscribe)
+		// goes through here, so a client that sends a FULL session key
+		// (`web:chat_X`) cannot create the ghost session `web:web:chat_X`.
+		//
+		// Without this, the ghost key lives only on the SEND path: the agent
+		// registers the worker under `web:web:chat_X` while every OUTBOUND event
+		// is canonicalized in SendSessionState (web.go: SendSessionState) and the
+		// client subscribes to the raw key ⇒ "有网但发消息没有任何反应" and
+		// send/cancel/ask all disagree with REST/SSE (which canonicalize in
+		// resolveInboundSession / resolveSSESession). Empty channel or empty
+		// chat_id are returned unchanged (canonicalChatID contract) so the
+		// "missing => current session" semantics below are preserved.
+		msg.ChatID = canonicalChatID(msg.Channel, msg.ChatID)
 
 		switch msg.Type {
 		case protocol.MsgTypeSync:

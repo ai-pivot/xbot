@@ -56,6 +56,18 @@ export interface AgentChatState {
   /** **会话重载信号**（单调计数器）：出现「无法追赶的 gap」时自增（见 chat/types.ts）。
    *  `AgentPanel` 据此 `markHistoryStale` + `reset` + `reload`（重载该会话）。 */
   readonly gapReloadToken: number
+  /**
+   * 触发该计数的**缺口形状**（`unreachableGapSig` / `liveAheadGapSig` 之一）。
+   * ⛔ `AgentPanel` 的**去重键必须用「形状」而不是只比 token 数值**：`reset()` 会把
+   * token 归零，而 reset 之后的权威 hydration 可能重新算出**同一形状** ⇒ 只比数值会
+   * 把「归零」当成新 gap、把「同一形状再现」当成新 gap ⇒ reset+reload 自激循环。
+   * 空串 = 当前没有 gap 形状。
+   */
+  readonly gapReloadSig: string
+  /** 「无法追赶的洞」形状签名（'' = 无）—— 与 `gapReloadSig` 同源，供诊断/测试。 */
+  readonly unreachableGapSig: string
+  /** 「live 明显领先于已持有窗口」形状签名（'' = 无）。 */
+  readonly liveAheadGapSig: string
   /** 排队中的消息（queue_state SSE 事件 → Staging Tray 数据源）。 */
   readonly queue: readonly QueueItemPayload[]
   /** 全量替换排队快照（queue_state 事件 / 恢复时重建 Staging Tray）。 */
@@ -282,15 +294,20 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     liveProgress,
     sessionIdle,
     dispatchIterationsLoaded,
-  // busyFallback：状态机有活动 turn 即 busy —— 不依赖 streaming（lazy 采纳
-  // 的 live turn 可能 streaming=false，但 turn 仍在运行；turn_started 建的
-  // EMPTY_LIVE streaming=true）。覆盖 REST ack 到 session(busy) 之间的窗口
-  // + 切换会话后 currentSession.running 是旧会话状态的场景。
-  busyFallback: state.activeTurn !== null,
+  // busyFallback：live turn 仍在产出（`progressSnapshot.streaming`）—— 不再用
+  // `activeTurn !== null`：权威 idle 现在只停 streaming、保留 activeTurn（为了不丢
+  // 后续同迭代事件）⇒ 用 activeTurn 会永久卡 busy。`streaming` 覆盖 REST ack
+  // 到 session(busy) 之间的窗口（turn_started 建的 EMPTY_LIVE streaming=true）。
+  busyFallback: state.activeTurn !== null && liveProgress.streaming,
     tokenPrompt,
     queue: state.queue,
     /** **会话重载信号**：出现「无法追赶的 gap」时自增（见 chat/types.ts）。 */
     gapReloadToken: state.gapReloadToken,
+    // 缺口**形状**（去重键）：token 会被 reset() 归零，只比数值会把「归零」/「同形状再现」
+    // 误判成新 gap ⇒ reset+reload 自激。AgentPanel 必须用 (key, sig) 去重。
+    gapReloadSig: state.liveAheadGapSig !== '' ? state.liveAheadGapSig : state.unreachableGapSig,
+    unreachableGapSig: state.unreachableGapSig,
+    liveAheadGapSig: state.liveAheadGapSig,
     reset,
     sendUser,
     ackUser,

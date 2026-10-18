@@ -265,7 +265,7 @@ func TestSaveCLIConfigPreservesDiskFields(t *testing.T) {
 	// Runtime cfg only modifies LLM and Agent — everything else is zero/default.
 	appCfg := &config.Config{
 		LLM:   config.LLMConfig{Provider: "openai", Model: "gpt-4.1"},
-		Agent: config.AgentConfig{MaxIterations: 123},
+		Agent: config.AgentConfig{MemoryProvider: "flat"},
 		// Deliberately zero: CLI, Admin, Web, Sandbox, Feishu, Subscriptions
 	}
 	if err := saveCLIConfig(appCfg); err != nil {
@@ -279,8 +279,8 @@ func TestSaveCLIConfigPreservesDiskFields(t *testing.T) {
 	}
 
 	// Agent settings should be updated from appCfg.
-	if loaded.Agent.MaxIterations != 123 {
-		t.Fatalf("Agent.MaxIterations should be updated, got %+v", loaded.Agent)
+	if loaded.Agent.MemoryProvider != "flat" {
+		t.Fatalf("Agent.MemoryProvider should be updated, got %+v", loaded.Agent)
 	}
 	// LLM credentials should NOT be written back when config.json has subscriptions
 	// (single source of truth is the subscription system, not cfg.LLM).
@@ -450,7 +450,7 @@ func TestSaveCLIConfig_DoesNotWriteLLMCredentials(t *testing.T) {
 			MaxOutputTokens: 4096,
 			ThinkingMode:    "enabled",
 		},
-		Agent: config.AgentConfig{MaxIterations: 42},
+		Agent: config.AgentConfig{MemoryProvider: "flat"},
 	}
 
 	if err := saveCLIConfig(appCfg); err != nil {
@@ -474,8 +474,8 @@ func TestSaveCLIConfig_DoesNotWriteLLMCredentials(t *testing.T) {
 	}
 
 	// Agent should be persisted.
-	if loaded.Agent.MaxIterations != 42 {
-		t.Errorf("Agent.MaxIterations = %d, want 42", loaded.Agent.MaxIterations)
+	if loaded.Agent.MemoryProvider != "flat" {
+		t.Errorf("Agent.MemoryProvider = %q, want %q", loaded.Agent.MemoryProvider, "flat")
 	}
 
 	// Other sections from disk should be preserved.
@@ -546,7 +546,6 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 	// Agent section: max_concurrency is no longer stored in config.json — its
 	// single source is the canonical user_settings row
 	// (channel.MaxConcurrencyChannel). Nothing to assert here for it.
-	_ = loaded.Agent.MaxIterations
 
 	// Disk subscriptions and other sections must remain untouched.
 	if len(loaded.Subscriptions) != 1 || loaded.Subscriptions[0].ID != "sub1" {
@@ -572,8 +571,7 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 			Model:    "claude-3",
 		},
 		Agent: config.AgentConfig{
-			MaxIterations: 10,
-			ContextMode:   "full",
+			ContextMode: "full",
 		},
 		Admin:   config.AdminConfig{Token: "admin-tok", ChatID: "ou_admin"},
 		Web:     config.WebConfig{Port: 8080, Enable: true},
@@ -593,7 +591,6 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 	appCfg := &config.Config{
 		LLM: config.LLMConfig{},
 		Agent: config.AgentConfig{
-			MaxIterations:  99,
 			MemoryProvider: "redis",
 		},
 	}
@@ -608,10 +605,8 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 		return
 	}
 
-	// Agent settings must be updated from appCfg.
-	if loaded.Agent.MaxIterations != 99 {
-		t.Errorf("Agent.MaxIterations = %d, want 99", loaded.Agent.MaxIterations)
-	}
+	// Agent settings updated from appCfg (the Agent section is replaced wholesale,
+	// not merged with disk values).
 	// max_concurrency is no longer a config.json field (single source =
 	// canonical user_settings row).
 	if loaded.Agent.MemoryProvider != "redis" {
@@ -827,11 +822,11 @@ func TestCLISettingHandlersCoversAllRuntimeKeys(t *testing.T) {
 func TestApplyRuntimeSettings(t *testing.T) {
 	cfg := &config.Config{}
 	agent.ApplyRuntimeSettings(cfg, nil, "cli_user", map[string]string{
-		"max_iterations": "50",
-		"context_mode":   "auto",
+		"compression_threshold": "0.8",
+		"context_mode":          "auto",
 	})
-	if cfg.Agent.MaxIterations != 50 {
-		t.Errorf("max_iterations = %d, want %d", cfg.Agent.MaxIterations, 50)
+	if cfg.Agent.CompressionThreshold != 0.8 {
+		t.Errorf("compression_threshold = %v, want %v", cfg.Agent.CompressionThreshold, 0.8)
 	}
 	if cfg.Agent.ContextMode != "auto" {
 		t.Errorf("context_mode = %q, want %q", cfg.Agent.ContextMode, "auto")
@@ -854,7 +849,6 @@ func TestIsCLISubscriptionSettingKey(t *testing.T) {
 		{"theme", false},
 		{"sandbox_mode", false},
 		{"vanguard_model", false},
-		{"max_iterations", false},
 		{"", false},
 		{"random_key", false},
 	}
