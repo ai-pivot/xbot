@@ -32,7 +32,6 @@ interface RegistryItem {
   description: string
   author: string
   version: string
-  tags?: string[]
   registry?: string
 }
 
@@ -449,12 +448,6 @@ export function MarketplacePanel() {
                     <span>author:{item.author}</span>
                     <span>version:{item.version}</span>
                     {item.registry && <span>source:{item.registry}</span>}
-                    {(item.tags || []).some((t) => t !== item.type) && (
-                      <span>
-                        tags:
-                        {(item.tags || []).filter((t) => t !== item.type).join(', ')}
-                      </span>
-                    )}
                   </div>
                 </div>
               )

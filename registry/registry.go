@@ -31,8 +31,7 @@ type Entry struct {
 	Description string   `json:"description"`
 	Author      string   `json:"author"`
 	Version     string   `json:"version"`
-	Path        string   `json:"path"` // relative path inside the registry repo
-	Tags        []string `json:"tags,omitempty"`
+	Path        string `json:"path"` // relative path inside the registry repo
 
 	// Registry is the source registry name (set after fetch, not serialized).
 	Registry string `json:"-"`
@@ -224,8 +223,8 @@ func loadIndex(cloneDir string) (*Index, error) {
 	return &idx, nil
 }
 
-// Search filters the index by query, matching against name, description, and tags.
-// Results are sorted by relevance (name match > tag match > description match).
+// Search filters the index by query, matching against name and description.
+// Results are sorted by relevance (name match ranked first).
 func Search(idx *Index, query string) []Entry {
 	if query == "" {
 		return idx.Items
@@ -234,12 +233,11 @@ func Search(idx *Index, query string) []Entry {
 	var results []Entry
 	for _, item := range idx.Items {
 		if strings.Contains(strings.ToLower(item.Name), q) ||
-			strings.Contains(strings.ToLower(item.Description), q) ||
-			containsTag(item.Tags, q) {
+			strings.Contains(strings.ToLower(item.Description), q) {
 			results = append(results, item)
 		}
 	}
-	// Sort: name starts-with query > name contains > tag match > description
+	// Sort: name starts-with query first, then by name.
 	sort.SliceStable(results, func(i, j int) bool {
 		ni, nj := strings.ToLower(results[i].Name), strings.ToLower(results[j].Name)
 		si := strings.HasPrefix(ni, q)
@@ -250,15 +248,6 @@ func Search(idx *Index, query string) []Entry {
 		return ni < nj
 	})
 	return results
-}
-
-func containsTag(tags []string, q string) bool {
-	for _, t := range tags {
-		if strings.Contains(strings.ToLower(t), q) {
-			return true
-		}
-	}
-	return false
 }
 
 // FindEntry returns the entry matching the given name, or nil if not found.
@@ -274,12 +263,8 @@ func FindEntry(idx *Index, name string) *Entry {
 
 // FormatEntry returns a human-readable string for an entry.
 func FormatEntry(e Entry) string {
-	tags := ""
-	if len(e.Tags) > 0 {
-		tags = " [" + strings.Join(e.Tags, ", ") + "]"
-	}
-	return fmt.Sprintf("%s/%s (%s) v%s — %s%s",
-		e.Type, e.Name, e.Author, e.Version, e.Description, tags)
+	return fmt.Sprintf("%s/%s (%s) v%s — %s",
+		e.Type, e.Name, e.Author, e.Version, e.Description)
 }
 
 // LastFetch returns the modification time of the registry cache directory,

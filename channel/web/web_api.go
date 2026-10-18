@@ -1005,13 +1005,12 @@ func (wc *WebChannel) handleRegistrySearch(w http.ResponseWriter, r *http.Reques
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	var result struct {
 		Items []struct {
-			Type        string   `json:"type"`
-			Name        string   `json:"name"`
-			Description string   `json:"description"`
-			Author      string   `json:"author"`
-			Version     string   `json:"version"`
-			Tags        []string `json:"tags,omitempty"`
-			Registry    string   `json:"registry"`
+			Type        string `json:"type"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Author      string `json:"author"`
+			Version     string `json:"version"`
+			Registry    string `json:"registry"`
 		} `json:"items"`
 	}
 	if err := wc.rpcCallAs(r, "registry_search", map[string]any{
