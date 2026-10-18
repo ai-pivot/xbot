@@ -39,7 +39,9 @@ func sessionRouteKey(channel, chatID string) string {
 // callers can keep their existing "missing => default/current" semantics.
 func canonicalChatID(channel, chatID string) string {
 	chatID = strings.TrimSpace(chatID)
-	if channel == "" {
+	if channel == "" || channel == "agent" {
+		// agent 路由的 chat key 是**全键**（含 role/instance），不参与剥前缀；
+		// 把当前"恰好不撞"变成显式契约。
 		return chatID
 	}
 	prefix := channel + ":"

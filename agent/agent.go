@@ -1660,6 +1660,9 @@ func (a *Agent) progressSeqFor(sessionKey string) *atomic.Uint64 {
 	if sessionKey == "" {
 		sessionKey = "default"
 	}
+	if v, ok := a.progressSeq.Load(sessionKey); ok {
+		return v.(*atomic.Uint64)
+	}
 	fresh := &atomic.Uint64{}
 	fresh.Store(uint64(time.Now().UnixMilli()))
 	actual, _ := a.progressSeq.LoadOrStore(sessionKey, fresh)

@@ -745,11 +745,9 @@ func relocateIncompleteTurnUsers(history []HistoryMessage) []HistoryMessage {
 	out := make([]HistoryMessage, 0, len(history))
 	for _, h := range history {
 		if h.Role == "user" && h.TurnID > 0 && !h.Standalone {
-			// 该 turn 未完整下发 ⇒ 它的 user 行**一律**从消息流里摘掉（前端模型与 DB
-			// 事实都是「一个 turn 一条 user 行」——v67 的 Internal 注入行、压缩标记行
-			// 都不是这里的角色；若真出现多条，只保留第一条挂 TurnUser，语义与前端
-			// mergeHistory「取 dbID 最小那条」一致，绝不把第二条漏在流里）。
-			if _, ok := users[h.TurnID]; ok {
+			// 只摘**实际搬走的那一条** user 行；同 turn 的第 2+ 条必须留在流里，
+			// 否则会从载荷彻底消失（P2 2026-10-18）。
+			if u, ok := users[h.TurnID]; ok && u.ID == h.ID {
 				continue
 			}
 		}
@@ -957,11 +955,23 @@ func compactionAnchor(
 ) (uint64, int, bool) {
 	owner := uint64(0)
 	if !ts.IsZero() {
+		// 选**包含 ts 的候选中 first 最大者**（最近仍在跑的 turn）；旧实现遇重叠 span
+		// 停在"先开始"的 turn，锚点退化。同 first 取 turnID 大者。
+		var ownerFirst time.Time
 		for _, s := range spans {
-			if !ts.Before(s.first) {
-				owner = s.turnID // 最后一个 first ≤ ts
-				if !ts.After(s.last) {
-					break // ts 落在本 turn 区间内 ⇒ 已是最优归属
+			if ts.Before(s.first) || ts.After(s.last) {
+				continue
+			}
+			if owner == 0 || s.first.After(ownerFirst) ||
+				(s.first.Equal(ownerFirst) && s.turnID > owner) {
+				owner = s.turnID
+				ownerFirst = s.first
+			}
+		}
+		if owner == 0 {
+			for _, s := range spans {
+				if !ts.Before(s.first) {
+					owner = s.turnID
 				}
 			}
 		}
