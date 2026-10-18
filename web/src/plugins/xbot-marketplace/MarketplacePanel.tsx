@@ -53,13 +53,6 @@ const TYPE_ICONS: Record<string, typeof Sparkles> = {
   package: Package,
 }
 
-const TYPE_LABELS: Record<string, string> = {
-  skill: 'Skill',
-  agent: 'Agent',
-  plugin: 'Plugin',
-  package: 'Package',
-}
-
 const OFFICIAL_NAME = 'official'
 const OFFICIAL_URL = 'https://github.com/ai-pivot/market'
 
@@ -216,23 +209,20 @@ export function MarketplacePanel() {
     await handleAddRegistry(OFFICIAL_NAME, OFFICIAL_URL, '')
   }, [handleAddRegistry])
 
-  // 统一为「app」：类型（skill/agent/plugin/package）只作为一个 tag 参与展示/过滤，
-  // 不再分栏。kind 由后端安装时按内容识别，前端只负责展示。
+  // 统一为「app」：类型只作为元数据，用 VS Code 扩展那种 key:value 文本展示，
+  // 不用 chips。过滤值形如 "type:plugin" / "tag:git"（"" = 全部）。
   const KIND_ORDER = ['skill', 'agent', 'plugin', 'package']
-  const tagSet = new Set<string>()
-  for (const it of items) {
-    if (it.type) tagSet.add(it.type)
-    for (const tg of it.tags || []) tagSet.add(tg)
-  }
-  const tagOptions = Array.from(tagSet).sort((a, b) => {
-    const ia = KIND_ORDER.indexOf(a)
-    const ib = KIND_ORDER.indexOf(b)
-    if (ia !== -1 || ib !== -1) return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib)
-    return a.localeCompare(b)
-  })
-  const filteredItems = tagFilter
-    ? items.filter((it) => it.type === tagFilter || (it.tags || []).includes(tagFilter))
-    : items
+  const kinds = KIND_ORDER.filter((k) => items.some((it) => it.type === k))
+  const otherTags = Array.from(
+    new Set(items.flatMap((it) => (it.tags || []).filter((t) => !KIND_ORDER.includes(t)))),
+  ).sort()
+  const filteredItems = !tagFilter
+    ? items
+    : tagFilter.startsWith('type:')
+      ? items.filter((it) => it.type === tagFilter.slice('type:'.length))
+      : tagFilter.startsWith('tag:')
+        ? items.filter((it) => (it.tags || []).includes(tagFilter.slice('tag:'.length)))
+        : items
 
   const noRegistries = registries.length === 0
 
@@ -275,30 +265,28 @@ export function MarketplacePanel() {
             )}
           </Button>
         </div>
-        <div className="flex flex-wrap gap-1">
-          <button
-            onClick={() => setTagFilter('')}
-            className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-              tagFilter === ''
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:bg-muted'
-            }`}
+        <div className="flex items-center gap-2 text-xs">
+          <label htmlFor="market-category" className="text-muted-foreground">
+            分类
+          </label>
+          <select
+            id="market-category"
+            value={tagFilter}
+            onChange={(e) => setTagFilter(e.target.value)}
+            className="rounded-md border bg-background px-2 py-1 text-xs"
           >
-            全部
-          </button>
-          {tagOptions.map((tag) => (
-            <button
-              key={tag}
-              onClick={() => setTagFilter(tag)}
-              className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-                tagFilter === tag
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted'
-              }`}
-            >
-              {tag}
-            </button>
-          ))}
+            <option value="">全部</option>
+            {kinds.map((k) => (
+              <option key={`type:${k}`} value={`type:${k}`}>
+                type:{k}
+              </option>
+            ))}
+            {otherTags.map((t) => (
+              <option key={`tag:${t}`} value={`tag:${t}`}>
+                tag:{t}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -465,22 +453,17 @@ export function MarketplacePanel() {
                   {item.description && (
                     <p className="text-xs text-muted-foreground line-clamp-2">{item.description}</p>
                   )}
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                    <span>{item.author}</span>
-                    <span>v{item.version}</span>
-                    {/* kind 作为一个高亮 tag（类型只作 tag 标识，不单独分栏） */}
-                    <span className="rounded bg-primary/10 px-1 text-primary">
-                      {TYPE_LABELS[item.type] || item.type}
-                    </span>
-                    {item.registry && <span className="rounded bg-muted px-1">{item.registry}</span>}
-                    {(item.tags || [])
-                      .filter((tag) => tag !== item.type)
-                      .slice(0, 3)
-                      .map((tag) => (
-                        <span key={tag} className="rounded bg-muted px-1">
-                          {tag}
-                        </span>
-                      ))}
+                  <div className="flex items-center gap-x-3 gap-y-1 text-xs text-muted-foreground flex-wrap">
+                    <span>type:{item.type}</span>
+                    <span>author:{item.author}</span>
+                    <span>version:{item.version}</span>
+                    {item.registry && <span>source:{item.registry}</span>}
+                    {(item.tags || []).some((t) => t !== item.type) && (
+                      <span>
+                        tags:
+                        {(item.tags || []).filter((t) => t !== item.type).join(', ')}
+                      </span>
+                    )}
                   </div>
                 </div>
               )
