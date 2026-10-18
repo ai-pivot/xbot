@@ -64,7 +64,7 @@ func checkReadPumpCanonical(body string) error {
 	if iNormalize < 0 {
 		return fmt.Errorf("readPump 未在传输边界规范化 chat_id（缺少 `%s`）—— 全键会生成幽灵会话 web:web:chat_X", normalize)
 	}
-	if !(iUnmarshal < iNormalize && iNormalize < iSwitch) {
+	if iUnmarshal >= iNormalize || iNormalize >= iSwitch {
 		return fmt.Errorf("规范化必须在反序列化之后、`switch msg.Type` 之前（unmarshal=%d normalize=%d switch=%d）—— 否则 cancel/ask/sync/subscribe 分支仍是原始 key", iUnmarshal, iNormalize, iSwitch)
 	}
 	return nil

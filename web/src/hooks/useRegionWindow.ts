@@ -104,10 +104,6 @@ export function useRegionWindow({
   beforeIterRef.current = beforeIteration
   const loadRef = useRef(actions.loadRegionSegment)
   loadRef.current = actions.loadRegionSegment
-  /** 上一次请求用的游标（`beforeIteration`）—— 链式续拉的**进展判定**基准。 */
-  const cursorRef = useRef<number | undefined>(undefined)
-  /** 上一段成功后置 true：等新的 `beforeIteration` 落地（新内容已提交）再续拉。 */
-  const pendingChainRef = useRef(false)
 
   /** 一次段请求（唯一入口：IO 触发、链式续拉与手动重试共用）。 */
   const run = useCallback(() => {
@@ -117,8 +113,6 @@ export function useRegionWindow({
     // ⛔ 拍锚必须在**发请求之前**（MessageList 的 prepend 锚）：段落地后由列表在同一帧把
     // 「用户看到的那一行」钉回原位 ⇒ 视角一动不动（用户 2026-10-12 硬要求）。
     beginAnchorRef.current()
-    cursorRef.current = before
-    pendingChainRef.current = false
     statusRef.current = 'loading'
     setStatus('loading')
     void (async () => {
@@ -132,13 +126,9 @@ export function useRegionWindow({
         failStreakRef.current = 0
         statusRef.current = 'idle'
         setStatus('idle')
-        // 链式续拉的**触发点**：等 `beforeIteration` 随新内容前移后由下面那个 effect 续拉
-        //（不在 await 里直接 run —— 此刻 React 还没提交新迭代，游标还是旧值 ⇒ 会重复取同一段）。
-        pendingChainRef.current = true
         return
       }
       failStreakRef.current += 1
-      pendingChainRef.current = false
       statusRef.current = 'error'
       setStatus('error')
     })()
@@ -185,31 +175,6 @@ export function useRegionWindow({
   const retry = useCallback(() => {
     run()
   }, [run])
-
-  // ── 链式续拉（P1 2026-10-18 审查）：一段到位后，若哨兵**仍在预取带内**就立刻续拉下一段 ──
-  // 为什么必须显式做：observer 只在「可见性翻转」时回调；段插入把内容长高后，只要哨兵没有
-  // 离开预取带（用户上滚时几乎总是如此），IO **不会再回调** ⇒ 旧实现只拉一段就停 ⇒ 用户
-  // 继续上滚会看到「历史在这里断掉」（而现在分隔条不可见，连"加载中"都没有）= 静默缺口。
-  //
-  // 防死循环（三重闸门，缺一不可）：
-  //   ① 只在「上一段成功」后才进入本路径（`pendingChainRef`）；失败走 error 态等手动重试；
-  //   ② **进展判定**：新的 `beforeIteration` 必须真的前移（≠ 上次请求用的游标）——服务端
-  //      返回空段/原地踏步时立刻停（否则同一请求无限重发）；
-  //   ③ `visibleRef` 必须是"仍在带内"（段把哨兵推出带时 IO 会回调 false ⇒ 自然停），
-  //      且失败连击已达 `MAX_AUTO_REGION_FAILURES` 时彻底停。
-  useEffect(() => {
-    if (!pendingChainRef.current) return
-    if (!enabled || beforeIteration === undefined) {
-      pendingChainRef.current = false
-      return
-    }
-    if (statusRef.current === 'loading') return // 等这次落地后下一轮 effect 再判
-    pendingChainRef.current = false
-    if (visibleRef.current !== true) return // ②/③：被推出预取带 ⇒ 自然停止
-    if (failStreakRef.current >= MAX_AUTO_REGION_FAILURES) return
-    if (cursorRef.current === beforeIteration) return // 进展判定：没前移 ⇒ 停（防死循环）
-    run()
-  }, [beforeIteration, enabled, run])
 
   // ── 自动追赶（2026-10-02 P0：熄屏恢复 × 折叠窗口的洞）────────────────────────
   // 检测到洞（gapTop 有值）⇒ 立即自动取段填洞，**不等 IO 哨兵**——熄屏恢复场景洞的
