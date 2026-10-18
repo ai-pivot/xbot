@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "xbot/logger"
@@ -402,11 +403,19 @@ func parseSQLiteTime(s string) time.Time {
 //
 // ⛔ 本表禁止对 created_at 做**字符串排序**：裸串形态混用本地偏移（见 ParseTimestamp
 // 注释），DST 切换处字符串序可能与真实时间序相反。只允许解析成 time.Time 后比较。
+var iterationParseErrCount atomic.Int64
+
 func parseIterationTime(s string) time.Time {
 	t, err := internal.ParseIterationTimestamp(s)
 	if err != nil {
-		log.WithFields(log.Fields{"table": "iteration_history", "created_at": s}).
-			Error("created_at 无法解析 —— 按无时间戳处理；压缩锚点对该行将 fail-safe 回落")
+		// P2 2026-10-18：坏行批量存在时旧实现每行一条 ERROR ⇒ 历史读放大成日志风暴。
+		// 保留前 3 条 + 每 100 条的汇总（带 count），仍可定位且不刷屏。
+		n := iterationParseErrCount.Add(1)
+		if n <= 3 || n%100 == 0 {
+			log.WithFields(log.Fields{
+				"table": "iteration_history", "created_at": s, "count": n,
+			}).Error("created_at 无法解析 —— 按无时间戳处理；压缩锚点对该行将 fail-safe 回落")
+		}
 	}
 	return t
 }
