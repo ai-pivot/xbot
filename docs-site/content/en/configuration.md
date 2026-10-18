@@ -18,7 +18,7 @@ preferred over environment variables.**
 | Enable Web | `web.enable: true` |
 | Docker sandbox | `sandbox.mode: "docker"` |
 | Restrict users | `*.allow_from: [...]` |
-| Max concurrent calls | `agent.max_concurrency` |
+| Max concurrent calls | Settings panel (per-user; not in config.json) |
 | Context compression | `agent.compression_threshold` |
 
 ## Config file location
@@ -200,7 +200,6 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 ```json
 {
   "agent": {
-    "max_concurrency": 100,
     "memory_provider": "flat",
     "work_dir": ".",
     "prompt_file": "prompt.md",
@@ -208,7 +207,6 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
     "enable_auto_compress": true,
     "compression_threshold": 0.9,
     "context_mode": "",
-    "purge_old_messages": false,
     "max_sub_agent_depth": 5,
     "llm_retry_attempts": 5,
     "llm_retry_delay": "1s",
@@ -223,7 +221,7 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_concurrency` | int | `100` | Max concurrent LLM calls |
+| `max_concurrency` | int | `5` | Concurrency cap. ⚠️ **Not a config.json key** — a per-user setting stored in the `user_settings` table; change it from the settings panel (`/settings`, range 1–100) or the Web LLM console |
 | `memory_provider` | string | `"flat"` | Memory system: `flat` or `letta` |
 | `work_dir` | string | `"."` | Working directory |
 | `prompt_file` | string | `"prompt.md"` | Custom system prompt file |
@@ -232,7 +230,6 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 | `enable_auto_compress` | bool | `true` | Auto-compress context when full |
 | `compression_threshold` | float | `0.9` | Token ratio that triggers compression |
 | `context_mode` | string | `""` | Context management mode |
-| `purge_old_messages` | bool | `false` | Purge old messages after compression |
 | `max_sub_agent_depth` | int | `5` | Max SubAgent nesting levels (depth only — nesting the same role is legal, not a cycle) |
 | `llm_retry_attempts` | int | `5` | LLM call retry count |
 | `llm_retry_delay` | duration | `"1s"` | Initial retry delay |
