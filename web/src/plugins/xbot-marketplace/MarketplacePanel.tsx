@@ -23,7 +23,6 @@ import {
   Trash2,
   X,
   RefreshCw,
-  Boxes,
 } from 'lucide-react'
 
 interface RegistryItem {
@@ -75,7 +74,7 @@ export function MarketplacePanel() {
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
-  const [typeFilter, setTypeFilter] = useState('')
+  const [tagFilter, setTagFilter] = useState('')
 
   // registry 管理 UI 状态
   const [showRegistries, setShowRegistries] = useState(false)
@@ -104,7 +103,6 @@ export function MarketplacePanel() {
         postAPI<{ registries?: RegistryRef[] }>('/api/registry/config-list', {}),
         postAPI<{ items: RegistryItem[] }>('/api/registry/search', {
           query: debouncedQuery,
-          type: typeFilter,
           refresh: force,
         }),
       ])
@@ -116,7 +114,7 @@ export function MarketplacePanel() {
     } finally {
       setLoading(false)
     }
-  }, [debouncedQuery, typeFilter, loadInstalled])
+  }, [debouncedQuery, loadInstalled])
 
   // Debounce the search box so typing doesn't hit the RPC on every keystroke.
   useEffect(() => {
@@ -134,13 +132,12 @@ export function MarketplacePanel() {
       postAPI<{ registries?: RegistryRef[] }>('/api/registry/config-list', {}),
       postAPI<{ items: RegistryItem[] }>('/api/registry/search', {
         query: debouncedQuery,
-        type: typeFilter,
         refresh: true,
       }),
     ])
     setRegistries(configRes.registries || [])
     setItems(searchRes.items || [])
-  }, [debouncedQuery, typeFilter])
+  }, [debouncedQuery])
 
   const handleInstall = useCallback(
     async (item: RegistryItem) => {
@@ -219,13 +216,23 @@ export function MarketplacePanel() {
     await handleAddRegistry(OFFICIAL_NAME, OFFICIAL_URL, '')
   }, [handleAddRegistry])
 
-  const filterTabs = [
-    { label: '全部', value: '', Icon: Boxes },
-    { label: 'Skills', value: 'skill', Icon: Sparkles },
-    { label: 'Agents', value: 'agent', Icon: Bot },
-    { label: 'Plugins', value: 'plugin', Icon: Puzzle },
-    { label: 'Packages', value: 'package', Icon: Package },
-  ]
+  // 统一为「app」：类型（skill/agent/plugin/package）只作为一个 tag 参与展示/过滤，
+  // 不再分栏。kind 由后端安装时按内容识别，前端只负责展示。
+  const KIND_ORDER = ['skill', 'agent', 'plugin', 'package']
+  const tagSet = new Set<string>()
+  for (const it of items) {
+    if (it.type) tagSet.add(it.type)
+    for (const tg of it.tags || []) tagSet.add(tg)
+  }
+  const tagOptions = Array.from(tagSet).sort((a, b) => {
+    const ia = KIND_ORDER.indexOf(a)
+    const ib = KIND_ORDER.indexOf(b)
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib)
+    return a.localeCompare(b)
+  })
+  const filteredItems = tagFilter
+    ? items.filter((it) => it.type === tagFilter || (it.tags || []).includes(tagFilter))
+    : items
 
   const noRegistries = registries.length === 0
 
@@ -268,19 +275,28 @@ export function MarketplacePanel() {
             )}
           </Button>
         </div>
-        <div className="flex gap-1">
-          {filterTabs.map((tab) => (
+        <div className="flex flex-wrap gap-1">
+          <button
+            onClick={() => setTagFilter('')}
+            className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+              tagFilter === ''
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-muted'
+            }`}
+          >
+            全部
+          </button>
+          {tagOptions.map((tag) => (
             <button
-              key={tab.value}
-              onClick={() => setTypeFilter(tab.value)}
-              className={`flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
-                typeFilter === tab.value
+              key={tag}
+              onClick={() => setTagFilter(tag)}
+              className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                tagFilter === tag
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-muted'
               }`}
             >
-              <tab.Icon className="h-3 w-3" />
-              {tab.label}
+              {tag}
             </button>
           ))}
         </div>
@@ -391,12 +407,12 @@ export function MarketplacePanel() {
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
-          ) : items.length === 0 ? (
+          ) : filteredItems.length === 0 ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
               {t('marketplace.empty', { defaultValue: '暂无可用组件' })}
             </div>
           ) : (
-            items.map((item) => {
+            filteredItems.map((item) => {
               const Icon = TYPE_ICONS[item.type] || Package
               const isInstalled = installed.has(`${item.type}:${item.name}`)
               const isThisInstalling = installing === item.name
@@ -410,9 +426,6 @@ export function MarketplacePanel() {
                     <div className="flex items-center gap-2 min-w-0">
                       <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
                       <span className="font-medium text-sm truncate">{item.name}</span>
-                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                        {TYPE_LABELS[item.type] || item.type}
-                      </span>
                     </div>
                     {isInstalled ? (
                       <div className="flex shrink-0 items-center gap-1">
@@ -455,16 +468,19 @@ export function MarketplacePanel() {
                   <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
                     <span>{item.author}</span>
                     <span>v{item.version}</span>
+                    {/* kind 作为一个高亮 tag（类型只作 tag 标识，不单独分栏） */}
+                    <span className="rounded bg-primary/10 px-1 text-primary">
+                      {TYPE_LABELS[item.type] || item.type}
+                    </span>
                     {item.registry && <span className="rounded bg-muted px-1">{item.registry}</span>}
-                    {item.tags && item.tags.length > 0 && (
-                      <span className="flex gap-1 flex-wrap">
-                        {item.tags.slice(0, 3).map((tag) => (
-                          <span key={tag} className="rounded bg-muted px-1">
-                            {tag}
-                          </span>
-                        ))}
-                      </span>
-                    )}
+                    {(item.tags || [])
+                      .filter((tag) => tag !== item.type)
+                      .slice(0, 3)
+                      .map((tag) => (
+                        <span key={tag} className="rounded bg-muted px-1">
+                          {tag}
+                        </span>
+                      ))}
                   </div>
                 </div>
               )
