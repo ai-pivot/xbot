@@ -18,7 +18,6 @@ import {
   Bot,
   Sparkles,
   Puzzle,
-  Boxes,
   Settings2,
   Plus,
   Trash2,
@@ -211,11 +210,11 @@ export function MarketplacePanel() {
 
   // 筛选：按类型 chips（全部 / Skills / Agents / Plugins / Packages），前端本地过滤。
   const filterTabs = [
-    { label: '全部', value: '', Icon: Boxes },
-    { label: 'Skills', value: 'skill', Icon: Sparkles },
-    { label: 'Agents', value: 'agent', Icon: Bot },
-    { label: 'Plugins', value: 'plugin', Icon: Puzzle },
-    { label: 'Packages', value: 'package', Icon: Package },
+    { label: '全部', value: '' },
+    { label: 'Skills', value: 'skill' },
+    { label: 'Agents', value: 'agent' },
+    { label: 'Plugins', value: 'plugin' },
+    { label: 'Packages', value: 'package' },
   ]
   const filteredItems = filterType
     ? items.filter((it) => it.type === filterType)
@@ -262,18 +261,17 @@ export function MarketplacePanel() {
             )}
           </Button>
         </div>
-        <div className="flex flex-wrap gap-1">
+        <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap">
           {filterTabs.map((tab) => (
             <button
               key={tab.value}
               onClick={() => setFilterType(tab.value)}
-              className={`flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
+              className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium transition-colors ${
                 filterType === tab.value
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-muted'
               }`}
             >
-              <tab.Icon className="h-3 w-3" />
               {tab.label}
             </button>
           ))}
