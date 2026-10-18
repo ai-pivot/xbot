@@ -18,6 +18,7 @@ import {
   Bot,
   Sparkles,
   Puzzle,
+  Boxes,
   Settings2,
   Plus,
   Trash2,
@@ -67,7 +68,7 @@ export function MarketplacePanel() {
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
-  const [tagFilter, setTagFilter] = useState('')
+  const [filterType, setFilterType] = useState('')
 
   // registry 管理 UI 状态
   const [showRegistries, setShowRegistries] = useState(false)
@@ -209,20 +210,17 @@ export function MarketplacePanel() {
     await handleAddRegistry(OFFICIAL_NAME, OFFICIAL_URL, '')
   }, [handleAddRegistry])
 
-  // 统一为「app」：类型只作为元数据，用 VS Code 扩展那种 key:value 文本展示，
-  // 不用 chips。过滤值形如 "type:plugin" / "tag:git"（"" = 全部）。
-  const KIND_ORDER = ['skill', 'agent', 'plugin', 'package']
-  const kinds = KIND_ORDER.filter((k) => items.some((it) => it.type === k))
-  const otherTags = Array.from(
-    new Set(items.flatMap((it) => (it.tags || []).filter((t) => !KIND_ORDER.includes(t)))),
-  ).sort()
-  const filteredItems = !tagFilter
-    ? items
-    : tagFilter.startsWith('type:')
-      ? items.filter((it) => it.type === tagFilter.slice('type:'.length))
-      : tagFilter.startsWith('tag:')
-        ? items.filter((it) => (it.tags || []).includes(tagFilter.slice('tag:'.length)))
-        : items
+  // 筛选：按类型 chips（全部 / Skills / Agents / Plugins / Packages），前端本地过滤。
+  const filterTabs = [
+    { label: '全部', value: '', Icon: Boxes },
+    { label: 'Skills', value: 'skill', Icon: Sparkles },
+    { label: 'Agents', value: 'agent', Icon: Bot },
+    { label: 'Plugins', value: 'plugin', Icon: Puzzle },
+    { label: 'Packages', value: 'package', Icon: Package },
+  ]
+  const filteredItems = filterType
+    ? items.filter((it) => it.type === filterType)
+    : items
 
   const noRegistries = registries.length === 0
 
@@ -265,28 +263,21 @@ export function MarketplacePanel() {
             )}
           </Button>
         </div>
-        <div className="flex items-center gap-2 text-xs">
-          <label htmlFor="market-category" className="text-muted-foreground">
-            分类
-          </label>
-          <select
-            id="market-category"
-            value={tagFilter}
-            onChange={(e) => setTagFilter(e.target.value)}
-            className="rounded-md border bg-background px-2 py-1 text-xs"
-          >
-            <option value="">全部</option>
-            {kinds.map((k) => (
-              <option key={`type:${k}`} value={`type:${k}`}>
-                type:{k}
-              </option>
-            ))}
-            {otherTags.map((t) => (
-              <option key={`tag:${t}`} value={`tag:${t}`}>
-                tag:{t}
-              </option>
-            ))}
-          </select>
+        <div className="flex flex-wrap gap-1">
+          {filterTabs.map((tab) => (
+            <button
+              key={tab.value}
+              onClick={() => setFilterType(tab.value)}
+              className={`flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
+                filterType === tab.value
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              <tab.Icon className="h-3 w-3" />
+              {tab.label}
+            </button>
+          ))}
         </div>
       </div>
 
