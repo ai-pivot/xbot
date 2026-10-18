@@ -843,7 +843,6 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		}
 	}
 
-	return s.buildMaxIterOutput()
 }
 
 // executeWithHooks wraps tool execution with pre/post hook calls via hooks.Manager.

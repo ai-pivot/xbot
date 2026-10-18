@@ -41,10 +41,11 @@ func seedLegacyUTCIteration(t *testing.T, db *sqlite.DB, tenantID int64, turnID 
 // 边界**（很早的迭代上），而不是堆到最后一个 turn 的末尾。
 //
 // 生产实测样本（本地 +08:00）：
-//   turn 152 迭代 1..4：17:10:31 / 17:10:45 / 17:11:10 / 17:12:00
-//     ⇒ CURRENT_TIMESTAMP 落库= UTC 裸 "2026-10-14 09:10:31" …
-//   压缩标记：17:11:20+08:00（= 09:11:20Z，落在 turn152 迭代 3 之后、迭代 4 之前）
-//   turn 155（更晚、最后一个 turn）：19:24:53 / 19:25:10 本地 —— 绝不是标记的归属。
+//
+//	turn 152 迭代 1..4：17:10:31 / 17:10:45 / 17:11:10 / 17:12:00
+//	  ⇒ CURRENT_TIMESTAMP 落库= UTC 裸 "2026-10-14 09:10:31" …
+//	压缩标记：17:11:20+08:00（= 09:11:20Z，落在 turn152 迭代 3 之后、迭代 4 之前）
+//	turn 155（更晚、最后一个 turn）：19:24:53 / 19:25:10 本地 —— 绝不是标记的归属。
 //
 // ⛔ 修复前（宿主 TZ=+08:00）：迭代被 -8h 解析 ⇒ 标记"晚于全部 turn 区间" ⇒
 // owner=155（时间线最后一个 turn）、after=155 的最大迭代号（2）⇒ 与用户 DOM 完全一致
@@ -120,7 +121,7 @@ func TestCompactionAnchor_LegacyUTCBareSpansZonedMarker(t *testing.T) {
 // TestCompactionAnchor_SpansFromDBDontDependOnHostTZ：同一批生产数据在**任意
 // 宿主时区**下必须给出同一批 instant —— 时区只许影响墙钟显示，绝不许影响
 // 「压缩归到哪个 turn 的哪个迭代」这类**时序事实**判定。
-//（双跑判据见文件头：TZ=Asia/Shanghai 与 TZ=UTC 的 go test 各跑一遍。）
+// （双跑判据见文件头：TZ=Asia/Shanghai 与 TZ=UTC 的 go test 各跑一遍。）
 func TestCompactionAnchor_SpansFromDBDontDependOnHostTZ(t *testing.T) {
 	db, err := sqlite.Open(t.TempDir() + "/tz-invariant.db")
 	if err != nil {
@@ -167,4 +168,3 @@ func TestCompactionAnchor_SpansFromDBDontDependOnHostTZ(t *testing.T) {
 		t.Fatalf("compactionAnchor 必须与宿主时区无关地得到锚点 2, got after=%d ok=%v", after, ok)
 	}
 }
-

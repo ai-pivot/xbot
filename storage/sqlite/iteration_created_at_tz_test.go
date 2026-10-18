@@ -31,7 +31,7 @@ import (
 //	TZ=UTC           go test ./storage/sqlite/ -run TestIterationCreatedAt -count=1
 
 // seedIterationRawAt 生产形态落库：created_at 由调用方给**原样字符串**
-//（legacy = CURRENT_TIMESTAMP 的 UTC 裸串；canonical = Go 写的 RFC3339 带偏移）。
+// （legacy = CURRENT_TIMESTAMP 的 UTC 裸串；canonical = Go 写的 RFC3339 带偏移）。
 func seedIterationRawAtTZ(t *testing.T, db *DB, tenantID int64, turnID uint64, iteration int, rawCreatedAt string) {
 	t.Helper()
 	if _, err := db.Conn().Exec(
@@ -116,7 +116,7 @@ func TestIterationCreatedAt_CanonicalWriteAndRoundTrip(t *testing.T) {
 		tenantID).Scan(&stored); err != nil {
 		t.Fatalf("read stored created_at: %v", err)
 	}
-	if !strings.Contains(stored, "T") || !(strings.HasSuffix(stored, "Z") || strings.Contains(stored, "+")) {
+	if !strings.Contains(stored, "T") || !strings.HasSuffix(stored, "Z") && !strings.Contains(stored, "+") {
 		t.Fatalf("⛔ 写侧必须显式写带时区偏移的 canonical created_at（不得依赖 CURRENT_TIMESTAMP 默认）: got %q", stored)
 	}
 

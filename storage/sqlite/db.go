@@ -377,6 +377,7 @@ func (db *DB) initSchema() error {
 //   - host TZ = UTC：产出 "Z" 形态，但此时 time.Local ≡ UTC、case 2 的本地猜 ≡
 //     字面 UTC —— **构造上无害**（错位只在「写 Z 串 & 读侧 local≠UTC」时发生，
 //     本写法让该组合不可能出现）。
+//
 // ⛔ 不许任何写点绕过本函数直接 `ts.Format(time.RFC3339*)` 落这两张表
 // （判据：TestIterationCreatedAt_CanonicalWriteAndRoundTrip + TestGetSyntheticPairRowsByTurn
 // 双时区跑 —— 后者在规范化前于 TZ=Asia/Shanghai 必红，因为 UTC 时区的时间值会

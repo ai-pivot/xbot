@@ -154,7 +154,7 @@ func TestCompactionAnchor_FallsBackWhenNoTimeline(t *testing.T) {
 }
 
 // TestCompactionAnchor_EarlierThanAllTurnsUsesFallback：ts 早于所有 turn 的首迭代
-//（标记出现在结构化迭代数据之前的老段）⇒ 用 fallbackTurn（旧 cmdAnchor 语义）。
+// （标记出现在结构化迭代数据之前的老段）⇒ 用 fallbackTurn（旧 cmdAnchor 语义）。
 func TestCompactionAnchor_EarlierThanAllTurnsUsesFallback(t *testing.T) {
 	base := time.Date(2026, 10, 12, 1, 0, 0, 0, time.UTC)
 	turnIterMap := map[uint64][]sqlite.IterationRecord{
@@ -186,7 +186,7 @@ func TestCompactionAnchor_IntegrationKeepsStandaloneOnNoTimestamps(t *testing.T)
 }
 
 // TestCompactionAnchor_AfterAllIterationsUsesLastTurn：压缩时间戳晚于所有迭代
-//（会话末尾/长时间空闲后的压缩）⇒ 归属最后一个已开始的 turn，锚点=它的最大迭代号。
+// （会话末尾/长时间空闲后的压缩）⇒ 归属最后一个已开始的 turn，锚点=它的最大迭代号。
 // 这条**故意保留旧语义**：无处可归时"落在最后一个 turn 末尾"是最不坏的近似。
 func TestCompactionAnchor_AfterAllIterationsUsesLastTurn(t *testing.T) {
 	base := time.Date(2026, 10, 12, 1, 0, 0, 0, time.UTC)
