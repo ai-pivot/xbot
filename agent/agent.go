@@ -3138,6 +3138,13 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 	ss.msgCh = msgCh // reorder path re-projects the queue order onto this channel
 	a.bgSessionStates.Store(chatKey, ss)
 	defer a.bgSessionStates.Delete(chatKey)
+	// P2 2026-10-18：runGen 只在 worker 生命周期内有效；worker 退出必须清理，避免长驻
+	// server 上每会话残留一条。
+	defer func() {
+		a.runGenMu.Lock()
+		delete(a.runGen, chatKey)
+		a.runGenMu.Unlock()
+	}()
 
 	// Restore the per-session turn ID counter from DB SYNCHRONOUSLY, BEFORE
 	// the processLoop goroutine starts and BEFORE the main loop can admit any
