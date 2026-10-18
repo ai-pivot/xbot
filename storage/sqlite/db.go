@@ -399,6 +399,9 @@ func parseSQLiteTime(s string) time.Time {
 //
 // 未知格式一律 ERROR + 零值（fail-safe）：下游 buildTurnSpans 跳过该行 /
 // compactionIteration 回落 standalone 压缩标记行（信息不丢、绝不静默错位）。
+//
+// ⛔ 本表禁止对 created_at 做**字符串排序**：裸串形态混用本地偏移（见 ParseTimestamp
+// 注释），DST 切换处字符串序可能与真实时间序相反。只允许解析成 time.Time 后比较。
 func parseIterationTime(s string) time.Time {
 	t, err := internal.ParseIterationTimestamp(s)
 	if err != nil {

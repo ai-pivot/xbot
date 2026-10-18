@@ -1616,9 +1616,7 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 			state.(*bgSessionState).busy.Store(false)
 		}
 		tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
-		a.emitSessionState(protocol.SessionEvent{
-			Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
-		})
+		a.emitSessionIdleIfNoActiveRun(cancelKey, msg.Channel, msg.ChatID, msg.SenderID)
 		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
 		return
@@ -1761,10 +1759,21 @@ func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, last
 		ss.busy.Store(false)
 	}
 	if i := strings.Index(chatKey, ":"); i > 0 {
-		a.emitSessionState(protocol.SessionEvent{
-			Channel: chatKey[:i], ChatID: chatKey[i+1:], Action: "idle", SenderID: lastSenderID,
-		})
+		a.emitSessionIdleIfNoActiveRun(chatKey, chatKey[:i], chatKey[i+1:], lastSenderID)
 	}
+}
+
+// emitSessionIdleIfNoActiveRun 是 idle 的受控出口：有活跃 cancel/Run 时不得发 idle。
+// P2 2026-10-18：interceptCancel / cleanupStaleCancelState 里的两处无条件 idle 会在
+// 「pending prompt 存在但该会话已有新一轮」时冻结新轮。
+func (a *Agent) emitSessionIdleIfNoActiveRun(chatKey, channel, chatID, senderID string) {
+	if _, active := a.chatCancelCh.Load(chatKey); active {
+		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active run owns this chat")
+		return
+	}
+	a.emitSessionState(protocol.SessionEvent{
+		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
+	})
 }
 
 // dispatchWaitingUser 把 WaitingUser 出站消息投递到 bus，返回是否真的送达。

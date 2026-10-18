@@ -242,6 +242,7 @@ func TestMemoryContentRejectReason(t *testing.T) {
 		"- 本机模拟器地址 127.0.0.1:5555，包名 com.chronostasys.xbot。\n",
 		"- harmony 仓唯一门禁是 bash tools/gate.sh，必须 GATE_RC=0。\n",
 		"- 服务端在 ~/.xbot/web/dist 提供静态产物。\n",
+		"- 历史消息行里带 tool_call_id 字段（只记录字段名，不是回执）。\n",
 	}
 	for _, c := range allowed {
 		if r := memoryContentRejectReason(c); r != "" {
@@ -255,7 +256,7 @@ func TestMemoryContentRejectReason(t *testing.T) {
 		"<user-msg>原话</user-msg>",
 		"<dynamic-context>...</dynamic-context>",
 		"<goal status=\"active\">long term goal</goal>",
-		"tool_call_id: call_abc123",
+		`{"tool_call_id":"call_abc123"}`,
 		"这里有一堆 ToolCall 回执 tool_call_id=xyz",
 	}
 	for _, c := range rejected {

@@ -99,7 +99,6 @@ func memoryContentRejectReason(content string) string {
 	lower := strings.ToLower(content)
 	markers := []string{
 		"<system-reminder", "<user-msg", "<dynamic-context", "<goal status=",
-		"tool_call_id",
 	}
 	for _, m := range markers {
 		if strings.Contains(lower, m) {
@@ -107,6 +106,14 @@ func memoryContentRejectReason(content string) string {
 				"content contains %q — that looks like injected prompt text / tool output; "+
 					"memory must hold objective, durable facts only", m)
 		}
+	}
+	// `tool_call_id` 只在**结构化回执**形态下拒绝：正常笔记可能客观记录“历史行里有
+	// tool_call_id 字段”。纯文本提及时放行；JSON/键值回执仍拒绝。
+	if strings.Contains(lower, "tool_call_id") &&
+		(strings.Contains(content, "{") || strings.Contains(content, "tool_call_id=") ||
+			strings.Contains(content, `"tool_call_id"`)) {
+		return "content contains a tool_call_id receipt — that looks like raw tool output; " +
+			"memory must hold objective, durable facts only"
 	}
 	return ""
 }
