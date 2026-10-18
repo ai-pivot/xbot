@@ -998,8 +998,9 @@ func (wc *WebChannel) handleRegistrySearch(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var req struct {
-		Query string `json:"query"`
-		Type  string `json:"type"`
+		Query   string `json:"query"`
+		Type    string `json:"type"`
+		Refresh bool   `json:"refresh"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	var result struct {
@@ -1014,8 +1015,9 @@ func (wc *WebChannel) handleRegistrySearch(w http.ResponseWriter, r *http.Reques
 		} `json:"items"`
 	}
 	if err := wc.rpcCallAs(r, "registry_search", map[string]any{
-		"query": req.Query,
-		"type":  req.Type,
+		"query":   req.Query,
+		"type":    req.Type,
+		"refresh": req.Refresh,
 	}, &result); err != nil {
 		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
 		return

@@ -137,9 +137,45 @@ func RemoveRegistry(xbotHome, name string) error {
 }
 
 // Fetch clones or pulls all configured registries and returns a merged index.
-// If a registry clone already exists, it is updated with git pull; otherwise
-// it is cloned fresh. Failed registries are logged and skipped.
+// fetchTTL bounds how often Fetch performs a network `git pull` on an existing
+// clone. Within the TTL, Fetch reads the cached registry.json only (fast). Use
+// Refresh for an explicit, immediate pull (e.g. `xbot-cli registry update`).
+const fetchTTL = 10 * time.Minute
+
+// fetchMarkerPath is a marker inside the clone's .git dir recording the last
+// successful clone/pull attempt (mtime = last fetch time).
+func fetchMarkerPath(cloneDir string) string {
+	return filepath.Join(cloneDir, ".git", "xbot-last-fetch")
+}
+
+func touchFetchMarker(cloneDir string) {
+	_ = os.WriteFile(fetchMarkerPath(cloneDir), []byte(time.Now().UTC().Format(time.RFC3339)), 0o644)
+}
+
+// fetchIsFresh reports whether the clone was fetched within fetchTTL.
+func fetchIsFresh(cloneDir string) bool {
+	fi, err := os.Stat(fetchMarkerPath(cloneDir))
+	if err != nil {
+		return false
+	}
+	return time.Since(fi.ModTime()) < fetchTTL
+}
+
+// Fetch returns the merged registry index. Existing clones are refreshed with
+// `git pull` at most once per fetchTTL; within that window the cached
+// registry.json is used (no network), so search/install stay fast.
+// Failed pulls are logged and the cached copy is served.
 func Fetch(xbotHome string) (*Index, error) {
+	return fetchAll(xbotHome, false)
+}
+
+// Refresh forces a `git pull` for every configured registry, then returns the
+// merged index. Used by explicit "update" actions.
+func Refresh(xbotHome string) (*Index, error) {
+	return fetchAll(xbotHome, true)
+}
+
+func fetchAll(xbotHome string, force bool) (*Index, error) {
 	cfg, err := LoadConfig(xbotHome)
 	if err != nil {
 		return nil, err
@@ -161,17 +197,8 @@ func Fetch(xbotHome string) (*Index, error) {
 		}
 		cloneDir := filepath.Join(cacheDir, ref.Name)
 
-		if _, err := os.Stat(filepath.Join(cloneDir, ".git")); err == nil {
-			// Update existing clone
-			cmd := exec.Command("git", "pull", "--ff-only", "origin", branch)
-			cmd.Dir = cloneDir
-			cmd.Stdout = nil
-			cmd.Stderr = nil
-			if err := cmd.Run(); err != nil {
-				log.WithError(err).WithField("registry", ref.Name).Warn("Failed to update registry, using cached version")
-			}
-		} else {
-			// Fresh clone
+		if _, err := os.Stat(filepath.Join(cloneDir, ".git")); err != nil {
+			// Fresh clone (one-time network cost).
 			cmd := exec.Command("git", "clone", "--depth", "1", "-b", branch, ref.URL, cloneDir)
 			cmd.Stdout = nil
 			cmd.Stderr = os.Stderr
@@ -179,6 +206,19 @@ func Fetch(xbotHome string) (*Index, error) {
 				log.WithError(err).WithField("registry", ref.Name).Warn("Failed to clone registry, skipping")
 				continue
 			}
+			touchFetchMarker(cloneDir)
+		} else if force || !fetchIsFresh(cloneDir) {
+			// Update existing clone only when forced or stale. Touch the marker
+			// regardless of outcome so an offline registry doesn't retry the
+			// network on every request — cached data is served instead.
+			cmd := exec.Command("git", "pull", "--ff-only", "origin", branch)
+			cmd.Dir = cloneDir
+			cmd.Stdout = nil
+			cmd.Stderr = nil
+			if err := cmd.Run(); err != nil {
+				log.WithError(err).WithField("registry", ref.Name).Warn("Failed to update registry, using cached version")
+			}
+			touchFetchMarker(cloneDir)
 		}
 
 		// Parse registry.json

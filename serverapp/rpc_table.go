@@ -2982,11 +2982,18 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 func registerRegistryHandlers(t RPCTable, h *RPCContext) {
 
 	t["registry_search"] = rpc1(func(ctx context.Context, p struct {
-		Query string `json:"query"`
-		Type  string `json:"type"` // optional filter: skill/agent/plugin/package
+		Query   string `json:"query"`
+		Type    string `json:"type"`    // optional filter: skill/agent/plugin/package
+		Refresh bool   `json:"refresh"` // force git pull instead of using cache
 	}) (any, error) {
 		xbotHome := config.XbotHome()
-		idx, err := registry.Fetch(xbotHome)
+		var idx *registry.Index
+		var err error
+		if p.Refresh {
+			idx, err = registry.Refresh(xbotHome)
+		} else {
+			idx, err = registry.Fetch(xbotHome)
+		}
 		if err != nil {
 			return nil, err
 		}

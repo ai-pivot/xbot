@@ -22,6 +22,7 @@ import {
   Plus,
   Trash2,
   X,
+  RefreshCw,
 } from 'lucide-react'
 
 interface RegistryItem {
@@ -72,6 +73,7 @@ export function MarketplacePanel() {
   const [uninstalling, setUninstalling] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
 
   // registry 管理 UI 状态
@@ -93,13 +95,17 @@ export function MarketplacePanel() {
     setInstalled(installedSet)
   }, [])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     setLoading(true)
     setError('')
     try {
       const [configRes, searchRes] = await Promise.all([
         postAPI<{ registries?: RegistryRef[] }>('/api/registry/config-list', {}),
-        postAPI<{ items: RegistryItem[] }>('/api/registry/search', { query, type: typeFilter }),
+        postAPI<{ items: RegistryItem[] }>('/api/registry/search', {
+          query: debouncedQuery,
+          type: typeFilter,
+          refresh: force,
+        }),
       ])
       setRegistries(configRes.registries || [])
       setItems(searchRes.items || [])
@@ -109,21 +115,31 @@ export function MarketplacePanel() {
     } finally {
       setLoading(false)
     }
-  }, [query, typeFilter, loadInstalled])
+  }, [debouncedQuery, typeFilter, loadInstalled])
+
+  // Debounce the search box so typing doesn't hit the RPC on every keystroke.
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedQuery(query), 300)
+    return () => clearTimeout(h)
+  }, [query])
 
   useEffect(() => {
-    load()
+    void load()
   }, [load])
 
   const refreshAfterRegistryChange = useCallback(async () => {
-    // registry 变更后重新拉配置 + 搜索 + 已安装
+    // registry 变更后重新拉配置 + 搜索（强制 pull）+ 已安装
     const [configRes, searchRes] = await Promise.all([
       postAPI<{ registries?: RegistryRef[] }>('/api/registry/config-list', {}),
-      postAPI<{ items: RegistryItem[] }>('/api/registry/search', { query, type: typeFilter }),
+      postAPI<{ items: RegistryItem[] }>('/api/registry/search', {
+        query: debouncedQuery,
+        type: typeFilter,
+        refresh: true,
+      }),
     ])
     setRegistries(configRes.registries || [])
     setItems(searchRes.items || [])
-  }, [query, typeFilter])
+  }, [debouncedQuery, typeFilter])
 
   const handleInstall = useCallback(
     async (item: RegistryItem) => {
@@ -226,6 +242,16 @@ export function MarketplacePanel() {
               className="w-full rounded-md border bg-background pl-8 pr-3 py-2 text-sm"
             />
           </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void load(true)}
+            disabled={loading}
+            title="刷新组件源（git pull）"
+            className="shrink-0"
+          >
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          </Button>
           <Button
             size="sm"
             variant={showRegistries ? 'default' : 'outline'}

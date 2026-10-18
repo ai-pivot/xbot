@@ -83,7 +83,7 @@ func runRegistryCmd(args []string) error {
 			return nil
 		}
 		fmt.Println("Updating registries...")
-		idx, err := registry.Fetch(xbotHome)
+		idx, err := registry.Refresh(xbotHome)
 		if err != nil {
 			return err
 		}
