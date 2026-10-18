@@ -547,11 +547,6 @@ type Agent struct {
 	// On turn end, the entry is deleted.
 	iterationHistories sync.Map
 
-	// builtinProgressSeq stores per-chat atomic seq counters for builtin commands
-	// (/compress, /new) that bypass engine.Run but still need progress events.
-	// key: "channel:chatID" -> *atomic.Uint64
-	builtinProgressSeq sync.Map
-
 	// progressSeq stores **per-session** structured-progress seq counters.
 	//
 	// ⛔ 2026-10-17：此前每个 Run 在 buildMainRunConfig 里新建 `var progressSeq
@@ -4655,8 +4650,8 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 		}
 	}
 
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 
 	payload := &protocol.ProgressEvent{
 		ChatID: progressKey,
@@ -4692,8 +4687,8 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 
 	// Get or create per-chat seq counter. Start at 1 so the first event
 	// is not discarded by the CLI's seq monotonic check (initial lastProgressSeq=0).
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
@@ -4732,8 +4727,8 @@ func (a *Agent) emitGoalProgress(chName, chatID string) {
 	if goal == nil {
 		return
 	}
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
 		Phase:     "",
@@ -4763,11 +4758,8 @@ func (a *Agent) emitGoalProgress(chName, chatID string) {
 func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *protocol.TokenUsage, historyCompacted bool) {
 	progressKey := qualifyChatID(chName, chatID)
 
-	seqPtr, ok := a.builtinProgressSeq.Load(progressKey)
-	if !ok {
-		return
-	}
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 
 	payload := &protocol.ProgressEvent{
 		ChatID:           progressKey,
@@ -4788,7 +4780,6 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 	}
 
 	a.lastProgressSnapshot.Delete(progressKey)
-	a.builtinProgressSeq.Delete(progressKey)
 }
 
 // 首次发送创建新消息（如有入站 message_id 则回复该消息），后续发送 Patch 更新同一条消息。

@@ -761,6 +761,12 @@ Output the structured working state directly.`
 		Model:     model,
 		Messages:  compactionMsgs,
 		Tools:     tools.NewRegistry(), // empty — no tools for compression
+		// ⛔ 一次性上限（RunConfig.MaxIterations 是**内部 Run 专用**字段，主对话永不设）：
+		// 压缩是一次摘要调用、且工具注册表为空 —— 模型若幻觉出 tool_calls，引擎会把
+		// "unknown tool" 当工具结果回喂并继续下一轮，没有上限就永不返回（压缩把整个
+		// turn 拖到 ctx deadline，用户看到"卡在压缩"）。触顶 ⇒ output.Error ⇒ 压缩失败
+		// 走既有**非致命**降级（compress_failure_nonfatal_test.go）。
+		MaxIterations: 1,
 		// Stream MUST be true — the same timeout semantics as normal chat.
 		// The non-stream path carries perAttemptCtx's HARD 120s deadline
 		// (llm/retry.go); a large compaction summary (e.g. a 52,884-token

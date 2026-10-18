@@ -1004,10 +1004,16 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // 迭代 N+1 的 stream 到达时，若 content 尚未产出，迭代 N 的旧 content
       // /reasoning 残留到新迭代（"老 content 到新迭代"竞态，用户报告）。
       const advanced = ev.iteration !== null && ev.iteration > prev.iter
+      // ⛔ 只有**新帧**才能把 streaming 拨回 true（P1 2026-10-18 审查）：
+      //   权威 idle 现在只停 `streaming`、保留 live turn（为了不丢同迭代后续帧）⇒ 若
+      //   重放/迟到帧也无条件置 true，一条 SSE 重连重放的旧 stream 就会让 composer 回到
+      //   cancel（幽灵 busy；master 上不可能——idle 会把 turn 冻成 frozen，重放帧被整批丢弃）。
+      //   判据：seq 严格前进 = 新帧；`seq === null`（旧后端/mock 未携带）无从判重放 ⇒ 按新帧
+      //   处理（不能因为缺字段就永久停流）。⛔ 不看 iteration 是否前进：同迭代的新内容也是活动证据。
+      const freshFrame = ev.seq === null || s.lastSeq === null || ev.seq > s.lastSeq
       const data: LiveSnapshot = {
         ...prev,
-        // 流式帧 = 活动证据 ⇒ streaming 恢复 true（陈旧 idle 之后仍有流 ⇒ 重新显示进行中）。
-        streaming: true,
+        streaming: freshFrame ? true : prev.streaming,
         iter: advanced ? ev.iteration : prev.iter,
         content: advanced ? (ev.content ?? '') : (ev.content !== undefined ? ev.content : prev.content),
         reasoning: advanced ? (ev.reasoning ?? '') : (ev.reasoning !== undefined ? ev.reasoning : prev.reasoning),
@@ -1971,6 +1977,22 @@ function attachNotificationWhileLive(
     dbID: undefined,
   }
   if (ev.turnID === s.activeTurn) {
+    // ⛔ 幂等 + 归属正确（P1 2026-10-18 审查）：
+    //  ① SSE 重连按 last_event_id 重放同一条 `turn_started(trigger=notification)` 会走到
+    //     这里；无去重 ⇒ 每重放一次多一条通知行。同一 turn 的通知行 id 恒定
+    //     （`notif-<turnID>`）⇒ 以 id 判重（turn.user 与 pendingUsers 两处都要查）。
+    //  ② turn 还没有 user（lazy 采纳：stream 先到、turn_started 后到）⇒ 挂到 **turn 自己的
+    //     user 槽**（渲染在它的 assistant 之前）。⛔ 别进 pendingUsers —— 那里沉到底部，
+    //     通知会跑到「它自己的回答」之后（顺序错乱）。
+    const t = s.turns.get(ev.turnID)
+    if (t !== undefined && t.user !== null && t.user.id === row.id) return s // ① 重放
+    if (t !== undefined && t.user === null) {
+      const turns = new Map(s.turns) // ② lazy 采纳的空 user 槽
+      turns.set(t.id, { ...t, user: row })
+      return { ...s, turns }
+    }
+    // ③ turn 已有别的 user 行（异常形态）：保留通知文本，但同一 turn 的通知行不得重复。
+    if (s.pendingUsers.some((u) => u.id === row.id)) return s
     return { ...s, pendingUsers: [...s.pendingUsers, row] }
   }
   const existing = s.turns.get(ev.turnID)

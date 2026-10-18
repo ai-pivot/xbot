@@ -30,6 +30,7 @@ import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import { DEFAULT_SESSION_CATEGORY, groupSessions, isSessionCategory, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
 import { rememberRecentWorkDir } from '@/lib/recent-workdirs'
+import { initialActiveSession, isEmbeddedHostPage, readHostIdentity } from '@/plugin-runtime/sessionIdentity'
 import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus, TodoItem } from '@/types/shared'
 import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
@@ -943,9 +944,18 @@ export function useSessionStoreImpl(): SessionStore {
   const [sessions, setSessions] = useState<SessionInfo[]>(() => cachedTree?.sessions ?? [])
   const [subAgents, setSubAgents] = useState<SessionInfo[]>(() => cachedTree?.subAgents ?? [])
   const [activeSession, setActiveSession] = useState<SessionSelector | null>(() => {
-    const active = cachedTree?.sessions.find((session) => session.isCurrent && !session.synthetic)
+    const cachedActive = cachedTree?.sessions.find((session) => session.isCurrent && !session.synthetic)
       ?? cachedTree?.sessions.find((session) => !session.synthetic)
-    return active ? { channel: active.channel, chatID: active.chatID } : null
+    // ⛔ P0（2026-10-18 审查）：嵌入态的会话身份必须与**插件 RPC 同源**（宿主注入的
+    //   `window.__xbot_session__`）。旧实现只按**缓存会话树**自动选中 ⇒ `EmbedPanelShell`
+    //   的 SSE 订阅与面板 REST 快照落在一个**与宿主不同**的会话上（任务/终端/文件面板显示
+    //   别人的数据），而同一页面的插件 RPC 已经是宿主身份 ⇒ 一页两身份。
+    //   判定复用纯函数 `resolveSessionIdentity`（与 `usePluginRuntimeHost` 同一真源）。
+    return initialActiveSession({
+      cached: cachedActive ? { channel: cachedActive.channel, chatID: cachedActive.chatID } : null,
+      hostIdentity: readHostIdentity(),
+      embedded: isEmbeddedHostPage(),
+    })
   })
   const [starredIds, setStarredIds] = useState<string[]>(loadStarred)
   const [category, setCategoryState] = useState<SessionCategory>(loadCategory)
@@ -1067,7 +1077,14 @@ export function useSessionStoreImpl(): SessionStore {
       saveSessionTreeCache(cachedSessions, cachedAgents)
       setSessions((prev) => (sameSessionList(prev, cachedSessions) ? prev : cachedSessions))
       setSubAgents((prev) => (sameSessionList(prev, cachedAgents) ? prev : cachedAgents))
-      if (active) setActiveSession(active)
+      // 嵌入态：宿主身份权威（原生 `onChatIdChanged` 会**原地重注入** `__xbot_session__`，
+      // 不重载页面 ⇒ 必须每次对账复查，否则切了会话后本页仍订阅旧会话 = 面板数据陈旧/串会话）。
+      // 非嵌入态：行为逐字节不变（只走 `reconcileActiveSession`）。
+      const host = isEmbeddedHostPage() ? readHostIdentity() : null
+      if (host) {
+        const hostSelector: SessionSelector = { channel: host.channel, chatID: host.chatID }
+        if (!sameSession(hostSelector, activeSessionRef.current)) setActiveSession(hostSelector)
+      } else if (active) setActiveSession(active)
     } catch (e) {
       if (seq !== refreshSeqRef.current) return
       setError(e instanceof Error ? e.message : 'network error')

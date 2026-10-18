@@ -49,6 +49,16 @@ func canonicalChatID(channel, chatID string) string {
 	return chatID
 }
 
+// normalizeWSInboundChatID applies the same canonicalization to every inbound WS
+// command (message/cancel/ask_user/sync/subscribe). Kept as a named seam so the
+// wire contract is testable without a live websocket.
+func normalizeWSInboundChatID(msg *protocol.WSClientMessage) {
+	if msg == nil {
+		return
+	}
+	msg.ChatID = canonicalChatID(msg.Channel, msg.ChatID)
+}
+
 func parseSessionRouteKey(routeKey string) (channel, chatID string, ok bool) {
 	channel, chatID, ok = strings.Cut(routeKey, "\x00")
 	return channel, chatID, ok && channel != "" && chatID != ""

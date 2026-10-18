@@ -440,6 +440,27 @@ export function isSanePrependDelta(delta: number, growth: number): boolean {
   return delta > 0 && delta <= Math.max(growth, 0) + 0.5
 }
 
+/**
+ * 「本次 prepend 让内容长高了多少」（**增长上界**）—— 合法性闸门 `isSanePrependDelta` 的
+ * 第二个参数。
+ *
+ * ⛔ 为什么不能只看锚所在那一行（P1 2026-10-18 审查）：段**不一定**落在锚行内部。
+ *   · 预取 / 自动追赶（`useRegionWindow` 的 `gapTop` effect）时，用户在底部看 live、被加载的
+ *     是**上方**的 turn ⇒ 锚行是更晚的一行，它自己一行没长高 ⇒ `row` 增量 = 0 ⇒ 任何正位移
+ *     都越界 ⇒ 锚被丢弃、一个像素都不补 ⇒ 内容整体下移（正是用户报的"视角被推走"）。
+ *   · 历史分页（`onLoadMore`）同理。
+ * ⇒ 取 **内容容器高度增量**（`[data-message-list-content]`，随虚拟列表总高变化）与
+ *   锚行自身增量的**较大者**：前者覆盖「段落在别的行」，后者覆盖「容器高度还没跟上实测」
+ *   （虚拟列表对不可见行的估高滞后）——任一为真即可放行，两者都小才判越界（陈旧快照）。
+ * 纯函数（可单测）；`now < prev`（内容变短）时保留负值 ⇒ 闸门按"不可信"处理。
+ */
+export function measurePrependGrowth(
+  prev: { content: number; row: number },
+  now: { content: number; row: number },
+): number {
+  return Math.max(now.content - prev.content, now.row - prev.row)
+}
+
 export const MessageList = memo(function MessageList({
   chatKey,
   followResetToken = 0,
@@ -642,6 +663,8 @@ export const MessageList = memo(function MessageList({
     /** 锚所在的**虚拟行**（key 稳定、prepend 不卸载）—— 其高度增量 = 本轮插入的真实高度。 */
     rowEl: HTMLElement
     rowHeight: number
+    /** 拍锚时的滚动内容总高（prepend 后 `scrollHeight` 增量是跨行的插入高度）。 */
+    scrollHeight: number
   } | null>(null)
   // 供 observer effect 现读（observer 只按 hasMore 建一次，绝不因回调身份变化重建）。
   const beginPrependAnchorRef = useRef<() => void>(() => {})
@@ -1414,6 +1437,7 @@ export const MessageList = memo(function MessageList({
       // **总高估算**驱动、滞后于行内真实插入 ⇒ 首帧为 0，会把合法的 417px 误判成越界）。
       rowEl,
       rowHeight: rowEl.getBoundingClientRect().height,
+      scrollHeight: (scrollRef.current ?? el).scrollHeight,
       applied: 0,
       stable: 0,
       // 安全上限：请求失败（段永不到达）也不能让锚永久粘住视口。它只负责**清理**，
@@ -1440,10 +1464,14 @@ export const MessageList = memo(function MessageList({
       prependAnchorRef.current = null
       return
     }
-    const growth = snap.rowEl.isConnected ? snap.rowEl.getBoundingClientRect().height - snap.rowHeight : 0
+    const rowGrowth = snap.rowEl.isConnected ? snap.rowEl.getBoundingClientRect().height - snap.rowHeight : 0
+    // ⛔ P1 2026-10-18 审查：段不一定落在**锚行**内部（预取/自动追赶时锚行是更晚的一行），
+    //   只看 rowGrowth=0 会把合法位移判成越界并弃锚。`scrollHeight` 增量是本轮 prepend 的
+    //   跨行插入高度（虚拟列表的行高变化也会反映到内容总高），与锚行是哪一行无关。
+    const contentGrowth = Math.max(0, el.scrollHeight - snap.scrollHeight)
+    const growth = Math.max(rowGrowth, contentGrowth)
     // 锚还活着 ⇒ 用它（精确）；锚被 React 重新分组/卸载（tool-only run 的 head 变化会让旧块
-    // 消失）⇒ 回退到 `growth`：段恒在**视口上方**、**在该行内部**插入 ⇒「这一行长高了多少」
-    // 就是「视口下方的内容被推下去多少」，等价且免疫重挂载。
+    // 消失）⇒ 回退到 `growth`：段恒在**视口上方**插入 ⇒ 内容长高多少，视口下方就被推下多少。
     const moved = snap.el.isConnected ? snap.el.getBoundingClientRect().top - snap.top : null
     const delta = moved ?? growth
     devAnchorDebugSettle(delta, isSanePrependDelta(delta, growth), growth)

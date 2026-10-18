@@ -514,6 +514,20 @@ func (s *runState) setupRetryNotify(ctx context.Context) context.Context {
 	})
 }
 
+// lastAssistantContent 返回最近一条**有正文**的 assistant 消息内容（无则 ""）。
+//
+// 只给「内部一次性 Run 触顶」收尾用（RunConfig.MaxIterations > 0）：此时模型可能
+// 全程只吐 tool_calls、没有可用的最终回答，压缩侧会据此判定"没有产出"（非致命），
+// 而不是把上一轮的旧文本当成摘要（那会把错误内容写进上下文）。
+func (s *runState) lastAssistantContent() string {
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		if s.messages[i].Role == "assistant" && s.messages[i].Content != "" {
+			return s.messages[i].Content
+		}
+	}
+	return ""
+}
+
 // buildOutput creates a RunOutput from an OutboundMessage.
 func (s *runState) buildOutput(ob *channel.OutboundMsg) *RunOutput {
 	out := &RunOutput{OutboundMsg: ob}

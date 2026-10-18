@@ -99,6 +99,17 @@ type RunConfig struct {
 
 	// === 循环控制 ===
 	MaxOutputTokens int // 0 = 使用 LLM client 默认值
+	// MaxIterations 是**引擎内部一次性 Run**的硬上限（0 = 不限，主对话永远不设）。
+	//
+	// ⛔ 主对话（用户 turn）**绝不设上限**（用户 2026-10-14 明确要求：彻底移除
+	// 迭代次数上限，见 TestRun_NoIterationCap）。本字段只为「工具型内部 Run」
+	// 存在 —— 典型是上下文压缩（agent/compress.go 的 compactMessages）：它用
+	// **空工具注册表**跑一次摘要调用，若模型幻觉出 tool_calls，引擎会把
+	// "unknown tool: X" 当成工具结果回喂并继续下一轮（engine.go 的 defaultToolExecutor），
+	// 而没有上限就永不返回 ⇒ 压缩把整个 turn 拖到 ctx deadline（表现为"卡在压缩"）。
+	// 传 1 ⇒ 摘要只允许一次 LLM 调用，触顶即返回明确错误（压缩失败是**非致命**的，
+	// 见 compress_failure_nonfatal_test.go），绝不无限空转。
+	MaxIterations int
 	// IterationStart 偏移 Run 的迭代编号（resume 场景）：> 0 时首个迭代号是
 	// IterationStart+1 而非 1。重启恢复的 Run（InjectInboundResume）复用被中断
 	// turn 的 turn_id，而迭代号是 turn 域唯一的（iteration_history 按
@@ -698,6 +709,24 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	// contiguous across the restart boundary. See RunConfig.IterationStart.
 	for n := 1; ; n++ {
 		i := n + s.iterStart
+		// ⛔ 内部一次性 Run 的硬上限（0 = 主对话，不限）：见 RunConfig.MaxIterations。
+		// 必须在**调用 LLM 之前**判定 —— 计数语义是"允许执行多少次迭代"，
+		// 触顶即返回明确错误（压缩侧把失败当非致命降级，绝不无限空转）。
+		if s.cfg.MaxIterations > 0 && n > s.cfg.MaxIterations {
+			out := s.buildOutput(&channel.OutboundMsg{
+				Channel:   s.cfg.Channel,
+				ChatID:    s.cfg.ChatID,
+				Content:   s.lastAssistantContent(),
+				ToolsUsed: s.toolsUsed,
+			})
+			out.Error = fmt.Errorf("internal Run iteration cap reached (%d iterations): the model kept requesting tool calls in a one-shot Run (empty tool registry) — aborting instead of looping until the ctx deadline", s.cfg.MaxIterations)
+			log.Ctx(ctx).WithFields(log.Fields{
+				"chat_id": s.cfg.ChatID,
+				"agent":   s.cfg.AgentID,
+				"cap":     s.cfg.MaxIterations,
+			}).Warn("Internal Run hit its iteration cap — aborting (one-shot run, tools are not executable)")
+			return out
+		}
 		log.Ctx(ctx).WithField("iteration", i).Debug("Run loop iteration start")
 		// Check for cancellation before starting each iteration
 		select {

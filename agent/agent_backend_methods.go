@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 
 	"xbot/channel"
 	log "xbot/logger"
@@ -538,8 +537,8 @@ func (a *Agent) SetTodos(ch, chatID string, items []protocol.TodoItem) {
 // even in a session with no goal.
 func (a *Agent) emitTodosProgress(chName, chatID string) {
 	progressKey := qualifyChatID(chName, chatID)
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
 		Phase:     "",
@@ -587,8 +586,8 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 	a.goalManager.Clear(ch + ":" + chatID)
 	// Push a progress event with nil goal so the frontend removes the GoalBanner.
 	progressKey := ch + ":" + chatID
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
 		Phase:     "",

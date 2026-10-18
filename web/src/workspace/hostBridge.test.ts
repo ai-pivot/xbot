@@ -58,6 +58,7 @@ describe('postHostMessage', () => {
 
 describe('postHostNav', () => {
   it('固定走 type=nav（原生侧 webbridge 的白名单据此分派）', () => {
+    window.history.replaceState({}, '', '/?xbot_panel=files&xbot_embed=1')
     const seen: Array<Record<string, unknown>> = []
     ;(window as unknown as { xbotNative: unknown }).xbotNative = {
       postMessage: (s: string) => {
@@ -65,8 +66,26 @@ describe('postHostNav', () => {
         return ''
       },
     }
-    postHostNav({ kind: 'openFile', text: '/tmp/a.ts' })
+    expect(postHostNav({ kind: 'openFile', text: '/tmp/a.ts' })).toBe(true)
     expect(seen[0]).toEqual({ v: 1, id: 'nav', type: 'nav', payload: { kind: 'openFile', text: '/tmp/a.ts' } })
+    window.history.replaceState({}, '', '/')
+  })
+
+  // ⛔ P1（2026-10-18 审查）：原生壳给**完整 Web UI** 也注入同一个 `xbotNative`
+  //   （javaScriptProxy 无条件注册）⇒ 只判「有桥」会把完整 app 的打开文件代理成原生预览
+  //   （web tab 永不打开）。契约：非嵌入态一律不代理。判别力：把 `if (!isEmbedMode())`
+  //   删掉 ⇒ 本条必红。
+  it('非嵌入态（浏览器/完整 app）⇒ 返回 false 且**一条都不发**', () => {
+    window.history.replaceState({}, '', '/')
+    const seen: string[] = []
+    ;(window as unknown as { xbotNative: unknown }).xbotNative = {
+      postMessage: (s: string) => {
+        seen.push(s)
+        return ''
+      },
+    }
+    expect(postHostNav({ kind: 'openFile', text: '/tmp/a.ts' })).toBe(false)
+    expect(seen).toHaveLength(0)
   })
 })
 

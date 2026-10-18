@@ -13,7 +13,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import hostSrc from './usePluginRuntimeHost.ts?raw'
-import { resolveSessionIdentity } from './sessionIdentity'
+import storeSrc from '@/hooks/useSessionStore.ts?raw'
+import { initialActiveSession, readHostIdentity, resolveSessionIdentity } from './sessionIdentity'
 
 const HOST = { channel: 'web', chatID: 'chat_HOST' }
 const ACTIVE = { channel: 'web', chatID: 'chat_CACHED' }
@@ -74,5 +75,68 @@ describe('resolveSessionIdentity', () => {
     // 宿主权威时**不得**覆盖全局
     expect(hostSrc).toContain('if (!verdict.hostOwns) {')
     expect(hostSrc).toContain("w.__xbot_session__ = { channel: effChannel ?? 'web', chatID: effChatID }")
+  })
+})
+
+/**
+ * P0（2026-10-18 审查）：**`activeSession` 必须与插件 RPC 同源**。
+ *
+ * 症状（未修时）：嵌入态 `EmbedPanelShell` 的 SSE 订阅与所有面板的 REST 快照都取自
+ * `session.activeSession`，而它是"缓存会话树自动选中"的 —— 与宿主 `__xbot_session__`
+ * 可以不同 ⇒ **同一页面两种会话身份**：插件 RPC 用宿主会话（正确），任务/终端/文件面板
+ * 显示另一个会话的数据（错误）。
+ *
+ * 判据（mutation 自证）：
+ *  · `initialActiveSession` 里丢掉宿主优先（直接 `return input.cached`）⇒ ①/② 必红；
+ *  · `useSessionStore` 的初始化改回"只按缓存树"⇒ ⑨ 源码形态断言必红；
+ *  · 对账（refresh）里丢掉宿主复查 ⇒ ⑩ 必红。
+ */
+describe('initialActiveSession —— 嵌入态 activeSession 用宿主身份', () => {
+  it('① 嵌入 + 宿主已注入 + 缓存树指向另一会话 ⇒ **宿主**（与 RPC 同源）', () => {
+    const r = initialActiveSession({ cached: ACTIVE, hostIdentity: HOST, embedded: true })
+    expect(r).toEqual({ channel: 'web', chatID: 'chat_HOST' })
+  })
+
+  it('② 嵌入 + 宿主已注入 + 缓存树为空 ⇒ 宿主（不能因为没有缓存就丢身份）', () => {
+    const r = initialActiveSession({ cached: null, hostIdentity: HOST, embedded: true })
+    expect(r).toEqual({ channel: 'web', chatID: 'chat_HOST' })
+  })
+
+  it('③ 非嵌入 + 页面残留 __xbot_session__ ⇒ 缓存树（浏览器直开行为逐字节不变）', () => {
+    const r = initialActiveSession({ cached: ACTIVE, hostIdentity: HOST, embedded: false })
+    expect(r).toEqual({ channel: 'web', chatID: 'chat_CACHED' })
+  })
+
+  it('④ 嵌入 + 宿主没注入 ⇒ 缓存树（旧宿主兼容）', () => {
+    const r = initialActiveSession({ cached: ACTIVE, hostIdentity: null, embedded: true })
+    expect(r).toEqual({ channel: 'web', chatID: 'chat_CACHED' })
+  })
+
+  it('⑤ 两条来源都没有 ⇒ null', () => {
+    expect(initialActiveSession({ cached: null, hostIdentity: null, embedded: true })).toBeNull()
+  })
+
+  it('⑥ readHostIdentity：读全局 / 空 chatID 视为未注入 / 缺失不抛', () => {
+    const w = window as unknown as { __xbot_session__?: { channel?: string; chatID?: string } }
+    delete w.__xbot_session__
+    expect(readHostIdentity()).toBeNull()
+    w.__xbot_session__ = { channel: 'cli', chatID: 'chat_HOST' }
+    expect(readHostIdentity()).toEqual({ channel: 'cli', chatID: 'chat_HOST' })
+    w.__xbot_session__ = { channel: 'cli', chatID: '' }
+    expect(readHostIdentity()).toBeNull()
+    w.__xbot_session__ = { chatID: 'chat_HOST' }
+    expect(readHostIdentity()).toEqual({ channel: 'web', chatID: 'chat_HOST' }) // channel 缺失 ⇒ web
+    delete w.__xbot_session__
+  })
+
+  it('⑨ 接线：useSessionStore 的 activeSession 初值必须走 initialActiveSession(宿主身份)', () => {
+    expect(storeSrc).toContain('initialActiveSession({')
+    expect(storeSrc).toContain('hostIdentity: readHostIdentity()')
+    expect(storeSrc).toContain('embedded: isEmbeddedHostPage()')
+  })
+
+  it('⑩ 接线：会话树对账必须复查宿主身份（原生原地重注入后不重载页面也要生效）', () => {
+    expect(storeSrc).toContain('const host = isEmbeddedHostPage() ? readHostIdentity() : null')
+    expect(storeSrc).toContain('if (!sameSession(hostSelector, activeSessionRef.current)) setActiveSession(hostSelector)')
   })
 })

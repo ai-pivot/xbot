@@ -68,8 +68,15 @@ export function postHostMessage(type: string, payload: unknown): boolean {
 
 /**
  * 代理一条面板导航意图（`type:'nav'`）。返回宿主是否收到（false ⇒ 调用方可回落 web 自身行为）。
+ *
+ * ⛔ **只有嵌入态才代理**（P1 2026-10-18 审查）：原生壳对**完整 Web UI** 也注入同一个
+ * `window.xbotNative`（`WebSurface.ets` 的 `javaScriptProxy` 无条件注册），只判「有桥」会把
+ * 完整 app 里的「打开文件」也代理成原生预览 ⇒ web 自己的 tab 永远不打开（用户点文件像没反应）。
+ * 判定收在**本函数内部**（一处真源）：调用点一律写成
+ * `if (postHostNav(...)) return`，⛔ 别在调用点各自再判一次 `isEmbedMode()`（迟早漏一个）。
  */
 export function postHostNav(ev: HostNavEvent): boolean {
+  if (!isEmbedMode()) return false
   return postHostMessage('nav', { kind: ev.kind, text: ev.text })
 }
 

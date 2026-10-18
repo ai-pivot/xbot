@@ -27,7 +27,7 @@ export interface UseAskUserResult {
 
 export function useAskUser({ chatID, channel = 'web' }: UseAskUserOptions): UseAskUserResult {
   const ws = useWSConnection()
-  const { askUserPrompts, clearAskUserPrompt, markAskUserAnswered } = useSessionStore()
+  const { askUserPrompts, clearAskUserPrompt, markAskUserAnswered, hydrateAskUserPrompt } = useSessionStore()
 
   const key = `${channel}:${chatID ?? ''}`
   const prompt = chatID ? askUserPrompts.get(key) ?? null : null
@@ -56,12 +56,17 @@ export function useAskUser({ chatID, channel = 'web' }: UseAskUserOptions): UseA
       markAskUserAnswered(channel, chatID ?? '', requestId)
       void ws.send({ type: 'ask_user_response', channel, chat_id: chatID ?? undefined, answers, cancelled: false })
         .catch((error: unknown) => {
-          // 失败 ⇒ 撤销抑制并让服务端权威重新 hydrate（问题还在 pending，会再弹出来给用户重试）
+          // ⛔ 失败必须把问题**放回面板**（P1 2026-10-18 审查）：旧实现只弹 toast + 撤销抑制，
+          //   而 prompt 在点击那一刻已被清掉、`hydrate` 只在会话切换/行对账时跑 ⇒ 服务端仍
+          //   在等这条 `ask_user_response`，用户却再也看不到面板（会话卡 waiting_input）。
+          //   撤销抑制（允许回填）+ 显式 hydrate（立即回填）——两者缺一不可：
+          //   前者防"仍被闪回防线挡住"，后者不等下一次对账。
           markAskUserAnswered(channel, chatID ?? '', '')
+          if (prompt) hydrateAskUserPrompt(channel, chatID ?? '', prompt)
           toast.error(error instanceof Error ? error.message : 'response failed')
         })
     },
-    [channel, chatID, ws, clearAskUserPrompt, markAskUserAnswered, prompt],
+    [channel, chatID, ws, clearAskUserPrompt, markAskUserAnswered, hydrateAskUserPrompt, prompt],
   )
 
   const cancel = useCallback(() => {
@@ -71,9 +76,10 @@ export function useAskUser({ chatID, channel = 'web' }: UseAskUserOptions): UseA
     void ws.send({ type: 'ask_user_response', channel, chat_id: chatID ?? undefined, answers: {}, cancelled: true })
       .catch((error: unknown) => {
         markAskUserAnswered(channel, chatID ?? '', '')
+        if (prompt) hydrateAskUserPrompt(channel, chatID ?? '', prompt)
         toast.error(error instanceof Error ? error.message : 'response failed')
       })
-  }, [channel, chatID, ws, clearAskUserPrompt, markAskUserAnswered, prompt])
+  }, [channel, chatID, ws, clearAskUserPrompt, markAskUserAnswered, hydrateAskUserPrompt, prompt])
 
   return { prompt, respond, cancel }
 }

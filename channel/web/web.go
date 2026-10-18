@@ -1682,11 +1682,30 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			log.WithError(err).Debug("WS invalid message")
 			continue
 		}
+		// ⛔ 所有 WS 路径（message/cancel/ask_user/sync/subscribe）共用同一个规范化入站 id。
+		// 不在这里剥，`hub.subscribe` / `InboundMessage.ChatID` 会落到 `web:web:chat_X`
+		// 幽灵会话，而出站事件已按裸 id 发布 ⇒「有网但发消息无反应 / live 永不动」。
+		normalizeWSInboundChatID(&msg)
 
 		// Handle message type (default to "message" for backward compatibility)
 		if msg.Type == "" {
 			msg.Type = "message"
 		}
+
+		// ⛔ ONE canonical form at the transport boundary (2026-10-17): every WS
+		// client message (message / cancel / ask_user_response / sync / subscribe)
+		// goes through here, so a client that sends a FULL session key
+		// (`web:chat_X`) cannot create the ghost session `web:web:chat_X`.
+		//
+		// Without this, the ghost key lives only on the SEND path: the agent
+		// registers the worker under `web:web:chat_X` while every OUTBOUND event
+		// is canonicalized in SendSessionState (web.go: SendSessionState) and the
+		// client subscribes to the raw key ⇒ "有网但发消息没有任何反应" and
+		// send/cancel/ask all disagree with REST/SSE (which canonicalize in
+		// resolveInboundSession / resolveSSESession). Empty channel or empty
+		// chat_id are returned unchanged (canonicalChatID contract) so the
+		// "missing => current session" semantics below are preserved.
+		msg.ChatID = canonicalChatID(msg.Channel, msg.ChatID)
 
 		switch msg.Type {
 		case protocol.MsgTypeSync:

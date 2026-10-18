@@ -1912,6 +1912,100 @@ describe('REPRO: turn_started 丢失 + cron 同内容 echo —— activeTurn 兜
   })
 })
 
+// ─── P1（2026-10-18 审查）：notification turn_started 重放必须幂等 ─────────────
+// 历史形态：SSE 重连按 last_event_id 重放同一条 `turn_started(trigger=notification)`；
+// 旧实现（`attachNotificationWhileLive` 的 `ev.turnID === activeTurn` 分支）无条件
+// `pendingUsers.push` ⇒ **每重放一次多一条通知行**（derive 把 pendingUsers 沉到底部 ⇒
+// 用户看到重复通知）；而 lazy 采纳（stream 先到）时该 turn 的 user 槽为空，把通知塞进
+// pendingUsers 还让它渲染在自己的回答**之后**（顺序错乱）。
+describe('P1：notification turn_started 重放幂等 + 归属 turn.user', () => {
+  const T7 = turnID(7)
+  const NOTIF = '⏰ [后台任务完成] 报告已生成'
+  const notifStart = (turn = T7, content = NOTIF): DomainEvent => ({
+    type: 'turn_started', turnID: turn, requestID: null, trigger: 'notification', content,
+  })
+
+  it('★ 同一条重放两次 ⇒ 只有一条通知行（不重复 push pendingUsers）', () => {
+    const s1 = run([notifStart()])
+    expect(deriveRows(s1).filter((r) => r.kind === 'user')).toHaveLength(1)
+    // 重放（activeTurn=T7 且 T7 是 live ⇒ 走 attachNotificationWhileLive）
+    const s2 = reduce(s1, notifStart())
+    expect(s2.pendingUsers).toHaveLength(0)
+    expect(deriveRows(s2).filter((r) => r.kind === 'user')).toHaveLength(1)
+    expect(s2).toBe(s1) // 幂等：原引用（零渲染）
+  })
+
+  it('★ lazy 采纳（stream 先到、user 槽为空）后 turn_started(notification) 到达 ⇒ 挂 turn.user，不进 pendingUsers', () => {
+    // 模拟 lazy 采纳：该 turn 已 live 且 activeTurn 指向它，但没有 user 行。
+    const live: Turn = {
+      id: T7,
+      user: null,
+      requestID: null,
+      phase: { kind: 'live', data: { ...EMPTY_LIVE, iter: iterNum(1), streaming: true } },
+    }
+    const s0: ChatState = { ...initialChatState('chat-1'), turns: new Map([[T7, live]]), activeTurn: T7, busy: true }
+    const s1 = reduce(s0, notifStart())
+    expect(s1.turns.get(T7)?.user?.content).toBe(NOTIF) // 归属 turn 自己
+    expect(s1.pendingUsers).toHaveLength(0)             // ⛔ 不进 pendingUsers（那会排到回答之后）
+    // 渲染顺序：user 行在该 turn 的 assistant 行之前
+    const rows = deriveRows(s1)
+    const uIdx = rows.findIndex((r) => r.kind === 'user')
+    const aIdx = rows.findIndex((r) => r.kind === 'live')
+    expect(uIdx).toBeGreaterThanOrEqual(0)
+    expect(uIdx).toBeLessThan(aIdx)
+    // 重放仍幂等
+    expect(reduce(s1, notifStart())).toBe(s1)
+  })
+})
+
+// ─── P1（2026-10-18 审查）：重放的 stream 帧不得复活 streaming（幽灵 busy）──────
+// 权威 idle 现在只停 `streaming`、保留 live turn（为了不丢同迭代后续帧）。若 stream 帧
+// 无条件 `streaming: true`，SSE 重连按 last_event_id 重放的旧帧就会把 busy 拨回来
+// （composer 回到 cancel），而 master 上不可能（idle 把 turn 冻成 frozen ⇒ 重放帧被丢弃）。
+// 判据：只有 seq 严格前进的**新帧**才是活动证据。
+describe('P1：stream 重放帧不得把 streaming 拨回 true', () => {
+  const T9 = turnID(9)
+  const streamEv = (seq: number | null, content: string): DomainEvent => ({
+    type: 'stream',
+    turnID: T9,
+    seq: seq as never,
+    iteration: iterNum(1),
+    content,
+    reasoning: undefined,
+    streamingTools: undefined,
+    genui: undefined,
+    streamStats: undefined,
+  })
+
+  it('★ 权威 idle 之后 seq <= lastSeq 的 stream ⇒ streaming 仍 false；新 seq ⇒ true', () => {
+    // 有产出的 live turn + 水位推进到 seq=100（iteration 事件带 seq）
+    let s = run([started(T9), iteration1(T9, '已产出', 1, undefined, 100)])
+    expect(s.activeTurn).toBe(T9)
+    expect(s.lastSeq).toBe(100)
+
+    // 权威 idle：只停 streaming、保持 live（新语义）
+    s = reduce(s, { type: 'session', busy: false } as DomainEvent)
+    expect(s.turns.get(T9)?.phase.kind).toBe('live')
+    expect(liveProgressFromState(s).streaming).toBe(false)
+
+    // ⛔ 重放旧帧（seq 90 <= 水位 100）—— 不得复活 busy
+    s = reduce(s, streamEv(90, '旧内容'))
+    expect(liveProgressFromState(s).streaming, '重放帧不得复活 busy').toBe(false)
+
+    // 新帧（seq 101 > 水位）—— 流式帧是活动证据 ⇒ 恢复 streaming
+    s = reduce(s, streamEv(101, '新内容'))
+    expect(liveProgressFromState(s).streaming).toBe(true)
+  })
+
+  it('无 seq 的 stream（旧后端/mock）⇒ 仍按新帧处理（不能因缺字段永久停流）', () => {
+    let s = run([started(T9), iteration1(T9, '已产出', 1, undefined, 100)])
+    s = reduce(s, { type: 'session', busy: false } as DomainEvent)
+    expect(liveProgressFromState(s).streaming).toBe(false)
+    s = reduce(s, streamEv(null, '无号帧'))
+    expect(liveProgressFromState(s).streaming).toBe(true)
+  })
+})
+
 // ─── REPRO: web 压缩提示永不渲染（progressPhase 三处断点，2026-09-03）──────────
 // 用户报告"web 端一直不渲染压缩提示"。后端链路是通的（runCompression 设置
 // Phase=PhaseCompressing → notifyProgress 推 structured 事件——Web 的 autoNotify

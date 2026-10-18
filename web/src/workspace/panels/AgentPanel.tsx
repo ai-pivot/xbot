@@ -47,6 +47,7 @@ import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
 import { parseAskUserPrompt } from '@/hooks/useSessionStore'
+import { gateGapReload, type GapReloadSeen } from '@/workspace/panels/gapReloadGate'
 import type { PanelProps } from '@/workspace/panels/types'
 import type { PanelParams } from '@/types/tab'
 import type { ChatMessage, GoalInfo, TodoItem } from '@/types/shared'
@@ -441,24 +442,29 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // **落在权威窗口之外**（服务端历史按 turn 尾部有界 ⇒ 那段再也取不回来）⇒ 本地视图与
   // 权威永久断裂。**不拼合、不遮掩**：直接重载该会话 —— 丢弃带洞的本地窗口（reset）+
   // 权威重载（reload）+ loading 屏（本地视图不可信时只渲染 loading）。
-  // 计数器语义：同一缺口形状只触发一次 ⇒ **不可能造成重载循环**。
-  const gapReloadSeenRef = useRef<{ key: string; token: number }>({ key: '', token: 0 })
+  //
+  // ⛔ **去重键 = (会话 key, 缺口形状)**，不是只比 token 数值（P0 2026-10-18 审查）：
+  //   `reset()` 会把 token 归零 ⇒ 旧实现会「每个 gap 多打一次 reload」，且 reset 之后
+  //   权威 hydration 重新算出**同一形状**的缺口时 token 0→1 又"变化"⇒ reset+reload
+  //   **自激循环**（`liveAheadGapSig` 不像 `unreachableGapSig` 那样在 reset 后自熄）。
+  //   判据收在纯函数 `gateGapReload`（含判别力单测）：同形状跨 reset 只重载一次；
+  //   形状变化（洞下界前移）才是新缺口；token 变小 = 被 reset 复位，不是新 gap。
+  const gapReloadSeenRef = useRef<GapReloadSeen>({ key: '', sig: '', token: 0 })
   useEffect(() => {
     const key = `${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}`
     const token = agentChat.gapReloadToken ?? 0
-    if (gapReloadSeenRef.current.key !== key) {
-      gapReloadSeenRef.current = { key, token } // 新会话首帧只记录
-      return
-    }
-    if (token === gapReloadSeenRef.current.token) return
-    gapReloadSeenRef.current = { key, token }
-    console.warn('[SESSION_RELOAD] 出现无法追赶的 gap ⇒ 重新加载会话', { chatID, token })
+    const sig = agentChat.gapReloadSig ?? ''
+    const decision = gateGapReload(gapReloadSeenRef.current, { key, token, sig })
+    gapReloadSeenRef.current = decision.next
+    if (!decision.reload) return
+    console.warn('[SESSION_RELOAD] 出现无法追赶的 gap ⇒ 重新加载会话', { chatID, token, sig })
     chat.markHistoryStale() // ⇒ historyReady=false：本地视图不可信，只渲染 loading 屏
     agentChat.reset()       // 丢弃带洞的本地窗口（等价于页面刷新时的状态复位）
     setResumeLoading(true)
     void reloadChat()
   }, [
     agentChat.gapReloadToken,
+    agentChat.gapReloadSig,
     agentChat.reset,
     chat.markHistoryStale,
     reloadChat,
