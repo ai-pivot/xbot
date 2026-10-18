@@ -440,8 +440,7 @@ type marketResponse struct {
 // Accepts multipart/form-data with a "file" field containing a single-plugin
 // zip (plugin.json at root or wrapped in one directory). The zip is saved to a
 // temp file, passed to plugin_install_file RPC (which extracts + installs), then
-// cleaned up. This mirrors handleMarketInstallFile but for single plugins —
-// no OSS round-trip, no cloud dependency.
+// cleaned up — no OSS round-trip, no cloud dependency.
 func (wc *WebChannel) handlePluginInstallFile(w http.ResponseWriter, r *http.Request) {
 	if wc.callbacks.RPCHandler == nil {
 		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})

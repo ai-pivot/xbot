@@ -256,6 +256,9 @@ func installPackage(cloneDir string, entry *Entry, xbotHome, workDir, senderID s
 	if err != nil {
 		return err
 	}
+	if len(manifest.Items) == 0 && (len(manifest.LegacyContents) > 0 || len(manifest.LegacyDependencies) > 0) {
+		return fmt.Errorf("package %q uses the legacy contents[]/dependencies[] format; migrate it to items[]", entry.Name)
+	}
 	catalog, err := loadIndex(cloneDir)
 	if err != nil {
 		return fmt.Errorf("package %q: registry.json unreadable: %w", entry.Name, err)
@@ -341,6 +344,11 @@ type pkgManifest struct {
 	Name    string    `json:"name"`
 	Version string    `json:"version"`
 	Items   []pkgItem `json:"items"`
+
+	// Legacy fields (contents[]/dependencies[]) are parsed only to fail loudly
+	// for old-format packages instead of silently installing nothing.
+	LegacyContents     []pkgItem `json:"contents"`
+	LegacyDependencies []pkgItem `json:"dependencies"`
 }
 
 func loadPackageManifest(pkgDir string) (*pkgManifest, error) {
