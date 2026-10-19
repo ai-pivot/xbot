@@ -2,11 +2,13 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"xbot/storage/sqlite"
 )
 
@@ -293,6 +295,41 @@ func (s *pgTenantStore) GetSenderForChat(channel, chatID string) (string, error)
 		return "", nil
 	}
 	return senderID, err
+}
+
+// GetChatOwner resolves the channel and sender owning a session. chat_id is unique
+// in practice, so the lookup spans channels; empty results mean "not registered".
+func (s *pgTenantStore) GetChatOwner(chatID string) (string, string, error) {
+	ctx := context.Background()
+	var channel, senderID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT channel, sender_id FROM user_chats WHERE chat_id = $1
+		 ORDER BY created_at DESC LIMIT 1`, chatID).Scan(&channel, &senderID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("get chat owner: %w", err)
+	}
+	return channel, senderID, nil
+}
+
+// GetChatLabel returns the user-assigned label of a session ("" when unset or
+// unknown) — the backend-agnostic replacement for the direct user_chats SELECT.
+func (s *pgTenantStore) GetChatLabel(channel, chatID string) (string, error) {
+	ctx := context.Background()
+	var label string
+	err := s.pool.QueryRow(ctx,
+		`SELECT label FROM user_chats WHERE channel = $1 AND chat_id = $2 AND label != ''
+		 ORDER BY created_at DESC LIMIT 1`,
+		channel, chatID).Scan(&label)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get chat label: %w", err)
+	}
+	return label, nil
 }
 
 func (s *pgTenantStore) AddPendingResume(channel, chatID, senderID string) error {

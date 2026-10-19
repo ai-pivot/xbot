@@ -20,6 +20,9 @@ func RunStorageContractTests(t *testing.T, factory StorageFactory) {
 	t.Run("MemoryStore", func(t *testing.T) { testMemoryStoreContract(t, factory) })
 	t.Run("AgentMemoryStore", func(t *testing.T) { testAgentMemoryStoreContract(t, factory) })
 	t.Run("ConfigStore", func(t *testing.T) { testConfigStoreContract(t, factory) })
+	t.Run("CronStore", func(t *testing.T) { testCronStoreContract(t, factory) })
+	t.Run("TriggerStore", func(t *testing.T) { testTriggerStoreContract(t, factory) })
+	t.Run("OAuthTokenStore", func(t *testing.T) { testOAuthTokenStoreContract(t, factory) })
 	t.Run("CrossStore", func(t *testing.T) { testCrossStoreContract(t, factory) })
 	t.Run("EdgeCases", func(t *testing.T) { testEdgeCasesContract(t, factory) })
 }

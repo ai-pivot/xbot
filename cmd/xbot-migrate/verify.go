@@ -45,7 +45,7 @@ func printPlan(ctx context.Context, src *sql.DB, pool *pgxpool.Pool, sessions []
 	}
 	fmt.Printf("  %-26s %6d rows  (merged from %d session DBs)\n", "session_messages", msgs, len(sessions))
 	fmt.Printf("  %-26s %6d rows  (merged from %d session DBs)\n", "iteration_history", iters, len(sessions))
-	fmt.Println("\nskipped tables: oauth_tokens (incompatible schema; PG keeps OAuth in SQLite), event_history_fts* (derived index)")
+	fmt.Println("\nskipped tables: event_history_fts* (derived index — rebuilt, not copied)")
 	return nil
 }
 

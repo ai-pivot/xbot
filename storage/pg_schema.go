@@ -338,10 +338,13 @@ func initPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			access_token TEXT NOT NULL DEFAULT '',
 			refresh_token TEXT NOT NULL DEFAULT '',
 			expires_at TIMESTAMPTZ,
+			scopes TEXT NOT NULL DEFAULT '',
+			raw TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			PRIMARY KEY (provider, channel, chat_id)
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expires_at ON oauth_tokens(expires_at)`,
 
 		// ── Agent memory (official "xbot" provider) ──
 		// Native PG full-text search: a generated tsvector column + GIN index.

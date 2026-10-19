@@ -128,17 +128,12 @@ func (a *Agent) buildBaseRunConfig(
 		SubID:   userCtx.SubID,
 		SessionName: func() string {
 			_, name := cli.ParseChatID(chatID)
-			// Override with DB label if available (e.g. renamed from "Agent-xxx" to a custom name).
-			// This ensures the rename reminder doesn't fire for already-renamed sessions.
-			if a.multiSession != nil {
-				if db := a.multiSession.DB(); db != nil {
-					var label string
-					if err := db.Conn().QueryRow(
-						"SELECT label FROM user_chats WHERE channel = ? AND chat_id = ? AND label != '' LIMIT 1",
-						channel, chatID,
-					).Scan(&label); err == nil && label != "" {
-						name = label
-					}
+			// Override with the stored label if available (e.g. renamed from "Agent-xxx"
+			// to a custom name), so the rename reminder doesn't fire for renamed
+			// sessions. Backend-agnostic: works on SQLite and PG alike.
+			if a.multiSession != nil && a.multiSession.Store() != nil {
+				if label, err := a.multiSession.Store().Tenant().GetChatLabel(channel, chatID); err == nil && label != "" {
+					name = label
 				}
 			}
 			return name

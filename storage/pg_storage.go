@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"xbot/event"
 )
 
 // pgStorage implements Storage for PostgreSQL.
@@ -14,6 +16,9 @@ type pgStorage struct {
 	tenant  TenantStore
 	memory  MemoryStore
 	config  ConfigStore
+	cron    CronStore
+	trigger event.TriggerStore
+	oauth   OAuthTokenStore
 }
 
 // NewPGStorage creates a Storage backed by PostgreSQL.
@@ -34,6 +39,9 @@ func NewPGStorage(ctx context.Context, dsn string) (Storage, error) {
 	pg.tenant = newPGTenantStore(pool)
 	pg.memory = newPGMemoryStore(pool)
 	pg.config = newPGConfigStore(pool)
+	pg.cron = newPGCronStore(pool)
+	pg.trigger = newPGTriggerStore(pool)
+	pg.oauth = newPGOAuthTokenStore(pool)
 	pg.session = newPGSessionStore(pool) // shared pool, tenant_id-filtered
 	return pg, nil
 }
@@ -41,10 +49,13 @@ func NewPGStorage(ctx context.Context, dsn string) (Storage, error) {
 func (s *pgStorage) Session(tenantID int64) (SessionStore, error) {
 	return s.session, nil // single shared pool; tenant_id filtering is per-method
 }
-func (s *pgStorage) Tenant() TenantStore { return s.tenant }
-func (s *pgStorage) Memory() MemoryStore { return s.memory }
-func (s *pgStorage) Config() ConfigStore { return s.config }
-func (s *pgStorage) Close() error        { s.pool.Close(); return nil }
+func (s *pgStorage) Tenant() TenantStore         { return s.tenant }
+func (s *pgStorage) Memory() MemoryStore         { return s.memory }
+func (s *pgStorage) Config() ConfigStore         { return s.config }
+func (s *pgStorage) Cron() CronStore             { return s.cron }
+func (s *pgStorage) Trigger() event.TriggerStore { return s.trigger }
+func (s *pgStorage) OAuth() OAuthTokenStore      { return s.oauth }
+func (s *pgStorage) Close() error                { s.pool.Close(); return nil }
 
 var _ Storage = (*pgStorage)(nil)
 

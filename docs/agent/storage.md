@@ -225,9 +225,42 @@ tables, and orphaned `target_history_id` references; any mismatch fails the run.
 Session `MAX(id)` is deliberately *not* compared across source and target — windows
 make it incomparable; row counts plus reference integrity are the real proof.
 
+## Runtime services are backend-agnostic too
+
+The same rule that applies to memory providers applies to every runtime service that
+used to hold a SQLite handle: the scheduler, the webhook router and the OAuth server.
+A `*sqlite.XxxService` field in those layers is what made the feature silently vanish
+on PG, because the wiring was guarded by `MultiSession.DB() != nil` and that handle is
+nil on PG. They are now reached through `Storage`:
+
+| Accessor | Interface | Consumers |
+|---|---|---|
+| `Storage.Cron()` | `CronStore` | `cron.Scheduler`, `tools.CronTool`, `plugin.WirePluginCrons`, web cron panel |
+| `Storage.Trigger()` | `event.TriggerStore` | `event.Router` (webhook dispatch) |
+| `Storage.OAuth()` | `OAuthTokenStore` | `oauth.Manager` via a thin adapter in `serverapp` |
+
+Consequences worth knowing:
+
+- **OAuth is created after `InitServer`**, because the token store comes from the
+  storage backend. Previously it opened its own SQLite file before the server started,
+  and PG skipped it entirely.
+- **`RecordFire` does not disable one-shot triggers** — that decision belongs to
+  `event.Router.dispatchOne` (it calls `UpdateEnabled`). Keeping it in the store made
+  only one backend do it, which is exactly the kind of divergence the contract suite
+  catches.
+- `oauth_tokens` is part of the main SQLite schema (`createSchema`) rather than being
+  created lazily by the OAuth package: a backend-neutral store cannot rely on a
+  package-level init step that only runs when OAuth happens to be enabled.
+- Nullable TEXT columns in PG projections are `COALESCEd` (`cron_expr`, `at`,
+  `sender_id`) — scanning NULL into a plain `string` fails at runtime, not at compile
+  time.
+
 ## Known scope limits
 
 - Per-session DB (v71 one-session-one-DB) is a SQLite mechanism. Under PG the same
   `tenantID` partitions rows in a shared schema; `session_messages` / `iteration_history`
   do not become separate databases.
+- `MultiSession.DB()` remains as a SQLite-only escape hatch (WAL checkpoint on
+  shutdown, legacy browse SQL). Anything reachable by a normal user path must go
+  through `Storage`.
 - `docs/plans/storage-interfaces.md` holds the original design notes.

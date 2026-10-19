@@ -433,3 +433,37 @@ func (s *ChatService) GetSenderForChat(channel, chatID string) (string, error) {
 	}
 	return senderID, nil
 }
+
+// GetChatOwner resolves the channel and sender owning a session. chat_id is unique
+// in practice, so the lookup spans channels; empty results mean "not registered".
+func (s *ChatService) GetChatOwner(chatID string) (string, string, error) {
+	var channel, senderID string
+	err := s.db.Conn().QueryRow(
+		"SELECT channel, sender_id FROM user_chats WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1",
+		chatID,
+	).Scan(&channel, &senderID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("get chat owner: %w", err)
+	}
+	return channel, senderID, nil
+}
+
+// GetChatLabel returns the user-assigned label of a session, or "" when the
+// session has no label (or is unknown). Same shape as GetSenderForChat.
+func (s *ChatService) GetChatLabel(channel, chatID string) (string, error) {
+	var label string
+	err := s.db.Conn().QueryRow(
+		"SELECT label FROM user_chats WHERE channel = ? AND chat_id = ? AND label != '' LIMIT 1",
+		channel, chatID,
+	).Scan(&label)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", fmt.Errorf("get chat label: %w", err)
+	}
+	return label, nil
+}

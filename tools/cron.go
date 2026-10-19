@@ -9,6 +9,7 @@ import (
 	"xbot/cron"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 
 	"github.com/google/uuid"
@@ -16,11 +17,11 @@ import (
 
 // CronTool 定时任务工具（无状态）
 type CronTool struct {
-	cronSvc *sqlite.CronService
+	cronSvc storage.CronStore
 }
 
 // NewCronTool 创建 CronTool 实例
-func NewCronTool(cronSvc *sqlite.CronService) *CronTool {
+func NewCronTool(cronSvc storage.CronStore) *CronTool {
 	return &CronTool{
 		cronSvc: cronSvc,
 	}

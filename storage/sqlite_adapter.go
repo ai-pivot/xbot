@@ -3,9 +3,12 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"xbot/crypto"
 	"xbot/event"
 	log "xbot/logger"
 	"xbot/storage/agentmem"
@@ -122,6 +125,12 @@ func (s *sqliteTenantStore) UpdateChatSortOrders(channel, senderID string, order
 }
 func (s *sqliteTenantStore) GetSenderForChat(channel, chatID string) (string, error) {
 	return s.chats.GetSenderForChat(channel, chatID)
+}
+func (s *sqliteTenantStore) GetChatLabel(channel, chatID string) (string, error) {
+	return s.chats.GetChatLabel(channel, chatID)
+}
+func (s *sqliteTenantStore) GetChatOwner(chatID string) (string, string, error) {
+	return s.chats.GetChatOwner(chatID)
 }
 func (s *sqliteTenantStore) ListDistinctChannels() ([]string, error) {
 	rows, err := s.db.Conn().Query(`SELECT DISTINCT channel FROM tenants WHERE chat_id != '_shared' ORDER BY channel`)
@@ -648,6 +657,9 @@ type sqliteStorage struct {
 	tenant    TenantStore
 	memory    MemoryStore
 	config    ConfigStore
+	cron      CronStore
+	trigger   event.TriggerStore
+	oauth     OAuthTokenStore
 	sessionFn func(int64) (SessionStore, error)
 	closeFn   func() error
 }
@@ -665,6 +677,9 @@ func NewSQLiteStorage(
 		tenant:    NewSQLiteTenantStore(mainDB),
 		memory:    NewSQLiteMemoryStore(mainDB),
 		config:    NewSQLiteConfigStore(mainDB),
+		cron:      sqlite.NewCronService(mainDB),
+		trigger:   sqlite.NewTriggerService(mainDB),
+		oauth:     &sqliteOAuthTokenStore{db: mainDB},
 		sessionFn: sessionFactory,
 		closeFn:   close,
 	}
@@ -673,10 +688,115 @@ func NewSQLiteStorage(
 func (s *sqliteStorage) Session(tenantID int64) (SessionStore, error) {
 	return s.sessionFn(tenantID)
 }
-func (s *sqliteStorage) Tenant() TenantStore { return s.tenant }
-func (s *sqliteStorage) Memory() MemoryStore { return s.memory }
-func (s *sqliteStorage) Config() ConfigStore { return s.config }
-func (s *sqliteStorage) Close() error        { return s.closeFn() }
+func (s *sqliteStorage) Tenant() TenantStore         { return s.tenant }
+func (s *sqliteStorage) Memory() MemoryStore         { return s.memory }
+func (s *sqliteStorage) Config() ConfigStore         { return s.config }
+func (s *sqliteStorage) Cron() CronStore             { return s.cron }
+func (s *sqliteStorage) Trigger() event.TriggerStore { return s.trigger }
+func (s *sqliteStorage) OAuth() OAuthTokenStore      { return s.oauth }
+func (s *sqliteStorage) Close() error                { return s.closeFn() }
 
 // Compile-time check.
 var _ Storage = (*sqliteStorage)(nil)
+
+// sqliteOAuthTokenStore adapts the SQLite oauth_tokens table to the
+// backend-neutral OAuthTokenStore. It keeps the credential semantics of the
+// original oauth.SQLiteStorage (encrypt when a key is configured, decrypt on read,
+// unix-second expiry) so both backends behave identically.
+type sqliteOAuthTokenStore struct {
+	db *sqlite.DB
+}
+
+func (s *sqliteOAuthTokenStore) GetOAuthToken(provider, channel, chatID string) (*OAuthToken, error) {
+	var accessToken, refreshToken, scopesJSON, rawJSON string
+	var expiresAt int64
+	err := s.db.Conn().QueryRow(`
+		SELECT access_token, COALESCE(refresh_token, ''), expires_at,
+		       COALESCE(scopes, ''), COALESCE(raw, '')
+		FROM oauth_tokens WHERE provider = ? AND channel = ? AND chat_id = ?`,
+		provider, channel, chatID).
+		Scan(&accessToken, &refreshToken, &expiresAt, &scopesJSON, &rawJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query token: %w", err)
+	}
+	if accessToken != "" {
+		if decrypted, derr := crypto.Decrypt(accessToken); derr == nil {
+			accessToken = decrypted
+		}
+	}
+	if refreshToken != "" {
+		if decrypted, derr := crypto.Decrypt(refreshToken); derr == nil {
+			refreshToken = decrypted
+		}
+	}
+	var scopes []string
+	if scopesJSON != "" {
+		if jerr := json.Unmarshal([]byte(scopesJSON), &scopes); jerr != nil {
+			log.WithError(jerr).Warn("Failed to parse scopes JSON")
+		}
+	}
+	var raw map[string]any
+	if rawJSON != "" {
+		if jerr := json.Unmarshal([]byte(rawJSON), &raw); jerr != nil {
+			log.WithError(jerr).Warn("Failed to parse raw JSON")
+		}
+	}
+	return &OAuthToken{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    time.Unix(expiresAt, 0),
+		Scopes:       scopes,
+		Raw:          raw,
+	}, nil
+}
+
+func (s *sqliteOAuthTokenStore) SetOAuthToken(provider, channel, chatID string, token *OAuthToken) error {
+	scopesJSON, _ := json.Marshal(token.Scopes)
+	rawJSON, _ := json.Marshal(token.Raw)
+	accessToken := token.AccessToken
+	refreshToken := token.RefreshToken
+	if accessToken != "" {
+		if encrypted, err := crypto.Encrypt(accessToken); err == nil {
+			accessToken = encrypted
+		}
+	}
+	if refreshToken != "" {
+		if encrypted, err := crypto.Encrypt(refreshToken); err == nil {
+			refreshToken = encrypted
+		}
+	}
+	_, err := s.db.Conn().Exec(`
+		REPLACE INTO oauth_tokens (provider, channel, chat_id, access_token, refresh_token,
+			expires_at, scopes, raw, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		provider, channel, chatID, accessToken, refreshToken,
+		token.ExpiresAt.Unix(), string(scopesJSON), string(rawJSON), time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("store token: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteOAuthTokenStore) DeleteOAuthToken(provider, channel, chatID string) error {
+	_, err := s.db.Conn().Exec(
+		`DELETE FROM oauth_tokens WHERE provider = ? AND channel = ? AND chat_id = ?`,
+		provider, channel, chatID)
+	if err != nil {
+		return fmt.Errorf("delete token: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteOAuthTokenStore) CleanupExpiredOAuthTokens(cutoff time.Time) error {
+	res, err := s.db.Conn().Exec(`DELETE FROM oauth_tokens WHERE expires_at < ?`, cutoff.Unix())
+	if err != nil {
+		return fmt.Errorf("cleanup expired tokens: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.WithField("count", n).Info("Cleaned up expired OAuth tokens")
+	}
+	return nil
+}

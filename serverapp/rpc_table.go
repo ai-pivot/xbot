@@ -830,9 +830,10 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if channel == "" {
 			channel = "cli"
 		}
-		// Read from tenants table (persistent backend source of truth).
-		if h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
-			subID, model, _ := sqlite.NewTenantService(h.Ag.MultiSession().DB()).GetTenantSubscription(channel, p.ChatID)
+		// Read from tenants table (persistent backend source of truth) through the
+		// backend-agnostic TenantStore — works on SQLite and PG alike.
+		if h.Ag.MultiSession() != nil && h.Ag.MultiSession().Store() != nil {
+			subID, model, _ := h.Ag.MultiSession().Store().Tenant().GetTenantSubscription(channel, p.ChatID)
 			if subID != "" {
 				return map[string]string{"subscription_id": subID, "model": model}, nil
 			}
@@ -1505,8 +1506,8 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		// Get model + tenantID for the full raw history.
 		var model string
 		var tenantID int64
-		if db := ms.DB(); db != nil {
-			ts := sqlite.NewTenantService(db)
+		if ms.Store() != nil {
+			ts := ms.Store().Tenant()
 			if _, m, err := ts.GetTenantSubscription(channelName, chatID); err == nil {
 				model = m
 			}
@@ -2747,8 +2748,8 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 			if resolvedModel == "" {
 				return fmt.Errorf("subscription %s has no selectable model (empty Model column and no user default) — cannot bind session %s", sub.ID, p.ChatID)
 			}
-			if ms := h.Ag.MultiSession(); ms != nil && ms.DB() != nil {
-				if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription(channel, p.ChatID, sub.ID, resolvedModel); err != nil {
+			if ms := h.Ag.MultiSession(); ms != nil && ms.Store() != nil {
+				if err := ms.Store().Tenant().SetTenantSubscription(channel, p.ChatID, sub.ID, resolvedModel); err != nil {
 					log.WithError(err).Warn("RPC setDefaultSubscription: SetTenantSubscription failed")
 				}
 			}
@@ -2816,11 +2817,10 @@ func (h *RPCContext) listTenants(ctx context.Context) (any, error) {
 	if h.Ag.MultiSession() == nil {
 		return []struct{}{}, nil
 	}
-	db := h.Ag.MultiSession().DB()
-	if db == nil {
+	if h.Ag.MultiSession().Store() == nil {
 		return []struct{}{}, nil
 	}
-	tenants, err := sqlite.NewTenantService(db).ListTenants()
+	tenants, err := h.Ag.MultiSession().Store().Tenant().ListTenants()
 	if err != nil {
 		return nil, err
 	}

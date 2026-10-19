@@ -72,11 +72,17 @@ func newPGTestStorage(t *testing.T) Storage {
 
 // NewPGStorageWithPool creates a PG Storage from an existing pool (for testing).
 // In production, NewPGStorage creates its own pool.
+//
+// Every store must be wired here — a nil field panics on first use, and the
+// contract suite calls each accessor, so this is also a wiring guard.
 func NewPGStorageWithPool(pool *pgxpool.Pool) (Storage, error) {
 	pg := &pgStorage{pool: pool}
 	pg.tenant = newPGTenantStore(pool)
 	pg.memory = newPGMemoryStore(pool)
 	pg.config = newPGConfigStore(pool)
+	pg.cron = newPGCronStore(pool)
+	pg.trigger = newPGTriggerStore(pool)
+	pg.oauth = newPGOAuthTokenStore(pool)
 	pg.session = newPGSessionStore(pool)
 	return pg, nil
 }

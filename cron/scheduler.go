@@ -7,6 +7,7 @@ import (
 	"time"
 
 	log "xbot/logger"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
@@ -23,7 +24,7 @@ type NotifyCronFunc func(channel, chatID, senderID, message string)
 // Cron jobs are fired via NotifyCronFunc through the bg notification pipeline,
 // reusing the same routing as bg task completions (busy → tool message, idle → user message).
 type Scheduler struct {
-	cronSvc      *sqlite.CronService
+	cronSvc      storage.CronStore
 	injectFunc   InjectFunc     // deprecated, kept for tests
 	notifyCronFn NotifyCronFunc // preferred: unified bg notification pipeline
 	stopCh       chan struct{}
@@ -33,7 +34,7 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a new Scheduler
-func NewScheduler(cronSvc *sqlite.CronService) *Scheduler {
+func NewScheduler(cronSvc storage.CronStore) *Scheduler {
 	return &Scheduler{
 		cronSvc: cronSvc,
 		stopCh:  make(chan struct{}),

@@ -504,13 +504,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
 		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 	}
 	callbacks.CronRemove = func(channel, chatID, jobID string) (bool, error) {
-		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+		if ag.MultiSession() == nil || ag.MultiSession().Store() == nil {
 			return false, nil
 		}
 		if jobID == "" {
 			return false, nil
 		}
-		cronSvc := sqlite.NewCronService(ag.MultiSession().DB())
+		cronSvc := ag.MultiSession().Store().Cron()
 		// Session-scoped ownership check (same policy as the cron tool's
 		// removeJob): only jobs belonging to THIS session may be removed, so a
 		// stale panel can never delete another session's schedule. Unknown /
@@ -535,13 +535,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
 		return true, nil
 	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
-		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+		if ag.MultiSession() == nil || ag.MultiSession().Store() == nil {
 			return []any{}, nil
 		}
 		// Session-scoped (user request 2026-08-31: "web task面板里的定时任务没做会话隔离"):
 		// filter by the requested session — same policy as BackgroundTasks above.
 		// The task panel shows only the active session's cron jobs, not a cross-session dump.
-		jobs, err := sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByChannelChatID(sel.Channel, sel.ChatID)
+		jobs, err := ag.MultiSession().Store().Cron().ListJobsByChannelChatID(sel.Channel, sel.ChatID)
 		if err != nil {
 			return nil, fmt.Errorf("list cron jobs: %w", err)
 		}
@@ -580,8 +580,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
 		return result, nil
 	}
 	callbacks.SessionSubscription = func(senderID string, sel web.SessionSelector) (map[string]string, error) {
-		if ag.MultiSession() != nil && ag.MultiSession().DB() != nil {
-			subID, model, _ := sqlite.NewTenantService(ag.MultiSession().DB()).GetTenantSubscription(sel.Channel, sel.ChatID)
+		if ag.MultiSession() != nil && ag.MultiSession().Store() != nil {
+			subID, model, _ := ag.MultiSession().Store().Tenant().GetTenantSubscription(sel.Channel, sel.ChatID)
 			if subID != "" {
 				return map[string]string{"subscription_id": subID, "model": model}, nil
 			}

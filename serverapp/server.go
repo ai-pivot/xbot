@@ -115,29 +115,63 @@ func setupLLM(cfg *config.Config) (llm_pkg.LLM, error) {
 	})
 }
 
-// setupOAuth creates OAuth server and manager.
-// pgBackend=true 时跳过：OAuth token 存储是 SQLite 文件专属（sqlite.Open），
-// PG 路径下不启用（返回 nil，调用方对 sharedDB 的使用都是 nil 安全的）。
-func setupOAuth(cfg *config.Config, dbPath string, pgBackend bool) (*oauth.Server, *oauth.Manager, *providers.FeishuProvider, *sqlite.DB, error) {
-	if !cfg.OAuth.Enable || pgBackend {
-		return nil, nil, nil, nil, nil
+// oauthTokenAdapter bridges the backend-neutral storage.OAuthTokenStore to the
+// oauth package's TokenStorage contract.
+//
+// Why the indirection: oauth/ must not import storage (storage imports oauth-free
+// packages, and a cycle would appear the moment oauth needed storage types). The
+// adapter keeps the dependency pointing one way — serverapp depends on both.
+type oauthTokenAdapter struct {
+	store storage.OAuthTokenStore
+}
+
+func (a *oauthTokenAdapter) GetToken(ctx context.Context, provider, channel, chatID string) (*oauth.Token, error) {
+	t, err := a.store.GetOAuthToken(provider, channel, chatID)
+	if err != nil || t == nil {
+		return nil, err
+	}
+	return &oauth.Token{
+		AccessToken:  t.AccessToken,
+		RefreshToken: t.RefreshToken,
+		ExpiresAt:    t.ExpiresAt,
+		Scopes:       t.Scopes,
+		Raw:          t.Raw,
+	}, nil
+}
+
+func (a *oauthTokenAdapter) SetToken(ctx context.Context, provider, channel, chatID string, token *oauth.Token) error {
+	return a.store.SetOAuthToken(provider, channel, chatID, &storage.OAuthToken{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		ExpiresAt:    token.ExpiresAt,
+		Scopes:       token.Scopes,
+		Raw:          token.Raw,
+	})
+}
+
+func (a *oauthTokenAdapter) DeleteToken(ctx context.Context, provider, channel, chatID string) error {
+	return a.store.DeleteOAuthToken(provider, channel, chatID)
+}
+
+// Close is a no-op: the store is owned by the storage backend, not by OAuth.
+func (a *oauthTokenAdapter) Close() error { return nil }
+
+// setupOAuth creates the OAuth server and manager on top of the storage backend.
+//
+// It takes the token store instead of opening a SQLite file: on the PG backend
+// there is no SQLite main DB at all, and the previous wiring simply disabled OAuth
+// there — the OAuth server silently disappeared when switching backends.
+func setupOAuth(cfg *config.Config, tokenStore storage.OAuthTokenStore) (*oauth.Server, *oauth.Manager, *providers.FeishuProvider, error) {
+	if !cfg.OAuth.Enable || tokenStore == nil {
+		return nil, nil, nil, nil
 	}
 
-	sharedDB, err := sqlite.Open(dbPath)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to open shared database for OAuth: %w", err)
-	}
-	tokenStorage, err := oauth.NewSQLiteStorage(sharedDB)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to create OAuth token storage: %w", err)
-	}
-
-	oauthManager := oauth.NewManager(tokenStorage)
+	oauthManager := oauth.NewManager(&oauthTokenAdapter{store: tokenStore})
 	feishuProvider := providers.NewFeishuProvider(cfg.Feishu.AppID, cfg.Feishu.AppSecret, cfg.OAuth.BaseURL+"/oauth/callback")
 	oauthManager.RegisterProvider(feishuProvider)
 	oauthServer := oauth.NewServer(oauth.Config{Enable: true, Host: cfg.OAuth.Host, Port: cfg.OAuth.Port, BaseURL: cfg.OAuth.BaseURL}, oauthManager)
 	log.WithFields(log.Fields{"port": cfg.OAuth.Port, "baseURL": cfg.OAuth.BaseURL}).Info("OAuth server started")
-	return oauthServer, oauthManager, feishuProvider, sharedDB, nil
+	return oauthServer, oauthManager, feishuProvider, nil
 }
 
 // maskAPIKey masks an API key for safe transport over WS RPC.
@@ -502,13 +536,13 @@ func Run(args []string) error {
 		}
 	}
 
-	oauthServer, oauthManager, _, sharedDB, err := setupOAuth(cfg, dbPath, false)
-	if err != nil {
-		log.WithError(err).Fatal("Failed to setup OAuth")
-	}
-	// Web 认证不再依赖 SQLite 文件：认证存储来自后端无关的
-	// storage.WebAuthStore（SQLite 或 PG），在 registerChannels 处从
-	// ag.MultiSession().Store().Config() 取。PG 路径下因此不再打开任何 SQLite 文件。
+	// OAuth 在 InitServer 之后创建：它需要 storage（OAuth token 表现在由存储后端
+	// 承载 —— SQLite 主库或 PG），而 storage 由 InitServer 建立。此前这里在
+	// InitServer 之前打开一个独立 SQLite 文件，PG 路径下直接跳过 ⇒ OAuth 静默消失。
+	var (
+		oauthServer  *oauth.Server
+		oauthManager *oauth.Manager
+	)
 
 	// 初始化沙箱
 	tools.InitSandbox(cfg.Sandbox, workDir)
@@ -592,6 +626,16 @@ func Run(args []string) error {
 	ag, rpcTable, disp, msgBus, err = InitServer(cfg, llmClient, dbPath, workDir, xbotDir, cfg.Web.PersonaIsolation, channelReconfigureFn, nil)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to init server")
+	}
+
+	// OAuth 现在可以创建了：token 存储来自存储后端（SQLite 主库 / PG 的 oauth_tokens
+	// 表），因此切换后端不再让 OAuth 服务消失。
+	if ag != nil && ag.MultiSession() != nil && ag.MultiSession().Store() != nil {
+		var setupErr error
+		oauthServer, oauthManager, _, setupErr = setupOAuth(cfg, ag.MultiSession().Store().OAuth())
+		if setupErr != nil {
+			log.WithError(setupErr).Fatal("Failed to setup OAuth")
+		}
 	}
 
 	// Refresh component registries once at startup (best-effort, async). This is
@@ -751,7 +795,9 @@ func Run(args []string) error {
 	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 
 	// 初始化事件触发系统（Event Trigger System）
-	triggerSvc := sqlite.NewTriggerService(ag.MultiSession().DB())
+	// 后端无关：TriggerStore 来自 Storage（SQLite 的 event_triggers / PG 同一张表），
+	// 不再依赖主库 *sqlite.DB —— 否则 PG 后端下 webhook 路由会因 nil 句柄而失效。
+	triggerSvc := ag.MultiSession().Store().Trigger()
 	eventRouter := event.NewRouter(triggerSvc)
 	ag.SetEventRouter(eventRouter)
 
@@ -1031,12 +1077,8 @@ func Run(args []string) error {
 		oauthManager.Close()
 	}
 
-	// 关闭 OAuth 共享数据库连接
-	if sharedDB != nil {
-		if err := sharedDB.Close(); err != nil {
-			log.WithError(err).Warn("OAuth shared DB close error")
-		}
-	}
+	// OAuth token 存储由存储后端（SQLite 主库 / PG）持有，随 storage 一起关闭 ——
+	// 这里不再单独关闭 sharedDB（那个独立 SQLite 文件已删除）。
 
 	// 关闭 runner token 数据库连接
 	if tokenDB != nil {

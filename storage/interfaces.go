@@ -18,6 +18,19 @@ type Storage interface {
 	Tenant() TenantStore
 	Memory() MemoryStore
 	Config() ConfigStore
+	// Cron is the scheduled-job store (cron_jobs). It lives on Storage — not on
+	// ConfigStore — because the scheduler and the Cron tool both need it, and it
+	// must be reachable on every backend (a concrete *sqlite.CronService in those
+	// layers is what made cron disappear on PG).
+	Cron() CronStore
+	// Trigger is the webhook event-trigger store (event_triggers), reached by the
+	// event router. Same rationale as Cron: the router must not hold a SQLite
+	// handle, or webhooks stop working on PG.
+	Trigger() event.TriggerStore
+	// OAuth is the OAuth credential store (oauth_tokens). On Storage so the OAuth
+	// server can run on every backend — it previously required a SQLite file and
+	// was silently disabled on PG.
+	OAuth() OAuthTokenStore
 	Close() error
 }
 
@@ -166,6 +179,14 @@ type TenantStore interface {
 	ListUserChats(channel, senderID, currentChatID string, offset, limit int) ([]sqlite.UserChatWithPreview, bool, error)
 	UpdateChatSortOrders(channel, senderID string, orders map[string]int) error
 	GetSenderForChat(channel, chatID string) (string, error)
+	// GetChatLabel returns the user-assigned label of a session ("" when unset or
+	// unknown). Backend-agnostic replacement for the direct user_chats SELECTs that
+	// used to run against the main SQLite handle.
+	GetChatLabel(channel, chatID string) (string, error)
+	// GetChatOwner resolves the channel and sender that own a chat session,
+	// searching across channels (chat_id is unique in practice). Returns empty
+	// strings when the session is not registered — callers fall back to defaults.
+	GetChatOwner(chatID string) (channel, senderID string, err error)
 
 	// Tenant / channel discovery (used by the Web channel and its callbacks to
 	// browse sessions without touching a backend-specific SQL handle).
@@ -281,6 +302,26 @@ type AgentMemoryStore interface {
 	// search_text is empty (backfill driver — the transform is provider-side).
 	ListAgentLongTermMissingSearchText(ctx context.Context, userID, tenantID int64, limit int) ([]agentmem.LongTermMemory, error)
 	SetAgentLongTermSearchText(ctx context.Context, id int64, searchText string) error
+}
+
+// CronStore is the storage seam for scheduled jobs (cron_jobs).
+//
+// It exists so the scheduler and the Cron tool never hold a *sqlite.CronService:
+// a concrete SQLite type in those layers made cron silently unavailable on the PG
+// backend (the whole wiring block was skipped when the main DB handle was nil).
+type CronStore interface {
+	AddJob(job *sqlite.CronJob) error
+	RemoveJob(id string) error
+	// GetJob returns (nil, nil) when the job does not exist.
+	GetJob(id string) (*sqlite.CronJob, error)
+	ListJobs() ([]*sqlite.CronJob, error)
+	ListAllJobs() ([]*sqlite.CronJob, error)
+	ListJobsByChannelChatID(channel, chatID string) ([]*sqlite.CronJob, error)
+	UpdateNextRun(id string, nextRun time.Time) error
+	UpdateLastTrigger(id string, lastTrigger time.Time) error
+	// MigrateFromJSON imports jobs from the legacy cron.json (idempotent: it is a
+	// no-op once the table has rows). Backends without a legacy file ignore it.
+	MigrateFromJSON(dataDir string) error
 }
 
 // WebUserInfo describes a web UI user account (for listing).
@@ -400,4 +441,29 @@ type ConfigStore interface {
 	ListSharedArtifactsByCreator(createdBy int64) ([]sqlite.SharedArtifact, error)
 	GetAllUsage() ([]sqlite.UserTokenUsage, error)
 	GetDailyUsageSummary(senderID string, days int) ([]sqlite.DailyTokenUsage, error)
+}
+
+// OAuthToken is one stored OAuth credential, in backend-neutral form.
+// Times are native (SQLite stores unix seconds, PG stores TIMESTAMPTZ — the
+// backend converts, callers never see the difference).
+type OAuthToken struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    time.Time
+	Scopes       []string
+	Raw          map[string]any
+}
+
+// OAuthTokenStore persists OAuth credentials (the oauth_tokens table).
+//
+// It lives in the storage layer so OAuth does not depend on a SQLite file: on the
+// PG backend there is no SQLite main DB at all, and the previous wiring silently
+// disabled the whole OAuth server in that case.
+type OAuthTokenStore interface {
+	// GetOAuthToken returns (nil, nil) when no token is stored for the key.
+	GetOAuthToken(provider, channel, chatID string) (*OAuthToken, error)
+	SetOAuthToken(provider, channel, chatID string, token *OAuthToken) error
+	DeleteOAuthToken(provider, channel, chatID string) error
+	// CleanupExpiredOAuthTokens removes tokens that expired before cutoff.
+	CleanupExpiredOAuthTokens(cutoff time.Time) error
 }

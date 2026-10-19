@@ -178,10 +178,8 @@ func loadSessionDBs(ctx context.Context, src *sql.DB, mainPath string) ([]sessio
 // ─── Table definitions ───
 
 // globalTables lists the main-DB tables copied verbatim, in FK-safe order
-// (tenants first: six tables reference it). oauth_tokens is intentionally absent:
-// its SQLite shape (INTEGER expires_at + scopes/raw) is incompatible with the PG
-// schema (TIMESTAMPTZ), and the PG backend keeps OAuth in a local SQLite file.
-// FTS shadow tables are derived indexes and are rebuilt, not copied.
+// (tenants first: six tables reference it). FTS shadow tables are derived indexes
+// and are rebuilt, not copied.
 var globalTables = []string{
 	"tenants",
 	"tenant_state",
@@ -204,6 +202,7 @@ var globalTables = []string{
 	"user_token_usage",
 	"daily_token_usage",
 	"shared_artifacts",
+	"oauth_tokens",
 }
 
 // identityTables lists the tables whose PG primary key is GENERATED ALWAYS AS
@@ -242,10 +241,7 @@ var columnRename = map[string]map[string]string{
 	"core_memory_migrations": {"applied_at": "created_at"},
 }
 
-// skippedColumns are source columns with no PG counterpart (verified against both
-// schemas by TestMigrateSchemaParity).
+// skippedColumns are source columns with no PG counterpart.
 var skippedColumns = map[string]bool{
 	"applied_at": true, // renamed to created_at
-	"scopes":     true, // oauth_tokens only (table skipped entirely)
-	"raw":        true,
 }
