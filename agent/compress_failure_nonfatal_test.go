@@ -47,14 +47,13 @@ func compressFailCM(calls *int) *mockContextManager {
 // promptBudget = 1000-100 = 900，阈值 0.9 → 810；mock LLM 报告 950 prompt tokens。
 func compressTriggerCfg(mock *mockLLM, cm ContextManager, msgs []llm.ChatMessage, tools ...*mockTool) RunConfig {
 	return RunConfig{
-		LLMClient:     mock,
-		Model:         "test-model",
-		Tools:         newTestRegistry(tools...),
-		Messages:      msgs,
-		AgentID:       "main",
-		Channel:       "test",
-		ChatID:        "chat-compress-fail",
-		MaxIterations: 6,
+		LLMClient: mock,
+		Model:     "test-model",
+		Tools:     newTestRegistry(tools...),
+		Messages:  msgs,
+		AgentID:   "main",
+		Channel:   "test",
+		ChatID:    "chat-compress-fail",
 
 		ContextManager:       cm,
 		ContextManagerConfig: &ContextManagerConfig{MaxContextTokens: 1000, CompressionThreshold: 0.9},

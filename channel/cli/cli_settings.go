@@ -52,7 +52,7 @@ func (m *cliModel) readSettings() map[string]string {
 		}
 	}
 
-	// 2. User-scoped DB overrides (max_iterations, language overrides, etc.)
+	// 2. User-scoped DB overrides (layout_mode, language overrides, etc.)
 	if m.channel.settingsSvc != nil {
 		if vals, err := m.channel.settingsSvc.GetSettings(m.channelName, m.senderID); err == nil {
 			for k, v := range vals {

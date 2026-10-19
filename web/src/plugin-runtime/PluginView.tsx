@@ -17,6 +17,7 @@ import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
 import { SkillManagerPanel } from '@/plugins/xbot-skill-manager/SkillManagerPanel'
 import { SessionStatsPanel } from '@/plugins/session-stats/SessionStatsPanel'
+import { MarketplacePanel } from '@/plugins/xbot-marketplace/MarketplacePanel'
 import type { ViewContribution } from '@/plugin-api'
 import { usePluginRuntime } from '@/plugin-runtime'
 import { useLocale } from './useLocale'
@@ -106,6 +107,12 @@ function BuiltinView({
       return (
         <PluginViewErrorBoundary>
           <SessionStatsPanel viewParams={viewParams} />
+        </PluginViewErrorBoundary>
+      )
+    case 'xbot.marketplace.panel':
+      return (
+        <PluginViewErrorBoundary>
+          <MarketplacePanel />
         </PluginViewErrorBoundary>
       )
     default:

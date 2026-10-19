@@ -41,8 +41,7 @@ type toolExecResult struct {
 // without passing dozens of parameters.
 type runState struct {
 	// Configuration (read-only after init)
-	cfg     RunConfig
-	maxIter int
+	cfg RunConfig
 	// iterStart offsets the Run's iteration numbering (resume turns): the
 	// first iteration is iterStart+1 instead of 1. A restart-resumed Run
 	// (InjectInboundResume) reuses the interrupted turn's id and must CONTINUE
@@ -178,10 +177,6 @@ type runState struct {
 
 // newRunState creates and initializes a runState from the given RunConfig.
 func newRunState(cfg RunConfig) *runState {
-	maxIter := cfg.MaxIterations
-	if maxIter == 0 {
-		maxIter = DefaultMaxIterations
-	}
 
 	sessionKey := cfg.SessionKey
 	if sessionKey == "" && cfg.Channel != "" {
@@ -210,7 +205,6 @@ func newRunState(cfg RunConfig) *runState {
 
 	state := &runState{
 		cfg:                      cfg,
-		maxIter:                  maxIter,
 		iterStart:                cfg.IterationStart,
 		sessionKey:               sessionKey,
 		offloadSessionKey:        offloadSessionKey,
@@ -518,6 +512,20 @@ func (s *runState) setupRetryNotify(ctx context.Context) context.Context {
 			fmt.Sprintf("> ⚠️ LLM 请求失败 (%s)，重试中 %d/%d ...", reason, attempt, max))
 		s.notifyProgress("")
 	})
+}
+
+// lastAssistantContent 返回最近一条**有正文**的 assistant 消息内容（无则 ""）。
+//
+// 只给「内部一次性 Run 触顶」收尾用（RunConfig.MaxIterations > 0）：此时模型可能
+// 全程只吐 tool_calls、没有可用的最终回答，压缩侧会据此判定"没有产出"（非致命），
+// 而不是把上一轮的旧文本当成摘要（那会把错误内容写进上下文）。
+func (s *runState) lastAssistantContent() string {
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		if s.messages[i].Role == "assistant" && s.messages[i].Content != "" {
+			return s.messages[i].Content
+		}
+	}
+	return ""
 }
 
 // buildOutput creates a RunOutput from an OutboundMessage.
@@ -1305,7 +1313,7 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 	// byte-for-byte identical to the previous iteration AND the previous
 	// iteration had no tool errors, the agent is stuck repeating itself. Inject
 	// a synthetic tool result warning so the LLM sees explicit feedback and
-	// breaks the cycle instead of looping until maxIter.
+	// breaks the cycle instead of looping forever.
 	s.detectIterationLoop(ctx, response)
 }
 
@@ -2901,12 +2909,4 @@ func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m
 	return err
 }
 
-// buildMaxIterOutput creates the output for when max iterations is reached.
-func (s *runState) buildMaxIterOutput() *RunOutput {
-	return s.buildOutput(&channel.OutboundMsg{
-		Channel:   s.cfg.Channel,
-		ChatID:    s.cfg.ChatID,
-		Content:   "已达到最大迭代次数，请重新描述你的需求。",
-		ToolsUsed: s.toolsUsed,
-	})
-}
+// (buildMaxIterOutput removed with max_iterations: the main loop has no iteration cap.)

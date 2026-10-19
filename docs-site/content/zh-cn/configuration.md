@@ -17,7 +17,7 @@ weight: 15
 | 启用 Web | `web.enable: true` |
 | Docker 沙箱 | `sandbox.mode: "docker"` |
 | 限制用户 | `*.allow_from: [...]` |
-| 最大并发调用 | `agent.max_concurrency` |
+| 最大并发调用 | 设置面板（per-user，不在 config.json） |
 | 上下文压缩 | `agent.compression_threshold` |
 
 ## 配置文件位置
@@ -183,8 +183,6 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 ```json
 {
   "agent": {
-    "max_iterations": 2000,
-    "max_concurrency": 100,
     "memory_provider": "flat",
     "work_dir": ".",
     "prompt_file": "prompt.md",
@@ -192,7 +190,6 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
     "enable_auto_compress": true,
     "compression_threshold": 0.9,
     "context_mode": "",
-    "purge_old_messages": false,
     "max_sub_agent_depth": 5,
     "llm_retry_attempts": 5,
     "llm_retry_delay": "1s",
@@ -207,8 +204,7 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `max_iterations` | int | `2000` | 单次对话最大工具调用次数 |
-| `max_concurrency` | int | `100` | 最大并发 LLM 调用数 |
+| `max_concurrency` | int | `5` | 并发上限。⚠️ **不在 config.json** —— per-user 设置，存于 `user_settings` 表，通过设置面板（`/settings`，范围 1–100）或 Web LLM 控制台修改 |
 | `memory_provider` | string | `"flat"` | 记忆系统：`flat` 或 `letta` |
 | `work_dir` | string | `"."` | 工作目录 |
 | `prompt_file` | string | `"prompt.md"` | 自定义系统 prompt 文件 |
@@ -216,7 +212,6 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 | `enable_auto_compress` | bool | `true` | 自动压缩上下文 |
 | `compression_threshold` | float | `0.9` | 触发压缩的 token 比例 |
 | `context_mode` | string | `""` | 上下文管理模式 |
-| `purge_old_messages` | bool | `false` | 压缩后清除旧消息 |
 | `max_sub_agent_depth` | int | `5` | SubAgent 最大嵌套层数（只校验深度；同角色嵌套是合法用法，不视为循环调用） |
 | `llm_retry_attempts` | int | `5` | LLM 调用失败重试次数 |
 | `llm_retry_delay` | duration | `"1s"` | 重试初始延迟 |

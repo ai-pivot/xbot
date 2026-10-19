@@ -36,6 +36,7 @@ const zhCN = {
     tasks: '任务',
     tasksCron: '定时任务',
     tasksBg: '后台命令',
+    tasksSubAgents: '子代理',
     cronSchedule: '调度',
     cronNext: '下次运行',
     cronTarget: '目标会话',
@@ -354,7 +355,6 @@ const zhCN = {
     // 禁用词（collapseAll*/collapseLevel*/mergeTools*/processed —— noLegacyFoldFormat
     // 守护测试会红）；`{{count}}` 必须双花括号（单括号不替换）。
     regions: {
-      loadEarlier: '更早的 {{count}} 个区域',
       loading: '正在加载更早区域…',
       retry: '加载失败 · 重试',
       detailLoading: '正在加载详情…',
@@ -1095,6 +1095,7 @@ const zhCN = {
       enable: '启用',
       reloading: '重载中…',
       reload: '重载',
+      uninstall: '卸载',
       // 内置插件面板（宿主静态 import）的清单文案 —— 随主 bundle 走宿主 i18n。
       manifest: {
         name: '插件管理',
@@ -1157,6 +1158,15 @@ const zhCN = {
         sakura: '樱花和纸',
         focus: '专注素色',
       },
+    },
+  },
+  marketplace: {
+    search: '搜索组件…',
+    empty: '暂无可用组件',
+    manifest: {
+      name: '组件市场',
+      title: '市场',
+      description: '浏览、搜索并安装技能、代理、插件',
     },
   },
 }

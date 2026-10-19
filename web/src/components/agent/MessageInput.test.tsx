@@ -756,3 +756,58 @@ describe('MessageInput links & file paste', () => {
     })
   })
 })
+
+describe('运行中的停止可达性（busy + 有内容 ⇒ 独立停止按钮）', () => {
+  // ⛔ 契约（P0，2026-10-12）：主按钮在 `canSend` 时是「发送/排队」，**不是**停止 ——
+  // 所以只要 canSend 且 busy，就必须额外有一颗只走 onCancel 的独立停止按钮。
+  // 修复前必红：找不到 `composer-cancel`，点击主按钮会走 onSend（= 用户报告的原 bug）。
+
+  it('★ busy 且输入框有文字时：存在独立停止按钮，点它只触发 onCancel、绝不 onSend', async () => {
+    const onSend = vi.fn()
+    const onCancel = vi.fn()
+    renderWithProviders(
+      <MessageInput busy onSend={onSend} onCancel={onCancel} onUpload={vi.fn()} />,
+    )
+    await setEditorContent('你查一下最新信息')
+
+    const stop = await screen.findByTestId('composer-cancel')
+    fireEvent.click(stop)
+    expect(onCancel, '运行中点击独立停止按钮必须触发取消').toHaveBeenCalledTimes(1)
+    expect(onSend, '绝不能被当成「发送/排队」（那正是原 bug）').not.toHaveBeenCalled()
+  })
+
+  it('busy 且只有「完成态附件」（无文字）时：同样必须有独立停止按钮', async () => {
+    const onSend = vi.fn()
+    const onCancel = vi.fn()
+    renderWithProviders(
+      <MessageInput
+        busy
+        onSend={onSend}
+        onCancel={onCancel}
+        onUpload={async () => ({ upload_key: 'uploads/notes.txt', name: 'notes.txt', size: 4, mime: 'text/plain' })}
+      />,
+    )
+    await waitFor(() => expect(__getTestEditor()).not.toBeNull())
+    fireEvent.paste(__getTestEditor()!.view.dom, {
+      clipboardData: { files: [new File(['test'], 'notes.txt', { type: 'text/plain' })], getData: () => '', types: [] },
+    })
+    const stop = await screen.findByTestId('composer-cancel')
+    fireEvent.click(stop)
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('busy 但没有内容：不额外渲染 —— 主按钮本身就是停止（原有行为不变）', async () => {
+    const onSend = vi.fn()
+    const onCancel = vi.fn()
+    renderWithProviders(
+      <MessageInput busy onSend={onSend} onCancel={onCancel} onUpload={vi.fn()} />,
+    )
+    await waitFor(() => expect(__getTestEditor()).not.toBeNull())
+    expect(screen.queryByTestId('composer-cancel')).toBeNull()
+    // 空输入 + busy：那颗唯一的按钮仍是停止
+    fireEvent.click(screen.getByLabelText('common.cancel'))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+})

@@ -3702,10 +3702,6 @@ func (f *FeishuChannel) BuildMainMenuUI(ctx context.Context, senderID string) st
 	sb.WriteString("## 🏠 主菜单\n\n")
 	sb.WriteString("欢迎使用 xbot！请选择功能：\n\n")
 	sb.WriteString("- ⚙️ `/settings` — 个人设置\n")
-	sb.WriteString("- 📦 `/app` — 应用管理（打包、安装、卸载）\n")
-	sb.WriteString("- 📥 `/app install <file|url>` — 安装应用\n")
-	sb.WriteString("- 📤 `/app export <name> -s/-a/-p` — 打包导出\n")
-	sb.WriteString("- 🗑️ `/app uninstall -n/-s/-a/-p` — 卸载\n")
 	return sb.String()
 }
 

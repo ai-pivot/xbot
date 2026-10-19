@@ -324,7 +324,7 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?, ?)
 	`, tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName, msg.ToolArguments,
 		toolCallsJSON, msg.Detail, displayOnly, internalOnly, msg.ReasoningContent, reasoningItemsJSON,
-		ts.Format(time.RFC3339), msg.TurnID, msg.Iteration)
+		canonicalTimestamp(ts), msg.TurnID, msg.Iteration)
 	if err != nil {
 		return 0, fmt.Errorf("insert session message: %w", err)
 	}
@@ -364,7 +364,7 @@ func (s *SessionService) AppendCommandMessage(tenantID int64, role, content stri
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, created_at, turn_id)
 		VALUES (?, ?, ?, 1, 'command', ?, 0)
-	`, tenantID, role, content, time.Now().Format(time.RFC3339))
+	`, tenantID, role, content, canonicalTimestamp(time.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("insert command history row: %w", err)
 	}
@@ -513,7 +513,7 @@ func appendControlWith(store historyQueryExecer, tenantID int64, recordType Hist
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, target_history_id, record_data, created_at)
 		VALUES (?, 'control', '', 1, ?, NULLIF(?, 0), ?, ?)
-	`, tenantID, recordType, targetHistoryID, string(raw), time.Now().Format(time.RFC3339Nano))
+	`, tenantID, recordType, targetHistoryID, string(raw), canonicalTimestamp(time.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("append %s history record: %w", recordType, err)
 	}
@@ -588,7 +588,7 @@ func appendSnapshotWith(execer historyExecer, tenantID int64, recordType History
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, record_data, created_at)
 		VALUES (?, 'control', '', 1, ?, ?, ?)
-	`, tenantID, recordType, string(raw), time.Now().Format(time.RFC3339Nano))
+	`, tenantID, recordType, string(raw), canonicalTimestamp(time.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("append %s history record: %w", recordType, err)
 	}
@@ -655,7 +655,7 @@ func appendAskQuestionWith(execer historyExecer, tenantID, toolHistoryID int64, 
 				WHERE a.tenant_id = q.tenant_id AND a.record_type = 'ask_answer' AND a.target_history_id = q.id
 			)
 		)
-	`, tenantID, toolHistoryID, string(payload), time.Now().Format(time.RFC3339Nano), tenantID, toolHistoryID, tenantID)
+	`, tenantID, toolHistoryID, string(payload), canonicalTimestamp(time.Now()), tenantID, toolHistoryID, tenantID)
 	if err != nil {
 		return 0, fmt.Errorf("append AskUser question: %w", err)
 	}
@@ -710,7 +710,7 @@ func (s *SessionService) AppendMasks(tenantID int64, mutations []MaskMutation) e
 						WHERE sm.tenant_id = ? AND sm.id = json_extract(m.value, '$.target_history_id')
 					)
 				)
-			`, tenantID, string(raw), time.Now().Format(time.RFC3339Nano), string(raw), tenantID)
+			`, tenantID, string(raw), canonicalTimestamp(time.Now()), string(raw), tenantID)
 		if err != nil {
 			return fmt.Errorf("append mask history record: %w", err)
 		}
@@ -814,7 +814,7 @@ func validateAndAppendAskAnswerWith(store historyQueryExecer, tenantID int64, an
 			SELECT 1 FROM session_messages tool
 			WHERE tool.tenant_id = ? AND tool.id = ?
 		)
-	`, tenantID, replay.PendingAskUser.HistoryID, string(payload), time.Now().Format(time.RFC3339Nano),
+	`, tenantID, replay.PendingAskUser.HistoryID, string(payload), canonicalTimestamp(time.Now()),
 		tenantID, replay.PendingAskUser.HistoryID, tenantID, replay.PendingAskUser.HistoryID, tenantID, toolHistoryID)
 	if err != nil {
 		return 0, fmt.Errorf("append AskUser answer: %w", err)

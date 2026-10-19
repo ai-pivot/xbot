@@ -78,7 +78,6 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		Bus:                    msgBus,
 		LLM:                    llmClient,
 		Model:                  cfg.LLM.Model,
-		MaxIterations:          cfg.Agent.MaxIterations,
 		DBPath:                 agentDBPath,
 		StorageType:            cfg.Storage.Type,
 		SkillsDir:              filepath.Join(xbotHome, "skills"),

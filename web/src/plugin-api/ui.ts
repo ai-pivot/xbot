@@ -34,6 +34,15 @@ export interface OpenDiffTabOptions {
   key?: string
   /** 范围标注（如 "commit abc1234" / "工作区"）。 */
   scope?: string
+  /**
+   * 可选：commit 哈希（空 = 工作区 diff）。
+   *
+   * ⛔ **嵌入原生宿主时必需**（`?xbot_embed=1` + `window.xbotNative`）：此时 diff 不在这里渲染，
+   * 而是把 `{path, commit}` 交给原生——由原生按同一份数据取 diff 并弹原生面板
+   * （点 diff 直接出原生文件 diff，返回回 web view，再返回上一级）。
+   * 浏览器里运行（非嵌入）时该字段被忽略，行为逐字节不变。
+   */
+  commit?: string
 }
 
 /** 打开宿主文件编辑器 tab 的选项（VSCode showTextDocument 语义的子集）。 */

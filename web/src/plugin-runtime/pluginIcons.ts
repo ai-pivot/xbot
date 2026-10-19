@@ -21,6 +21,8 @@ import {
   Puzzle,
   Search,
   ServerCog,
+  ShoppingBasket,
+  ShoppingCart,
   Sparkles,
   Terminal,
   Wrench,
@@ -36,6 +38,12 @@ const ICON_MAP: Record<string, LucideIcon> = {
   puzzle: Puzzle,
   sparkles: Sparkles,
   wrench: Wrench,
+
+  // 市场/购物类（xbot.marketplace 声明 "basket"）
+  basket: ShoppingBasket,
+  'shopping-basket': ShoppingBasket,
+  cart: ShoppingCart,
+  'shopping-cart': ShoppingCart,
 
   // 内置面板图标（builtinPanels.tsx 声明）
   message: MessageCircle,

@@ -16,6 +16,9 @@ import { SessionStoreProvider } from '@/hooks/useSessionStore'
 import { PluginWidgetProvider } from '@/plugins/PluginWidgetProvider'
 import { PluginRuntimeRoot } from '@/plugin-runtime/usePluginRuntimeHost'
 import { AppShell } from '@/layouts/AppShell'
+import { EmbedPanelShell } from '@/layouts/EmbedPanelShell'
+import { parseEmbedTarget } from '@/workspace/panelRequest'
+import { parsePluginViewQuery } from '@/plugin-runtime/pluginViewRequest'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { LoginPage } from '@/pages/LoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
@@ -34,6 +37,26 @@ function SharePageRoute() {
 }
 
 export default function App() {
+  // 宿主嵌入模式（原生壳内嵌单个面板 / 单个插件视图）：
+  //   · 内置面板：`?xbot_panel=<id>&xbot_embed=1`；
+  //   · 插件视图：`?xbot_view=<viewId>&xbot_view_title=…&xbot_embed=1`。
+  // 判定一次即可（URL 在 WebView 生命周期内不变，⛔ 不订阅 location 以免无谓重渲）。
+  // ⛔ 两条**都**走嵌入（`parseEmbedTarget`，纯函数）—— 此前只认 `xbot_panel` ⇒ 插件视图
+  //   落到 `<AppShell />`（整个 SPA）⇒ 原生 chrome 之下又出现 web 自己的头/底栏 = "套娃"。
+  // 两条都无 ⇒ 回落完整应用（fail-safe：宁可多渲 chrome，也不给宿主渲一个空白壳）。
+  const embedTarget = (() => {
+    if (typeof window === 'undefined') return null
+    const search = window.location.search
+    const t = parseEmbedTarget(search)
+    if (!t) return null
+    if (t.kind === 'view') {
+      // 细节（key/params/title）解析归 `pluginViewRequest.ts` 唯一真源（本文件只消费）。
+      const req = parsePluginViewQuery(search)
+      return { kind: 'view' as const, viewId: t.viewId, params: req?.params }
+    }
+    return t
+  })()
+
   return (
     <TooltipProvider delayDuration={200}>
       <BrowserRouter>
@@ -52,7 +75,11 @@ export default function App() {
                     <CwdProvider>
                       <PluginWidgetProvider>
                         <PluginRuntimeRoot>
-                          <AppShell />
+                          {embedTarget ? (
+                            <EmbedPanelShell target={embedTarget} />
+                          ) : (
+                            <AppShell />
+                          )}
                         </PluginRuntimeRoot>
                       </PluginWidgetProvider>
                     </CwdProvider>

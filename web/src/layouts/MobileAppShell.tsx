@@ -25,13 +25,8 @@ const DiffPanel = lazy(() =>
   import('@/workspace/panels/DiffPanel').then(m => ({ default: m.DiffPanel })))
 const BackgroundPanel = lazy(() =>
   import('@/workspace/panels/BackgroundPanel').then(m => ({ default: m.BackgroundPanel })))
-import { FileExplorer } from '@/components/sidebar/FileExplorer'
-import { FileSearch } from '@/components/sidebar/FileSearch'
-import { SessionInfo } from '@/components/sidebar/SessionInfo'
 import type { SessionInfo as SessionInfoType } from '@/types/shared'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
-import { TasksPanel } from '@/components/sidebar/TasksPanel'
-import { TerminalList } from '@/components/sidebar/TerminalList'
 import { InfoBar } from '@/plugins/InfoBar'
 import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 import { AmbienceBackground } from '@/ambience/AmbienceRoot'
@@ -59,6 +54,12 @@ import { useTheme } from '@/hooks/useTheme'
 import { useWSConnection } from '@/providers/WSProvider'
 import { useTerminal } from '@/hooks/useTerminal'
 import { closeMobileWorkView, pushMobileWorkView, useMobileWorkView, type MobileWorkView } from '@/workspace/mobileWorkView'
+// 宿主深链：`?xbot_panel=<id>` ⇒ 直达内置面板（原生壳「终端/文件/任务」入口用；纯解析在 panelRequest）
+import { mobileViewForPanel, parsePanelQuery } from '@/workspace/panelRequest'
+// 面板**本体**渲染（与宿主嵌入模式 `EmbedPanelShell` 共用同一份实现，⛔ 别在此另写 switch）
+import { renderPanelBody, type PluginViewRef } from '@/workspace/panelRender'
+// `PanelProps` 构造（与嵌入模式共用）
+import { mobileTerminalProps } from '@/workspace/panelProps'
 import { cn } from '@/lib/utils'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import type { PanelProps } from '@/workspace/panels/types'
@@ -84,23 +85,6 @@ const mobilePanelProps: PanelProps = {
   },
   api: {} as PanelProps['api'],
   containerApi: {} as PanelProps['containerApi'],
-}
-
-/** Construct PanelProps for a mobile terminal panel (no Dockview needed). */
-function mobileTerminalProps(terminalId: string): PanelProps {
-  return {
-    params: {
-      tabId: `mobile-terminal-${terminalId}`,
-      type: 'terminal',
-      title: 'Terminal',
-      icon: 'terminal',
-      closable: true,
-      active: true,
-      terminalId,
-    },
-    api: {} as PanelProps['api'],
-    containerApi: {} as PanelProps['containerApi'],
-  }
 }
 
 export function MobileAppShell() {
@@ -145,6 +129,17 @@ export function MobileAppShell() {
   useEffect(() => {
     if (workView) setView('work')
   }, [workView])
+
+  // 宿主深链：`?xbot_panel=<id>` ⇒ 直接落该内置面板（原生壳的「终端/文件/任务」入口用）。
+  // ⛔ 白名单解析在 `workspace/panelRequest.ts`（未知 id ⇒ null ⇒ 保持默认视图，不渲染空壳）。
+  useEffect(() => {
+    const panel = parsePanelQuery(window.location.search)
+    if (!panel) return
+    const nextView = mobileViewForPanel(panel)
+    if (!nextView) return
+    setActivePanel(panel)
+    setView(nextView)
+  }, [])
 
   // 手机端无 Dockview——FileExplorer/FileSearch 等的 openTab(file/plugin)
   // 路由到全屏工作视图（其余类型维持原行为，如 SubAgent 专用机制）。
@@ -694,7 +689,7 @@ function MobileDetail({
 }) {
   const { t } = useI18n()
   const pluginPanels = usePluginViewPanels('right_sidebar')
-  const pluginViewsMap: Map<string, { pluginId: string; view: import('@/plugin-api').ViewContribution }> = new Map(
+  const pluginViewsMap = new Map<string, PluginViewRef>(
     pluginPanels.map((p) => [p.id, { pluginId: p.pluginId, view: p.view }]),
   )
 
@@ -730,33 +725,8 @@ function MobileDetail({
         })}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
-        {renderMobilePanel(activePanel, tabManager, pluginViewsMap, terminalManager)}
+        {renderPanelBody(activePanel, tabManager, pluginViewsMap, terminalManager)}
       </div>
     </div>
   )
-}
-
-function renderMobilePanel(
-  panel: SidebarPanel,
-  tabManager: ReturnType<typeof useTabManager>,
-  pluginViews: Map<string, { pluginId: string; view: import('@/plugin-api').ViewContribution }>,
-  terminalManager?: ReturnType<typeof useTerminal>,
-) {
-  switch (panel) {
-    case 'files':
-      return <FileExplorer tabManager={tabManager} />
-    case 'search':
-      return <FileSearch tabManager={tabManager} />
-    case 'info':
-      return <SessionInfo tabManager={tabManager} />
-    case 'tasks':
-      return <TasksPanel tabManager={tabManager} />
-    case 'terminal':
-      return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
-    default: {
-      const entry = pluginViews.get(panel)
-      if (!entry) return null
-      return <PluginView pluginId={entry.pluginId} view={entry.view} />
-    }
-  }
 }

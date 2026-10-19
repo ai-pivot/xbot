@@ -34,7 +34,6 @@ func newTestConfig() *config.Config {
 		Agent: config.AgentConfig{
 			MemoryProvider:     "flat",
 			ContextMode:        "manual",
-			MaxIterations:      321,
 			MaxContextTokens:   456789,
 			EnableAutoCompress: &enableAutoCompress,
 		},
@@ -1482,11 +1481,11 @@ func TestApplyRuntimeSetting_UpdatesConfig(t *testing.T) {
 	// LLM fields (llm_model, llm_base_url) are no longer handled by
 	// applyRuntimeSetting — they go through update_subscription RPC.
 	// Test a non-LLM config mutation instead.
-	// max_iterations still has a config.json projection; max_concurrency does NOT
-	// (single source = canonical user_settings row).
-	applyRuntimeSetting(cfg, ag, "cli_user", "max_iterations", "99")
-	if cfg.Agent.MaxIterations != 99 {
-		t.Fatalf("max_iterations = %d, want %d", cfg.Agent.MaxIterations, 99)
+	// compression_threshold still has a config.json projection; max_concurrency
+	// does NOT (single source = canonical user_settings row).
+	applyRuntimeSetting(cfg, ag, "cli_user", "compression_threshold", "0.5")
+	if cfg.Agent.CompressionThreshold != 0.5 {
+		t.Fatalf("compression_threshold = %v, want %v", cfg.Agent.CompressionThreshold, 0.5)
 	}
 }
 

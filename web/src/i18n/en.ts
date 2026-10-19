@@ -39,6 +39,7 @@ const en: Translations = {
     tasks: 'Tasks',
     tasksCron: 'Cron Jobs',
     tasksBg: 'Background Commands',
+    tasksSubAgents: 'Sub-Agents',
     cronSchedule: 'Schedule',
     cronNext: 'Next run',
     cronTarget: 'Target session',
@@ -357,7 +358,6 @@ const en: Translations = {
     // Avoid the forbidden key words (collapseAll*/collapseLevel*/mergeTools*/processed)
     // — `noLegacyFoldFormat.test.tsx` asserts they never come back.
     regions: {
-      loadEarlier: '{{count}} earlier region(s)',
       loading: 'Loading earlier regions…',
       retry: 'Load failed · Retry',
       detailLoading: 'Loading details…',
@@ -1101,6 +1101,7 @@ const en: Translations = {
       enable: 'Enable',
       reloading: 'Reloading…',
       reload: 'Reload',
+      uninstall: 'Uninstall',
       // Built-in plugin panel (host static import) — manifest text uses host i18n.
       manifest: {
         name: 'Plugin Manager',
@@ -1163,6 +1164,15 @@ const en: Translations = {
         sakura: 'Sakura Paper',
         focus: 'Focus Plain',
       },
+    },
+  },
+  marketplace: {
+    search: 'Search components…',
+    empty: 'No components available',
+    manifest: {
+      name: 'Marketplace',
+      title: 'Market',
+      description: 'Browse, search, and install skills, agents, and plugins',
     },
   },
 }
