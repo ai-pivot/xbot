@@ -61,14 +61,10 @@ func WithMemoryProvider(provider string) MultiTenantOption {
 }
 
 // WithPersonaIsolation enables per-tenant persona isolation (no fallback to tenantID=0).
-// The flag is applied to both the SQLite core-memory service (the letta provider's
-// dependency) and the backend-agnostic memory store (used on the PG path, which
-// forces flat memory and therefore has no coreSvc).
+// The flag is applied through the backend-agnostic memory store, so it works on every
+// storage backend.
 func WithPersonaIsolation(enabled bool) MultiTenantOption {
 	return func(m *MultiTenantSession) {
-		if m.coreSvc != nil {
-			m.coreSvc.SetPersonaIsolation(enabled)
-		}
 		if m.store != nil {
 			m.store.Memory().SetPersonaIsolation(enabled)
 		}
@@ -109,6 +105,15 @@ func WithToolIndexService(svc *vectordb.ToolIndexService) MultiTenantOption {
 	}
 }
 
+// WithDataDir 设置与存储后端无关的数据目录（chromem 归档库 / 工具索引落在此处）。
+// 默认 config.XbotHome()。它存在的意义是：这些路径**绝不能**从 dbPath 推导 ——
+// PG 后端下 dbPath 存的是 DSN，不是文件路径。
+func WithDataDir(dir string) MultiTenantOption {
+	return func(m *MultiTenantSession) {
+		m.dataDir = dir
+	}
+}
+
 // MultiTenantSession manages multiple tenant sessions with SQLite backing
 type MultiTenantSession struct {
 	// store is the backend-agnostic storage layer (SQLite adapter or PG). All
@@ -122,7 +127,6 @@ type MultiTenantSession struct {
 	memorySvc            *sqlite.MemoryService
 	userProfileSvc       *sqlite.UserProfileService
 	tokenUsageSvc        *sqlite.UserTokenUsageService
-	coreSvc              *sqlite.CoreMemoryService
 	archivalSvc          *vectordb.ArchivalService
 	toolIndexSvc         *vectordb.ToolIndexService
 	recallTimeRangeFn    vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
@@ -131,6 +135,7 @@ type MultiTenantSession struct {
 	mu                   sync.RWMutex
 	tenantCache          map[string]*TenantSession // key: "channel:chat_id"
 	dbPath               string
+	dataDir              string          // backend-independent data dir (chromem stores); default config.XbotHome()
 	mcpConfigPath        string          // MCP 配置文件路径
 	mcpInactivityTimeout time.Duration   // MCP 不活跃超时配置
 	mcpCleanupInterval   time.Duration   // MCP 清理扫描间隔
@@ -169,13 +174,13 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	m := &MultiTenantSession{
-		db:                    db,
-		tenantSvc:             sqlite.NewTenantService(db),
-		sessionSvc:            sqlite.NewSessionService(db),
-		memorySvc:             sqlite.NewMemoryService(db),
-		userProfileSvc:        sqlite.NewUserProfileService(db),
-		tokenUsageSvc:         sqlite.NewUserTokenUsageService(db),
-		coreSvc:               sqlite.NewCoreMemoryService(db),
+		db:             db,
+		tenantSvc:      sqlite.NewTenantService(db),
+		sessionSvc:     sqlite.NewSessionService(db),
+		memorySvc:      sqlite.NewMemoryService(db),
+		userProfileSvc: sqlite.NewUserProfileService(db),
+		tokenUsageSvc:  sqlite.NewUserTokenUsageService(db),
+
 		memoryProvider:        "flat",
 		tenantCache:           make(map[string]*TenantSession),
 		toolIndexFingerprints: make(map[int64]string),
@@ -206,26 +211,56 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		opt(m)
 	}
 
-	// Build shared embedding limit options (used by both archival and tool index)
-	var embOpts []vectordb.EmbeddingLimitOption
-	if m.embeddingConfig != nil {
-		if m.embeddingConfig.MaxTokens > 0 {
-			embOpts = append(embOpts, vectordb.WithMaxTokens(m.embeddingConfig.MaxTokens))
-		}
-		if m.embeddingConfig.TokenModel != "" {
-			embOpts = append(embOpts, vectordb.WithTokenModel(m.embeddingConfig.TokenModel))
-		}
-		if m.embeddingConfig.LLMClient != nil && m.embeddingConfig.LLMModel != "" {
-			compressor := vectordb.LLMContentCompressor(m.embeddingConfig.LLMClient, m.embeddingConfig.LLMModel)
-			embOpts = append(embOpts, vectordb.WithCompressor(compressor))
-		}
+	// Memory-provider support services (chromem archival + tool index, and the
+	// recall time-range function) are built through the SAME method as the PG
+	// constructor — see initMemoryServices. Their directories come from an
+	// explicit data dir, never from dbPath.
+	m.initMemoryServices()
+
+	return m, nil
+}
+
+// initMemoryServices builds the services the memory providers need: the chromem
+// archival store, the tool index, and the recall time-range function.
+//
+// It is called by BOTH constructors, so this creation logic no longer lives on
+// the SQLite-only path. Paths come from dataDir (an explicit, backend-independent
+// data directory; defaults to config.XbotHome()) and must NEVER be derived from
+// dbPath — on the PG path dbPath holds a DSN, not a file path.
+func (m *MultiTenantSession) initMemoryServices() {
+	if m.dataDir == "" {
+		m.dataDir = config.XbotHome()
 	}
 
-	// Letta 模式：自动创建 chromem-go 归档服务（如果未通过 WithArchivalService 注入）
-	if m.memoryProvider == "letta" && m.archivalSvc == nil && m.embeddingConfig != nil {
-		archivalDir := filepath.Join(filepath.Dir(dbPath), "archival")
-		embFunc := vectordb.NewEmbeddingFunc(m.embeddingConfig.BaseURL, m.embeddingConfig.APIKey, m.embeddingConfig.Model, m.embeddingConfig.Provider, m.embeddingConfig.MaxTokens)
+	// Providers that need no vector store or recall helper (flat/none) stop here.
+	if m.memoryProvider != "letta" {
+		return
+	}
 
+	// Recall reads through the storage interface, so it works on every backend and
+	// needs NO embedding config (it used to be set unconditionally in letta mode).
+	m.recallTimeRangeFn = m.storeRecallTimeRange()
+
+	if m.embeddingConfig == nil {
+		return
+	}
+
+	// Shared embedding limit options (used by both archival and tool index).
+	var embOpts []vectordb.EmbeddingLimitOption
+	if m.embeddingConfig.MaxTokens > 0 {
+		embOpts = append(embOpts, vectordb.WithMaxTokens(m.embeddingConfig.MaxTokens))
+	}
+	if m.embeddingConfig.TokenModel != "" {
+		embOpts = append(embOpts, vectordb.WithTokenModel(m.embeddingConfig.TokenModel))
+	}
+	if m.embeddingConfig.LLMClient != nil && m.embeddingConfig.LLMModel != "" {
+		embOpts = append(embOpts, vectordb.WithCompressor(vectordb.LLMContentCompressor(m.embeddingConfig.LLMClient, m.embeddingConfig.LLMModel)))
+	}
+	embFunc := vectordb.NewEmbeddingFunc(m.embeddingConfig.BaseURL, m.embeddingConfig.APIKey, m.embeddingConfig.Model, m.embeddingConfig.Provider, m.embeddingConfig.MaxTokens)
+
+	// chromem-go archival store (unless injected via WithArchivalService).
+	if m.archivalSvc == nil {
+		archivalDir := filepath.Join(m.dataDir, "archival")
 		archSvc, err := vectordb.NewArchivalService(archivalDir, embFunc, embOpts...)
 		if err != nil {
 			log.WithError(err).Error("Failed to initialize archival memory (chromem-go), archival tools will be unavailable")
@@ -234,11 +269,9 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		}
 	}
 
-	// Letta 模式：自动创建工具索引服务（如果未通过 WithToolIndexService 注入）
-	if m.memoryProvider == "letta" && m.toolIndexSvc == nil && m.embeddingConfig != nil {
-		toolIndexDir := filepath.Join(filepath.Dir(dbPath), "tool_index")
-		embFunc := vectordb.NewEmbeddingFunc(m.embeddingConfig.BaseURL, m.embeddingConfig.APIKey, m.embeddingConfig.Model, m.embeddingConfig.Provider, m.embeddingConfig.MaxTokens)
-
+	// chromem-go tool index (unless injected via WithToolIndexService).
+	if m.toolIndexSvc == nil {
+		toolIndexDir := filepath.Join(m.dataDir, "tool_index")
 		toolIdxSvc, err := vectordb.NewToolIndexService(toolIndexDir, embFunc, embOpts...)
 		if err != nil {
 			log.WithError(err).Warn("Tool index DB corrupted, removing and recreating")
@@ -256,12 +289,35 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		}
 	}
 
-	// Letta 模式：创建时间范围搜索函数
-	if m.memoryProvider == "letta" {
-		m.recallTimeRangeFn = vectordb.NewSQLiteRecallTimeRangeFunc(db.Conn())
-	}
+	// Recall reads through the storage interface, so it works on every backend.
+	m.recallTimeRangeFn = m.storeRecallTimeRange()
+}
 
-	return m, nil
+// storeRecallTimeRange adapts the backend-agnostic MemoryStore range query to the
+// vectordb RecallTimeRangeFunc shape (keeping storage/vectordb free of any storage
+// dependency). The unbounded-end defaults mirror the SQLite implementation that
+// used to back this function.
+func (m *MultiTenantSession) storeRecallTimeRange() vectordb.RecallTimeRangeFunc {
+	return func(tenantID int64, start, end time.Time, limit int) ([]vectordb.RecallEntry, error) {
+		if start.IsZero() {
+			start = time.Date(2000, 1, 1, 0, 0, 0, 0, time.Local)
+		}
+		if end.IsZero() {
+			end = time.Now().Add(24 * time.Hour)
+		}
+		if limit <= 0 {
+			limit = 20
+		}
+		entries, err := m.store.Memory().GetHistoryEntriesInRange(context.Background(), tenantID, start, end, limit)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]vectordb.RecallEntry, len(entries))
+		for i, e := range entries {
+			out[i] = vectordb.RecallEntry{Entry: e.Entry, CreatedAt: e.CreatedAt}
+		}
+		return out, nil
+	}
 }
 
 // NewMultiTenantPG creates a MultiTenantSession backed by PostgreSQL.
@@ -302,9 +358,12 @@ func NewMultiTenantPG(dsn string, opts ...MultiTenantOption) (*MultiTenantSessio
 		opt(m)
 	}
 
-	// PG 强制 flat：忽略任何 WithMemoryProvider("letta")（letta 依赖 SQLite
-	// 专属服务，在 PG 路径上不可用）。
-	m.memoryProvider = "flat"
+	// Memory services (archival store / tool index / recall) are created through
+	// the SAME path as the SQLite constructor — see initMemoryServices. No provider
+	// is forced here: whatever WithMemoryProvider asked for is honoured, and a
+	// missing dependency surfaces as an explicit error rather than a silent
+	// downgrade to flat.
+	m.initMemoryServices()
 
 	return m, nil
 }
@@ -432,7 +491,7 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 		// Letta-specific deps
 		if m.memoryProvider == "letta" {
 			deps.LettaDeps = &letta.Deps{
-				CoreSvc:      m.coreSvc,
+				CoreSvc:      m.getMemoryStore(),
 				ArchivalSvc:  m.archivalSvc,
 				MemorySvc:    m.getMemoryStore(),
 				ToolIndexSvc: m.toolIndexSvc,
@@ -726,8 +785,8 @@ func (m *MultiTenantSession) Store() storage.Storage {
 }
 
 // CoreMemoryService returns the shared core memory service.
-func (m *MultiTenantSession) CoreMemoryService() *sqlite.CoreMemoryService {
-	return m.coreSvc
+func (m *MultiTenantSession) CoreMemoryService() storage.MemoryStore {
+	return m.getMemoryStore()
 }
 
 // ArchivalService returns the shared archival memory service.
@@ -751,10 +810,10 @@ func (m *MultiTenantSession) RecallTimeRange() vectordb.RecallTimeRangeFunc {
 }
 
 // NewLettaMemory creates a new LettaMemory instance with an independent tenantID.
-// The service instances (coreSvc, archivalSvc, etc.) are shared — data isolation
+// The service instances (memory store, archivalSvc, etc.) are shared — data isolation
 // is provided by the tenantID parameter.
 func (m *MultiTenantSession) NewLettaMemory(tenantID int64) *letta.LettaMemory {
-	return letta.New(tenantID, m.coreSvc, m.archivalSvc, m.getMemoryStore(), m.toolIndexSvc)
+	return letta.New(tenantID, m.getMemoryStore(), m.archivalSvc, m.getMemoryStore(), m.toolIndexSvc)
 }
 
 // GetSessionMCPManager 实现 SessionMCPManagerProvider 接口

@@ -210,6 +210,17 @@ func (s *sqliteMemoryStore) AppendHistory(ctx context.Context, tenantID int64, e
 func (s *sqliteMemoryStore) GetHistoryEntries(ctx context.Context, tenantID int64, limit int) ([]string, error) {
 	return s.mem.GetHistoryEntries(ctx, tenantID, limit)
 }
+func (s *sqliteMemoryStore) GetHistoryEntriesInRange(ctx context.Context, tenantID int64, start, end time.Time, limit int) ([]HistoryEntry, error) {
+	rows, err := s.mem.GetHistoryEntriesInRange(ctx, tenantID, start, end, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]HistoryEntry, len(rows))
+	for i, r := range rows {
+		out[i] = HistoryEntry{Entry: r.Entry, CreatedAt: r.CreatedAt}
+	}
+	return out, nil
+}
 func (s *sqliteMemoryStore) ClearHistory(ctx context.Context, tenantID int64) error {
 	return s.mem.ClearHistory(ctx, tenantID)
 }

@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5"
+	"fmt"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -164,6 +166,35 @@ func (s *pgMemoryStore) GetHistoryEntries(ctx context.Context, tenantID int64, l
 		result = append(result, entry)
 	}
 	return result, nil
+}
+
+// GetHistoryEntriesInRange returns event_history rows within [start, end], newest
+// first (limit <= 0 means 20) — the PG peer of the SQLite implementation: same
+// defaulting and ordering, so recall behaves identically on both backends.
+func (s *pgMemoryStore) GetHistoryEntriesInRange(ctx context.Context, tenantID int64, start, end time.Time, limit int) ([]HistoryEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT entry, created_at FROM event_history
+		WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3
+		ORDER BY created_at DESC LIMIT $4`, tenantID, start, end, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recall time range: %w", err)
+	}
+	defer rows.Close()
+	var entries []HistoryEntry
+	for rows.Next() {
+		var e HistoryEntry
+		if err := rows.Scan(&e.Entry, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan recall entry: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recall entries: %w", err)
+	}
+	return entries, nil
 }
 
 func (s *pgMemoryStore) ClearHistory(ctx context.Context, tenantID int64) error {

@@ -177,12 +177,23 @@ type MemoryStore interface {
 	// Event history
 	AppendHistory(ctx context.Context, tenantID int64, entry string) error
 	GetHistoryEntries(ctx context.Context, tenantID int64, limit int) ([]string, error)
+	// GetHistoryEntriesInRange returns event_history rows within [start, end],
+	// newest first (limit <= 0 means 20). This is the backend-agnostic replacement
+	// for the former SQLite-only RecallTimeRangeFunc: both backends filter on
+	// created_at and return the same ordering.
+	GetHistoryEntriesInRange(ctx context.Context, tenantID int64, start, end time.Time, limit int) ([]HistoryEntry, error)
 	GetHistoryCount(ctx context.Context, tenantID int64) (int64, error)
 	ClearHistory(ctx context.Context, tenantID int64) error
 	ClearState(ctx context.Context, tenantID int64) error
 	GetTokenState(ctx context.Context, tenantID int64) (promptTokens, completionTokens int64, err error)
 	SetTokenState(ctx context.Context, tenantID int64, promptTokens, completionTokens int64) error
 	SetPersonaIsolation(enabled bool)
+}
+
+// HistoryEntry is one event_history row, as returned by the range query.
+type HistoryEntry struct {
+	Entry     string
+	CreatedAt time.Time
 }
 
 // WebUserInfo describes a web UI user account (for listing).

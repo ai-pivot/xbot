@@ -416,7 +416,7 @@ type SubAgentStatus struct {
 // 已迁移到 RunConfig 中。
 type ToolContextExtras struct {
 	TenantID        int64
-	CoreMemory      *sqlite.CoreMemoryService
+	CoreMemory      storage.MemoryStore
 	ArchivalMemory  *vectordb.ArchivalService
 	MemorySvc       storage.MemoryStore
 	RecallTimeRange vectordb.RecallTimeRangeFunc
