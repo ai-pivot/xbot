@@ -102,6 +102,17 @@ func verify(ctx context.Context, src *sql.DB, pool *pgxpool.Pool, sessions []ses
 		if err != nil {
 			return err
 		}
+		// Tenant-scoped tables legitimately lose their orphaned rows: SQLite never
+		// enforced the FK, so deleting a session left children behind, and PG will
+		// not accept them. The expected target count is therefore
+		// "source − orphans"; counting the orphans as failures would report a
+		// correct migration as broken.
+		if table != "tenants" && hasTenantColumnInSQLite(ctx, src, table) {
+			if orphans, err := countOrphans(ctx, src, table); err == nil && orphans > 0 {
+				check(fmt.Sprintf("%s (−%d orphan)", table, orphans), int64(srcN-orphans), dstN)
+				continue
+			}
+		}
 		check(table, int64(srcN), dstN)
 	}
 
@@ -251,4 +262,18 @@ func sortedIdentityTables() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// hasTenantColumnInSQLite reports whether a source table carries tenant_id.
+func hasTenantColumnInSQLite(ctx context.Context, src *sql.DB, table string) bool {
+	cols, err := sqliteColumns(ctx, src, table)
+	if err != nil {
+		return false
+	}
+	for _, c := range cols {
+		if c == "tenant_id" {
+			return true
+		}
+	}
+	return false
 }
