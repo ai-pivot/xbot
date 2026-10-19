@@ -15,7 +15,7 @@
 | S1 | 迁移 = 主库 v74 + 会话库 v4 | **只改会话库 schema（v3 → v4）**；主库不加列、不建表 |
 | S2 | 群组消息以主库中心表为权威 | **不存在群级消息表**；权威 = 每个收件方会话库的 inbound 行 |
 | S3 | 旧行 `sender_id` 由主库回填作业批量填 | 回填作业改为**逐会话库**执行（主库只提供 owner 映射） |
-| S4 | 群组场景用中心表 `from_*` 索引 | 群历史用会话库 `group_id` 索引（④） |
+| S4 | 群组场景用中心表 `from_*` 索引 | 群发副本用会话库 `group_id` 标记（不做跨库聚合，④） |
 
 ---
 
@@ -49,7 +49,7 @@
 - 不引入用户表/权限表（`sender_id` 仍是自由字符串，与现有 `user_chats.sender_id`、memory 的 user_id 一致）。
 - 不把 `sender_id` 作为外键（跨会话库无法 FK）。
 - 不实现「消息级已读/未读」。
-- 不做「群级发送者索引表」（群历史靠跨库聚合，见 ④）。
+- 不做「群级发送者索引表」（群历史不做聚合，见 ④）。
 - **不迁移**任何历史消息到别处；旧行原地加列。
 
 ---
@@ -68,7 +68,7 @@
 **主库**（只有注册表与全局表）：
 
 - `tenants`（含 `db_path`/`migrated`/`preview`）：`storage/sqlite/schema.go:17-38`
-- v71 之前的 `session_messages` 表仍残留在 DDL 中（`storage/sqlite/schema.go:40-74`），仅服务 `migrated=0` 的会话；**不属于新设计的一部分**，收尾处置见开放问题 Q1。
+- v71 之前的 `session_messages` 表仍残留在 DDL 中（`storage/sqlite/schema.go:40-74`），仅服务 `migrated=0` 的会话；**不属于新设计的一部分**，v74 收尾 DROP（守卫：无 `migrated=0` 会话）。
 
 ### 2.2 写入路径
 
@@ -144,7 +144,7 @@ ALTER TABLE session_messages ADD COLUMN sender_name TEXT NOT NULL DEFAULT '';
 | `sender_id` | TEXT | 用户 id / `role:instance` / `system` | `agent` 用 `role:instance`（与 `agent:<role>/<instance>` 地址一致） |
 | `sender_name` | TEXT | 展示名 | 用户昵称 / 角色名；可空，UI 回退到 id |
 
-> 这三列是 ① §7.2 的 12 列中的 3 列；其余列（`message_id`/`group_id`/`kind`/`correlation_id`/`reply_to`/`idempotency_key`/`direction`/`expires_at`/`structured_json`）同批迁移，定义以 ① 为准。本文只负责 sender 部分。
+> 这三列是 ① §7.2 的 11 列中的 3 列；其余列（`message_id`/`group_id`/`kind`/`correlation_id`/`reply_to`/`idempotency_key`/`direction`/`structured_json`）同批迁移，定义以 ① 为准。本文只负责 sender 部分。
 
 ### 3.2 为什么不用「单一 sender_id + 命名空间」
 
@@ -192,7 +192,7 @@ UPDATE session_messages SET sender_type = 'agent'
 UPDATE session_messages SET sender_type = 'system'
  WHERE sender_type = '' AND (role IN ('tool','system') OR record_type <> 'message' OR internal_only = 1);
 
--- system 行直接落 'system'；user/agent 留空表示 legacy
+-- system 行直接落 'system'；user/agent 留空即 legacy
 UPDATE session_messages SET sender_id = 'system', sender_name = 'system'
  WHERE sender_type = 'system' AND sender_id = '';
 
@@ -243,7 +243,7 @@ for each tenant in tenants where db_path != '':
 | `idx_sm_sender (tenant_id, sender_type, sender_id)` | 按发送者查消息 |
 | 现有 `idx_session_messages_tenant_history` | 主查询（id 顺序）不变 |
 | 现有 `idx_sm_tenant_role_id` | 预览查询不变 |
-| `ix_sm_group (group_id, created_at)`（①） | 群历史聚合（④） |
+| `ix_sm_group (group_id, created_at)`（①） | 群发副本标记 / 按群过滤（不做跨库聚合） |
 | `ux_sm_message_id`（①） | 投递去重 |
 
 ### 4.6 惰性迁移的列顺序契约
@@ -373,7 +373,7 @@ SenderName string `json:"sender_name,omitempty"`
 
 - **没有中心表 `from_*`**，因此不存在"两表字段映射"问题。
 - 写入时由 `MessageService` 用同一个信封同时填 `structured_json.from.*` 与 `sender_*`，保证同构。
-- 群历史聚合（④ §6）直接读各库的 `sender_*`，不需要 join。
+- 不做群历史聚合（④ §6）：每份副本在自己会话库里读 `sender_*`，不需要 join。
 
 ### 7.3 一致性约束
 
@@ -411,7 +411,7 @@ structured_json.from.name  == sender_name
 | 迁移期间并发写 | 锁竞争 | 现有 `historyLock` + WAL；迁移在打开库时串行 | 重试 |
 | 索引增加写放大 | 写入变慢 | 复合索引，成本可接受；观察 p99 | `DROP INDEX` |
 | `role`/`sender_type` 混用 | 语义错误 | 文档 + 测试；`role` 不进 sender 逻辑 | — |
-| 主库遗留 `session_messages` 无 sender 列 | 旧会话读不到 sender | 该表只服务 `migrated=0`；迁移完成后按 Q1 处置 | 保留空列/空表 |
+| 主库遗留 `session_messages` 无 sender 列 | 旧会话读不到 sender | 该表只服务 `migrated=0`；v74 收尾 DROP（守卫：无 `migrated=0` 会话） | 保留旧表不 DROP |
 
 ---
 
@@ -424,7 +424,7 @@ structured_json.from.name  == sender_name
 3. 旧行 `sender_type` 分布符合 §4.4；`sender_id=''`（user/agent）或 `'system'`（system）。
 4. 回填作业运行后，1:1 会话的旧 user 行 `sender_id` = `user_chats.sender_id`。
 5. 重复运行迁移/回填幂等（不报错、不改变结果）。
-6. **主库 `pragma table_info(session_messages)` 不含 sender 三列**（若有遗留表，保持原样）。
+6. **主库 `pragma table_info(session_messages)` 报 no such table**（v74 收尾已 DROP；守卫：无 `migrated=0` 会话）。
 
 ### 10.2 新写入
 
@@ -511,4 +511,4 @@ structured_json.from.name  == sender_name
 
 ## 12. 开放问题
 
-全局仅 3 条，见 `sendmessage-structured.md` §17（本文不新增）。其中与本文件相关的是 Q1（主库遗留消息表处置）——本设计默认**不动主库遗留表**。
+无开放问题（Q1–Q3 已由用户拍板，见 `sendmessage-structured.md` §17）。与本文件相关的是 **Q1：主库遗留 `session_messages`/`iteration_history` 在 v74 收尾 DROP（守卫：无 `migrated=0` 会话）**。

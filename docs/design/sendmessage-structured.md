@@ -25,10 +25,10 @@
 
 1. **`SendMessage` 是「结构化信封 + 地址」**：`kind`/`payload`/`correlation_id`/`reply_to`/`idempotency_key`/`hop`；`message` 字符串 = `kind=text` 的快捷方式。
 2. **消息的权威副本永远在参与者的会话分库里**。一次投递 = 发送方会话库一条 `direction=out` 的审计行 + 收件方会话库一条 `direction=in` 的消息行。**主库（`xbot.db`）不新增任何消息表**。
-3. **群发不是一种消息类型**：群发 = 遍历 `group_members(status='alive')`，对每个成员各发一份同样的 `SendMessage`；每份写各自的会话库，带 `group_id` 与 `sender_*`。群历史 = 跨会话库按 `group_id` 聚合查询（见 ④）。
+3. **群发不是一种消息类型**：群发 = 遍历 `group_members(status='alive')`，对每个成员各发一份同样的 `SendMessage`；每份写各自的会话库，带 `group_id` 与 `sender_*`。**群历史不做聚合**：群主用 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报（见 ④）。
 4. **`SendMessage` 永远异步**：持久化成功即返回 `{message_id, status}`，不等待回复。
 5. **`ask_user` 完全异步**：投递即返回并带 `correlation_id`。用户回复是**插队消息**（优先级高于普通排队消息），agent 忙则在**下一个 iteration 边界**注入（不打断当前工具调用），空闲则立即开启新 turn；回复带 `reply_to=<correlation_id>`。
-6. **旧 `AskUser` 工具、等待态、旧 WS 事件、旧控制记录读写、旧历史只读回放全部删除**（无兼容窗口），前端换成新问题卡片（单选/多选/自定义/取消/超时）。
+6. **旧 `AskUser` 工具、等待态、旧 WS 事件、旧控制记录读写、旧历史只读回放全部删除**（无兼容窗口），前端换成新问题卡片（单选/多选/自定义/取消）。
 
 ---
 
@@ -39,10 +39,10 @@
 | # | 目标 | 可验证判据 |
 |---|---|---|
 | G1 | 结构化消息 schema 稳定、可版本化 | `schema` 字段 + 单一 `kind` 注册表；未知 kind 拒绝并回执 |
-| G2 | ask_user 能力不丢 | payload 覆盖单选/多选/自定义/取消/超时四类交互；前端卡片可回答 |
+| G2 | ask_user 能力不丢 | payload 覆盖单选/多选/自定义/取消四类交互；前端卡片可回答 |
 | G3 | 完全异步 + 回调 | `SendMessage` 返回耗时 < 100ms（本进程本地写库）；回答经插队队列注入 |
 | G4 | 幂等/去重语义明确 | 同一 `idempotency_key` 重复提交返回同一 `message_id`，收件方只有一行 |
-| G5 | 消息只在会话库、可跨会话聚合 | 任意消息可由 `(channel, chatID)` + `message_id` 定位；主库 `SELECT` 不到任何消息内容 |
+| G5 | 消息只在会话库、可跨会话定位 | 任意消息可由 `(channel, chatID)` + `message_id` 定位；主库 `SELECT` 不到任何消息内容 |
 | G6 | 群发/单发语义唯一 | 地址只有 `agent:`/`session:`/`group:`/IM；`group:` 的投递 = N 份独立单发 |
 | G7 | ask_user 回复高优先级且不打断工具 | 运行中收到回复：当前工具调用完整执行 → 持久化 → 下一 iteration 首条注入 |
 | G8 | 旧机制彻底退场 | `GetBuiltinToolNames()` 无 `AskUser`；代码中无等待态/旧事件/旧回放分支 |
@@ -92,7 +92,7 @@
 | 会话库 schema = 主库子集（`session_messages` + `iteration_history` + 索引） | `storage/sqlite/sessiondb.go:20-90` |
 | 会话库版本独立：`sessionSchemaVersion = 3` | `storage/sqlite/sessiondb.go:45` |
 | 惰性迁移是**显式列清单** `INSERT ... SELECT`（不是 `SELECT *`），新增列天然拿到默认值 | `storage/sqlite/sessiondb.go:296-320` |
-| 主库仍保留 v71 之前的 `session_messages` 表（`migrated=0` 的会话仍读它） | `storage/sqlite/schema.go:40-74`、`tenants.migrated`（`:34`） |
+| 主库仍保留 v71 之前的 `session_messages` 表（`migrated=0` 的会话仍读它）；v74 收尾 DROP（守卫：无 `migrated=0` 会话） | `storage/sqlite/schema.go:40-74`、`tenants.migrated`（`:34`） |
 | 会话库写收口：`appendMessageWith`（显式 INSERT 列清单） | `storage/sqlite/history.go:291-337` |
 | 主库 schema 版本 73 | `storage/sqlite/db.go:67` |
 
@@ -100,7 +100,7 @@
 
 1. **无 correlation**：普通 `SendMessage` 的「发出去—回过来」没有关联键。
 2. **无持久化信封**：投递内容只以 `[group:g1] ...` 前缀字符串存在于目标会话，无法还原「谁发给谁、哪条、什么状态」。
-3. **异步是「投递即忘」**：没有重试、没有幂等、没有超时收据。
+3. **异步是「投递即忘」**：没有重试、没有幂等。
 4. **AskUser 与 SendMessage 两套机制**：前者要求目标会话正在等待，后者要求地址可寻址。
 5. **群组消息丢失发送者**：`[group:%s] %s` 前缀（`tools/send_message.go:292,336`）无法结构化还原。
 6. **等待态跨重启恢复复杂**：内存 + DB 双份状态（`agent/agent.go:1242-1480`）。
@@ -127,13 +127,14 @@
 ```text
 schema:              "xbot.message/v1"
 default_max_hops:    4
-default_ttl_ms:      86_400_000        # 24h；ask_user 默认 1h
 max_payload_bytes:   256 KiB
 max_fanout:          128               # 单次群发最大收件人
 id_prefix:           msg_ / cor_ / rcp_
 id_format:           ULID（26 字符 Crockford Base32，时间有序）
 group_id_format:     grp_<nanoid(12)>
 ```
+
+> **没有 TTL / 过期机制**：消息投递后永久有效；`ask_user` 未回答状态也永久保留（Q3 拍板，见 §17）。
 
 ---
 
@@ -154,13 +155,12 @@ group_id_format:     grp_<nanoid(12)>
 | `to` | object | 是 | 目标地址（单发解析后的规范形式） |
 | `to.type` | enum | 是 | `user` / `agent` / `session` / `im`；**没有 `group`**（群发是 N 次单发） |
 | `to.id` | string | 是 | 解析后的目标 ID |
-| `group_id` | string | 否 | 群发场景的群 ID（仅作标记与聚合查询，不参与路由） |
+| `group_id` | string | 否 | 群发场景的群 ID（仅作标记，不参与路由；平台不做群历史聚合） |
 | `correlation_id` | string | 否 | 请求—响应链；`ask_user`/`report`/`decision` 必填 |
 | `causation_id` | string | 否 | 触发消息 ID |
 | `reply_to` | string | 否 | 直接回复的消息 ID（ask_user 回复填 `correlation_id` 对应的原问题 `message_id`） |
 | `idempotency_key` | string | 否 | 发送者作用域内唯一（建议 `<role>/<instance>:<业务键>`） |
 | `created_at` | string | 是 | RFC3339Nano，服务端时钟 |
-| `expires_at` | string | 否 | 到期后由 sweeper 产生 `receipt(expired)` |
 | `hop` | integer | 是 | 初始 0；agent 间转发 +1 |
 | `max_hops` | integer | 是 | 默认 4；`hop >= max_hops` 拒绝并回执 `HOP_LIMIT` |
 | `priority` | integer | 否 | 0=普通；100=用户插队回复（仅入站队列使用，不随消息转发） |
@@ -182,7 +182,6 @@ group_id_format:     grp_<nanoid(12)>
   "correlation_id": "cor_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
   "idempotency_key": "hubu-report-20261019-q1",
   "created_at": "2026-10-19T12:00:00.123Z",
-  "expires_at": "2026-10-19T13:00:00.123Z",
   "hop": 0,
   "max_hops": 4,
   "payload": {
@@ -199,7 +198,6 @@ group_id_format:     grp_<nanoid(12)>
       "required": true
     }],
     "allow_cancel": true,
-    "timeout_ms": 3600000,
     "context_refs": ["court/reports/2026-10-19.md#section-3"]
   },
   "text": "户部请旨：PPU 集群是否按计划今夜扩容？"
@@ -244,7 +242,7 @@ group_id_format:     grp_<nanoid(12)>
 | `report` | agent → user/agent | 奏折/汇报 | 是 |
 | `event` | 任意 → 任意 | 状态事件（无强回复期望） | 可配置（默认是） |
 | `decision` | user → agent | 批红（准/驳/改） | 是 |
-| `receipt` | 系统/收件方 → 发送方 | 投递/失败/过期收据 | 否（仅审计/UI） |
+| `receipt` | 系统/收件方 → 发送方 | 投递/失败收据 | 否（仅审计/UI） |
 
 ### 5.2 `text`
 
@@ -269,7 +267,6 @@ group_id_format:     grp_<nanoid(12)>
 | `questions[].allow_other` | bool | 否 | 默认 false；true 时允许 `text` |
 | `questions[].required` | bool | 否 | 默认 true |
 | `allow_cancel` | bool | 否 | 默认 true |
-| `timeout_ms` | integer | 否 | 1_000..86_400_000；默认 3_600_000 |
 | `context_refs` | string[] | 否 | 证据/文件引用（给 UI 展示） |
 
 回答校验：
@@ -338,12 +335,12 @@ group_id_format:     grp_<nanoid(12)>
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `ack_of` | string | 是 | 被回执的 `message_id` |
-| `status` | enum | 是 | `delivered`/`rejected`/`expired`/`cancelled`/`failed` |
+| `status` | enum | 是 | `delivered`/`rejected`/`cancelled`/`failed` |
 | `duplicate` | bool | 否 | true 表示重复提交，未重复投递 |
 | `error` | object | 否 | `{code, message}` |
 | `at` | string | 是 | RFC3339Nano |
 
-错误码枚举：`INVALID_KIND`、`INVALID_PAYLOAD`、`INVALID_ANSWER`、`NOT_FOUND`、`PERMISSION_DENIED`、`MEMBERSHIP_REQUIRED`、`HOP_LIMIT`、`FANOUT_LIMIT`、`RATE_LIMITED`、`TTL_EXPIRED`、`IDEMPOTENCY_CONFLICT`、`DELIVERY_FAILED`、`CANCELLED`。
+错误码枚举：`INVALID_KIND`、`INVALID_PAYLOAD`、`INVALID_ANSWER`、`NOT_FOUND`、`PERMISSION_DENIED`、`MEMBERSHIP_REQUIRED`、`HOP_LIMIT`、`FANOUT_LIMIT`、`RATE_LIMITED`、`IDEMPOTENCY_CONFLICT`、`DELIVERY_FAILED`、`CANCELLED`。
 
 ---
 
@@ -361,9 +358,9 @@ group_id_format:     grp_<nanoid(12)>
 | `reply_to` | string | 否 | 回复时必填 |
 | `causation_id` | string | 否 | 触发消息 id |
 | `idempotency_key` | string | 否 | 发送者作用域内唯一 |
-| `ttl_ms` | integer | 否 | 缺省见 §3 |
 
 > 地址前缀 `peer:` **删除**。`to="peer:x"` 返回 `NOT_FOUND`（旧 peer 数据不迁移，见 ④ / §12）。
+> **没有 `ttl_ms` 参数，也没有过期时间**：消息投递后永久有效（Q3 拍板，见 §17）。
 
 ### 6.2 返回（结构化）
 
@@ -391,7 +388,7 @@ MessageService
     ├─ 1. 规范化地址/kind/payload
     ├─ 2. 解析 from（ToolContext / session 上下文；忽略调用方 from）
     ├─ 3. 权限校验（§10）
-    ├─ 4. hop/TTL/幂等校验（幂等查询发送方会话库）
+    ├─ 4. hop/幂等校验（幂等查询发送方会话库）
     ├─ 5. 展开目标：
     │      · 单发 → [1 个收件人]
     │      · group:<id> → SELECT member_addr FROM group_members
@@ -402,7 +399,6 @@ MessageService
     └─ 9. 失败者写 receipt(failed) 到发送方会话库；返回 SendResult
 
   Resolve(ctx, correlationID) ([]Envelope, error)   // 扫发送方会话库
-  ExpireDue(ctx, now) (int, error)                  // 会话加载/活跃期定时结算
 ```
 
 ### 6.4 与旧行为差异
@@ -424,7 +420,7 @@ MessageService
 1. **消息只在会话库**：`session_messages` / `iteration_history`，路径 `sqlite.SessionDBRelPath(channel, chatID)`（`storage/sqlite/sessiondb.go:211-222`）。
 2. **主库不放任何消息表**：不建中心消息表、不建群级消息表、不建全局状态表。
 3. **每条消息都是某个会话库的一行**：由 `tenant_id`（会话）唯一归属。
-4. **跨会话的可观测性靠 ID 关联 + 聚合查询**，不靠中心表。
+4. **跨会话的可观测性靠 ID 关联**，不靠中心表，也不做跨库聚合查询。
 
 ### 7.2 会话库 schema 变更（`sessionSchemaVersion 3 → 4`）
 
@@ -440,7 +436,6 @@ ALTER TABLE session_messages ADD COLUMN correlation_id  TEXT NOT NULL DEFAULT ''
 ALTER TABLE session_messages ADD COLUMN reply_to        TEXT NOT NULL DEFAULT '';
 ALTER TABLE session_messages ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE session_messages ADD COLUMN direction       TEXT NOT NULL DEFAULT '';  -- in | out
-ALTER TABLE session_messages ADD COLUMN expires_at      DATETIME;                  -- ask_user/report 的超时结算点
 ALTER TABLE session_messages ADD COLUMN structured_json TEXT NOT NULL DEFAULT '';  -- 完整信封
 
 -- 一份投递在同一个会话库里只能有一行（重试/重复注入幂等）
@@ -453,7 +448,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_sm_idem
 -- 每个 correlation 只允许一个 answer（用户重复提交不重复注入）
 CREATE UNIQUE INDEX IF NOT EXISTS ux_sm_answer
     ON session_messages(correlation_id) WHERE kind = 'answer';
--- 群历史聚合 / correlation 链查询
+-- 群发标记 / correlation 链查询
 CREATE INDEX IF NOT EXISTS ix_sm_group ON session_messages(group_id, created_at) WHERE group_id <> '';
 CREATE INDEX IF NOT EXISTS ix_sm_corr  ON session_messages(correlation_id, created_at) WHERE correlation_id <> '';
 CREATE INDEX IF NOT EXISTS ix_sm_kind  ON session_messages(kind, created_at) WHERE kind <> '';
@@ -496,7 +491,7 @@ A 的会话库：1 条 outbound（message_id=msg_X, group_id=G）
 B/C/D 的会话库：各 1 条 inbound（message_id 同为 msg_X, group_id=G）
 ```
 
-> 群发**不是**一条消息被广播到多个库，而是 N 份独立单发（用户模型的直接映射）。N 份副本共享同一个 `message_id`（同一条逻辑发言），靠 `group_id` + 收件方会话库区分副本；群历史按 `message_id` 去重。
+> 群发**不是**一条消息被广播到多个库，而是 N 份独立单发（用户模型的直接映射）。N 份副本共享同一个 `message_id`（同一条逻辑发言），靠 `group_id` + 收件方会话库区分副本。**平台不做群历史聚合**：不存在跨库合并查询（④ §6）。
 
 ### 7.4 幂等与去重
 
@@ -517,22 +512,10 @@ B/C/D 的会话库：各 1 条 inbound（message_id 同为 msg_X, group_id=G）
 |---|---|
 | `delivered` | 收件方会话库存在该 `message_id` 的 inbound 行 |
 | `failed` | 发送方会话库存在 `kind=receipt, ack_of=msg_X, status=failed` 行 |
-| `expired` | 同上，`status=expired` |
 | `answered` | 发送方会话库存在 `kind=answer, reply_to=msg_X` 行 |
 | `duplicate` | 重复提交时新写的 receipt 行 `duplicate=true` |
 
-`sweeper` 只处理 `ask_user`/`report` 等有 `expires_at` 的 outbound 行：
-
-```sql
-SELECT message_id, correlation_id, expires_at, structured_json
-  FROM session_messages
- WHERE direction='out' AND kind IN ('ask_user','report')
-   AND expires_at IS NOT NULL AND expires_at <= ?
-   AND NOT EXISTS (SELECT 1 FROM session_messages r
-                    WHERE r.kind='receipt' AND r.reply_to = session_messages.message_id)
-```
-
-触发时机：会话加载时（惰性）+ 活跃会话的定时 tick（复用 `Agent.periodicCleanup` 节奏，`agent/agent.go:5202-5215`）。**不新增后台全局扫描器**（主库没有消息表可扫）。
+**没有 `expired` 状态**：消息不会过期，`ask_user` 未回答状态永久保留（Q3 拍板）。因此也没有 sweeper / 惰性结算 / 定时 tick 扫描。
 
 ---
 
@@ -583,11 +566,11 @@ Q1: 改 — 先扩 4 节点，观察 24h
 - **去重**：见 §7.4。
 - **重试**：仅投递失败重试（3 次，200ms/1s/5s 退避）；LLM 处理失败不自动重试。
 
-### 8.4 超时与取消
+### 8.4 取消（没有超时）
 
-- `expires_at` 到期 → 写 `receipt(expired)` 到发送方会话库，并注入一条用户可见提示。
+- **没有超时**：`ask_user` 本质上就是一条消息。异步投递后 agent 不等待回复，用户想答就答，未回答状态永久保留；不需要任何过期状态机/结算任务。
 - 取消：发送方发 `kind=command, command=cancel, args.target=<message_id>`；取消 `ask_user` 时写 `receipt(cancelled)`，并把该 correlation 标记为 closed（之后到的 answer 返回 `CANCELLED`）。
-- 取消幂等：已 answered/expired 的消息返回 `CANCELLED` 但不改变终态。
+- 取消幂等：已 answered 的消息返回 `CANCELLED` 但不改变终态。
 
 ### 8.5 时序
 
@@ -596,7 +579,7 @@ Q1: 改 — 先扩 4 节点，观察 24h
     │                        │                         │
     │ SendMessage(ask_user)  │                         │
     ├───────────────────────▶│                         │
-    │                        ├─ 权限/hop/ttl/幂等       │
+    │                        ├─ 权限/hop/幂等         │
     │                        ├─ 写 outbound 行          │
     │                        ├─ 写 inbound 行 ─────────▶│
     │◀── {id,corr,delivered}─┤                         │
@@ -656,7 +639,6 @@ Q1: 改 — 先扩 4 节点，观察 24h
 |---|---|
 | 用户重复点「提交」 | `ux_sm_answer(correlation_id)`：第二次 `INSERT OR IGNORE` 返回 0 行 → 返回 `receipt(duplicate=true)`，不注入 |
 | 前端重连导致事件重放 | 前端以 `correlation_id` 去重；后端以 answer 行存在性判定 |
-| 同一问题被两个 worker 同时结算超时 | 先写 receipt 的事务获胜（`INSERT OR IGNORE` + 唯一键），另一方 no-op |
 | 回答到达时问题已被取消 | 只写 `receipt(cancelled)`，**不落 answer 行**；agent 收到取消提示而非答案 |
 
 ### 9.6 前端问题卡片（重新设计，替换旧 AskUserPanel）
@@ -669,7 +651,6 @@ Q1: 改 — 先扩 4 节点，观察 24h
 | 多选 | `multi_select=true`：checkbox，提交时校验 required |
 | 自定义 | `allow_other=true`：额外输入框（与选项互斥或并存由 `required` 决定） |
 | 取消 | `allow_cancel=true`：按钮 → 提交 `answer{cancelled:true}` |
-| 超时 | 显示倒计时；到期后卡片变灰，后端写 `receipt(expired)` |
 | 多问题 | 一次卡片内分页/纵向排列；一次性提交全部 `answers[]` |
 
 新 WS 事件（旧 `ask_user` / `ask_user_resolved` / `ask_user_response` **删除**）：
@@ -677,17 +658,16 @@ Q1: 改 — 先扩 4 节点，观察 24h
 ```text
 question_card            # 服务端 → 前端：渲染问题卡片（payload = ask_user envelope）
 question_card_answer     # 前端 → 服务端：提交回答（payload = answer envelope）
-question_card_resolved   # 服务端 → 前端：已答/取消/超时，卡片关闭
+question_card_resolved   # 服务端 → 前端：已答/取消，卡片关闭
 ```
 
 事件只携带信封 JSON，不再有 `request_id`/`WaitingUser` 等旧字段。
 
-### 9.7 超时结算
+### 9.7 没有超时（拍板决策）
 
-- `expires_at` 由 `ask_user.timeout_ms` 计算。
-- 结算时机：会话加载时惰性 + 活跃会话定时 tick（§7.5）。**没有全局扫描器**。
-- 结算动作：写 `receipt(expired)`（发送方会话库）+ 发 `question_card_resolved(reason=timeout)` + 向 agent 注入一条 `event(severity=info)`。
-- 会话长期不活跃：不结算；下次加载时补结算（幂等，时间戳用 `expires_at` 而非 `now`，保证审计一致）。
+- **不设过期时间字段，也不接受超时参数，不做任何超时结算。**
+- 理由（用户原话）：*"为什么要超时？它本质上不是 sendMessage 的一个消息吗？"* —— `ask_user` 就是一条消息；异步投递后 agent 不等待回复，未回答状态永久保留（用户想答就答）。
+- 因此：没有 sweep、没有惰性结算、没有全局 cron，也没有「过期」状态或对应错误码。
 
 ---
 
@@ -746,7 +726,7 @@ question_card_resolved   # 服务端 → 前端：已答/取消/超时，卡片�
 约束：
 
 1. **没有 `to.type=group`**：群 ID 只出现在 `group_id` 字段（标记）与 `group_members` 查询（路由）。
-2. **没有群级消息表**：群历史 = 跨会话库聚合（④ §6）。
+2. **没有群级消息表**：群历史不做聚合（④ §6）；群主用 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报。
 3. **成员回复默认单发给发起者**（prompt 约定），避免 N×N；显式群发必须受 fanout/hop/令牌桶限制。
 4. **非成员不能群发**（D6）。
 5. **`left` 成员不再投递**：群发时 `WHERE status='alive'`。
@@ -800,7 +780,7 @@ question_card_resolved   # 服务端 → 前端：已答/取消/超时，卡片�
 | 阶段 | 改动 | 兼容性 | 回滚 |
 |---|---|---|---|
 | M1（本设计） | 文档 only | 无 | — |
-| M2 | 会话库 v4：12 列 + 索引；`appendMessageWith` 写新列；`SendMessage` 双写（旧前缀字符串 + 新信封） | 旧客户端无感 | 列保留，旧代码忽略 |
+| M2 | 会话库 v4：11 列 + 索引；`appendMessageWith` 写新列；`SendMessage` 双写（旧前缀字符串 + 新信封） | 旧客户端无感 | 列保留，旧代码忽略 |
 | M3 | `SendMessage` 默认结构化；`group:` 走群发新路径；新问题卡片上线 | 旧 agent 仍可发字符串 | feature flag 切回 |
 | M4 | 删除 AskUser / 旧群组（§12） | 无兼容（按决策 C/D） | 回滚到上一版本二进制（旧数据已删，接受） |
 
@@ -824,7 +804,7 @@ question_card_resolved   # 服务端 → 前端：已答/取消/超时，卡片�
 - 新列：旧行默认 `''`；不需要回填消息内容。
 - `sender_type` 按 `role` 回填（见 ③ §4）。
 - **主库遗留 `session_messages`**：惰性迁移仍是显式列清单（`storage/sqlite/sessiondb.go:296-320`），新列自动取默认值，无需改迁移 SQL。
-- 收尾（可选）：当 `SELECT COUNT(*) FROM tenants WHERE migrated=0 AND db_path<>''` = 0 时，v74 迁移可 `DROP TABLE session_messages`（主库）与 `DROP TABLE iteration_history`（主库，若仍存在）。**这是破坏性动作，需用户单独确认**（开放问题 Q1）。
+- 收尾（Q1 已拍板）：当 `SELECT COUNT(*) FROM tenants WHERE migrated=0 AND db_path<>''` = 0 时，v74 迁移直接 `DROP TABLE session_messages`（主库）与 `DROP TABLE iteration_history`（主库，若仍存在）。**守卫条件不满足时保留两张旧表并跳过 DROP**（幂等，下次迁移再判）。
 
 ### 13.4 迁移执行注意
 
@@ -839,7 +819,6 @@ question_card_resolved   # 服务端 → 前端：已答/取消/超时，卡片�
 | 风险 | 影响 | 缓解 | 回滚 |
 |---|---|---|---|
 | 异步化改变 agent 行为（原来同步拿回复） | agent 重复提问 | prompt/docs 明确「回答异步到达」；ask_user 有 correlation，重复提问会被 `ux_sm_idem` 挡住 | 关 feature flag |
-| 跨会话库聚合查询慢 | 群历史卡顿 | 每库 `ix_sm_group`；fanout ≤128；默认 7 天窗口；超窗口走归档文件 | 降级为「只查发送者副本」 |
 | 群发部分失败 | 成员收不到 | 逐个记 receipt；返回 `recipients[]` 明细；重试幂等 | 重发同 `idempotency_key` |
 | 用户回复插队导致普通消息饿死 | 普通消息延迟 | 8 条强制让位规则（§9.2） | 调低优先级/关闭插队 |
 | 旧客户端收到新 WS 事件 | UI 报错 | 旧事件已删除，前后端同版本发布；未知事件忽略 | 回滚前端 |
@@ -856,7 +835,7 @@ question_card_resolved   # 服务端 → 前端：已答/取消/超时，卡片�
 1. `SendMessage(to="agent:x/y", message="hi")` 在 ≤100ms 返回 `{ok:true, status:"delivered", message_id:"msg_..."}`。
 2. `SendMessage(kind="ask_user", ...)` 返回后发送方 run 继续；用户回答后，发送方**下一 iteration 首条**上下文出现 `kind=answer`，`reply_to` = 原问题 `message_id`。
 3. 同一 `idempotency_key` 重复发送 10 次：发送方只有 1 条 outbound，收件方只有 1 条 inbound，返回同一 `message_id`。
-4. TTL 到期后，会话加载/定时 tick 内产生 `receipt(expired)`，且只产生一次（并发结算幂等）。
+4. `ask_user` 没有超时：发出 24h 后仍未回答，问题仍为待回答状态；用户随时回答都能正常注入（不存在 `expired` 状态，也不产生任何结算收据）。
 5. 取消未回答的 ask_user 后，再次回答返回 `CANCELLED`，不注入 agent。
 6. 非法答案（`multi_select=false` 选 2 项）返回 `INVALID_ANSWER`，原问题仍 pending。
 7. 跨租户/非成员发送返回 `PERMISSION_DENIED` / `MEMBERSHIP_REQUIRED` / `NOT_FOUND`，不泄露目标存在性。
@@ -881,14 +860,14 @@ question_card_resolved   # 服务端 → 前端：已答/取消/超时，卡片�
 ### 15.4 审计
 
 19. `SELECT ... FROM session_messages WHERE correlation_id=?`（发送方库）能还原完整问答链。
-20. 群历史聚合能还原「谁说的 + 发给了谁」（`message_id` 去重 + `recipients` 来自成员表）。
+20. 不存在群历史查询 API；每份群发副本在自己会话库内可还原「谁说的 + 发给了谁」（`sender_*` + `to.*`），但不跨库合并。
 
 ### 15.5 测试清单
 
 - 单元：envelope 校验、幂等、优先级排序、权限矩阵、hop、列迁移。
 - 集成：`SendMessage` → 写库 → 注入 → 回答 → 插队注入（CLI/Web/Feishu 三渠道）。
 - 回归：`go test ./storage/... ./agent/... ./tools/... ./channel/...`。
-- 前端：QuestionCard 单选/多选/自定义/取消/超时；旧组件已删除。
+- 前端：QuestionCard 单选/多选/自定义/取消；旧组件已删除。
 
 ---
 
@@ -909,7 +888,7 @@ question_card_resolved   # 服务端 → 前端：已答/取消/超时，卡片�
 
 | 文件:行 | 改动 |
 |---|---|
-| `storage/sqlite/sessiondb.go:27,45,51-90` | `sessionSchemaVersion 3→4`，加 12 列 + 7 索引 |
+| `storage/sqlite/sessiondb.go:27,45,51-90` | `sessionSchemaVersion 3→4`，加 11 列 + 索引 |
 | `storage/sqlite/history.go:16-30` | 新增 `HistoryRecordOutbound` 枚举 |
 | `storage/sqlite/history.go:291-337` | `appendMessageWith` INSERT 新列 |
 | `storage/sqlite/history.go:857-899` | SELECT/Scan 新列 |
@@ -948,8 +927,12 @@ question_card_resolved   # 服务端 → 前端：已答/取消/超时，卡片�
 
 ---
 
-## 17. 开放问题（需用户拍板，全局共 3 条）
+## 17. 遗留问题（已全部拍板，无开放项）
 
-1. **主库遗留 `session_messages`/`iteration_history` 的 DROP 时机**：是否在 v74 收尾迁移中直接 DROP（守卫：无 `migrated=0` 的会话）？还是永久保留空表？
-2. **群历史的保留窗口**：聚合查询默认限 7 天 / 2000 条；更早的群历史是否需要归档成 `court/meetings/*.md` 后删除原始行？
-3. **长期不活跃会话的 ask_user 超时**：只在会话加载时惰性结算（本设计），还是允许一个全局 cron 巡检「未加载会话」并代结算（需要枚举会话库，成本更高）？
+| # | 原问题 | 拍板结论 |
+|---|---|---|
+| Q1 | 主库遗留 `session_messages`/`iteration_history`（分库迁移前的旧表）的处置 | **v74 收尾 DROP**；守卫：`SELECT COUNT(*) FROM tenants WHERE migrated=0 AND db_path<>''` = 0 |
+| Q2 | 群历史怎么查（原：跨会话库合并 + 时间/条数窗口） | **不做群历史聚合**：群主通过 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报；`group_id` 仅作消息标记，成员只读自己的会话库 |
+| Q3 | ask_user 是否要超时/过期结算 | **不设超时**：ask_user 本质就是一条消息，异步投递后 agent 不等待回复；未回答状态永久保留，用户想答就答 |
+
+> 因此本设计**没有**过期时间列、超时结算逻辑或任何"提问过期"状态机；也**没有**跨会话库的群历史查询/缓存/窗口/越权规则。

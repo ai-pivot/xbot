@@ -62,7 +62,7 @@ court/
     <YYYY-MM-DD>/<dept>.yaml        # 奏折快照（与 report 消息同源）
     <YYYY-MM-DD>/summary.yaml       # 首辅汇总
   meetings/
-    <YYYY-MM-DD>-<topic>.md         # 会议纪要（首辅从 GroupHistory 聚合查询后人工整理，非平台消息表）
+    <YYYY-MM-DD>-<topic>.md         # 会议纪要（首辅根据成员主动汇报与 SubAgent(action=inspect) 整理，非平台消息表）
   evidence/
     <dept>/<task-id>/...            # 证据文件（日志/截图/命令输出）
   bin/
@@ -758,7 +758,7 @@ cor_20261019
 |---|---|
 | 结构化消息 envelope / report / decision | `sendmessage-structured.md` |
 | sender_id 落库与展示 | `message-sender-id.md` |
-| 群发 / 单发、`groups`/`group_members` 两张表、`GroupHistory` 聚合 | `group-hardening.md` |
+| 群发 / 单发、`groups`/`group_members` 两张表（群历史不做聚合） | `group-hardening.md` |
 | cron 注入 | 现有 `cron/scheduler.go`、`tools/cron.go` |
 
 ### 12.3 需要修改的现有文件（最小）
@@ -774,7 +774,7 @@ cor_20261019
 
 ## 13. 开放问题
 
-全局仅 3 条，见 `sendmessage-structured.md` §17。本文档已按以下默认值收敛，不再单列问题：
+无开放问题（Q1–Q3 已由用户拍板，见 `sendmessage-structured.md` §17）。本文档已按以下默认值收敛，不再单列问题：
 
 - **部分准**：本期不支持（`decision` 只有 approve/reject/modify 三态；逐 task 准/驳留待后续）。
 - **state 进 git**：是（可 diff / 可 revert）；运行时高频写入由 `court/state/` 所在仓库承担。

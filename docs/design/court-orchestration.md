@@ -14,9 +14,9 @@
 
 | 文档 | 覆盖 | 核心内容 |
 |---|---|---|
-| [`sendmessage-structured.md`](./sendmessage-structured.md) | ① SendMessage 强化 + ② 删除 AskUser | 信封 schema、kind/payload、correlation/幂等/超时、**消息只落会话分库**、异步 ask_user 与插队队列、群发/单发语义、AskUser 删除清单 |
+| [`sendmessage-structured.md`](./sendmessage-structured.md) | ① SendMessage 强化 + ② 删除 AskUser | 信封 schema、kind/payload、correlation/幂等、**消息只落会话分库**、异步 ask_user 与插队队列、群发/单发语义、AskUser 删除清单 |
 | [`message-sender-id.md`](./message-sender-id.md) | ③ 每条消息记录发送人 | `sender_type`/`sender_id`/`sender_name`（**仅会话库**）、会话库 v3→v4 迁移与回填、写入/读取/UI 改造 |
-| [`group-hardening.md`](./group-hardening.md) | ④ 群组（群发/单发） | 只有群发与单发；`groups`/`group_members` 两张小表；跨会话库群历史聚合；D1–D17 修复；hop/fanout/限流；`grp_<nanoid>`；旧群数据删除清单 |
+| [`group-hardening.md`](./group-hardening.md) | ④ 群组（群发/单发） | 只有群发与单发；`groups`/`group_members` 两张小表；群历史不做聚合（群主用 `SubAgent(action=inspect)`）；D1–D17 修复；hop/fanout/限流；`grp_<nanoid>`；旧群数据删除清单 |
 | [`court-reporting.md`](./court-reporting.md) | ⑤ 批红 + 汇报详细设计 | state schema、report/decision 消息、确定性规则引擎 schema（白名单/阈值/证据/矛盾）、朝会 cron、端到端时序 |
 
 阅读顺序建议：① → ③ → ④ → ⑤（消息模型 → 身份 → 群组 → 朝廷流程）。
@@ -24,7 +24,7 @@
 **三条不可动摇的基线**（后续任何实现 PR 都不得违反）：
 
 1. **主库不放任何消息**：所有消息只存在于 `sqlite.SessionDBRelPath(channel, chatID)` 指向的会话库。
-2. **没有「群组消息」**：群发 = 遍历成员各发一份、各写各的会话库；群历史 = 跨会话库按 `group_id` 聚合。
+2. **没有「群组消息」**：群发 = 遍历成员各发一份、各写各的会话库；群历史不做聚合（群主用 `SubAgent(action=inspect)`，子代理主动汇报）。
 3. **`ask_user` 完全异步**：投递即返回；用户回复是插队消息，在下一个 iteration 边界注入。
 
 **决策基线（用户拍板 A–E）**：
@@ -54,7 +54,7 @@
 消息层的三条硬约束（详见 ①）：
 
 1. **消息只落会话分库**：`session_messages` / `iteration_history`，主库无消息表。
-2. **只有群发和单发**：群发 = 遍历成员各发一份；群历史 = 跨会话库按 `group_id` 聚合。
+2. **只有群发和单发**：群发 = 遍历成员各发一份；群历史不做聚合（群主用 `SubAgent(action=inspect)`，子代理主动汇报）。
 3. **`ask_user` 完全异步**：投递即返回，用户回复是插队消息，在下一个 iteration 边界注入。
 
 核心缺口只有四个，全部是**通用原语**，不含任何「朝廷」业务语义：
@@ -162,7 +162,7 @@
 | 内阁首辅 | 主 Agent 常驻会话 | `agent/agent.go`、`session/multitenant.go:293` | 唯一调度者；负责汇总与上奏 |
 | 六部（部门） | interactive SubAgent（role md） | `tools/subagent.go:125`、`tools/subagent_roles.go:12`、`agent/interactive.go:970` | 长寿命、独立工具白名单、独立记忆 |
 | 部门内司/局 | 嵌套 SubAgent | `agent/engine.go:1026`、`agent/interactive.go:2719` | `spawn_agent` capability 控制 |
-| 部务会议 | `CreateChat(type=group)` + `SendMessage(to=group:)` | `tools/create_chat.go:164-259`、`tools/send_message.go:240-353` | 群发 = 遍历成员各发一份；成员回发起者用单发；群历史跨库聚合 |
+| 部务会议 | `CreateChat(type=group)` + `SendMessage(to=group:)` | `tools/create_chat.go:164-259`、`tools/send_message.go:240-353` | 群发 = 遍历成员各发一份；成员回发起者用单发；群历史不做聚合（群主用 inspect） |
 | 公文传递 | `SendMessage(to=agent:/session:/group:)` | `tools/send_message.go:76-121` | 投递即返回（写各自会话库），回复走异步通知 |
 | 朝会/例会 | cron job → bg notification pipeline | `tools/cron.go:127`、`cron/scheduler.go:205`、`agent/agent.go:2860-2873` | job 归属主会话；持久化在 `cron_jobs` 表 |
 | 工作日志/奏折 | 普通文件工具 | `tools/read.go`、Write/Grep 工具 | 可 git 版本化、可人审 |
@@ -394,8 +394,8 @@ red_pen:                               # 批红规则（脚本读取，不是代
 - **通知开会 = 一次群发**：`SendMessage(to="group:grp_...", kind=text, message="...")`。平台遍历 `status='alive'` 的成员，**每人各得一份独立副本**（各写各的会话库）。
 - **成员发言 = 单发回发起者**：`SendMessage(to="agent:shoufu/main", reply_to=<群发消息 id>)`。prompt 明确「会议中默认只回发起者，不群发」。
 - **需要全员知晓的结论 = 发起者再群发一次**（显式动作，受 hop/fanout/令牌桶限制）。
-- 会议纪要由首辅通过 `GroupHistory(group_id)` 聚合查询（只读视图，跨成员会话库）后写入 `court/meetings/<date>-<topic>.md`。平台不建群级消息表 表。
-- 群历史是「读视图」而不是共享上下文：成员不会自动看到别人的回答；首辅在纪要里汇总后，通过下一次群发把结论发回全员。
+- 会议纪要由首辅根据成员的主动汇报（`kind=report`/`kind=text`）与 `SubAgent(action=inspect)` 返回的状态整理后写入 `court/meetings/<date>-<topic>.md`。**平台不提供群历史聚合，也不建群级消息表**。
+- 群历史不是共享上下文：成员不会自动看到别人的回答；也不存在跨会话库的读视图。首辅在纪要里汇总后，通过下一次群发把结论发回全员。
 
 ### 5.4 朝会（cron + 汇总）
 
@@ -665,12 +665,11 @@ subagent:
 | @ 解析容错 | `@agent:role`（无 instance）按 role 唯一匹配；歧义报 `AMBIGUOUS_MENTION` | `send_message.go:431-447` |
 | 删轮次 | `max_rounds`/`rounds_used`/`Closed`/`group_rounds` 全部从 schema 与代码删除 | `create_chat.go:57,69`、`group_state.go:61-65` |
 | 成员状态 | 只有 `alive/left`；`left` 不再投递；leave 广播 `event(member.left)` | 新 `tools/group_store.go` |
-| 群历史 | `GroupHistory(group_id)` 跨会话库聚合（只读，按 `message_id` 合并） | 新 `tools/group_history.go` |
 
 **B. 朝廷用法（不进 core）**：
 
 - **开会通知 = 一次群发**；成员回发起者 = 单发；结论回全员 = 发起者再群发一次。
-- 会议纪要 = 首辅用 `GroupHistory` 聚合后写 `court/meetings/<date>-<topic>.md`，平台不建消息表。
+- 会议纪要 = 首辅根据成员主动汇报 + `SubAgent(action=inspect)` 整理后写 `court/meetings/<date>-<topic>.md`，平台不提供聚合、不建消息表。
 - 不存在主持人/发言权/轮次：这些是 prompt 约定，core 不建模。
 
 #### 迁移（决策 D：不迁移）
@@ -900,7 +899,6 @@ grep -n "SetNotifyCronFunc" -A 12 agent/agent.go
 | group 发送 | `tools/send_message.go:232-353` |
 | peer 组（旧，已删） | `tools/group_state.go:133-387`、`tools/peer_group.go`（审计对照） |
 | group prompt | `agent/engine_wire.go:729-741` |
-| group 历史聚合 | 新 `tools/group_history.go` |
 | group 清理 | `agent/interactive.go:588-593` |
 | cron 调度 | `cron/scheduler.go:205-248` |
 | cron 工具 | `tools/cron.go:127-180,207-220` |
@@ -926,7 +924,7 @@ grep -n "SetNotifyCronFunc" -A 12 agent/agent.go
 | TTL 默认先保持 destroy | 零行为突变，可观察 | 直接切 hibernate（风险高） |
 | durable tenant 用 sidecar 记录 spec | 不碰 schema | 加 `agent_specs` 表（迁移成本） |
 | 朝会靠 cron 而非常驻 goroutine | 已有持久化 + 重启可用 | 新后台调度器（重复造轮子） |
-| 群历史靠跨会话库聚合 | 消息只落会话库（决策 A）；不建群级消息表 | 给 group 建消息表 / 群组独立库（与 session 重复，且违反 A） |
+| 不做群历史聚合 | 群主已有 `SubAgent(action=inspect)`，子代理会主动汇报；消息只落会话库（决策 A） | 跨会话库聚合（N 路文件扫描、越权面大、无人使用） |
 | 群状态只建两张小表 | 只有成员关系是跨会话数据；消息不是 | 建群组独立库、存群消息、存轮次/主持人 |
 | 旧群数据直接删除 | 用户拍板 D；旧数据本来不可靠（内存/JSON 双轨） | 迁移 `peer_groups.json` + legacy 认领（复杂度高、价值低） |
 | ask_user 完全异步 + 插队队列 | 不阻塞 run；用户回复应立即被看到 | 保留等待态/兼容窗口（双份状态、跨重启恢复复杂） |
