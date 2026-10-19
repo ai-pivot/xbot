@@ -128,3 +128,6 @@ plugins/*/xbot-*
 
 # locally built PG test image binary (95MB) — produced by scripts/docker, never committed
 /xbot-pg-test
+
+# locally built migration tool binary (24MB) — `go build ./cmd/xbot-migrate`
+/xbot-migrate
