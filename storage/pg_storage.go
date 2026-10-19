@@ -47,3 +47,10 @@ func (s *pgStorage) Config() ConfigStore { return s.config }
 func (s *pgStorage) Close() error        { s.pool.Close(); return nil }
 
 var _ Storage = (*pgStorage)(nil)
+
+// InitPGSchema applies the PostgreSQL schema (idempotent). Exported so tooling —
+// e.g. the SQLite→PG migration command — creates exactly the schema the runtime
+// uses instead of duplicating DDL.
+func InitPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	return initPGSchema(ctx, pool)
+}
