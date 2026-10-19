@@ -244,11 +244,13 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 		usage.MaxContextTokens = defaultMaxContext
 	}
 
-	if h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
+	if h.Ag == nil || h.Ag.MultiSession() == nil {
 		return usage, nil
 	}
-	db := h.Ag.MultiSession().DB()
-	tenantID, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(channelName, chatID)
+	// 后端无关：tenant 解析走 TenantStore，会话 token 走 SessionStore
+	// （SQLite 会话库 / PG 共享连接）—— 不再依赖主库 *sqlite.DB，因此 PG 后端同样可用。
+	tenantStore := h.Ag.MultiSession().Store().Tenant()
+	tenantID, err := tenantStore.GetTenantIDByChannelChatID(channelName, chatID)
 	if err != nil {
 		return usage, err
 	}
@@ -256,9 +258,7 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 		return usage, nil
 	}
 
-	// v71（每会话一个 DB）：session_messages.context_tokens 在会话库 —— 经
-	// SessionServiceForSQLite（tenantID → 会话库）读取，绝不再 NewSessionService(主库)。
-	sessionSvc, err := h.Ag.MultiSession().SessionServiceForSQLite(tenantID)
+	sessionSvc, err := h.Ag.MultiSession().SessionServiceFor(tenantID)
 	if err != nil {
 		return usage, err
 	}
@@ -266,7 +266,7 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 	if err != nil {
 		return usage, err
 	}
-	statePromptTokens, stateCompletionTokens, err := sqlite.NewMemoryService(db).GetTokenState(ctx, tenantID)
+	statePromptTokens, stateCompletionTokens, err := h.Ag.MultiSession().Store().Memory().GetTokenState(ctx, tenantID)
 	if err != nil {
 		return usage, err
 	}

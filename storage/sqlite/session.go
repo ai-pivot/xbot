@@ -1183,7 +1183,7 @@ func (s *SessionService) GetTenantUsageBuckets(tenantID int64, bucketSeconds int
 	}
 
 	shift := int64(tzOffsetMinutes) * 60 // seconds east of UTC
-	windowStart := floorEpochBucket(time.Now().Unix(), bucketSeconds, shift) -
+	windowStart := FloorEpochBucket(time.Now().Unix(), bucketSeconds, shift) -
 		(int64(count)-1)*bucketSeconds
 
 	rows, err := conn.Query(`
@@ -1218,9 +1218,9 @@ func (s *SessionService) GetTenantUsageBuckets(tenantID int64, bucketSeconds int
 	return buckets, nil
 }
 
-// floorEpochBucket floors an epoch-second instant to a bucket boundary in the
+// FloorEpochBucket floors an epoch-second instant to a bucket boundary in the
 // shifted (wall-clock) space and returns the boundary as epoch seconds.
-func floorEpochBucket(epoch, bucketSeconds, shiftSeconds int64) int64 {
+func FloorEpochBucket(epoch, bucketSeconds, shiftSeconds int64) int64 {
 	shifted := epoch + shiftSeconds
 	if shifted >= 0 {
 		return (shifted/bucketSeconds)*bucketSeconds - shiftSeconds

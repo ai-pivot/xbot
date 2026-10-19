@@ -258,6 +258,90 @@ func (s *pgSessionStore) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 	return result, nil
 }
 
+// GetIterationHistoryBeforeRange returns the iterations of a turn that precede
+// beforeIter, ascending — the windowing endpoint's segment query. Same ordering
+// and shape as the SQLite implementation.
+func (s *pgSessionStore) GetIterationHistoryBeforeRange(tenantID int64, turnID uint64, beforeIter int) ([]sqlite.IterationRecord, error) {
+	ctx := context.Background()
+	rows, err := s.pool.Query(ctx,
+		`SELECT iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
+		 FROM iteration_history WHERE tenant_id = $1 AND turn_id = $2 AND iteration < $3
+		 ORDER BY iteration ASC`, tenantID, turnID, beforeIter)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration_history before range: %w", err)
+	}
+	defer rows.Close()
+	return scanIterations(rows)
+}
+
+// GetIterationHistoryByNumber locates ONE iteration by (turn, iteration).
+// Not-found is a normal business result: (zero, false, nil) — the handler turns it
+// into a 404. ORDER BY id ASC LIMIT 1 keeps the same tie-break as SQLite when
+// duplicate rows exist.
+func (s *pgSessionStore) GetIterationHistoryByNumber(tenantID int64, turnID uint64, iteration int) (sqlite.IterationRecord, bool, error) {
+	ctx := context.Background()
+	var rec sqlite.IterationRecord
+	var createdAt time.Time
+	err := s.pool.QueryRow(ctx,
+		`SELECT iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, created_at
+		 FROM iteration_history WHERE tenant_id = $1 AND turn_id = $2 AND iteration = $3
+		 ORDER BY id ASC LIMIT 1`, tenantID, turnID, iteration).Scan(
+		&rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens,
+		&rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs,
+		&rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID, &createdAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return sqlite.IterationRecord{}, false, nil
+	}
+	if err != nil {
+		return sqlite.IterationRecord{}, false, fmt.Errorf("get iteration_history by number: %w", err)
+	}
+	rec.TurnID = turnID
+	rec.CreatedAt = createdAt
+	return rec, true, nil
+}
+
+// GetSyntheticPairRowsByTurn returns the turn's tool-pair candidate rows
+// (assistant rows carrying tool_calls + tool results, in id order) used to repair
+// histories written before synthetic tool pairs were persisted. The synthetic-name
+// judgement stays in the channel layer — SQL only narrows to candidate rows.
+func (s *pgSessionStore) GetSyntheticPairRowsByTurn(tenantID int64, turnID uint64) ([]llm.ChatMessage, error) {
+	ctx := context.Background()
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, role, content, COALESCE(tool_call_id, ''), COALESCE(tool_name, ''),
+		        COALESCE(tool_calls, ''), turn_id, created_at, iteration
+		 FROM session_messages
+		 WHERE tenant_id = $1 AND turn_id = $2 AND record_type = 'message'
+		   AND display_only = false AND internal_only = false
+		   AND ((role = 'assistant' AND COALESCE(tool_calls, '') NOT IN ('', '[]', 'null'))
+		     OR role = 'tool')
+		 ORDER BY id ASC`, tenantID, turnID)
+	if err != nil {
+		return nil, fmt.Errorf("get synthetic pair rows by turn: %w", err)
+	}
+	defer rows.Close()
+	var msgs []llm.ChatMessage
+	for rows.Next() {
+		var m llm.ChatMessage
+		var toolCalls string
+		var createdAt time.Time
+		var turnIDCol int64
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.ToolCallID, &m.ToolName,
+			&toolCalls, &turnIDCol, &createdAt, &m.Iteration); err != nil {
+			continue // a single corrupt row must not block the whole segment
+		}
+		m.TurnID = uint64(turnIDCol)
+		m.Timestamp = createdAt
+		if toolCalls != "" && toolCalls != "null" {
+			if err := json.Unmarshal([]byte(toolCalls), &m.ToolCalls); err != nil {
+				continue
+			}
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
 // ── v71 lifecycle ──
 
 func (s *pgSessionStore) HasLegacyRows(tenantID int64) (bool, error) {
@@ -1093,4 +1177,107 @@ func scanIterations(rows pgx.Rows) ([]sqlite.IterationRecord, error) {
 		result = append(result, rec)
 	}
 	return result, nil
+}
+
+// GetIterationAnchorsByTurn returns (iteration, created_at) anchors for every
+// iteration of a turn — the only basis for mapping a synthetic tool pair's
+// injection time onto an iteration number. Only those two fields are populated.
+func (s *pgSessionStore) GetIterationAnchorsByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error) {
+	ctx := context.Background()
+	rows, err := s.pool.Query(ctx,
+		`SELECT iteration, created_at FROM iteration_history
+		 WHERE tenant_id = $1 AND turn_id = $2 ORDER BY iteration ASC`, tenantID, turnID)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration anchors by turn: %w", err)
+	}
+	defer rows.Close()
+	var anchors []sqlite.IterationRecord
+	for rows.Next() {
+		var rec sqlite.IterationRecord
+		var createdAt time.Time
+		if err := rows.Scan(&rec.Iteration, &createdAt); err != nil {
+			continue
+		}
+		rec.CreatedAt = createdAt
+		anchors = append(anchors, rec)
+	}
+	return anchors, rows.Err()
+}
+
+// LatestAskControlRecord returns the newest ask_question / ask_answer control
+// record, or (0, "", nil) when the session has none — the authority for "is a
+// prompt still pending?" after a restart.
+func (s *pgSessionStore) LatestAskControlRecord(tenantID int64) (int64, sqlite.HistoryRecordType, error) {
+	ctx := context.Background()
+	var (
+		id         int64
+		recordType string
+	)
+	err := s.pool.QueryRow(ctx, `SELECT id, record_type FROM session_messages
+		WHERE tenant_id = $1 AND record_type IN ($2, $3)
+		ORDER BY id DESC LIMIT 1`,
+		tenantID, string(sqlite.HistoryRecordAskQuestion), string(sqlite.HistoryRecordAskAnswer)).
+		Scan(&id, &recordType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", fmt.Errorf("query latest ask control record: %w", err)
+	}
+	return id, sqlite.HistoryRecordType(recordType), nil
+}
+
+// GetTenantUsageBuckets returns time-bucketed usage for the dashboard. The bucket
+// maths mirrors SQLite (epoch seconds shifted into the caller's timezone, floored
+// to the bucket width) so both backends produce identical series.
+func (s *pgSessionStore) GetTenantUsageBuckets(tenantID int64, bucketSeconds int64, count int, tzOffsetMinutes int) ([]sqlite.UsageBucket, error) {
+	switch bucketSeconds {
+	case sqlite.UsageBucketMinuteSeconds, sqlite.UsageBucketHourSeconds, sqlite.UsageBucketDaySeconds:
+	default:
+		return nil, fmt.Errorf("unsupported bucket width %ds (want 60, 3600 or 86400)", bucketSeconds)
+	}
+	if count < 1 {
+		count = 1
+	} else if count > 1000 {
+		count = 1000
+	}
+	// Real offsets live in [-12h, +14h]; clamp so a hostile value cannot shift the
+	// series off the calendar.
+	if tzOffsetMinutes < -14*60 {
+		tzOffsetMinutes = -14 * 60
+	} else if tzOffsetMinutes > 14*60 {
+		tzOffsetMinutes = 14 * 60
+	}
+
+	ctx := context.Background()
+	shift := int64(tzOffsetMinutes) * 60 // seconds east of UTC
+	windowStart := sqlite.FloorEpochBucket(time.Now().Unix(), bucketSeconds, shift) -
+		(int64(count)-1)*bucketSeconds
+
+	// floor((epoch + shift) / width) * width - shift, expressed in SQL.
+	rows, err := s.pool.Query(ctx, `
+		SELECT (floor((EXTRACT(EPOCH FROM created_at) + $1) / $2) * $2 - $1)::bigint AS bucket_start,
+		       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cached_tokens), 0),
+		       COALESCE(SUM(tokens), 0), COUNT(*),
+		       COALESCE(SUM(ttft_ms), 0), COALESCE(SUM(total_ms), 0)
+		FROM iteration_history
+		WHERE tenant_id = $3 AND created_at IS NOT NULL
+		GROUP BY bucket_start
+		HAVING (floor((EXTRACT(EPOCH FROM MIN(created_at)) + $1) / $2) * $2 - $1) >= $4
+		ORDER BY bucket_start`, shift, bucketSeconds, tenantID, windowStart)
+	if err != nil {
+		return nil, fmt.Errorf("get tenant usage buckets: %w", err)
+	}
+	defer rows.Close()
+
+	buckets := []sqlite.UsageBucket{}
+	for rows.Next() {
+		var b sqlite.UsageBucket
+		if err := rows.Scan(&b.BucketStart, &b.InputTokens, &b.CachedTokens, &b.OutputTokens,
+			&b.Calls, &b.TTFTMsSum, &b.TotalMsSum); err != nil {
+			return nil, fmt.Errorf("scan usage bucket: %w", err)
+		}
+		buckets = append(buckets, b)
+	}
+	return buckets, rows.Err()
 }

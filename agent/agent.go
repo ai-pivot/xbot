@@ -1255,18 +1255,14 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	}
 	// Resolve again before replay: deletion may have happened after the probe.
 	// Never use GetOrCreateSession on this read-only recovery path.
-	// ⚠️ PG 后端没有主库 *sqlite.DB（TenantService 是 SQLite 专属具体类型）——
-	// 跳过本恢复路径（它的下一步 SessionServiceForSQLite().Replay 在 PG 上同样
-	// 不可用，见该方法注释）。
-	db := a.multiSession.DB()
-	if db == nil {
-		return key, nil
-	}
-	tenantID, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(ch, chatID)
+	// 后端无关：tenant 解析走 TenantStore、replay 走 SessionStore —— 因此 PG
+	// 后端也能恢复待答问题（此前这里依赖主库 *sqlite.DB，PG 上直接跳过）。
+	tenantStore := a.multiSession.Store().Tenant()
+	tenantID, err := tenantStore.GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil || tenantID == 0 {
 		return key, nil
 	}
-	if svc, err := a.multiSession.SessionServiceForSQLite(tenantID); err == nil {
+	if svc, err := a.multiSession.SessionServiceFor(tenantID); err == nil {
 		if replay, err := svc.Replay(tenantID); err == nil && replay.PendingAskUser != nil {
 			event := &protocol.ProgressEvent{}
 			metadata := replay.PendingAskUser.Metadata
@@ -1357,20 +1353,17 @@ func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqli
 	if a.multiSession == nil {
 		return 0, "", false
 	}
-	db := a.multiSession.DB()
-	if db == nil {
-		return 0, "", false
-	}
+	// 后端无关：tenant 解析走 TenantStore，控制记录查询走 SessionStore —— PG 后端
+	// 同样可用（此前这里依赖主库 *sqlite.DB，PG 上直接返回 available=false）。
 	// Session-tree probes must not recreate a tenant from a stale deleted row.
-	tenantID, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(ch, chatID)
+	tenantID, err := a.multiSession.Store().Tenant().GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil {
 		return 0, "", false
 	}
 	if tenantID == 0 {
 		return 0, "", true
 	}
-	// AskUser records live in the per-session DB, not the main registry.
-	svc, err := a.multiSession.SessionServiceForSQLite(tenantID)
+	svc, err := a.multiSession.SessionServiceFor(tenantID)
 	if err != nil {
 		return 0, "", false
 	}

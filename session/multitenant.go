@@ -1185,9 +1185,9 @@ func (m *MultiTenantSession) GetSessionUsageStats(channel, chatID string, recent
 	if tenantID == 0 {
 		return nil, nil
 	}
-	svc, err := m.SessionServiceForSQLite(tenantID)
+	svc, err := m.SessionServiceFor(tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("open session db for usage stats: %w", err)
+		return nil, fmt.Errorf("open session store for usage stats: %w", err)
 	}
 	stats, err := svc.GetTenantUsageStats(tenantID, recentLimit)
 	if err != nil {
@@ -1232,9 +1232,9 @@ func (m *MultiTenantSession) GetSessionUsageBuckets(channel, chatID string, buck
 	if tenantID == 0 {
 		return nil, nil
 	}
-	svc, err := m.SessionServiceForSQLite(tenantID)
+	svc, err := m.SessionServiceFor(tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("open session db for usage buckets: %w", err)
+		return nil, fmt.Errorf("open session store for usage buckets: %w", err)
 	}
 	return svc.GetTenantUsageBuckets(tenantID, bucketSeconds, count, tzOffsetMinutes)
 }
@@ -1248,9 +1248,9 @@ func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int
 	// 每会话一个 DB（v71）：rewind 操作会话库（session_messages/iteration_history
 	// 截断）。tenant_state（主库）的 token 水位恢复由 TenantSession 层完成（跨库
 	// 无法原子 —— token 水位是派生缓存，下一条用户消息的 SaveContextTokens 自愈）。
-	svc, err := m.SessionServiceForSQLite(tenantID)
+	svc, err := m.SessionServiceFor(tenantID)
 	if err != nil {
-		return llm.ChatMessage{}, 0, fmt.Errorf("open session db for rewind: %w", err)
+		return llm.ChatMessage{}, 0, fmt.Errorf("open session store for rewind: %w", err)
 	}
 	target, turnIdx, promptTokens, err := svc.RewindToHistoryID(tenantID, historyID)
 	if err != nil {

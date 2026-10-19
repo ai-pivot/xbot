@@ -49,6 +49,26 @@ type SessionStore interface {
 	AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error)
 	GetIterationHistoryByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error)
 	GetIterationHistoryByTurns(tenantID int64, turnIDs []uint64) (map[uint64][]sqlite.IterationRecord, error)
+	// GetIterationHistoryBeforeRange returns the iterations of a turn that precede
+	// beforeIter, ascending — the windowing endpoint's segment query.
+	GetIterationHistoryBeforeRange(tenantID int64, turnID uint64, beforeIter int) ([]sqlite.IterationRecord, error)
+	// GetIterationHistoryByNumber locates ONE iteration by (turn, iteration).
+	// Not-found is a normal business result: (zero, false, nil).
+	GetIterationHistoryByNumber(tenantID int64, turnID uint64, iteration int) (sqlite.IterationRecord, bool, error)
+	// GetSyntheticPairRowsByTurn returns the turn's tool-pair candidate rows
+	// (assistant rows carrying tool_calls + tool results, in id order) used to
+	// repair histories written before synthetic tool pairs were persisted.
+	GetSyntheticPairRowsByTurn(tenantID int64, turnID uint64) ([]llm.ChatMessage, error)
+	// GetIterationAnchorsByTurn returns lightweight (iteration, created_at) anchors
+	// for every iteration of a turn — the only basis for mapping a synthetic tool
+	// pair's injection time onto an iteration number. Only those two fields are
+	// populated; content/tools stay zero because anchors are never assembled as
+	// full records.
+	GetIterationAnchorsByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error)
+	// LatestAskControlRecord returns the newest ask_question / ask_answer control
+	// record (id + type), or (0, "", nil) when the session has none. This is the
+	// authority for "is a prompt still pending?" after a restart.
+	LatestAskControlRecord(tenantID int64) (int64, sqlite.HistoryRecordType, error)
 
 	// Append-style writes (return the inserted row's stable history id).
 	// AppendMessage differs from AddMessage: it is the append-only history
@@ -89,6 +109,9 @@ type SessionStore interface {
 
 	// Usage / counts.
 	GetUserMessageCount(tenantID int64) (int, error)
+	// GetTenantUsageBuckets returns time-bucketed usage for the dashboard
+	// (bucket width 60/3600/86400s, tzOffsetMinutes shifts the calendar).
+	GetTenantUsageBuckets(tenantID int64, bucketSeconds int64, count int, tzOffsetMinutes int) ([]sqlite.UsageBucket, error)
 	GetTenantUsageStats(tenantID int64, recentLimit int) (*sqlite.TenantUsageStats, error)
 	GetLastUserMessageContextTokens(tenantID int64) (int64, error)
 	// UpdateMessageContentNonDisplayOnly rewrites the Nth non-display-only

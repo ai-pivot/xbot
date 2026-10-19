@@ -22,6 +22,7 @@ import (
 	"xbot/config"
 	log "xbot/logger"
 	"xbot/session"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -429,9 +430,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
 		if tenantID <= 0 {
 			return nil, 0, nil
 		}
-		// SQLite 专属操作（regions 段查询 / 旧数据修复）—— PG 后端无对应实现，
-		// SessionServiceForSQLite 返回明确错误（绝不静默降级）。
-		svc, err := ag.MultiSession().SessionServiceForSQLite(tenantID)
+		// 后端无关：会话数据一律经 SessionStore（SQLite 会话库 / PG 共享连接）。
+		svc, err := ag.MultiSession().SessionServiceFor(tenantID)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -463,8 +463,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
 		if tenantID <= 0 {
 			return protocol.HistoryIteration{}, false, nil
 		}
-		// SQLite 专属操作（按迭代号精确取记录 / 旧数据修复）—— PG 后端无对应实现。
-		svc, err := ag.MultiSession().SessionServiceForSQLite(tenantID)
+		// 后端无关：会话数据一律经 SessionStore（SQLite 会话库 / PG 共享连接）。
+		svc, err := ag.MultiSession().SessionServiceFor(tenantID)
 		if err != nil {
 			return protocol.HistoryIteration{}, false, err
 		}
@@ -2257,7 +2257,7 @@ const (
 //
 // 错误冒泡（绝不静默降级）：修复查询失败让端点显式失败，而不是返回与主
 // 快照不一致的未修复段。
-func legacySyntheticPairRepair(svc *sqlite.SessionService, tenantID int64, turnID uint64, recs []sqlite.IterationRecord) ([]sqlite.IterationRecord, error) {
+func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID uint64, recs []sqlite.IterationRecord) ([]sqlite.IterationRecord, error) {
 	rows, err := svc.GetSyntheticPairRowsByTurn(tenantID, turnID)
 	if err != nil {
 		return nil, err
