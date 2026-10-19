@@ -65,12 +65,22 @@ export interface Lane {
 }
 
 export const KIND_COLORS: Record<string, string> = {
-  ask_user: '#f5a524',
-  answer: '#22c55e',
+  ask_user: '#fbbf24',
+  answer: '#4ade80',
   report: '#38bdf8',
-  decision: '#a78bfa',
+  decision: '#c084fc',
   action: '#f472b6',
-  text: '#94a3b8',
+  text: '#cbd5e1',
+}
+
+/** 弧线权重：关键决策/汇报明显更粗，text 最细且低透明度。 */
+export const KIND_WEIGHT: Record<string, number> = {
+  ask_user: 1.8,
+  answer: 1.8,
+  report: 2.5,
+  decision: 2.5,
+  action: 1.6,
+  text: 1.0,
 }
 
 export const KIND_LABELS: Record<string, string> = {
@@ -83,10 +93,10 @@ export const KIND_LABELS: Record<string, string> = {
 }
 
 export const STATUS_COLORS: Record<string, string> = {
-  idle: '#22c55e',
-  busy: '#f5a524',
-  blocked: '#ef4444',
-  left: '#64748b',
+  idle: '#4ade80',
+  busy: '#fbbf24',
+  blocked: '#f87171',
+  left: '#94a3b8',
 }
 
 /** 从 member_addr 派生泳道显示名。 */
