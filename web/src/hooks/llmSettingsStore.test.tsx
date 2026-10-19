@@ -59,6 +59,22 @@ describe('shared authenticated LLM settings', () => {
     await store.load()
     expect(store.getSnapshot().error).toBeNull(); expect(s.count()).toBe(2)
   })
+  it('waits for provider getters before notifying React on reconnect', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1000)
+    const s = server(), store = llmSettingsStore(s.conn)
+    await store.load()
+    const observed: boolean[] = []
+    const off = store.subscribe(() => observed.push(s.conn.connected))
+    // WSProvider registers its ref-updating passive listener after the
+    // external-store layout subscription. Model that actual listener order.
+    s.handlers.add(connected => { s.conn.connected = connected })
+    clock.mockReturnValue(32_000)
+    s.handlers.forEach(fn => fn(true))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(observed.length).toBeGreaterThan(0)
+    expect(observed.every(Boolean)).toBe(true)
+    off()
+  })
   it('mutation reloads cannot be overwritten by an older read finishing later', async () => {
     const s = server(), old = deferred<unknown>()
     vi.mocked(s.conn.rpc).mockImplementationOnce(() => old.promise as never)

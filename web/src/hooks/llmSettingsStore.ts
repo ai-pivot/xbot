@@ -62,7 +62,12 @@ function createStore(conn: WSConnection) {
       if (listeners.size === 1) {
         let wasConnected = conn.connected
         unsubscribe = conn.onConnectionChange(connected => {
-          if (!wasConnected && connected) void load().catch(() => {})
+          // The provider updates its connection getter in another listener.
+          // Let all connection listeners finish before notifying subscribers
+          // so they never observe a getter from the previous connection state.
+          if (!wasConnected && connected) queueMicrotask(() => {
+            if (listeners.size) void load().catch(() => {})
+          })
           wasConnected = connected
         })
       }

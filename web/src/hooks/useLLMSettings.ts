@@ -10,7 +10,7 @@
  * All RPC calls go through WSConnection.rpc → POST /api/rpc.
  * The backend resolves sender_id from auth context.
  */
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { llmSettingsStore } from './llmSettingsStore'
 
@@ -56,7 +56,11 @@ export interface LLMSettingsData {
 export function useLLMSettings() {
   const conn = useWSConnection()
   const store = llmSettingsStore(conn)
-  const { data, loading, error: loadError } = useSyncExternalStore(store.subscribe, store.getSnapshot)
+  // Keep configuration notifications in React's normal batching. A synchronous
+  // external-store render can interrupt history hydration/SSE effects, making
+  // legacy iteration rows repeatedly detach (msg-actions E2E regression).
+  const [observed, setObserved] = useState(() => ({ store, snapshot: store.getSnapshot() }))
+  const { data, loading, error: loadError } = observed.store === store ? observed.snapshot : store.getSnapshot()
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -74,7 +78,11 @@ export function useLLMSettings() {
   }, [load])
   useEffect(() => {
     setError(null)
+    const update = () => setObserved({ store, snapshot: store.getSnapshot() })
+    const unsubscribe = store.subscribe(update)
+    update()
     void store.load().catch(() => {})
+    return unsubscribe
   }, [store])
 
   // ── Subscription CRUD ──
