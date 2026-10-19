@@ -7,6 +7,21 @@
 
 ---
 
+## 文档索引（详细设计系列）
+
+本文件是总体方案。以下四份是**可批红的详细设计**，逐项覆盖追加需求：
+
+| 文档 | 覆盖 | 核心内容 |
+|---|---|---|
+| [`sendmessage-structured.md`](./sendmessage-structured.md) | ① SendMessage 强化 + ② 删除 AskUser | 信封 schema、kind/payload、correlation/幂等/超时、异步回调、落库、权限、群组语义、AskUser 受影响点全清单 |
+| [`message-sender-id.md`](./message-sender-id.md) | ③ 每条 user message 记录发送人 | `sender_type`/`sender_id`/`sender_name` 字段设计、v74 迁移与回填、写入/读取/UI 改造、群组统一 |
+| [`group-hardening.md`](./group-hardening.md) | ④ 群组强化 | D1–D17 逐条解决方案、统一 Conversation Core、groups/group_members schema、轮次/hop/限流、成员状态机、nanoid、租户隔离 |
+| [`court-reporting.md`](./court-reporting.md) | ⑤ 批红 + 汇报详细设计 | state schema、report/decision 消息、确定性规则引擎 schema（白名单/阈值/证据/矛盾）、朝会 cron、端到端时序 |
+
+阅读顺序建议：① → ③ → ④ → ⑤（每条后者的消息/身份/群组能力都建立在前者之上）。
+
+---
+
 ## 0. 一页纸结论
 
 「朝廷」不是一套新的业务流程代码，而是**把现有原语按组织语义组合起来的使用规范**：
