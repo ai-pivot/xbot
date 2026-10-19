@@ -1,10 +1,11 @@
-# 群组（群发 / 单发）—— 详细设计（v2）
+# 群组（群发 / 单发）—— 详细设计（v2.1）
 
 > 状态：设计稿（**不含实现代码**）
 > 基线：`origin/master@619ec6c3`
 > 工作分支：`feat/court-orchestration`
 > 关联：`sendmessage-structured.md`（①）、`message-sender-id.md`（③）、`court-reporting.md`（⑤）
-> **版本：v2（2026-10-19）** —— 按用户拍板决策重写。v1 的双模型分层（会议模型 + 对等总线）、群组独立库、群级消息表、轮次/主持人/发言权抽象**全部作废**。
+> **版本：v2.1（2026-10-19）** —— 在 v2 基础上按用户批注补回「群组展示」：**保留展示 API（用户视角有用），但不做 LRU、不建单独记录**；展示 = 事件流 + 按需查询当前会话库，后端零额外存储。
+> **v2（2026-10-19）** —— 按用户拍板决策重写。v1 的双模型分层（会议模型 + 对等总线）、群组独立库、群级消息表、轮次/主持人/发言权抽象**全部作废**。
 
 ---
 
@@ -18,6 +19,7 @@
 | G-4 | 成员状态 `alive/busy/left/dead` + 心跳 sweep | **只有 `alive/left`**（left 不再投递）；无心跳、无 busy/dead |
 | G-5 | `peer_groups.json` 一次性导入迁移 + legacy 认领 | **直接删文件，不迁移、不导入、不兼容** |
 | G-6 | `peer:` 与 `group:` 双地址轨 | **只保留 `group:`**；`peer:` 删除 |
+| G-7 | v2 初稿把「群历史」整体判死（无任何查询视图） | **补回「群组展示」**：`GET /api/groups/{id}/messages`（当前会话视角 + 游标分页）+ `group.message` 事件流；**不做跨库聚合、不做 LRU、不建聚合表/缓存、不做定时扫表**（§6） |
 
 ---
 
@@ -28,7 +30,7 @@
    - **群发** = `SendMessage(to="group:grp_xxx")`，**遍历 `group_members(status='alive')`，对每人各发一份一样的 SendMessage**；各写各的会话库，消息带 `group_id` + `sender_*` 标记。
 2. **没有「群组消息」实体**：不存在 `to.type=group` 的消息、不存在群级消息表、不存在群组独立库。群 ID 只是**标记 + 成员表主键**。
 3. **群状态 = 主库两张小表**：`groups(id, name, owner, created_at)` + `group_members(group_id, member_addr, status, joined_at)`。
-4. **没有群历史聚合**：平台不提供群历史查询工具、不跨会话库查询、不按 `message_id` 合并。群主通过 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报；消息上的 `group_id` 仅作标记（未来若真要做聚合时有锚点），成员只读自己的会话库。
+4. **不做群历史聚合，但保留群组展示**：平台**不跨会话库合并**、不建聚合表/缓存/LRU、不设时间/条数窗口、不做定时扫表。展示由两件事构成：① **按需查询**当前用户会话库（`GET /api/groups/{id}/messages`，游标分页，只返回当前会话视角）；② **事件流**（写入时推 `group.message`，前端实时渲染）。群主掌握全局仍靠 `SubAgent(action=inspect)` + 子代理主动汇报。
 5. **保留必修 bug 修复**：每条消息带发送者标识；群发前校验成员身份；hop/fanout/令牌桶防 N×N；ID 用 `grp_<nanoid(12)>`；成员状态 `alive/left`（`left` 不再投递）。
 6. **旧数据直接删**：`peer_groups.json`、内存 `GroupMembership`、`peer:` 分支、`groupCounter`、`FlushPeerGroups`，不迁移不兼容。
 
@@ -42,7 +44,7 @@
 |---|---|---|
 | G1 | 群组语义唯一，消除双模型 | 代码里只有 `group:` 一种群地址；无双模型分支 |
 | G2 | 群状态持久化 | 重启后 `groups`/`group_members` 完整；内存无群状态 |
-| G3 | 群主可掌握成员状态 | `SubAgent(action=inspect)` 返回子代理状态；子代理主动汇报；平台不提供群历史聚合 |
+| G3 | 群主可掌握成员状态，成员有可用的群组展示 | `SubAgent(action=inspect)` + 子代理主动汇报掌握全局；成员/群主可通过 `GET /api/groups/{id}/messages` 读取**自己会话视角**的群消息，并通过 `group.message` 事件实时渲染；不做跨库聚合 |
 | G4 | 防 N×N | hop 限制 + fanout 上限 + 群/发送者令牌桶 + 回复默认单发 |
 | G5 | 成员身份可校验 | 非成员群发返回 `MEMBERSHIP_REQUIRED` |
 | G6 | ID 全局唯一 | `grp_<nanoid(12)>`；重启/多进程不重复；创建 100 万次无碰撞（概率论证） |
@@ -54,6 +56,7 @@
 - 不做分布式共识/多节点群组（单进程部署；多进程不在本期）。
 - 不做群公告/置顶/表情/已读回执/输入中状态。
 - 不做群级消息表、不做群组独立库。
+- **不做跨会话库聚合**：不做 GroupHistory API、不建聚合结果表、不做 LRU 缓存、不设 7 天/2000 条窗口、不做定时扫表、不提供上帝视角（群主用 `SubAgent(action=inspect)` + 子代理主动汇报）。展示只读当前会话视角（§6）。
 - 不做轮次/主持人/发言权/点名顺序（prompt 约定即可，core 不建模）。
 - 不做成员互相私聊的额外通道（仍走 `agent:` 单发）。
 - **不迁移**旧群数据（决策 D）。
@@ -68,7 +71,7 @@
 |---|---|---|---|---|
 | **D1** | 两套模型互不相通：`group:` 是内存成员集合，`peer:` 是 JSON 文件 | `tools/group_state.go:19-26,149-152`；`tools/send_message.go:85-100` | **两套都删**，只保留一套 DB 群组 + 一种群发语义 | 代码无 `PeerGroup`/`GroupMembership` |
 | **D2** | `max_rounds` 是空参数，从未读取 | `tools/create_chat.go:57,61-68,170-242` | **删除轮次概念与参数**（不是实现它） | 工具 schema 无 `max_rounds` |
-| **D3** | 群组无消息历史 | `tools/group_state.go:11-18` | **不做群历史**（拍板：群主用 `SubAgent(action=inspect)` 看子代理状态，子代理主动汇报）；消息保留 `group_id` 标记 | 无群历史工具/API；inspect 可用 |
+| **D3** | 群组无消息历史、无展示视图 | `tools/group_state.go:11-18` | **保留群组展示**：`GET /api/groups/{id}/messages`（当前会话视角 + 游标分页）+ `group.message` 事件流；**不做跨库聚合**（群主用 `SubAgent(action=inspect)` 看子代理状态，子代理主动汇报）；`group_id` 保留为查询键 | 群成员能在自己会话里看到群消息时间线；全仓无聚合表/LRU |
 | **D4** | 广播 = N 个并发 full-turn，无 hop/depth → N×N | `tools/send_message.go:280-308,327-350` | hop/max_hops + fanout ≤128 + 令牌桶 + 回复默认单发 + `message_id` 去重 | 压测消息数线性 |
 | **D5** | ID `g<N>` 进程内自增，重启复用；`CreateGroup` 无条件覆盖 | `tools/create_chat.go:13-14,170,242` | `grp_<nanoid(12)>`；主键冲突重试；已存在则报错 | 重启后新建群 ID 不重复 |
 | **D6** | 发送者无成员校验：知道 `group:g1` 就能群发 | `tools/send_message.go:240-258` | 群发前查 `group_members(status='alive')`；否则 `MEMBERSHIP_REQUIRED` | 非成员发送被拒 |
@@ -122,8 +125,9 @@
 ### 3.3 成员能看到什么（诚实边界）
 
 - 群发给 N 个成员 = **N 份独立副本**。每个成员在自己的会话上下文里看到「发起者发给我的一条消息」。
-- **其他成员的回答不会自动进入你的上下文**（除非发起者再次群发）。
-- 这与 IM 群聊不同，是用户模型（只有群发和单发）的直接推论。**平台不做群历史聚合**：群主通过 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报；成员只读自己的会话库。
+- **其他成员的原始回答不会自动进入你的 LLM 上下文**（除非发起者再次群发）。
+- 但**展示层**可以看到当前会话视角的完整时间线：我发的（`direction=out`）+ 发给我的（`direction=in`），数据来自**自己的会话库**（§6）。这两者不矛盾：展示不等于上下文注入。
+- 这与 IM 群聊不同，是用户模型（只有群发和单发）的直接推论。**平台不做群历史聚合**：群主通过 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报。
 
 ---
 
@@ -241,13 +245,14 @@ Send(to="group:"+grpID, envelope)
      if len(R) > max_fanout(128): FANOUT_LIMIT
   6. token bucket(group, sender)                    → 超限: RATE_LIMITED
   7. message_id = "msg_" + ULID（本次逻辑消息的唯一 ID）
-  8. 写发送方会话库 outbound 行（message_id, group_id, envelope）
+  8. 写发送方会话库 outbound 行（message_id, group_id, envelope；`envelope.meta.recipients` = 本次展开的收件人清单，供流向图渲染，不新增表/记录）
   9. for addr in R (有界并发, 默认 8):
        写收件方会话库 inbound 行（message_id 相同, group_id, sender_*）
        成功 → 入队通知（busy/idle 见 ① §8）
        失败 → 记录 failed
  10. 失败者写 receipt(failed) 到发送方库
- 11. return {message_id, recipients:[{addr,status}], duplicate}
+ 11. 向实际写入的会话推送 `group.message` 事件（收件人 in / 发送方 out；不落盘、失败不影响投递）
+ 12. return {message_id, recipients:[{addr,status}], duplicate}
 ```
 
 ### 5.3 原子性与部分失败
@@ -269,17 +274,173 @@ Send(to="group:"+grpID, envelope)
 
 ---
 
-## 6. 群历史：不做聚合（拍板决策）
+## 6. 群组展示：事件流 + 按需查询（零额外存储）
 
-**结论：平台不提供群历史。**
+> **结论：保留群组展示 API（用户视角有用）；展示 = 读当前会话库 + 实时事件，后端不新增任何存储。**
+> 不做 LRU、不加单独记录、不建聚合表/缓存、不做定时扫表、不设窗口。
 
-- **不建工具/API**：没有群历史查询工具，没有对应的实现文件，没有 `GET /api/groups/{id}/history`。
-- **不做跨会话库查询**：不按 `message_id` 合并、不设时间/条数窗口、不做 LRU 缓存、不定义跨库越权规则。
-- **不注入任何成员会话**：成员只读自己的会话库（收到的那一份副本）。
-- **群主怎么掌握全局**：通过 `SubAgent(action=inspect)` 查看子代理状态；子代理按 role prompt 主动向其汇报（`kind=report` / `kind=text` 单发）。
-- **`group_id` 字段保留**：仅作消息标记（未来若真要聚合时有锚点），不参与路由，也不驱动任何查询。
+### 6.1 为什么能做，且为什么不用聚合
 
-> 理由：群主已有 inspect 能力，且子代理会主动汇报；再建一套跨库聚合会引入 N 路文件扫描、跨 owner 越权面和缓存一致性问题，收益为零。
+消息本来就在各成员会话库里：`session_messages` 已带 `group_id` / `sender_*` / `kind` / `correlation_id`（① §7.2）。当前用户打开群组时要看的本来就是「**我发的 + 发给我的**」——这恰好是他自己那个会话库里已有的行：
+
+| 视角 | 会话库里的行 | 展示含义 |
+|---|---|---|
+| 成员 | `direction=in` 的群发副本 + 自己 `direction=out` 的回复 | 收到的通知 + 我的发言 |
+| 群主 / 发起者 | 每次群发的 `direction=out` 行（一条逻辑消息一行）+ 成员单发回来的 `direction=in` 行 | 会议通知 + 各部门回奏 |
+| 旁观者 | 无行（非成员） | 不可见 |
+
+因此查询是**单库、单索引、keyset 分页**，不是 N 路扫描。反过来，跨会话库合并需要枚举成员库、合并排序、处理跨 owner 越权；要提速就得建聚合表/缓存/LRU/窗口/定时扫表 —— 全部引入一致性、GC、越权面，而收益只是"看到别人的原始副本"，用户并不需要。**不做聚合 ≠ 没有展示。**
+
+### 6.2 数据基底（已有字段，不新增）
+
+| 字段 | 来源 | 展示用途 |
+|---|---|---|
+| `group_id` | ① §7.2 新增列 | 过滤键；唯一查询入口 |
+| `sender_type` / `sender_id` / `sender_name` | ③ 新增列 | 头像/徽标/"谁说的" |
+| `kind` | ① 新增列 | 选择卡片形态（text/ask_user/report/decision/event/receipt/answer） |
+| `structured_json` | ① 新增列 | 卡片 `payload`（证据、选项、批红结论等） |
+| `correlation_id` / `reply_to` | ① 新增列 | 线程视图、问答连线 |
+| `direction`（`in`/`out`） | ① 新增列 | 当前视角左右分栏、"我发的"与"发给我的" |
+| `structured_json.meta.recipients` | 信封内既有 `meta`（不新增记录） | 流向图：outbound 行的收件人清单与投递状态 |
+| `id` / `created_at` | 既有列 | 游标分页与时间线排序 |
+
+**不新增表、不新增列、不新增缓存。**
+
+### 6.3 形态一：按需查询（事实源）
+
+```http
+GET /api/groups/{id}/messages?cursor=<msg_id>&limit=50
+```
+
+请求参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `id`（path） | string | 是 | `grp_<nanoid(12)>` |
+| `cursor` | string | 否 | 上一页最后一条的 `message_id`；缺省从最新开始 |
+| `limit` | int | 否 | 默认 50，最大 200 |
+| `kind` | string | 否 | 可选过滤（如 `ask_user` / `report` / `decision`） |
+| `correlation_id` | string | 否 | 线程视图：只取该请求—响应链 |
+| `unanswered` | bool | 否 | 收件箱：只取 `kind=ask_user AND answered=false` |
+
+响应（示例）：
+
+```json
+{
+  "group_id": "grp_V1StGXR8_Z5j",
+  "viewer": {"session": "session:web:chat_123", "member_status": "alive"},
+  "items": [
+    {
+      "message_id": "msg_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+      "direction": "in",
+      "kind": "ask_user",
+      "sender": {"type": "agent", "id": "hubu/main", "name": "户部"},
+      "correlation_id": "cor_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+      "reply_to": "",
+      "created_at": "2026-10-19T12:00:00.123Z",
+      "text": "户部请旨：PPU 集群是否按计划今夜扩容？",
+      "payload": {"questions": ["..."], "allow_cancel": true},
+      "answered": false
+    }
+  ],
+  "next_cursor": "msg_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+  "has_more": true
+}
+```
+
+分页语义（设计级）：
+
+- `cursor` 对外是不透明字符串，等于上一页最后一条的 `message_id`；服务端解析成行 `id` 做 keyset：
+  `WHERE group_id = ? AND id < :cursor_row_id ORDER BY id DESC LIMIT :limit + 1`。
+- 多取一条判断 `has_more`；`next_cursor` 取本页最后一条。
+- 无 `cursor` = 第一页（最新）。**没有 offset 深翻页问题。**
+- 返回顺序：`id DESC`（最新在前）；前端时间线可反转渲染。
+- `answered` 由同一会话库内是否存在 `kind=answer AND reply_to=<id>` 派生，不建状态列（① §7.5）。
+
+权限：
+
+| 调用者 | 结果 |
+|---|---|
+| `groups.owner` | ✅ 只读**自己会话库**的群消息（自己发的 + 回给自己的） |
+| `status='alive'` 成员 | ✅ 只读**自己会话库**的群消息 |
+| `status='left'` 成员 | ❌ `403 MEMBERSHIP_REQUIRED` |
+| 非成员 / 跨 owner | ❌ `404 NOT_FOUND`（不泄露群存在性） |
+
+- `viewer.session` 由服务端会话上下文决定，**不接受客户端传 session 参数** → 没有跨库读的口子。
+- **没有上帝视角**：群主也只能看到自己会话库里的行；全局掌握仍靠 `SubAgent(action=inspect)` + 子代理主动汇报。
+- 查询不写库、不产生事件、不改变任何状态（纯只读）。
+
+### 6.4 形态二：事件流（实时性）
+
+- **触发点**：群发/单发写库成功之后（§5.2 第 8/9 步），沿**现有 WS/SSE 通道**推一条 `group.message`。不新增 broker、不建 outbox、不落盘。
+- **推送范围**：只推给**实际写入了该消息的会话**——群发时给每个收件人会话推 `direction=in`，给发送方会话推 `direction=out`。每个连接只收到自己会话的事件，天然零越权。
+- **事件是提示，不是事实源**：丢事件不影响正确性；客户端按 `message_id` 幂等去重，重连后用 `GET ...?cursor=<last_message_id>` 补齐。
+
+核心 schema（完整字段与校验见 ① §11.1）：
+
+```json
+{
+  "type": "group.message",
+  "v": 1,
+  "group_id": "grp_V1StGXR8_Z5j",
+  "message_id": "msg_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+  "sender_type": "agent",
+  "sender_id": "hubu/main",
+  "sender_name": "户部",
+  "kind": "report",
+  "correlation_id": "cor_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+  "ts": "2026-10-19T12:00:00.123Z"
+}
+```
+
+可选补充字段（前端需要时携带，不改变核心契约）：`direction`（`in|out`）、`reply_to`、`text` 预览（≤200 字）、`group_seq` 不提供（无额外记录，顺序由 `message_id`/`ts` 表达）。
+
+- **顺序**：同一会话库内按行 `id`/`ts` 递增；跨会话库不承诺全局顺序（本来就不是聚合视图）。
+- **大消息**：事件只带元数据 + 文本预览；完整 `payload` 由客户端按 `message_id` 调查询接口取，避免事件风暴。
+
+### 6.5 明确不做（红线）
+
+| 不做 | 原因 |
+|---|---|
+| **不做**跨会话库聚合 / `GroupHistory` API | N 路文件扫描 + 跨 owner 越权面；用户要的只是自己视角 |
+| **不做** LRU / 内存缓存 / 聚合结果表 | 双写一致性与 GC；消息量本就是单会话库规模 |
+| 7 天 / 2000 条窗口 | 无意义截断；游标分页本身解决数据量 |
+| 定时扫描 / 后台物化 / outbox | 没有额外存储，就不需要维护它 |
+| 上帝视角 / 跨成员原始副本 | 群主用 `SubAgent(action=inspect)` + 主动汇报 |
+| 事件重放缓冲 / replay 表 | 客户端用 cursor 补齐，服务端不存事件 |
+
+### 6.6 前端形态（展示层设计）
+
+| 形态 | 数据来源 | 交互要点 |
+|---|---|---|
+| **实时时间线**（消息流式出现） | 事件流 `group.message` + 查询首屏 | 新消息入场动画；日期分隔吸顶；未读锚点；断线重连显示「正在补齐…」 |
+| **结构化消息卡片** | `kind` + `payload` | `ask_user`→提问卡片（单选/多选/自定义/取消）；`report`→奏折卡片（状态/证据/待批）；`decision`→批红卡片（准/驳/改 + 朱批视觉） |
+| **成员状态灯** | `group_members.status` + 状态事件 | 绿=`alive`/空闲，黄=`busy`（运行时态，不落库），灰=`left`；呼吸动画；hover 显示最近活动 |
+| **消息流向图** | `sender` + recipients（outbound 行的投递明细） | 谁→群→谁 的拓扑：群发画扇形、单发画直线；点节点筛选时间线 |
+| **未回答提问收件箱** | `kind=ask_user AND answered=false` 查询 | 集中列表、批量回复、按 `correlation_id` 展开线程 |
+| **线程视图** | `correlation_id` | 提问→回答→后续动作连成线；可折叠；跨卡片高亮 |
+
+**"高级/炫酷"的视觉与交互规格**（展示层，不引入数据依赖）：
+
+- **视觉语言**：朝廷主题可选皮肤（奏折纸纹、朱批红、墨色）；默认仍遵循系统深浅色，不牺牲可读性。
+- **动效**：消息入场 120–180ms ease-out；状态灯呼吸；流向图节点 hover 抬升；`prefers-reduced-motion` 自动降级为无动画。
+- **性能预算**：首屏 ≤50 条；虚拟滚动支撑 10k 行；渲染 60fps；事件在 16ms 帧内合并，最多触发一次渲染。
+- **状态完备**：空群、加载骨架、权限拒绝、断线重连、补历史失败都有明确空态/错误态。
+- **可访问性**：键盘可达、焦点环、卡片语义角色；状态不能只靠颜色区分（同时用文字/图标）。
+- **移动端**：时间线单列；流向图折叠为「谁发的 / 发给谁」标签；收件箱置顶。
+
+### 6.7 性能与容量
+
+- 单库单索引：`ix_sm_group_cursor ON session_messages(group_id, id DESC) WHERE group_id <> ''`（① §7.2），查询 O(log n + limit)。
+- 50 条/页、keyset 分页，无深翻页退化；10 万行内本地 p99 目标 < 10ms。
+- 事件只在写库后内存广播，**不增加持久化写**；推送失败不影响投递。
+- 不做缓存的前提：消息规模 = 单会话库规模，SQLite 本地读足够快；缓存只会带来一致性负担。
+
+### 6.8 与旧「不做聚合」结论的关系
+
+- **保留**：不做跨会话库聚合、不建群级消息表、不提供上帝视角。
+- **修正**：不是"没有展示"；展示 API 保留，但只读当前会话视角、无缓存、无额外记录。
+- **命名**：接口统一叫 `GET /api/groups/{id}/messages`，不叫 `history`（避免暗示跨会话库历史）。
 
 ---
 
@@ -301,6 +462,7 @@ Send(to="group:"+grpID, envelope)
 | 操作 | owner | alive 成员 | left 成员 | 其他 |
 |---|---|---|---|---|
 | 群发 | ✅ | ✅ | ❌ | ❌ |
+| **读群消息（当前会话视角）** | ✅ | ✅ | ❌ | ❌ |
 | 读成员列表 | ✅ | ✅ | ❌ | ❌ |
 | 加成员（`JoinGroup`/`AddMember`） | ✅ | ❌（自助加入需开关） | ❌ | ❌ |
 | 移除成员 / leave | ✅ | ✅（仅自己） | — | ❌ |
@@ -313,6 +475,7 @@ Send(to="group:"+grpID, envelope)
 
 - 隔离轴 = `groups.owner`（群宿主会话地址，`session:<channel>/<chatID>`）。
 - 所有读写 SQL 强制 `owner = <caller session>` 或成员校验；ID 猜测返回 `NOT_FOUND`。
+- **展示查询的隔离轴是「调用者自己的会话库」**：`viewer.session` 由服务端上下文决定，不接受客户端参数；查询不触达其他成员的库（§6.3）。
 - 跨 owner 邀请：本期不支持（`CROSS_OWNER_DENIED`）。
 
 ---
@@ -390,7 +553,7 @@ join ──▶ alive ──(leave)──▶ left
 1. 群发只查 `status='alive'`。
 2. `left` 保留行（历史审计），不物理删除。
 3. 状态变更广播 `kind=event(event_type=member.left/joined)` 给其余 alive 成员（单发，不是群发；避免事件风暴）。
-4. **没有 `busy`/`dead`/心跳**：投递失败由 receipt 表达，不改变成员状态。
+4. **没有 `busy`/`dead`/心跳**：投递失败由 receipt 表达，不改变成员状态。展示层的「忙」来自运行时是否正在跑 turn（内存态/事件），**不落 `group_members`、不新增列**。
 
 ---
 
@@ -421,7 +584,7 @@ join ──▶ alive ──(leave)──▶ left
 | `LeaveGroup` | `UPDATE status='left'` |
 | `ListGroupMembers` | 查 `group_members`（含 status）；校验调用者是成员 |
 
-（**不新增群历史查询工具**：群历史不做聚合，见 §6。）
+（**不新增跨库群历史工具**：群组展示只读当前会话视角，接口为 `GET /api/groups/{id}/messages`，不做聚合，见 §6。）
 
 ---
 
@@ -452,6 +615,9 @@ join ──▶ alive ──(leave)──▶ left
 | 删除旧 peer 数据 | 用户旧群消失 | CHANGELOG 提前说明；文档明确 | 无法回滚（数据已删） |
 | 成员校验变严 | 现有跨组用法被拒 | 发布说明 + 先 warn 日志后拒绝（一个版本） | 配置开关 `groups.strict_membership=false` |
 | 群 owner 单点 | owner 退出后无人管理 | owner 可转移（后续）；本期 owner 永久 | — |
+| 展示查询慢（长历史/大群） | 单库查询 | 首屏卡顿 | `(group_id, id DESC)` 复合索引 + 50 条/页 + keyset 分页；无跨库扫描 | 调小 `limit` / 补索引 |
+| 事件丢失或断线 | WS/SSE 断开 | 时间线缺消息 | 事件按 `message_id` 幂等；重连用 `cursor` 补齐；查询是事实源 | 无需回滚（无状态） |
+| 展示被误解为上下文注入 | 用户看到时间线 | 误以为成员共享上下文 | UI 明确「仅当前会话视角」；§3.3 与 §6.1 说明 | — |
 
 ---
 
@@ -466,8 +632,12 @@ join ──▶ alive ──(leave)──▶ left
 5. `@agent:qa`（无 instance）唯一则定向成功；多实例返回 `AMBIGUOUS_MENTION`。
 6. 重复 `idempotency_key` 不重复投递；返回 `duplicate=true`。
 7. hop 达到 `max_hops` 的消息被拒绝并回执。
-8. 不存在群历史查询工具/API（全仓无对应实现文件）；群主通过 `SubAgent(action=inspect)` 获取子代理状态，子代理主动汇报。
-9. 群成员上限/ fanout 超限返回 `FANOUT_LIMIT`；令牌桶超限返回 `RATE_LIMITED`。
+8. 群成员调用 `GET /api/groups/{id}/messages`：只返回自己会话视角（`direction` + `sender_*` 齐全）；`limit=50`、`cursor` 可续读，无重复/遗漏。
+9. 非成员返回 `404 NOT_FOUND`；`left` 成员返回 `403 MEMBERSHIP_REQUIRED`；客户端伪造 `session` 参数无效（服务端以上下文为准）。
+10. 全仓无 `GroupHistory` API、无聚合表、无 LRU/缓存/窗口/定时扫表；`group_id` 只用于单库查询。
+11. 群主仍通过 `SubAgent(action=inspect)` + 子代理主动汇报掌握全局（无上帝视角）。
+12. 事件流：写库后受影响会话收到 `group.message`；断线期间的消息可用 `cursor` 补齐；重复事件按 `message_id` 幂等。
+13. 群成员上限/ fanout 超限返回 `FANOUT_LIMIT`；令牌桶超限返回 `RATE_LIMITED`。
 
 ### 14.2 删除/迁移
 
@@ -499,6 +669,8 @@ join ──▶ alive ──(leave)──▶ left
 | `tools/group_ids.go` | nanoid、ID 校验 |
 | `storage/sqlite/migrations.go`（v74） | 建两张表 + 索引 |
 | `tools/group_tools.go` | Create/Join/Leave/List 适配 |
+| `channel/web/web_group_messages.go` | `GET /api/groups/{id}/messages`：成员校验 + 单库 keyset 分页 |
+| `protocol/group_events.go` | `GroupMessageEvent`（`group.message`）传输事件定义 |
 
 ### 15.2 修改
 
@@ -515,6 +687,10 @@ join ──▶ alive ──(leave)──▶ left
 | `tools/peer_group.go:159-175` | ListGroupMembers 改为 DB + 成员校验 |
 | `tools/peer_group.go:196-200` | 删除词表 ID |
 | `agent/engine_wire.go:729-741` | 群组 prompt 改为「群发/单发」语义 |
+| `protocol/events.go` / `channel/subscription.go` | 注册并分发 `group.message` 事件（不落盘） |
+| `tools/send_message.go`（写库成功后） | 向受影响会话推送 `group.message`（收件人 `in`、发送方 `out`） |
+| `storage/sqlite/sessiondb.go` | 新增 `ix_sm_group_cursor(group_id, id DESC)`（① §7.2） |
+| `web/src/components/group/*` | 时间线、结构化卡片、状态灯、流向图、收件箱、线程视图 |
 | `docs/agent/tools.md:90-115` | 更新群组语义 |
 
 ### 15.3 删除
@@ -531,4 +707,4 @@ join ──▶ alive ──(leave)──▶ left
 
 ## 16. 开放问题
 
-无开放问题（Q1–Q3 已由用户拍板，见 `sendmessage-structured.md` §17）。与本文件相关的是 **Q2：不做群历史聚合**（群主用 `SubAgent(action=inspect)`，子代理主动汇报）。
+无开放问题（Q1–Q3 已由用户拍板，见 `sendmessage-structured.md` §17）。与本文件相关的是 **Q2 的修订版：不做群历史聚合，但保留群组展示 API**——`GET /api/groups/{id}/messages`（当前会话视角 + 游标分页）+ `group.message` 事件流；不建聚合表/缓存/LRU/窗口/定时扫表（§6）。

@@ -244,6 +244,7 @@ for each tenant in tenants where db_path != '':
 | 现有 `idx_session_messages_tenant_history` | 主查询（id 顺序）不变 |
 | 现有 `idx_sm_tenant_role_id` | 预览查询不变 |
 | `ix_sm_group (group_id, created_at)`（①） | 群发副本标记 / 按群过滤（不做跨库聚合） |
+| `ix_sm_group_cursor (group_id, id DESC)`（①） | 群组展示：当前会话视角的 keyset 分页（④ §6.3） |
 | `ux_sm_message_id`（①） | 投递去重 |
 
 ### 4.6 惰性迁移的列顺序契约
@@ -373,7 +374,7 @@ SenderName string `json:"sender_name,omitempty"`
 
 - **没有中心表 `from_*`**，因此不存在"两表字段映射"问题。
 - 写入时由 `MessageService` 用同一个信封同时填 `structured_json.from.*` 与 `sender_*`，保证同构。
-- 不做群历史聚合（④ §6）：每份副本在自己会话库里读 `sender_*`，不需要 join。
+- 不做跨库群历史聚合（④ §6）：每份副本在自己会话库里读 `sender_*`，不需要 join；群组展示查询复用同一套字段（当前会话视角，无新增读路径）。
 
 ### 7.3 一致性约束
 

@@ -758,7 +758,7 @@ cor_20261019
 |---|---|
 | 结构化消息 envelope / report / decision | `sendmessage-structured.md` |
 | sender_id 落库与展示 | `message-sender-id.md` |
-| 群发 / 单发、`groups`/`group_members` 两张表（群历史不做聚合） | `group-hardening.md` |
+| 群发 / 单发、`groups`/`group_members` 两张表；群组展示（事件流 + 当前会话视角查询，不做聚合） | `group-hardening.md` |
 | cron 注入 | 现有 `cron/scheduler.go`、`tools/cron.go` |
 
 ### 12.3 需要修改的现有文件（最小）

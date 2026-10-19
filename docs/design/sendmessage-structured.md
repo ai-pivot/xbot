@@ -1,10 +1,11 @@
-# SendMessage 结构化消息 + 异步 ask_user —— 详细设计（v2）
+# SendMessage 结构化消息 + 异步 ask_user —— 详细设计（v2.1）
 
 > 状态：设计稿（**不含实现代码**，只含 schema / 接口 / 迁移 / 时序）
 > 基线：`origin/master@619ec6c3`
 > 工作分支：`feat/court-orchestration`（隔离工作树 `/tmp/xbot-court`）
 > 关联：`message-sender-id.md`（③）、`group-hardening.md`（④）、`court-reporting.md`（⑤）
 > 作者：taizi
+> **版本：v2.1（2026-10-19）** —— 按用户批注补回「群组展示」：保留 `GET /api/groups/{id}/messages`（当前会话视角 + 游标分页）与 `group.message` 事件流；后端零额外存储（不建聚合表/缓存/LRU/窗口）。
 > **版本：v2（2026-10-19）** —— 按用户拍板决策全面修订，冲突处以本版为准。
 
 ---
@@ -18,6 +19,7 @@
 | R3 | AskUser 三阶段兼容（保留旧事件、旧历史只读回放） | **旧 AskUser 工具与旧交互直接删除**，不做兼容窗口、不做只读回放 | C |
 | R4 | `ask_user` 允许「等回答」，用同步等待参数兼容 | **完全异步**：投递即返回；用户回复走**插队优先队列**，在下一个 iteration 边界注入 | C |
 | R5 | 幂等/状态机建在主库中心消息表的状态列上 | 幂等落在**发送方会话库**的唯一索引；状态由 `kind=receipt` 行表达 | A（无主库表） |
+| R6 | v2 初稿把群组展示整体判死（无查询视图、无实时事件） | **补回群组展示**：`GET /api/groups/{id}/messages`（当前会话视角 + 游标分页）+ `group.message` 事件流；**不做跨库聚合、不建聚合表/缓存/LRU/窗口/定时扫表** | 用户批注：用户视角有用，但零额外存储 |
 
 ---
 
@@ -25,7 +27,7 @@
 
 1. **`SendMessage` 是「结构化信封 + 地址」**：`kind`/`payload`/`correlation_id`/`reply_to`/`idempotency_key`/`hop`；`message` 字符串 = `kind=text` 的快捷方式。
 2. **消息的权威副本永远在参与者的会话分库里**。一次投递 = 发送方会话库一条 `direction=out` 的审计行 + 收件方会话库一条 `direction=in` 的消息行。**主库（`xbot.db`）不新增任何消息表**。
-3. **群发不是一种消息类型**：群发 = 遍历 `group_members(status='alive')`，对每个成员各发一份同样的 `SendMessage`；每份写各自的会话库，带 `group_id` 与 `sender_*`。**群历史不做聚合**：群主用 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报（见 ④）。
+3. **群发不是一种消息类型**：群发 = 遍历 `group_members(status='alive')`，对每个成员各发一份同样的 `SendMessage`；每份写各自的会话库，带 `group_id` 与 `sender_*`。**不做跨库聚合，但保留群组展示**：按需查询当前会话库（`GET /api/groups/{id}/messages`）+ `group.message` 事件流；群主仍用 `SubAgent(action=inspect)` 查看子代理状态、子代理主动汇报（见 ④ §6）。
 4. **`SendMessage` 永远异步**：持久化成功即返回 `{message_id, status}`，不等待回复。
 5. **`ask_user` 完全异步**：投递即返回并带 `correlation_id`。用户回复是**插队消息**（优先级高于普通排队消息），agent 忙则在**下一个 iteration 边界**注入（不打断当前工具调用），空闲则立即开启新 turn；回复带 `reply_to=<correlation_id>`。
 6. **旧 `AskUser` 工具、等待态、旧 WS 事件、旧控制记录读写、旧历史只读回放全部删除**（无兼容窗口），前端换成新问题卡片（单选/多选/自定义/取消）。
@@ -155,7 +157,7 @@ group_id_format:     grp_<nanoid(12)>
 | `to` | object | 是 | 目标地址（单发解析后的规范形式） |
 | `to.type` | enum | 是 | `user` / `agent` / `session` / `im`；**没有 `group`**（群发是 N 次单发） |
 | `to.id` | string | 是 | 解析后的目标 ID |
-| `group_id` | string | 否 | 群发场景的群 ID（仅作标记，不参与路由；平台不做群历史聚合） |
+| `group_id` | string | 否 | 群发场景的群 ID（仅作标记，不参与路由；作为群组展示查询的过滤键，只查当前会话库） |
 | `correlation_id` | string | 否 | 请求—响应链；`ask_user`/`report`/`decision` 必填 |
 | `causation_id` | string | 否 | 触发消息 ID |
 | `reply_to` | string | 否 | 直接回复的消息 ID（ask_user 回复填 `correlation_id` 对应的原问题 `message_id`） |
@@ -450,6 +452,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_sm_answer
     ON session_messages(correlation_id) WHERE kind = 'answer';
 -- 群发标记 / correlation 链查询
 CREATE INDEX IF NOT EXISTS ix_sm_group ON session_messages(group_id, created_at) WHERE group_id <> '';
+-- 群组展示：单库 keyset 分页（④ §6.3）
+CREATE INDEX IF NOT EXISTS ix_sm_group_cursor
+    ON session_messages(group_id, id DESC) WHERE group_id <> '';
 CREATE INDEX IF NOT EXISTS ix_sm_corr  ON session_messages(correlation_id, created_at) WHERE correlation_id <> '';
 CREATE INDEX IF NOT EXISTS ix_sm_kind  ON session_messages(kind, created_at) WHERE kind <> '';
 ```
@@ -726,10 +731,164 @@ question_card_resolved   # 服务端 → 前端：已答/取消，卡片关闭
 约束：
 
 1. **没有 `to.type=group`**：群 ID 只出现在 `group_id` 字段（标记）与 `group_members` 查询（路由）。
-2. **没有群级消息表**：群历史不做聚合（④ §6）；群主用 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报。
+2. **没有群级消息表，也不做跨库聚合**：展示只读调用者自己的会话库（§11.2）；群主用 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报。**不建聚合表/缓存/LRU/窗口/定时扫表**。
 3. **成员回复默认单发给发起者**（prompt 约定），避免 N×N；显式群发必须受 fanout/hop/令牌桶限制。
 4. **非成员不能群发**（D6）。
 5. **`left` 成员不再投递**：群发时 `WHERE status='alive'`。
+
+### 11.1 展示事件：`group.message`（WS/SSE）
+
+`group.message` 是**传输层事件**（不是消息 `kind`），在消息写库成功后沿现有 WS/SSE 通道推送；**不落盘、不建 outbox、不做 replay 缓冲**。它是实时性提示，事实源永远是会话库（§11.2）。
+
+**推送范围**：只推给**实际写入该消息的会话**。群发时，每个收件人会话收到 `direction=in` 的事件，发送方会话收到 `direction=out` 的事件；每个连接只看到自己会话的事件，天然无越权。
+
+**Schema（v1）**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `type` | string | 是 | 固定 `group.message` |
+| `v` | integer | 是 | 固定 `1`（事件版本） |
+| `group_id` | string | 是 | `grp_<nanoid(12)>` |
+| `message_id` | string | 是 | `msg_<ULID>`；客户端幂等键 |
+| `sender_type` | enum | 是 | `user` / `agent` / `system` |
+| `sender_id` | string | 是 | user id 或 `role:instance` |
+| `sender_name` | string | 是 | 展示名；空串表示无（前端回退到 `sender_id`） |
+| `kind` | string | 是 | `text` / `ask_user` / `answer` / `command` / `report` / `event` / `decision` / `receipt` |
+| `correlation_id` | string | 是 | 无关联时为空串（不是 null） |
+| `ts` | string | 是 | RFC3339Nano，取消息 `created_at` |
+| `direction` | enum | 否 | `in` / `out`；前端左右分栏用 |
+| `reply_to` | string | 否 | 直接回复的 `message_id` |
+| `text_preview` | string | 否 | ≤200 字预览；完整内容调查询接口 |
+
+```json
+{
+  "type": "group.message",
+  "v": 1,
+  "group_id": "grp_V1StGXR8_Z5j",
+  "message_id": "msg_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+  "sender_type": "agent",
+  "sender_id": "hubu/main",
+  "sender_name": "户部",
+  "kind": "report",
+  "correlation_id": "cor_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+  "ts": "2026-10-19T12:00:00.123Z",
+  "direction": "in",
+  "reply_to": "msg_01J9Y...",
+  "text_preview": "户部奏：PPU 扩容已完成 8 节点，证据见 court/evidence/..."
+}
+```
+
+**契约规则**：
+
+1. **不携带完整 `payload`**：大消息只发元数据 + `text_preview`；卡片数据由前端用 `message_id` 走 §11.2 取。
+2. **幂等**：同一 `message_id` 重复事件，客户端只渲染一次；服务端不保证 exactly-once。
+3. **顺序**：同一会话库内按行 `id`/`ts` 递增；跨会话库不承诺全局顺序。
+4. **恢复**：客户端记录每个群最后一条 `message_id`；断线重连后调用 `GET /api/groups/{id}/messages?cursor=<last_message_id>` 补齐。**服务端不存事件、不回放。**
+5. **失败无副作用**：事件推送失败不影响消息投递与查询结果。
+
+### 11.2 展示查询：`GET /api/groups/{id}/messages`
+
+**语义**：读取**调用者当前会话库**中该群的消息，返回「我发的（`out`）+ 发给我的（`in`）」；不做跨会话库合并。
+
+```http
+GET /api/groups/{id}/messages?cursor=<msg_id>&limit=50
+```
+
+| 参数 | 位置 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `id` | path | string | 是 | 群 ID `grp_*` |
+| `cursor` | query | string | 否 | 上一页最后一条 `message_id`；缺省为最新一页 |
+| `limit` | query | int | 否 | 默认 50，范围 1..200 |
+| `kind` | query | string | 否 | 可选过滤（`ask_user` / `report` / `decision` / ...） |
+| `correlation_id` | query | string | 否 | 线程视图：只取该链 |
+| `unanswered` | query | bool | 否 | 收件箱：只取未回答的 `ask_user` |
+
+**响应 schema**：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `group_id` | string | 群 ID |
+| `viewer.session` | string | 服务端判定的调用者会话（只读展示，客户端不可指定） |
+| `viewer.member_status` | enum | `owner` / `alive` / `left` |
+| `items[]` | array | 消息行，按 `id DESC` |
+| `items[].message_id` | string | 投递 ID |
+| `items[].direction` | enum | `in` / `out` |
+| `items[].kind` | string | 消息 kind |
+| `items[].sender` | object | `{type, id, name}` |
+| `items[].correlation_id` | string | 关联链；空串表示无 |
+| `items[].reply_to` | string | 直接回复的 `message_id` |
+| `items[].created_at` | string | RFC3339Nano |
+| `items[].text` | string | 人读文本 |
+| `items[].payload` | object | 解析后的 `structured_json.payload`（`text` 类型可为空对象） |
+| `items[].recipients` | array | 仅 `direction=out`：`[{addr, status}]`，取自信封 `meta.recipients`（群发展开结果，供流向图；不新增记录） |
+| `items[].answered` | bool | 仅 `ask_user` 有意义：同库存在 `kind=answer AND reply_to=<message_id>` |
+| `next_cursor` | string | 下一页游标（本页最后一条 `message_id`）；`has_more=false` 时为空串 |
+| `has_more` | bool | 是否还有更早的消息 |
+
+```json
+{
+  "group_id": "grp_V1StGXR8_Z5j",
+  "viewer": {"session": "session:web:chat_123", "member_status": "owner"},
+  "items": [
+    {
+      "message_id": "msg_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+      "direction": "out",
+      "kind": "ask_user",
+      "sender": {"type": "user", "id": "u_10086", "name": "皇帝"},
+      "correlation_id": "cor_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+      "reply_to": "",
+      "created_at": "2026-10-19T12:00:00.123Z",
+      "text": "户部请旨：PPU 集群是否按计划今夜扩容？",
+      "payload": {"questions": ["..."], "allow_cancel": true},
+      "recipients": [
+        {"addr": "agent:hubu/main", "status": "delivered"},
+        {"addr": "agent:gongbu/main", "status": "failed"}
+      ],
+      "answered": true
+    }
+  ],
+  "next_cursor": "msg_01J9Z8Q3K7V2M4R6T8W0X2Y4Z6",
+  "has_more": false
+}
+```
+
+**分页与索引**（设计级）：
+
+```sql
+-- cursor 解析为行 id 后做 keyset；无 cursor 则从最新开始
+SELECT id, message_id, direction, sender_type, sender_id, sender_name, kind,
+       correlation_id, reply_to, created_at, structured_json, text
+FROM session_messages
+WHERE group_id = :group_id
+  AND (:cursor_row_id IS NULL OR id < :cursor_row_id)
+ORDER BY id DESC
+LIMIT :limit + 1;
+```
+
+- 依赖索引 `ix_sm_group_cursor ON session_messages(group_id, id DESC) WHERE group_id <> ''`（§7.2）。单库查询，无跨库扫描。
+- 多取一条判断 `has_more`；`next_cursor` = 本页最后一条 `message_id`。
+- `answered` 由同库 `EXISTS(kind='answer' AND reply_to=message_id)` 派生，**不新增状态列、不新增表**。
+
+**权限与错误**：
+
+| 场景 | 结果 |
+|---|---|
+| owner / alive 成员 | `200`，只返回自己会话视角 |
+| left 成员 | `403 MEMBERSHIP_REQUIRED` |
+| 非成员 / 跨 owner / 群不存在 | `404 NOT_FOUND`（不泄露存在性） |
+| `cursor` 不存在或不属于该群 | `400 INVALID_CURSOR` |
+| `limit` 越界 | `400 LIMIT_OUT_OF_RANGE` |
+
+- `viewer.session` 由服务端会话上下文决定；**没有 `session` 查询参数**，因此不存在跨库读取入口。
+- 响应头 `Cache-Control: no-store`：**服务端不缓存、不物化、不做 LRU**；客户端可按 `message_id` 自行做 UI 去重。
+- 纯只读：不写库、不发事件、不改状态。
+
+**客户端取数算法（展示层）**：
+
+1. 首屏：`GET ...?limit=50` → 渲染最近 50 条。
+2. 订阅 `group.message`：新事件按 `message_id` 去重后插入时间线。
+3. 上滑加载更早：带 `cursor=next_cursor`。
+4. 断线：记录 last `message_id`，重连后 `GET ...?cursor=<last>` 补齐，再恢复订阅。
 
 ---
 
@@ -860,7 +1019,11 @@ question_card_resolved   # 服务端 → 前端：已答/取消，卡片关闭
 ### 15.4 审计
 
 19. `SELECT ... FROM session_messages WHERE correlation_id=?`（发送方库）能还原完整问答链。
-20. 不存在群历史查询 API；每份群发副本在自己会话库内可还原「谁说的 + 发给了谁」（`sender_*` + `to.*`），但不跨库合并。
+20. 群成员调用 `GET /api/groups/{id}/messages` 只返回**自己会话视角**（`direction` + `sender_*` 齐全）；`cursor` 续读无重复/遗漏；`limit` 默认 50。
+21. 非成员查询返回 `404`、`left` 成员返回 `403`；客户端伪造 session 参数无效（服务端以上下文为准）。
+22. 全仓无 `GroupHistory` API、无聚合表/LRU/缓存/窗口/定时扫表；展示只查单会话库（`group_id` 过滤 + `id DESC` 索引）。
+23. 写库后受影响会话收到 `group.message`；断线期间消息可用 `cursor` 补齐；重复事件按 `message_id` 幂等。
+24. 群主仍通过 `SubAgent(action=inspect)` + 子代理主动汇报掌握全局（无上帝视角）。
 
 ### 15.5 测试清单
 
@@ -881,8 +1044,16 @@ question_card_resolved   # 服务端 → 前端：已答/取消，卡片关闭
 | `tools/message_service.go` | Send/Resolve/Expire、群发展开 |
 | `tools/message_store.go` | 会话库读写（outbound/inbound/receipt）、幂等 |
 | `tools/message_routes.go` | 地址解析、权限、hop/fanout |
+| `protocol/group_events.go` | `GroupMessageEvent`（`type=group.message`，WS/SSE 传输事件） |
+| `channel/web/web_group_messages.go` | `GET /api/groups/{id}/messages`：成员校验 + 单库 keyset 分页 |
 | `web/src/components/agent/QuestionCard.tsx` | 新问题卡片 |
 | `web/src/hooks/useQuestionCard.ts` | 新卡片数据源 |
+| `web/src/components/group/GroupTimeline.tsx` | 群组时间线（首屏查询 + 事件流增量渲染） |
+| `web/src/components/group/GroupMessageCard.tsx` | 结构化卡片（ask_user/report/decision） |
+| `web/src/components/group/GroupMemberLights.tsx` | 成员状态灯（alive/left + 运行时 busy） |
+| `web/src/components/group/GroupFlowGraph.tsx` | 消息流向图（sender + recipients） |
+| `web/src/components/group/QuestionInbox.tsx` | 未回答提问收件箱 |
+| `web/src/components/group/ThreadView.tsx` | `correlation_id` 线程视图 |
 
 ### 16.2 修改
 
@@ -905,9 +1076,11 @@ question_card_resolved   # 服务端 → 前端：已答/取消，卡片关闭
 | `agent/interactive.go:64,85-89,882-885,1907` | `pendingUserMsg` 增加 priority；取队按优先级 |
 | `agent/session_queue.go:1-80` | `queuedEntry` 增加 Priority；影子队列排序 |
 | `agent/agent.go:4943-4960` | idle 注入携带信封/优先级 |
-| `protocol/ws.go` | 删除旧 AskUser 事件；新增 `question_card*` |
+| `protocol/ws.go` | 删除旧 AskUser 事件；新增 `question_card*`；注册 `group.message` |
 | `protocol/events.go:258-330` | `HistoryMessage` 增加 sender/message/kind/correlation |
-| `channel/subscription.go:1408-1490` | 转换赋值 |
+| `channel/subscription.go:1408-1490` | 转换赋值；`group.message` 订阅分发 |
+| `tools/send_message.go`（写库成功后） | 向受影响会话广播 `group.message`（收件人 `in`、发送方 `out`；不落盘） |
+| `channel/web/web.go` | 注册 `GET /api/groups/{id}/messages` 路由 |
 | `channel/web/web.go`、`web_inbound.go` | 新卡片发布/回答分发 |
 | `channel/cli/*`、`channel/feishu/*` | 新卡片渲染/回调 |
 | `prompt/channels/*.md` | 改用 `SendMessage(kind=ask_user)` |
@@ -932,7 +1105,7 @@ question_card_resolved   # 服务端 → 前端：已答/取消，卡片关闭
 | # | 原问题 | 拍板结论 |
 |---|---|---|
 | Q1 | 主库遗留 `session_messages`/`iteration_history`（分库迁移前的旧表）的处置 | **v74 收尾 DROP**；守卫：`SELECT COUNT(*) FROM tenants WHERE migrated=0 AND db_path<>''` = 0 |
-| Q2 | 群历史怎么查（原：跨会话库合并 + 时间/条数窗口） | **不做群历史聚合**：群主通过 `SubAgent(action=inspect)` 查看子代理状态，子代理主动汇报；`group_id` 仅作消息标记，成员只读自己的会话库 |
+| Q2 | 群历史怎么查（原：跨会话库合并 + 时间/条数窗口） | **不做群历史聚合，但保留群组展示**：`GET /api/groups/{id}/messages`（当前会话视角 + 游标分页）+ `group.message` 事件流；不建聚合表/缓存/LRU/窗口/定时扫表。群主仍通过 `SubAgent(action=inspect)` + 主动汇报掌握全局 |
 | Q3 | ask_user 是否要超时/过期结算 | **不设超时**：ask_user 本质就是一条消息，异步投递后 agent 不等待回复；未回答状态永久保留，用户想答就答 |
 
-> 因此本设计**没有**过期时间列、超时结算逻辑或任何"提问过期"状态机；也**没有**跨会话库的群历史查询/缓存/窗口/越权规则。
+> 因此本设计**没有**过期时间列、超时结算逻辑或任何"提问过期"状态机；群组展示只有**单会话库**的 `GET /api/groups/{id}/messages` 与 `group.message` 事件流，**没有**跨库查询/聚合/缓存/LRU/窗口/越权规则。

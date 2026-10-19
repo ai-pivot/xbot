@@ -4,6 +4,7 @@
 > 基线：`origin/master@619ec6c3`（2026-10-19）
 > 工作分支：`feat/court-orchestration`（隔离工作树 `/tmp/xbot-court`）
 > 作者：taizi
+> **版本：v2.1（2026-10-19）** —— 按用户批注补回「群组展示」：部务会议展示走 `group.message` 事件流 + `GET /api/groups/{id}/messages`（当前会话视角）；后端零额外存储（不做聚合表/缓存/LRU/窗口/定时扫表）。
 > **版本：v2（2026-10-19）** —— 按用户拍板决策修订：消息只落会话分库；群组只有群发/单发 + 两张小表；ask_user 完全异步；旧群数据直接删除；批红规则引擎保留。
 
 ---
@@ -16,7 +17,7 @@
 |---|---|---|
 | [`sendmessage-structured.md`](./sendmessage-structured.md) | ① SendMessage 强化 + ② 删除 AskUser | 信封 schema、kind/payload、correlation/幂等、**消息只落会话分库**、异步 ask_user 与插队队列、群发/单发语义、AskUser 删除清单 |
 | [`message-sender-id.md`](./message-sender-id.md) | ③ 每条消息记录发送人 | `sender_type`/`sender_id`/`sender_name`（**仅会话库**）、会话库 v3→v4 迁移与回填、写入/读取/UI 改造 |
-| [`group-hardening.md`](./group-hardening.md) | ④ 群组（群发/单发） | 只有群发与单发；`groups`/`group_members` 两张小表；群历史不做聚合（群主用 `SubAgent(action=inspect)`）；D1–D17 修复；hop/fanout/限流；`grp_<nanoid>`；旧群数据删除清单 |
+| [`group-hardening.md`](./group-hardening.md) | ④ 群组（群发/单发）+ 群组展示 | 只有群发与单发；`groups`/`group_members` 两张小表；**展示 = 事件流 `group.message` + 按需查询当前会话库**（不做跨库聚合/LRU/窗口）；D1–D17 修复；hop/fanout/限流；`grp_<nanoid>`；旧群数据删除清单 |
 | [`court-reporting.md`](./court-reporting.md) | ⑤ 批红 + 汇报详细设计 | state schema、report/decision 消息、确定性规则引擎 schema（白名单/阈值/证据/矛盾）、朝会 cron、端到端时序 |
 
 阅读顺序建议：① → ③ → ④ → ⑤（消息模型 → 身份 → 群组 → 朝廷流程）。
@@ -24,7 +25,7 @@
 **三条不可动摇的基线**（后续任何实现 PR 都不得违反）：
 
 1. **主库不放任何消息**：所有消息只存在于 `sqlite.SessionDBRelPath(channel, chatID)` 指向的会话库。
-2. **没有「群组消息」**：群发 = 遍历成员各发一份、各写各的会话库；群历史不做聚合（群主用 `SubAgent(action=inspect)`，子代理主动汇报）。
+2. **没有「群组消息」聚合**：群发 = 遍历成员各发一份、各写各的会话库；**不做跨库聚合**，但**保留群组展示**——`group.message` 事件流 + `GET /api/groups/{id}/messages`（只读当前会话视角）。群主仍用 `SubAgent(action=inspect)` + 子代理主动汇报掌握全局。
 3. **`ask_user` 完全异步**：投递即返回；用户回复是插队消息，在下一个 iteration 边界注入。
 
 **决策基线（用户拍板 A–E）**：
@@ -45,6 +46,7 @@
 
 - **部门 = interactive SubAgent**（`tools/subagent.go` + role `.md`）
 - **部门会议 = 群发 + 单发**（`SendMessage(to="group:grp_*")` 群发；成员回给发起者用单发）
+- **会议展示 = 事件流 + 按需查询**（`group.message` 实时推送；`GET /api/groups/{id}/messages` 读当前会话视角；不做聚合表/缓存/LRU）
 - **朝会 = cron 注入主会话**（`cron/scheduler.go` + `tools/cron.go`）
 - **奏折/工作日志 = 工作区普通文件**（Read/Write/Grep，零核心改动）
 - **批红 = 确定性校验脚本（规则）+ 汇总 agent（只做机械格式化）**
@@ -148,6 +150,9 @@
   每会话一个 session DB（消息的唯一归属）
   + 主库两张群组小表 groups / group_members
   + memory（user_id 隔离） + role md + cron_jobs + hooks
+
+  展示层（零额外存储）：
+  group.message 事件流（实时） + GET /api/groups/{id}/messages（当前会话视角，游标分页）
 ```
 
 **为什么不是 N×N**：群发只由发起者显式执行一次；成员回复默认单发给发起者，不再群发。每次群发带 `hop`，超过 `max_hops` 拒绝；单次 fanout ≤128 且有令牌桶（见 ④ §9）。
@@ -162,7 +167,7 @@
 | 内阁首辅 | 主 Agent 常驻会话 | `agent/agent.go`、`session/multitenant.go:293` | 唯一调度者；负责汇总与上奏 |
 | 六部（部门） | interactive SubAgent（role md） | `tools/subagent.go:125`、`tools/subagent_roles.go:12`、`agent/interactive.go:970` | 长寿命、独立工具白名单、独立记忆 |
 | 部门内司/局 | 嵌套 SubAgent | `agent/engine.go:1026`、`agent/interactive.go:2719` | `spawn_agent` capability 控制 |
-| 部务会议 | `CreateChat(type=group)` + `SendMessage(to=group:)` | `tools/create_chat.go:164-259`、`tools/send_message.go:240-353` | 群发 = 遍历成员各发一份；成员回发起者用单发；群历史不做聚合（群主用 inspect） |
+| 部务会议 | `CreateChat(type=group)` + `SendMessage(to=group:)` | `tools/create_chat.go:164-259`、`tools/send_message.go:240-353` | 群发 = 遍历成员各发一份；成员回发起者用单发；展示走 `group.message` + `GET /api/groups/{id}/messages`（当前视角，不聚合） |
 | 公文传递 | `SendMessage(to=agent:/session:/group:)` | `tools/send_message.go:76-121` | 投递即返回（写各自会话库），回复走异步通知 |
 | 朝会/例会 | cron job → bg notification pipeline | `tools/cron.go:127`、`cron/scheduler.go:205`、`agent/agent.go:2860-2873` | job 归属主会话；持久化在 `cron_jobs` 表 |
 | 工作日志/奏折 | 普通文件工具 | `tools/read.go`、Write/Grep 工具 | 可 git 版本化、可人审 |
@@ -394,8 +399,9 @@ red_pen:                               # 批红规则（脚本读取，不是代
 - **通知开会 = 一次群发**：`SendMessage(to="group:grp_...", kind=text, message="...")`。平台遍历 `status='alive'` 的成员，**每人各得一份独立副本**（各写各的会话库）。
 - **成员发言 = 单发回发起者**：`SendMessage(to="agent:shoufu/main", reply_to=<群发消息 id>)`。prompt 明确「会议中默认只回发起者，不群发」。
 - **需要全员知晓的结论 = 发起者再群发一次**（显式动作，受 hop/fanout/令牌桶限制）。
-- 会议纪要由首辅根据成员的主动汇报（`kind=report`/`kind=text`）与 `SubAgent(action=inspect)` 返回的状态整理后写入 `court/meetings/<date>-<topic>.md`。**平台不提供群历史聚合，也不建群级消息表**。
-- 群历史不是共享上下文：成员不会自动看到别人的回答；也不存在跨会话库的读视图。首辅在纪要里汇总后，通过下一次群发把结论发回全员。
+- 会议纪要由首辅根据成员的主动汇报（`kind=report`/`kind=text`）与 `SubAgent(action=inspect)` 返回的状态整理后写入 `court/meetings/<date>-<topic>.md`。**平台不做跨会话库聚合，也不建群级消息表/缓存/LRU**。
+- **会议展示**：首辅/成员在 Web 端打开该群时，通过 `GET /api/groups/{id}/messages` 读取**自己会话视角**的时间线（我发的 + 发给我的）；新消息由 `group.message` 事件流实时插入。群主看到的是「自己的群发 + 各部门回奏」，成员看到的是「收到的通知 + 自己的回复」。
+- **展示 ≠ 共享上下文**：成员不会自动看到别人的原始回答，也不存在跨会话库的读视图；首辅在纪要里汇总后，通过下一次群发把结论发回全员。展示层只是当前会话库的可视化，不改变 LLM 上下文边界。
 
 ### 5.4 朝会（cron + 汇总）
 
@@ -672,6 +678,17 @@ subagent:
 - 会议纪要 = 首辅根据成员主动汇报 + `SubAgent(action=inspect)` 整理后写 `court/meetings/<date>-<topic>.md`，平台不提供聚合、不建消息表。
 - 不存在主持人/发言权/轮次：这些是 prompt 约定，core 不建模。
 
+**C. 群组展示（用户视角，零额外存储）**：
+
+| 能力 | 做法 | 落点 |
+|---|---|---|
+| 按需查询 | `GET /api/groups/{id}/messages?cursor=<msg_id>&limit=50`；只查调用者会话库，`WHERE group_id=? ORDER BY id DESC` + keyset 分页 | `channel/web/web_group_messages.go` |
+| 实时事件 | 写库成功后向**实际写入的会话**推 `group.message`（收件人 `in`、发送方 `out`）；不落盘、不做 replay | `protocol/group_events.go`、`channel/subscription.go` |
+| 展示形态 | 实时时间线、结构化卡片（ask_user/report/decision）、成员状态灯、消息流向图、未回答提问收件箱、`correlation_id` 线程视图 | `web/src/components/group/*` |
+| 索引 | `session_messages(group_id, id DESC)` 复合索引 | ① §7.2 |
+
+明确不做：跨会话库聚合、`GroupHistory` API、LRU/缓存、聚合结果表、7 天/2000 条窗口、定时扫表、上帝视角。事件丢失由客户端 `cursor` 补齐，查询是事实源。
+
 #### 迁移（决策 D：不迁移）
 
 - `peer_groups.json`、内存 `group:` 群**直接删除**，不导入、不兼容；升级后旧群不存在（文档/CHANGELOG 说明）。
@@ -766,6 +783,7 @@ subagent:
 3. 会议按 prompt 串行 `@`；首辅写 `court/meetings/<date>-<topic>.md`。
 4. 修复 group 通用缺陷：ID、发送方校验、前缀带 sender、hop 限制、`max_rounds` 诚实、roster 实时校验。
 5. 加入「跨部门依赖」：`state.handoffs`，validator 校验被依赖 task 存在。
+6. **群组展示最小闭环**：`GET /api/groups/{id}/messages`（当前会话视角 + 游标分页）+ `group.message` 事件流 + 前端时间线/卡片/状态灯；不建聚合表/缓存/LRU。
 
 **验收判据**：
 
@@ -774,6 +792,8 @@ subagent:
 - [ ] 非成员向 `group:gN` 发送被拒（单测或手工）。
 - [ ] 一次广播只触发 1 跳；成员不回广播（日志可见）。
 - [ ] `grp_*` 重启后不冲突（新格式，无进程内计数器）。
+- [ ] 群成员打开会议：首屏 50 条 + 事件流实时增量；`cursor` 上滑加载更早；非成员 404。
+- [ ] 全仓无 `GroupHistory`/聚合表/LRU/窗口/定时扫表；展示只查单会话库。
 
 ### Phase 3 — 持久化与跨时间唤醒（2–3 周）
 
@@ -812,6 +832,8 @@ subagent:
 | 记忆迁移丢数据 | durable tenant 变更 | 部门经验丢失 | 不删旧 tenant + dual-read + marker | 回退派生函数 |
 | group 成员校验变严 | 现有跨组用法 | 消息被拒 | CHANGELOG + 先告警后拒绝 | 配置开关 `groups.strict_membership=false` |
 | 群发部分失败 | 成员漏消息 | 逐成员 receipt | 返回 recipients 明细 + 同 key 重试只补失败者 | 重发 |
+| 展示查询慢（长历史/大群） | 单库查询 | 首屏卡顿 | `(group_id,id DESC)` 索引 + 50 条/页 + keyset；无跨库扫描 | 调小 limit / 补索引 |
+| 事件丢失或断线 | WS/SSE 断开 | 时间线缺消息 | 事件按 `message_id` 幂等；重连用 cursor 补齐；查询是事实源 | 无需回滚（无状态） |
 | 广播 hop 限制 | 现有广播链 | 深层广播被截 | hop 默认 4 + 日志 | 调高 max_hops |
 | 状态文件并发写 | 多 agent 写同一文件 | 内容损坏 | 单写者 + 原子 rename + validator | git 回滚 |
 | 校验脚本误报 | 规则过严 | 奏折全红 | 规则分级（error/warn）+ 先 warn | 调整 `red_pen.rules` |
@@ -849,6 +871,12 @@ grep -n "func (s \*TenantSession) GetMessages\|func (s \*TenantSession) Clear" s
 grep -rn "FlushPeerGroups" --include=*.go .                  # 仅定义
 grep -n "groupCounter\|CreateGroup" tools/create_chat.go tools/group_state.go
 grep -n "for _, m := range members" tools/send_message.go    # 并发广播
+
+# 群组展示（文档级红线自查）
+grep -rn "GroupHistory" docs/ design/ 2>/dev/null             # 仅允许出现在「明确不做」的否定说明
+grep -rn "LRU" docs/design/                                   # 仅允许出现在「不做 LRU」的否定说明
+grep -rn "聚合结果表\|定时扫表\|2000 条窗口" docs/design/      # 仅允许否定说明
+grep -rn "api/groups/.*/messages" docs/design/                 # 查询接口只此一个
 
 # memory
 grep -n "deriveSubAgentTenantID" -A 15 agent/subagent_tenant.go
@@ -924,7 +952,8 @@ grep -n "SetNotifyCronFunc" -A 12 agent/agent.go
 | TTL 默认先保持 destroy | 零行为突变，可观察 | 直接切 hibernate（风险高） |
 | durable tenant 用 sidecar 记录 spec | 不碰 schema | 加 `agent_specs` 表（迁移成本） |
 | 朝会靠 cron 而非常驻 goroutine | 已有持久化 + 重启可用 | 新后台调度器（重复造轮子） |
-| 不做群历史聚合 | 群主已有 `SubAgent(action=inspect)`，子代理会主动汇报；消息只落会话库（决策 A） | 跨会话库聚合（N 路文件扫描、越权面大、无人使用） |
+| 不做跨库群历史聚合，但保留群组展示 | 消息只落会话库；用户只需自己视角；聚合引入 N 路扫描、越权面、缓存一致性 | ① 全量聚合/GroupHistory；② 完全不提供展示（本版已按用户批注修正） |
+| 展示走「事件流 + 按需查询」，不建缓存/LRU | 单库 keyset 查询已足够快；事件只是提示，事实源是会话库；零额外存储 | 聚合结果表、LRU、7 天/2000 条窗口、定时扫表、事件 replay 表 |
 | 群状态只建两张小表 | 只有成员关系是跨会话数据；消息不是 | 建群组独立库、存群消息、存轮次/主持人 |
 | 旧群数据直接删除 | 用户拍板 D；旧数据本来不可靠（内存/JSON 双轨） | 迁移 `peer_groups.json` + legacy 认领（复杂度高、价值低） |
 | ask_user 完全异步 + 插队队列 | 不阻塞 run；用户回复应立即被看到 | 保留等待态/兼容窗口（双份状态、跨重启恢复复杂） |
