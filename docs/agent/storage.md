@@ -154,6 +154,77 @@ XBOT_PG_TEST_DSN="postgres://postgres:***@host:5432/xbot?sslmode=disable" \
 
 The PG backend is pure Go (`github.com/jackc/pgx/v5` + `pgxpool`) — no cgo/libpq.
 
+## Migration: SQLite → PostgreSQL
+
+`cmd/xbot-migrate` copies an existing SQLite installation into PG. Use it with the
+server **stopped** (or against a `VACUUM INTO` snapshot):
+
+```bash
+xbot-migrate -sqlite ~/.xbot/xbot.db -pg "postgres://…/target?sslmode=disable" -dry-run
+xbot-migrate ... -wipe        # full re-run: TRUNCATE the target first
+xbot-migrate ... -verify-only # compare only, no writes
+```
+
+### Why it is not a storage-interface copy
+
+The layouts differ structurally: SQLite is a main DB plus **one DB file per session**
+(v71), PG is one schema. Two consequences force an explicit per-column copy:
+
+1. **Primary keys must be preserved.** `session_messages.id` is referenced by
+   `iteration_history.message_id`, by control records (`target_history_id`), by
+   compression snapshots (`HistoryIDs`) and by mask/context-edit targets. Renumbering
+   silently corrupts replay. The `storage.*` interfaces do not expose PK-preserving
+   inserts, so the tool issues `INSERT … OVERRIDING SYSTEM VALUE` and re-aligns every
+   IDENTITY sequence with `setval(pg_get_serial_sequence(...), MAX(id))` — otherwise
+   the first runtime insert collides.
+2. **Each session DB owns an independent id sequence starting at 1.** Merging would
+   collide, so every DB is assigned a disjoint **id window** and each DB's ids *and*
+   every internal reference (including the ids embedded in control-record JSON) are
+   shifted by the same offset. Referential integrity is exact; only absolute numbers
+   change.
+
+### Conversion rules
+
+- **Follow the PG column TYPE, never the column name.** The same name has different
+  types across tables: `user_settings.updated_at` is an epoch INTEGER while other
+  tables store a timestamp string; `oauth_tokens.expires_at` is an INTEGER in SQLite
+  and TIMESTAMPTZ in PG.
+- IDENTITY tables are discovered from PG metadata at run time; a hard-coded list rots.
+- Timestamps arrive in several shapes, including Go's `time.Time.String()`
+  (`… +0000 UTC m=+267.07`) — the monotonic suffix and the zone name must be stripped.
+- **Do not add `ORDER BY` when scanning a source table.** Ordering that matters is
+  *between* tables (`tenants` first, for the FKs), not within one; and on a DB with a
+  damaged index page `ORDER BY id` either fails with `database disk image is
+  malformed` or returns the same row twice, while the plain table scan reads cleanly.
+
+### Data conditions the tool reports rather than hides
+
+Real installations contain states SQLite tolerates and PG rejects. Each is handled
+explicitly and reported, never silently dropped:
+
+| Condition | Handling |
+|---|---|
+| Child rows whose tenant was deleted (SQLite has no FK) | skipped + counted |
+| Duplicate rows from a corrupt source btree | deduped on the real (composite) PK + counted |
+| Invalid UTF-8 (mid-character truncation) | damaged bytes → U+FFFD, rest preserved |
+| A session DB referenced by `tenants.db_path` but missing on disk | warned, its rows absent |
+
+### Not migrated
+
+- `oauth_tokens` — its SQLite shape (INTEGER `expires_at` + `scopes`/`raw`) is
+  incompatible with the PG schema, and the PG backend keeps OAuth in a local SQLite
+  file.
+- FTS shadow tables (`event_history_fts*`) — derived indexes, rebuilt not copied.
+- chromem vector stores (`~/.xbot/archival`, `~/.xbot/tool_index`) — file-based and
+  keyed by `tenantID`, so preserving `tenants.id` keeps them valid in place.
+
+### Verification
+
+Row counts (session tables summed across shards), `MAX(id)` for main-DB identity
+tables, and orphaned `target_history_id` references; any mismatch fails the run.
+Session `MAX(id)` is deliberately *not* compared across source and target — windows
+make it incomparable; row counts plus reference integrity are the real proof.
+
 ## Known scope limits
 
 - Per-session DB (v71 one-session-one-DB) is a SQLite mechanism. Under PG the same
