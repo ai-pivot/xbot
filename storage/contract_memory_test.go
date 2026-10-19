@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // testMemoryStoreContract exercises the MemoryStore half of the Storage
@@ -229,4 +230,85 @@ func testMemoryStoreContract(t *testing.T, factory StorageFactory) {
 		mem.SetPersonaIsolation(true)
 		mem.SetPersonaIsolation(false)
 	})
+
+	// GetHistoryEntriesInRange replaced the SQLite-only RecallTimeRangeFunc: it is
+	// the recall time-window query the letta provider depends on, so its ordering,
+	// defaulting and tenant isolation must hold on every backend.
+	t.Run("GetHistoryEntriesInRange", func(t *testing.T) {
+		rangeTenant := createTestTenant(t, s, uniqueChatID(t))
+		if err := mem.ClearHistory(ctx, rangeTenant); err != nil {
+			t.Fatalf("ClearHistory: %v", err)
+		}
+		for _, entry := range []string{"first", "second", "third"} {
+			if err := mem.AppendHistory(ctx, rangeTenant, entry); err != nil {
+				t.Fatalf("AppendHistory(%s): %v", entry, err)
+			}
+		}
+
+		// A wide window returns all three, NEWEST FIRST.
+		start := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		end := time.Now().Add(24 * time.Hour)
+		got, err := mem.GetHistoryEntriesInRange(ctx, rangeTenant, start, end, 10)
+		if err != nil {
+			t.Fatalf("GetHistoryEntriesInRange: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("returned %d entries, want 3", len(got))
+		}
+		if got[0].Entry != "third" {
+			t.Errorf("first row = %q, want the newest (\"third\") — ordering is newest-first", got[0].Entry)
+		}
+		if got[2].Entry != "first" {
+			t.Errorf("last row = %q, want the oldest (\"first\")", got[2].Entry)
+		}
+		if got[0].CreatedAt.IsZero() {
+			t.Error("CreatedAt must be populated (recall needs timestamps)")
+		}
+
+		// limit <= 0 defaults to 20 (never "unlimited"), so a small limit still
+		// truncates and stays newest-first.
+		limited, err := mem.GetHistoryEntriesInRange(ctx, rangeTenant, start, end, 2)
+		if err != nil {
+			t.Fatalf("GetHistoryEntriesInRange(limit=2): %v", err)
+		}
+		if len(limited) != 2 || limited[0].Entry != "third" {
+			t.Errorf("limit=2 returned %v, want the two newest newest-first", entryStrings(limited))
+		}
+		if def, err := mem.GetHistoryEntriesInRange(ctx, rangeTenant, start, end, 0); err != nil || len(def) != 3 {
+			t.Errorf("limit=0 returned %d entries (err=%v), want the 20-row default (all 3 here)", len(def), err)
+		}
+
+		// An empty window must return nothing — not the whole table.
+		future := time.Now().Add(48 * time.Hour)
+		none, err := mem.GetHistoryEntriesInRange(ctx, rangeTenant, future, future.Add(time.Hour), 10)
+		if err != nil {
+			t.Fatalf("GetHistoryEntriesInRange(empty window): %v", err)
+		}
+		if len(none) != 0 {
+			t.Errorf("empty window returned %d entries, want 0", len(none))
+		}
+
+		// Tenant isolation: another tenant's rows never leak in.
+		otherTenant := createTestTenant(t, s, uniqueChatID(t))
+		if err := mem.AppendHistory(ctx, otherTenant, "other-tenant-entry"); err != nil {
+			t.Fatalf("AppendHistory(other): %v", err)
+		}
+		isolated, err := mem.GetHistoryEntriesInRange(ctx, rangeTenant, start, end, 50)
+		if err != nil {
+			t.Fatalf("GetHistoryEntriesInRange(isolation): %v", err)
+		}
+		for _, e := range isolated {
+			if e.Entry == "other-tenant-entry" {
+				t.Fatal("another tenant's history leaked into the range query")
+			}
+		}
+	})
+}
+
+func entryStrings(rows []HistoryEntry) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.Entry
+	}
+	return out
 }

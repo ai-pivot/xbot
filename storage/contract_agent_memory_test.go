@@ -364,6 +364,87 @@ func testAgentMemoryStoreContract(t *testing.T, factory StorageFactory) {
 			}
 		}
 	})
+	t.Run("LongTerm_DecayLowersHeatAndForgets", func(t *testing.T) {
+		user := uniqueUser(t)
+		id, err := mem.AddAgentLongTermMemory(ctx, agentmem.LongTermMemory{
+			UserID: user, Type: "fact", Content: "decay candidate",
+			Importance: 1.0, SearchText: "decay candidate",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := mem.GetAgentLongTermMemory(ctx, user, 0, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if before.HeatScore != 1.0 {
+			t.Errorf("fresh row heat = %v, want the 1.0 default", before.HeatScore)
+		}
+		// A row is only above the forget threshold once it has been ACCESSED:
+		// heat = importance * exp(-days/halfLife) * log(1+access_count), and
+		// log(1+0) = 0, so a never-accessed row decays to heat 0 immediately
+		// (existing product behaviour). Touch it first, as recall does.
+		if err := mem.TouchAgentLongTermMemory(ctx, id); err != nil {
+			t.Fatalf("TouchAgentLongTermMemory: %v", err)
+		}
+		// Decay must RUN on every backend. With a 30-day half-life and a row
+		// accessed just now, heat moves but importance stays (heat is above the
+		// forget threshold).
+		if err := mem.DecayAgentLongTerm(ctx, user, 0, 30.0, 0.1); err != nil {
+			t.Fatalf("DecayAgentLongTerm: %v", err)
+		}
+		after, err := mem.GetAgentLongTermMemory(ctx, user, 0, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.HeatScore == before.HeatScore {
+			t.Errorf("heat unchanged (%v) after decay — decay did not run", after.HeatScore)
+		}
+		if after.Importance != before.Importance {
+			t.Errorf("importance changed (%v -> %v) although heat was above the forget threshold",
+				before.Importance, after.Importance)
+		}
+		// An impossible threshold makes every row "forgotten": importance decays 5%.
+		if err := mem.DecayAgentLongTerm(ctx, user, 0, 30.0, 1e9); err != nil {
+			t.Fatalf("DecayAgentLongTerm(high threshold): %v", err)
+		}
+		forgotten, err := mem.GetAgentLongTermMemory(ctx, user, 0, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if forgotten.Importance >= after.Importance {
+			t.Errorf("importance did not decay below the forget threshold: %v -> %v",
+				after.Importance, forgotten.Importance)
+		}
+	})
+
+	t.Run("LongTerm_SetFilePath", func(t *testing.T) {
+		user := uniqueUser(t)
+		id, err := mem.AddAgentLongTermMemory(ctx, agentmem.LongTermMemory{
+			UserID: user, Type: "fact", Content: "has a markdown mirror", SearchText: "has a markdown mirror",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := mem.GetAgentLongTermMemory(ctx, user, 0, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.FilePath != "" {
+			t.Errorf("file_path = %q before being set, want empty", got.FilePath)
+		}
+		const path = "/tmp/xbot-memory/notes/fact_1.md"
+		if err := mem.SetAgentLongTermFilePath(ctx, id, path); err != nil {
+			t.Fatalf("SetAgentLongTermFilePath: %v", err)
+		}
+		got, err = mem.GetAgentLongTermMemory(ctx, user, 0, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.FilePath != path {
+			t.Errorf("file_path = %q, want %q (the mirror must be findable so delete can remove it)", got.FilePath, path)
+		}
+	})
 }
 
 // seedNoiseCorpus adds unrelated rows so a text-similarity threshold that depends
