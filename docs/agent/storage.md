@@ -79,6 +79,19 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
 - **PG `Clear` drops `session_messages` only**, SQLite's also drops `iteration_history`.
   Tests that assert usage aggregates must therefore use baseline deltas or membership
   checks rather than absolute counts.
+- **PG validates UTF-8; SQLite does not.** SQLite stores TEXT as raw bytes, so an
+  invalid byte sequence lives there silently for years; PG rejects the *entire
+  statement* with SQLSTATE 22021 (`invalid byte sequence for encoding "UTF8"`) on the
+  first write, which surfaces as a lost conversation turn
+  (`append session history: persist message batch: … item N`), not as one garbled
+  character. The bytes come from byte-slicing CJK text — `args[:80] + "..."` cuts a
+  3-byte rune and leaves a 1–2 byte orphan (observed: `0xe6 0x2e 0x2e`). Two rules:
+  **never truncate a string that can reach a message or the DB with `s[:n]`** — use
+  `internal/textutil` (`TruncateBytes`, `TruncateBytesWithSuffix`, `TruncateRunes`);
+  and treat `pgText()` in `storage/pg_sanitize.go` as the write-boundary backstop, so
+  an unforeseen producer (third-party API, PDF/OCR extractor) degrades to U+FFFD
+  instead of killing the turn. `encoding/json` already repairs invalid bytes, so JSON
+  columns are safe by construction.
 
 ## One replay implementation, both backends
 

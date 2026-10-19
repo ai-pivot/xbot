@@ -10,6 +10,7 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/internal/textutil"
 	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
@@ -613,7 +614,7 @@ func (a *Agent) handleExportSession(ctx context.Context, msg bus.InboundMessage)
 	// Web channel has no limit (renders in browser). Truncate for IM channels.
 	exportStr := string(exported)
 	if msg.Channel != "web" && msg.Channel != "cli" && len(exportStr) > 28000 {
-		exportStr = exportStr[:28000] + "\n\n... (内容过长已截断，请使用 Web 渠道或 /export 命令获取完整导出)"
+		exportStr = textutil.TruncateBytesWithSuffix(exportStr, 28000, "\n\n... (内容过长已截断，请使用 Web 渠道或 /export 命令获取完整导出)")
 	}
 
 	return &channel.OutboundMsg{

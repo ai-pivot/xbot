@@ -11,6 +11,7 @@ import (
 
 	"xbot/agent/hooks"
 	"xbot/bus"
+	"xbot/internal/textutil"
 	"xbot/llm"
 	"xbot/memory"
 	"xbot/plugin"
@@ -950,7 +951,7 @@ func executeWithHooks(
 			}
 			const maxToolOutput = 8192
 			if len(toolOutput) > maxToolOutput {
-				toolOutput = toolOutput[:maxToolOutput] + "\n... (truncated)"
+				toolOutput = textutil.TruncateBytesWithSuffix(toolOutput, maxToolOutput, "\n... (truncated)")
 			}
 			postEvent = &hooks.PostToolUseEvent{
 				BasePayload:   base,

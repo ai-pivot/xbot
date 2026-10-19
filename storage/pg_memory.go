@@ -118,7 +118,7 @@ func (s *pgMemoryStore) SetBlock(tenantID int64, blockName, content, userID stri
 		`INSERT INTO core_memory_blocks (tenant_id, block_name, user_id, content, char_limit)
 		 VALUES ($1, $2, $3, $4, 2000)
 		 ON CONFLICT (tenant_id, block_name, user_id) DO UPDATE SET content = $4, updated_at = now()`,
-		tenantID, blockName, userID, content)
+		tenantID, blockName, userID, pgText(content))
 	return err
 }
 

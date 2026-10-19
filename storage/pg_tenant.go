@@ -159,7 +159,7 @@ func (s *pgTenantStore) GetTenantCWD(tenantID int64) (string, error) {
 
 func (s *pgTenantStore) SetTenantPreview(tenantID int64, content string) error {
 	ctx := context.Background()
-	_, err := s.pool.Exec(ctx, `UPDATE tenants SET preview = $1 WHERE id = $2`, content, tenantID)
+	_, err := s.pool.Exec(ctx, `UPDATE tenants SET preview = $1 WHERE id = $2`, pgText(content), tenantID)
 	return err
 }
 

@@ -218,7 +218,7 @@ func (s *pgConfigStore) SetUserSetting(channel, senderID, key, value string) err
 		`INSERT INTO user_settings (channel, sender_id, key, value, updated_at)
 		 VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (channel, sender_id, key) DO UPDATE SET value=$4, updated_at=$5`,
-		channel, senderID, key, value, time.Now().Unix())
+		channel, senderID, key, pgText(value), time.Now().Unix())
 	return err
 }
 

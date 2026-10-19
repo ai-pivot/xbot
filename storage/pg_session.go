@@ -52,6 +52,11 @@ func (s *pgSessionStore) insertMessageSQL() string {
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`
 }
 
+// messageArgs builds the INSERT argument vector. Every free-text column goes
+// through pgText: PostgreSQL rejects the whole statement on an invalid byte
+// sequence (SQLSTATE 22021) where SQLite stored it silently, so a single torn
+// character upstream must not be able to cost a conversation turn. The JSON
+// columns are safe already — encoding/json replaces invalid bytes with U+FFFD.
 func (s *pgSessionStore) messageArgs(tenantID int64, msg llm.ChatMessage) []any {
 	toolCalls, _ := json.Marshal(msg.ToolCalls)
 	if string(toolCalls) == "null" {
@@ -62,8 +67,8 @@ func (s *pgSessionStore) messageArgs(tenantID int64, msg llm.ChatMessage) []any 
 		reasoningItems = []byte("[]")
 	}
 	return []any{
-		tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName,
-		msg.ToolArguments, string(toolCalls), msg.Detail, msg.ReasoningContent,
+		tenantID, pgText(msg.Role), pgText(msg.Content), pgText(msg.ToolCallID), pgText(msg.ToolName),
+		pgText(msg.ToolArguments), string(toolCalls), pgText(msg.Detail), pgText(msg.ReasoningContent),
 		string(reasoningItems), msg.DisplayOnly, msg.Internal,
 		0, msg.TurnID, msg.Iteration,
 		"message", 0, "", // record_type, target_history_id, record_data (set by caller)
@@ -78,7 +83,7 @@ func (s *pgSessionStore) ReplaceToolMessage(tenantID int64, toolName, toolCallID
 		   SELECT id FROM session_messages
 		   WHERE tenant_id = $2 AND tool_name = $3 AND tool_call_id = $4
 		   ORDER BY id DESC LIMIT 1
-		 )`, content, tenantID, toolName, toolCallID)
+		 )`, pgText(content), tenantID, pgText(toolName), pgText(toolCallID))
 	return err
 }
 
@@ -137,7 +142,7 @@ func (s *pgSessionStore) UpdateMessageContent(tenantID int64, messageIndex int, 
 	_, err := s.pool.Exec(ctx,
 		`UPDATE session_messages SET content = $1
 		 WHERE id = (SELECT id FROM session_messages WHERE tenant_id = $2 ORDER BY id ASC LIMIT 1 OFFSET $3)`,
-		content, tenantID, messageIndex)
+		pgText(content), tenantID, messageIndex)
 	return err
 }
 
@@ -210,7 +215,7 @@ func (s *pgSessionStore) AppendIterationHistory(tenantID int64, msgID int64, tur
 		`INSERT INTO iteration_history
 		 (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-		msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools,
+		msgID, tenantID, turnID, rec.Iteration, pgText(rec.Content), pgText(rec.Reasoning), pgText(rec.Tools),
 		rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs,
 		rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)
 	return err
@@ -218,7 +223,7 @@ func (s *pgSessionStore) AppendIterationHistory(tenantID int64, msgID int64, tur
 
 func (s *pgSessionStore) AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error) {
 	ctx := context.Background()
-	tag, err := s.pool.Exec(ctx, `UPDATE iteration_history SET tools = $1 WHERE tenant_id = $2 AND turn_id = $3 AND iteration = $4`, toolJSON, tenantID, turnID, iteration)
+	tag, err := s.pool.Exec(ctx, `UPDATE iteration_history SET tools = $1 WHERE tenant_id = $2 AND turn_id = $3 AND iteration = $4`, pgText(toolJSON), tenantID, turnID, iteration)
 	if err != nil {
 		return false, err
 	}
@@ -450,7 +455,7 @@ func (s *pgSessionStore) AppendCommandMessage(tenantID int64, role, content stri
 	var id int64
 	err := s.pool.QueryRow(ctx, `INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, turn_id)
-		VALUES ($1, $2, $3, true, 'command', 0) RETURNING id`, tenantID, role, content).Scan(&id)
+		VALUES ($1, $2, $3, true, 'command', 0) RETURNING id`, tenantID, pgText(role), pgText(content)).Scan(&id)
 	return id, err
 }
 
