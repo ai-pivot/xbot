@@ -225,6 +225,55 @@ tables, and orphaned `target_history_id` references; any mismatch fails the run.
 Session `MAX(id)` is deliberately *not* compared across source and target — windows
 make it incomparable; row counts plus reference integrity are the real proof.
 
+### Cutover runbook (a real production switch)
+
+The tool is the mechanical part; the *ordering* around it is what makes a cutover
+safe. This is the sequence that worked on a live installation — it is a checklist,
+not a script, because every step's preconditions differ per host. **Never hard-code
+the DSN**: read it from the environment (or a 0600 file) and confirm which database
+it points at *before* the step that truncates.
+
+1. **Quiesce first.** The tool reads SQLite snapshots, and a running instance keeps
+   writing, so anything produced between snapshot and cutover is silently lost.
+   Stop the service and confirm it is really down.
+2. **Snapshot, don't read the live file.** `.backup` (or `VACUUM INTO`) the main DB
+   *and* every session DB. A consistent snapshot also keeps the live file untouched,
+   which is what makes rollback free.
+3. **Check the source for damage before trusting it.** A DB whose `wal_checkpoint`
+   failed on shutdown can have real btree page damage, and the failure is silent:
+   an index scan returns *fewer rows than the table holds* (observed: 17 tenants via
+   index vs 23 via table scan). Symptom to look for is a count that disagrees with
+   the sidebar/UI. Only when damaged, rebuild with `.recover` and require
+   `PRAGMA integrity_check` to return `ok` before migrating; a healthy DB needs
+   neither step.
+4. **Repair orphaned parents in the snapshot, not in PG.** A session can be visible
+   while its `tenants` row was lost to corruption. Recover the original `tenant_id`
+   from the session DB's own `session_messages` and re-insert the `tenants` row
+   pointing at that session DB — this also brings back the `event_history` rows
+   scoped to that tenant. Doing it in the snapshot keeps the source self-consistent.
+5. **Migrate with `-wipe` only when you mean it.** `-wipe` is `TRUNCATE … CASCADE`
+   on every target table. It is correct for a first cutover or a full re-run, and
+   catastrophic against a target that already has live data. Run `-dry-run` first.
+6. **Rewrite `config.json` as the service's own user.** Add
+   `"storage": {"type": "pg", "dsn": …}` and back the file up first. Writing it as
+   root leaves the file owned by root and the service (running as its own user) can
+   no longer read it.
+7. **Start, wait for HTTP, then verify against PG directly.** Readiness is the HTTP
+   port, not `systemctl is-active`. Then count `tenants` / `session_messages` /
+   `iteration_history` on the PG side and compare with the source.
+8. **Rollback is: stop, restore the config backup, start.** Because the SQLite files
+   were only ever read, no data has to be copied back. The one-way door is the other
+   direction: messages written to PG after the cutover do not return to SQLite.
+
+Two footguns worth restating because they are easy to reintroduce:
+
+- **A default DSN pointing at a real server plus `-wipe` is a data-loss trap.** A
+  script that runs unattended with both defaults will eventually be run against the
+  wrong database. Require the DSN explicitly.
+- **Deploying the binary is not part of migrating.** Building and installing a new
+  binary belongs to the deploy step; mixing it in means a migration failure leaves
+  you unable to tell which change caused it.
+
 ## Runtime services are backend-agnostic too
 
 The same rule that applies to memory providers applies to every runtime service that
