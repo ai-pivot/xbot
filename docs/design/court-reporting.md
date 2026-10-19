@@ -1,9 +1,10 @@
-# 朝会 / 奏折 / 批红 —— 详细设计
+# 朝会 / 奏折 / 批红 —— 详细设计（v2）
 
 > 状态：设计稿（**不含实现代码**；脚本契约以 schema 形式给出）
 > 基线：`origin/master@619ec6c3`
 > 工作分支：`feat/court-orchestration`
 > 关联：`court-orchestration.md`（总体方案）、`sendmessage-structured.md`（①信封）、`message-sender-id.md`（③）、`group-hardening.md`（④）
+> **版本：v2（2026-10-19）** —— 按用户拍板决策修订：消息落会话分库；群发=遍历成员各发一份；批红规则引擎（确定性 YAML + 脚本）保留不变。
 
 ---
 
@@ -13,8 +14,8 @@
 2. **奏折是结构化消息**（`kind=report`），必须携带 `state_ref` + `state_sha256` + `evidence[]`；批红系统先校验哈希再看内容。
 3. **批红是确定性规则引擎**（`court/bin/validate_state.py`），规则用 YAML 描述（schema/证据/阈值/白名单/黑名单/单调性/矛盾检测），输入输出都是 JSON，**不调用 LLM 做判定**。
 4. **朝会由 cron 驱动**：cron 注入议程 → 各部门写 state → 部门发 `kind=report` → 汇总校验 → 首辅上奏 → 用户 `kind=decision`（准/驳/改）→ 异步回调对应 agent。
-5. **`correlation_id` 贯穿全链**：朝会实例 `cor_<date>` → 每份奏折 `cor_<date>/<dept>` → 批红 `reply_to=report.message_id`。
-6. **用户批红 = `sender_type=user` 的消息**（③），在目标 agent 会话中以 `role=user` 投影，UI 显示「皇帝批红」。
+5. **`correlation_id` 贯穿全链**：朝会实例 `cor_<date>` → 每份奏折 `cor_<date>/<dept>` → 批红 `reply_to=report.message_id`。所有引用都按 ID 在**参与者的会话分库**里定位，不存在中心消息表。
+6. **用户批红 = `sender_type=user` 的消息**（③），写入目标 agent 的会话库（`role=user` 的 inbound 行），UI 显示「皇帝批红」。批红是**单发**给 report 作者，不群发。
 
 ---
 
@@ -61,7 +62,7 @@ court/
     <YYYY-MM-DD>/<dept>.yaml        # 奏折快照（与 report 消息同源）
     <YYYY-MM-DD>/summary.yaml       # 首辅汇总
   meetings/
-    <YYYY-MM-DD>-<topic>.md         # 会议纪要（来自 transcript）
+    <YYYY-MM-DD>-<topic>.md         # 会议纪要（首辅从 GroupHistory 聚合查询后人工整理，非平台消息表）
   evidence/
     <dept>/<task-id>/...            # 证据文件（日志/截图/命令输出）
   bin/
@@ -207,7 +208,6 @@ risks:
   "kind": "report",
   "from": {"type": "agent", "id": "gongbu/main", "name": "工部"},
   "to": {"type": "agent", "id": "shoufu/main", "name": "首辅"},
-  "group_id": "grp_court_daily",
   "correlation_id": "cor_20261019_gongbu",
   "idempotency_key": "gongbu:2026-10-19:rpt_20261019_gongbu_1",
   "payload": {
@@ -529,9 +529,10 @@ user may override:                   verdict = modify（改，附 modifications�
 
 ### 6.3 与 ③ 的关系
 
-- 批红消息 `from.type=user`, `from.id=<user id>` → 投影行 `sender_type='user'`, `sender_id=<user id>`。
+- 批红消息 `from.type=user`, `from.id=<user id>` → 写入目标 agent 会话库的 inbound 行，`sender_type='user'`, `sender_id=<user id>`。
 - 目标 agent 的下一轮上下文看到 `role=user` 的批红文本；UI 显示「皇帝批红」徽标。
-- 群组场景：`group_id` 必填，transcript 记录决策事件；非成员不可见（按 visibility）。
+- 批红是**单发**：`to` = report 作者（首辅），`reply_to` = 原 report 的 `message_id`，`correlation_id` 沿用奏折链。
+- 若奏折是通过群发通知的（例如朝会报到），批红仍只单发给 report 作者；不向群成员广播决策。
 
 ---
 
@@ -587,7 +588,7 @@ user may override:                   verdict = modify（改，附 modifications�
        └─ 首辅发 SendMessage(kind=report) 给 user（上奏）
 09:00 用户收到奏折
   ├─ 用户批红 SendMessage(kind=decision, reply_to=report.message_id)
-  └─ 回调注入各部门 agent（异步）
+  └─ decision 单发给首辅（report 作者）；首辅再单发给相关部门（异步）
        ├─ approve → 继续执行
        ├─ reject  → 下轮奏折必须回应
        └─ modify  → apply_decision.py 改 state 后继续
@@ -723,7 +724,7 @@ cor_20261019
 ### 11.4 端到端
 
 14. 模拟 cron 触发：首辅发 command → 部门写 state → 发 report → 校验 → 上奏 → 用户 decision → 回调注入部门会话。
-15. 全链 `correlation_id` 可从 `agent_messages` 反查（`cor_20261019_gongbu` 链完整）。
+15. 全链 `correlation_id` 可从**参与者会话库**反查（`cor_20261019_gongbu` 链完整：command 行在部门库、report 行在首辅库、decision 行在首辅库）；不存在中心表可查。
 16. 部门超时未交 → 汇总标记 `missing` + warn 事件。
 
 ### 11.5 回归
@@ -757,7 +758,7 @@ cor_20261019
 |---|---|
 | 结构化消息 envelope / report / decision | `sendmessage-structured.md` |
 | sender_id 落库与展示 | `message-sender-id.md` |
-| 群组 transcript / 轮次 | `group-hardening.md` |
+| 群发 / 单发、`groups`/`group_members` 两张表、`GroupHistory` 聚合 | `group-hardening.md` |
 | cron 注入 | 现有 `cron/scheduler.go`、`tools/cron.go` |
 
 ### 12.3 需要修改的现有文件（最小）
@@ -771,10 +772,12 @@ cor_20261019
 
 ---
 
-## 13. 开放问题（需用户拍板）
+## 13. 开放问题
 
-1. **批红是否允许「部分准」**：本设计 `modify` 通过 modifications 表达；若需要逐 task 准/驳，需要扩展 decision schema（`task_verdicts[]`）。
-2. **state 文件是否进 git**：本设计假设进（可 diff/回滚）；若运行时高频写入，建议 `court/state/` 单独分支/仓库。
-3. **朝会频率/时区**：默认每日 08:00 Asia/Shanghai；需要确认。
-4. **规则引擎用 Python 还是 Go**：本设计用 Python（零编译、易改）；若要求单二进制，可改为 `xbot court validate` 子命令。
-5. **批红签名**：预留 `signature`，本期不校验；是否需要接入现有 crypto 体系？
+全局仅 3 条，见 `sendmessage-structured.md` §17。本文档已按以下默认值收敛，不再单列问题：
+
+- **部分准**：本期不支持（`decision` 只有 approve/reject/modify 三态；逐 task 准/驳留待后续）。
+- **state 进 git**：是（可 diff / 可 revert）；运行时高频写入由 `court/state/` 所在仓库承担。
+- **朝会频率/时区**：默认每日 08:00 `Asia/Shanghai`，写在 `court/org.yaml`，可改。
+- **规则引擎实现**：Python（零编译、无第三方依赖、断网可跑）；不引入 Go 子命令。
+- **批红签名**：本期不校验（`signature` 字段预留）。

@@ -4,21 +4,38 @@
 > 基线：`origin/master@619ec6c3`（2026-10-19）
 > 工作分支：`feat/court-orchestration`（隔离工作树 `/tmp/xbot-court`）
 > 作者：taizi
+> **版本：v2（2026-10-19）** —— 按用户拍板决策修订：消息只落会话分库；群组只有群发/单发 + 两张小表；ask_user 完全异步；旧群数据直接删除；批红规则引擎保留。
 
 ---
 
 ## 文档索引（详细设计系列）
 
-本文件是总体方案。以下四份是**可批红的详细设计**，逐项覆盖追加需求：
+本文件是总体方案。以下四份是**可批红的详细设计**：
 
 | 文档 | 覆盖 | 核心内容 |
 |---|---|---|
-| [`sendmessage-structured.md`](./sendmessage-structured.md) | ① SendMessage 强化 + ② 删除 AskUser | 信封 schema、kind/payload、correlation/幂等/超时、异步回调、落库、权限、群组语义、AskUser 受影响点全清单 |
-| [`message-sender-id.md`](./message-sender-id.md) | ③ 每条 user message 记录发送人 | `sender_type`/`sender_id`/`sender_name` 字段设计、v74 迁移与回填、写入/读取/UI 改造、群组统一 |
-| [`group-hardening.md`](./group-hardening.md) | ④ 群组强化 | D1–D17 逐条解决方案、统一 Conversation Core、groups/group_members schema、轮次/hop/限流、成员状态机、nanoid、租户隔离 |
+| [`sendmessage-structured.md`](./sendmessage-structured.md) | ① SendMessage 强化 + ② 删除 AskUser | 信封 schema、kind/payload、correlation/幂等/超时、**消息只落会话分库**、异步 ask_user 与插队队列、群发/单发语义、AskUser 删除清单 |
+| [`message-sender-id.md`](./message-sender-id.md) | ③ 每条消息记录发送人 | `sender_type`/`sender_id`/`sender_name`（**仅会话库**）、会话库 v3→v4 迁移与回填、写入/读取/UI 改造 |
+| [`group-hardening.md`](./group-hardening.md) | ④ 群组（群发/单发） | 只有群发与单发；`groups`/`group_members` 两张小表；跨会话库群历史聚合；D1–D17 修复；hop/fanout/限流；`grp_<nanoid>`；旧群数据删除清单 |
 | [`court-reporting.md`](./court-reporting.md) | ⑤ 批红 + 汇报详细设计 | state schema、report/decision 消息、确定性规则引擎 schema（白名单/阈值/证据/矛盾）、朝会 cron、端到端时序 |
 
-阅读顺序建议：① → ③ → ④ → ⑤（每条后者的消息/身份/群组能力都建立在前者之上）。
+阅读顺序建议：① → ③ → ④ → ⑤（消息模型 → 身份 → 群组 → 朝廷流程）。
+
+**三条不可动摇的基线**（后续任何实现 PR 都不得违反）：
+
+1. **主库不放任何消息**：所有消息只存在于 `sqlite.SessionDBRelPath(channel, chatID)` 指向的会话库。
+2. **没有「群组消息」**：群发 = 遍历成员各发一份、各写各的会话库；群历史 = 跨会话库按 `group_id` 聚合。
+3. **`ask_user` 完全异步**：投递即返回；用户回复是插队消息，在下一个 iteration 边界注入。
+
+**决策基线（用户拍板 A–E）**：
+
+| # | 决策 |
+|---|---|
+| A | 消息绝不碰主库：只落会话分库，主库不放任何消息表 |
+| B | 只有群发和单发；群状态 = `groups` + `group_members` 两张小表；无群级消息表 |
+| C | `ask_user` 完全异步；旧 AskUser 工具与旧交互直接删除，无兼容窗口、无只读回放 |
+| D | 旧群数据（`peer_groups.json`、内存成员表）直接删除，不迁移不兼容 |
+| E | 批红规则引擎保留：确定性 YAML + 脚本，不由 LLM 判定 |
 
 ---
 
@@ -27,19 +44,25 @@
 「朝廷」不是一套新的业务流程代码，而是**把现有原语按组织语义组合起来的使用规范**：
 
 - **部门 = interactive SubAgent**（`tools/subagent.go` + role `.md`）
-- **部门会议 = group + moderator 串行 @**（`tools/create_chat.go` + `tools/send_message.go`）
+- **部门会议 = 群发 + 单发**（`SendMessage(to="group:grp_*")` 群发；成员回给发起者用单发）
 - **朝会 = cron 注入主会话**（`cron/scheduler.go` + `tools/cron.go`）
 - **奏折/工作日志 = 工作区普通文件**（Read/Write/Grep，零核心改动）
 - **批红 = 确定性校验脚本（规则）+ 汇总 agent（只做机械格式化）**
-- **持久化 = per-session SQLite + memory + role 注册表（磁盘 md）**
+- **持久化 = per-session SQLite + memory + role 注册表（磁盘 md）+ 主库两张群组小表**
 - **审计 = hooks 的 SubAgentStart/Stop（现有事件）**
+
+消息层的三条硬约束（详见 ①）：
+
+1. **消息只落会话分库**：`session_messages` / `iteration_history`，主库无消息表。
+2. **只有群发和单发**：群发 = 遍历成员各发一份；群历史 = 跨会话库按 `group_id` 聚合。
+3. **`ask_user` 完全异步**：投递即返回，用户回复是插队消息，在下一个 iteration 边界注入。
 
 核心缺口只有四个，全部是**通用原语**，不含任何「朝廷」业务语义：
 
 1. `WakeInteractiveSession`：从 DB 重建内存中的子代理会话（当前完全缺失）。
 2. 子代理 TTL 策略化：`destroy` → `hibernate`/`retain`，并把「自然完成时间」写对。
 3. spawn 时的 `Clear()` 语义拆分：新增/续跑/重置三种意图分开。
-4. group 的通用缺陷修复 + 组织元数据落文件（不是新表）。
+4. 群组通用缺陷修复：两张小表 + 群发/单发语义 + 成员校验 + 限流（不是新建群组引擎）。
 
 ---
 
@@ -90,15 +113,15 @@
                                                 │ IM / Web / CLI 消息
                                 ┌───────────────▼──────────────────┐
                                 │ 内阁首辅（主 Agent 常驻 session）   │
-                                │ · 唯一调度者（moderator）          │
+                                │ · 唯一调度者          │
                                 │ · 拆旨 → 派发 → 验收 → 上奏        │
                                 └───┬───────────┬───────────┬──────┘
                     CreateChat(group)│           │cron       │SendMessage(agent:)
                                     │           │           │
               ┌─────────────────────▼──┐   ┌────▼─────┐  ┌──▼──────────────────────┐
-              │ 部务会议 group:gN       │   │ 朝会/例会 │  │ 六部（interactive        │
-              │ moderator = 首辅        │   │ 定时触发  │  │ SubAgent，长寿命会话）    │
-              │ 串行 @ 单个部门发言      │   └────┬─────┘  │ 工部/户部/刑部/礼部/...   │
+              │ 部务会议 group:grp_*    │   │ 朝会/例会 │  │ 六部（interactive        │
+              │ 群发 = 逐成员各发一份     │   │ 定时触发  │  │ SubAgent，长寿命会话）    │
+              │ 成员回发起者 = 单发       │   └────┬─────┘  │ 工部/户部/刑部/礼部/...   │
               └────────────┬───────────┘        │        └──┬────┬────┬────┬──────┘
                            │                    │           │    │    │    │
                            └────────────────────┴───────────┴────┴────┴────┘
@@ -121,11 +144,13 @@
                                 │ 皇帝：批红（准/驳/改）              │
                                 └──────────────────────────────────┘
 
-  持久层（不在图里但支撑一切）：
-  session DB（每会话一个 .db） + memory（user_id/tenant 隔离） + role md + cron_jobs 表 + hooks
+  消息/持久层（不在图里但支撑一切）：
+  每会话一个 session DB（消息的唯一归属）
+  + 主库两张群组小表 groups / group_members
+  + memory（user_id 隔离） + role md + cron_jobs + hooks
 ```
 
-**为什么不是 N×N**：会议只允许 moderator 逐个 `@` 成员；成员回给 moderator，不互相广播。广播是显式动作且带 `hop` 限制（见 §7.3）。
+**为什么不是 N×N**：群发只由发起者显式执行一次；成员回复默认单发给发起者，不再群发。每次群发带 `hop`，超过 `max_hops` 拒绝；单次 fanout ≤128 且有令牌桶（见 ④ §9）。
 
 ---
 
@@ -134,11 +159,11 @@
 | 朝廷角色 | 现有功能 | 代码位置 | 关键约束 |
 |---|---|---|---|
 | 皇帝 | 用户消息 + IM/Web/CLI session | `channel/`、`bus/` | 唯一最终裁决；不直接进工具循环 |
-| 内阁首辅 | 主 Agent 常驻会话 | `agent/agent.go`、`session/multitenant.go:293` | 唯一 moderator；负责汇总与上奏 |
+| 内阁首辅 | 主 Agent 常驻会话 | `agent/agent.go`、`session/multitenant.go:293` | 唯一调度者；负责汇总与上奏 |
 | 六部（部门） | interactive SubAgent（role md） | `tools/subagent.go:125`、`tools/subagent_roles.go:12`、`agent/interactive.go:970` | 长寿命、独立工具白名单、独立记忆 |
 | 部门内司/局 | 嵌套 SubAgent | `agent/engine.go:1026`、`agent/interactive.go:2719` | `spawn_agent` capability 控制 |
-| 部务会议 | `CreateChat(type=group)` | `tools/create_chat.go:164-259` | moderator 串行 `@`；无消息库（需外部纪要） |
-| 公文传递 | `SendMessage(to=agent:/group:/session:)` | `tools/send_message.go:76-118` | 投递即返回，回复走通知 |
+| 部务会议 | `CreateChat(type=group)` + `SendMessage(to=group:)` | `tools/create_chat.go:164-259`、`tools/send_message.go:240-353` | 群发 = 遍历成员各发一份；成员回发起者用单发；群历史跨库聚合 |
+| 公文传递 | `SendMessage(to=agent:/session:/group:)` | `tools/send_message.go:76-121` | 投递即返回（写各自会话库），回复走异步通知 |
 | 朝会/例会 | cron job → bg notification pipeline | `tools/cron.go:127`、`cron/scheduler.go:205`、`agent/agent.go:2860-2873` | job 归属主会话；持久化在 `cron_jobs` 表 |
 | 工作日志/奏折 | 普通文件工具 | `tools/read.go`、Write/Grep 工具 | 可 git 版本化、可人审 |
 | 司礼监批红（规则） | skill 脚本 / plugin 工具 | skill 目录、`plugin/plugin.go:162-171` | **确定性**，不调 LLM |
@@ -222,7 +247,9 @@
 - `GetSessionMessages` / `GetAgentSessionDump` 只读内存 → 重启后 UI 也读不到（`3149`、`3182`）。
 - fg 分支没有 `OnIterationSnapshot`（L7）。
 
-### 4.3 群组（两套模型）
+### 4.3 群组（旧的两套模型，v2 删除）
+
+v1 基线里存在两套互不相通的群组模型：
 
 | | `GroupMembership`（`group:`） | `PeerGroup`（`peer:`） |
 |---|---|---|
@@ -233,22 +260,24 @@
 | 发送方校验 | **无**（`tools/send_message.go:240-258`） | 有（`:390-394`） |
 | 消息历史 | **无**（`tools/group_state.go:12-18` 自陈） | 无 |
 
-**群组缺陷清单**：
+**v2 处置：两套都删**（决策 D），统一为「群发 / 单发 + 两张小表」（见 ④）。这里保留表格仅作审计对照，不代表要保留实现。
+
+**旧群组缺陷清单（修复要求保留）**：
 
 | # | 缺陷 | 证据 |
 |---|---|---|
 | G1 | 无讨论历史/无「谁说过什么」；成员互相看不到彼此发言 | `group_state.go:19-26`、`send_message.go:240-353` |
-| G2 | moderator「串行」只存在于描述；实现是并发 goroutine | 描述 `create_chat.go:29-43`；实现 `send_message.go:280-297,327-341`；文档 `docs/agent/tools.md:98` |
-| G3 | `max_rounds` 是空参数，`Closed` 是死字段 | `create_chat.go:57,69`（无读取点）、`group_state.go:61-65`（仅测试调用） |
+| G2 | 「主持人串行」只存在于描述；实现是并发 goroutine | 描述 `create_chat.go:29-43`；实现 `send_message.go:280-297,327-341` |
+| G3 | `max_rounds` 是空参数，`Closed` 是死字段 | `create_chat.go:57,69`（无读取点）、`group_state.go:61-65` |
 | G4 | 无持久化，重启即失忆 | `group_state.go:29`；`send_message.go:241-244` |
 | G5 | ID `g<N>` 进程内自增，重启复用；`CreateGroup` 无条件覆盖 | `create_chat.go:14,170`；`group_state.go:32-40` |
 | G6 | 无租户/成员校验，知道 `group:g1` 就能群发 | `group_state.go:29`；`send_message.go:240-258` |
-| G7 | 广播是 N 个并发 full-turn RPC；成员 prompt 鼓励再广播 → N×N 放大器 | `send_message.go:280-297`；`agent/engine_wire.go:735-739`；`create_chat.go:247-248` |
+| G7 | 广播是 N 个并发 full-turn RPC；成员 prompt 鼓励再广播 → N×N 放大器 | `send_message.go:280-297`；`agent/engine_wire.go:735-739` |
 | G8 | 广播等全部成员完成（30s），与 `sendToAgent` 的 2s 即返回策略矛盾 | `send_message.go:265-268,297`；`tools/limits.go:61,65` |
 | G9 | @ 解析过窄，`@agent:qa`（无 instance）被丢弃 → 变全员广播；前缀不带发送者 | `send_message.go:431-447`、`:292,336` |
 | G10 | 成员 roster 是创建时快照；spawn 失败仍入册；`isInGroup` 用快照 | `create_chat.go:189-242`；`send_message.go:223-230` |
 | G11 | peer 组自动 ID 只有 15×15=225 种，撞名即共享 | `tools/peer_group.go:196-200`；`group_state.go:228-231` |
-| G12 | peer 组单文件全局、无 GC、`ListGroupMembers` 不校验成员、`FlushPeerGroups` 零调用、悬挂指针 | `group_state.go:162-168,283,296-327,360-386`；`peer_group.go:168-177` |
+| G12 | peer 组单文件全局、无 GC、`ListGroupMembers` 不校验成员、`FlushPeerGroups` 零调用 | `group_state.go:162-168,283,296-327,360-386` |
 | G13 | 文档与代码漂移（history/round/sequential 均不存在） | `docs/agent/tools.md:98,107-112` |
 
 ### 4.4 会话存储 / 跨重启
@@ -359,13 +388,14 @@ red_pen:                               # 批红规则（脚本读取，不是代
 5. 收到会议 `@` 时，只回主持人，不向其他部门广播。
 6. 不直接向用户汇报（除非首辅明确授权）。
 
-### 5.3 部门会议（group）
+### 5.3 部门会议（群发 + 单发）
 
-- 首辅 `CreateChat(type=group, members=[agent:gongbu/main, agent:hubu/main, ...])`。
-- 首辅是 moderator：**一次只 `@` 一个成员**，拿到回复后再 `@` 下一个。串行由 prompt + 工具调用顺序保证，不需要新代码。
-- 会议纪要由首辅写入 `court/meetings/<date>-<topic>.md`（结构化：议题/出席/每人结论/证据/待办）。
-- 平台不为 group 存消息历史（现状 G1）；纪要文件就是历史。这是「用文件做事实源」的直接应用。
-- 若要减少 N×N 风险：成员 prompt 明确「会议中不要广播」；`SendMessage(group:)` 的广播只在首辅明确要求时使用。
+- 首辅 `CreateChat(type=group, members=[agent:gongbu/main, agent:hubu/main, ...])` → 主库写入 `groups` + `group_members`，返回 `group:grp_<nanoid>`。
+- **通知开会 = 一次群发**：`SendMessage(to="group:grp_...", kind=text, message="...")`。平台遍历 `status='alive'` 的成员，**每人各得一份独立副本**（各写各的会话库）。
+- **成员发言 = 单发回发起者**：`SendMessage(to="agent:shoufu/main", reply_to=<群发消息 id>)`。prompt 明确「会议中默认只回发起者，不群发」。
+- **需要全员知晓的结论 = 发起者再群发一次**（显式动作，受 hop/fanout/令牌桶限制）。
+- 会议纪要由首辅通过 `GroupHistory(group_id)` 聚合查询（只读视图，跨成员会话库）后写入 `court/meetings/<date>-<topic>.md`。平台不建群级消息表 表。
+- 群历史是「读视图」而不是共享上下文：成员不会自动看到别人的回答；首辅在纪要里汇总后，通过下一次群发把结论发回全员。
 
 ### 5.4 朝会（cron + 汇总）
 
@@ -471,7 +501,7 @@ handoffs: []                          # 交接记录
 - 所有 agent 已有 Read/Write/Grep，零新工具。
 - 跨 session/跨进程/跨重启天然持久。
 - 可 git diff、可人审、可回滚。
-- 不需要新增 schema migration，不碰 `xbot.db`。
+- 不需要在主库新增任何**消息**表；唯一的主库改动是两张群组小表（`groups`/`group_members`，④ §4）。
 
 ---
 
@@ -614,42 +644,40 @@ subagent:
 - role 定义在休眠期间被改名/删除 → wake 返回 `role_not_found`，提示首辅重新编制。
 - `iterationHistory` 从 `Detail` 还原可能不完整（历史消息 Detail 被压缩）→ 允许为空，不影响消息真相。
 
-### 6.3 ③ 群组
+### 6.3 ③ 群组（群发 / 单发）
 
 #### 现状问题
 
 见 §4.3（G1–G13）。核心是**两套模型语义重叠、group 无持久化无历史、广播无刹车**。
 
-#### 方案（分「通用修复」与「朝廷用法」两层）
+#### 方案（v2：只有一个模型）
 
 **A. 通用修复（进 core，但仍是通用能力）**：
 
 | 修复 | 做法 | 落点 |
 |---|---|---|
-| ID 唯一 | `g<N>` → `g-<nanoid>`；`CreateGroup` 存在即报错 | `tools/create_chat.go:170`、`tools/group_state.go:32-40` |
-| 发送方校验 | `sendToGroup` 校验 `sender ∈ Members`（peer 已有） | `tools/send_message.go:240-258` |
-| 前缀带发送者 | `[group:<id>] <sender>: <msg>` | `send_message.go:292,336` |
-| 广播刹车 | 消息 metadata 带 `group_hop`；hop ≥ 2 拒绝广播；成员 prompt 默认「不广播」 | `send_message.go:280-297`、`agent/engine_wire.go:736-740` |
-| @ 解析容错 | `@agent:role`（无 instance）按 role 唯一匹配；歧义才报错 | `send_message.go:431-447` |
-| `max_rounds` 诚实 | 真计数并在达到后 `Close`，或从 schema 删除 | `create_chat.go:57,69`、`group_state.go:61-65` |
-| 成员快照失效 | `isInGroup` 改为实时 `GetGroup` 查询；roster 变更广播 | `send_message.go:223-230` |
-| group 持久化 | 复用 peer 的文件机制（通用 JSON），按 user 分区；启动加载、退出 flush | `group_state.go`（新增 `saveGroups`/`loadGroups`），`agent/agent.go:2878` 退出处 |
-| peer 修复 | ID 用 UUID；`FlushPeerGroups` 接到停机；`ListGroupMembers` 校验成员；`GetPeerGroup` 返回值拷贝或加删除标记 | `peer_group.go:196-200`、`group_state.go:283,242-248,360-386` |
+| 模型唯一 | 删除 `GroupMembership` 与 `PeerGroup`；只有「群发 = 遍历成员各发一份」与「单发」 | `tools/group_state.go`（整文件）、`tools/send_message.go:380-428` |
+| 持久化 | 主库两张小表：`groups(id,name,owner,created_at)` + `group_members(group_id,member_addr,status,joined_at)` | `storage/sqlite/migrations.go`（v74） |
+| ID 唯一 | `g<N>` → `grp_<nanoid(12)>`；`CreateGroup` 冲突报 `ID_TAKEN` | `tools/create_chat.go:170`、新 `tools/group_ids.go` |
+| 发送方校验 | 群发前查 `group_members(status='alive')`；否则 `MEMBERSHIP_REQUIRED` | `tools/send_message.go:240-258` |
+| 发送者标识 | 每份副本带 `sender_*` + `group_id` + `message_id`；不再用 `[group:x]` 字符串前缀 | `send_message.go:292,336` |
+| 广播刹车 | 信封 `hop/max_hops`；fanout ≤128；群/发送者令牌桶；成员 prompt 默认「回复单发」 | `send_message.go:280-297`、`agent/engine_wire.go:736-740` |
+| @ 解析容错 | `@agent:role`（无 instance）按 role 唯一匹配；歧义报 `AMBIGUOUS_MENTION` | `send_message.go:431-447` |
+| 删轮次 | `max_rounds`/`rounds_used`/`Closed`/`group_rounds` 全部从 schema 与代码删除 | `create_chat.go:57,69`、`group_state.go:61-65` |
+| 成员状态 | 只有 `alive/left`；`left` 不再投递；leave 广播 `event(member.left)` | 新 `tools/group_store.go` |
+| 群历史 | `GroupHistory(group_id)` 跨会话库聚合（只读，按 `message_id` 合并） | 新 `tools/group_history.go` |
 
 **B. 朝廷用法（不进 core）**：
 
-- 会议纪要 = 文件；group 不需要消息库。
-- moderator 串行 = prompt + 逐个 `@`；core 只保证「@ 单人」可靠。
-- 会议结束 = moderator 不再发消息；`Close` 仅作为可选清理。
+- **开会通知 = 一次群发**；成员回发起者 = 单发；结论回全员 = 发起者再群发一次。
+- 会议纪要 = 首辅用 `GroupHistory` 聚合后写 `court/meetings/<date>-<topic>.md`，平台不建消息表。
+- 不存在主持人/发言权/轮次：这些是 prompt 约定，core 不建模。
 
-> 说明：如果 `max_rounds` 与 `Close` 在通用层不实现，也应从工具 schema 删除，避免模型误以为有该能力（当前是「文档撒谎」）。
+#### 迁移（决策 D：不迁移）
 
-#### 迁移
-
-- ID 格式变更只影响新组；旧 `g1` 在重启后本来就丢，无兼容负担。
-- 成员校验从「无」到「有」可能打断现有跨组用法；先在 `docs` CHANGELOG 标注，再发布。
-- 持久化文件路径 `$XBOT_HOME/groups.json`，与 `peer_groups.json` 并列；损坏时备份为 `.bak` 而不是静默覆盖。
-- 回滚：删除 `groups.json` 即回到内存模式（文件是附加能力，不是真相）。
+- `peer_groups.json`、内存 `group:` 群**直接删除**，不导入、不兼容；升级后旧群不存在（文档/CHANGELOG 说明）。
+- 新代码只认 `group:grp_*`；`peer:` 地址返回 `NOT_FOUND`。
+- 回滚：DROP 两张表即回到"无群组"状态（消息不受影响）。
 
 ### 6.4 ④ 持久化 / 唤醒
 
@@ -746,7 +774,7 @@ subagent:
 - [ ] 一次会议产生纪要，含每个部门的「结论 + evidence 路径 + 待办」。
 - [ ] 非成员向 `group:gN` 发送被拒（单测或手工）。
 - [ ] 一次广播只触发 1 跳；成员不回广播（日志可见）。
-- [ ] `g<N>` 重启后不冲突（新格式 `g-<nanoid>`）。
+- [ ] `grp_*` 重启后不冲突（新格式，无进程内计数器）。
 
 ### Phase 3 — 持久化与跨时间唤醒（2–3 周）
 
@@ -784,7 +812,8 @@ subagent:
 | 唤醒重建失败 | role 删除/model 失效 | 部门失联 | sidecar spec + 明确错误 + 首辅重编制 | 关闭 `resume`，用 `new` |
 | 记忆迁移丢数据 | durable tenant 变更 | 部门经验丢失 | 不删旧 tenant + dual-read + marker | 回退派生函数 |
 | group 成员校验变严 | 现有跨组用法 | 消息被拒 | CHANGELOG + 先告警后拒绝 | 配置开关 `groups.strict_membership=false` |
-| 广播 hop 限制 | 现有广播链 | 深层广播被截 | hop=2 上限 + 日志 | 调高阈值 |
+| 群发部分失败 | 成员漏消息 | 逐成员 receipt | 返回 recipients 明细 + 同 key 重试只补失败者 | 重发 |
+| 广播 hop 限制 | 现有广播链 | 深层广播被截 | hop 默认 4 + 日志 | 调高 max_hops |
 | 状态文件并发写 | 多 agent 写同一文件 | 内容损坏 | 单写者 + 原子 rename + validator | git 回滚 |
 | 校验脚本误报 | 规则过严 | 奏折全红 | 规则分级（error/warn）+ 先 warn | 调整 `red_pen.rules` |
 | cron 朝会噪音 | 频繁触发 | 打扰用户 | 每日一次 + 只报异常 | 删除 cron job |
@@ -818,7 +847,6 @@ grep -n "func (m \*MultiTenantSession) DestroySession" -A 45 session/multitenant
 grep -n "func (s \*TenantSession) GetMessages\|func (s \*TenantSession) Clear" session/tenant.go
 
 # 群组
-grep -rn "MaxRounds" --include=*.go .                        # 仅声明
 grep -rn "FlushPeerGroups" --include=*.go .                  # 仅定义
 grep -n "groupCounter\|CreateGroup" tools/create_chat.go tools/group_state.go
 grep -n "for _, m := range members" tools/send_message.go    # 并发广播
@@ -867,11 +895,12 @@ grep -n "SetNotifyCronFunc" -A 12 agent/agent.go
 | SubAgent memory 整合（no-op） | `agent/engine_wire.go:1457-1489` |
 | memory 隔离 | `memory/xbot/xbot.go:105-156,239-261` |
 | memory 注入 | `agent/middleware_builtin.go:541-566`；SubAgent `agent/engine_wire.go:977-991` |
-| group 模型 | `tools/group_state.go:12-152` |
+| group 模型（旧，已删） | `tools/group_state.go:12-152`（审计对照） |
 | group 创建 | `tools/create_chat.go:164-259` |
 | group 发送 | `tools/send_message.go:232-353` |
-| peer 组 | `tools/group_state.go:133-387`、`tools/peer_group.go` |
+| peer 组（旧，已删） | `tools/group_state.go:133-387`、`tools/peer_group.go`（审计对照） |
 | group prompt | `agent/engine_wire.go:729-741` |
+| group 历史聚合 | 新 `tools/group_history.go` |
 | group 清理 | `agent/interactive.go:588-593` |
 | cron 调度 | `cron/scheduler.go:205-248` |
 | cron 工具 | `tools/cron.go:127-180,207-220` |
@@ -892,12 +921,15 @@ grep -n "SetNotifyCronFunc" -A 12 agent/agent.go
 | 决策 | 理由 | 替代方案（否决） |
 |---|---|---|
 | 组织结构用文件而非 DB 表 | 零 schema 变更；所有 agent 已有文件工具；可 git | 新增 `court_*` 表（违反「不定制」） |
-| 会议不新增 core 引擎 | moderator 串行可由 prompt + 逐个 @ 保证 | 写一个 `MeetingRunner`（业务逻辑进 core） |
+| 会议不新增 core 引擎 | 只有群发/单发两个动作；通知用群发、回复用单发，prompt 约定即可 | 写一个会议执行器 / 轮次抽象（业务逻辑进 core） |
 | 批红规则用脚本 | 确定性、可测试、可插拔 | 让 LLM 判定（不可复现） |
 | TTL 默认先保持 destroy | 零行为突变，可观察 | 直接切 hibernate（风险高） |
 | durable tenant 用 sidecar 记录 spec | 不碰 schema | 加 `agent_specs` 表（迁移成本） |
 | 朝会靠 cron 而非常驻 goroutine | 已有持久化 + 重启可用 | 新后台调度器（重复造轮子） |
-| group 消息历史落纪要文件 | 无需消息库 | 给 group 建消息表（与 session 重复） |
+| 群历史靠跨会话库聚合 | 消息只落会话库（决策 A）；不建群级消息表 | 给 group 建消息表 / 群组独立库（与 session 重复，且违反 A） |
+| 群状态只建两张小表 | 只有成员关系是跨会话数据；消息不是 | 建群组独立库、存群消息、存轮次/主持人 |
+| 旧群数据直接删除 | 用户拍板 D；旧数据本来不可靠（内存/JSON 双轨） | 迁移 `peer_groups.json` + legacy 认领（复杂度高、价值低） |
+| ask_user 完全异步 + 插队队列 | 不阻塞 run；用户回复应立即被看到 | 保留等待态/兼容窗口（双份状态、跨重启恢复复杂） |
 
 ---
 

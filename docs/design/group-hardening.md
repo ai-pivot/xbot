@@ -1,23 +1,36 @@
-# 群组强化（Group Hardening）—— 详细设计
+# 群组（群发 / 单发）—— 详细设计（v2）
 
 > 状态：设计稿（**不含实现代码**）
 > 基线：`origin/master@619ec6c3`
 > 工作分支：`feat/court-orchestration`
 > 关联：`sendmessage-structured.md`（①）、`message-sender-id.md`（③）、`court-reporting.md`（⑤）
-> 前置：本设计逐条解决审计缺陷 D1–D17。
+> **版本：v2（2026-10-19）** —— 按用户拍板决策重写。v1 的双模型分层（会议模型 + 对等总线）、群组独立库、群级消息表、轮次/主持人/发言权抽象**全部作废**。
+
+---
+
+## 修订记录（v1 → v2）
+
+| # | v1 | v2（已拍板） |
+|---|---|---|
+| G-1 | 「会议」模型（有主持人/轮次/发言权）与「对等总线」模型（无主持人）共享统一抽象 | **双模型删除**。只有两个动作：**群发**和**单发** |
+| G-2 | 群消息落主库中心表（group_id） | **没有「群组消息」这种东西**。群发 = 遍历成员各发一份、各写各的会话库；群历史 = 跨会话库聚合查询 |
+| G-3 | 新增轮次表、轮次计数、最大轮次、可见性、主持人字段、`kind` 类型 | **全部删除**。群状态只有两张小表：`groups` + `group_members` |
+| G-4 | 成员状态 `alive/busy/left/dead` + 心跳 sweep | **只有 `alive/left`**（left 不再投递）；无心跳、无 busy/dead |
+| G-5 | `peer_groups.json` 一次性导入迁移 + legacy 认领 | **直接删文件，不迁移、不导入、不兼容** |
+| G-6 | `peer:` 与 `group:` 双地址轨 | **只保留 `group:`**；`peer:` 删除 |
 
 ---
 
 ## 0. 一页纸结论
 
-1. **分层模型**：`Meeting`（`group:`，有主持人、有轮次、有发言权）与 `PeerBus`（`peer:`，无主持人、异步广播）共享一个 **Conversation Core**（成员、权限、transcript、投递、ID、持久化）；差异只在「谁能触发谁」的策略层。
-2. **一切落库**：新增 `groups` + `group_members`（主库），消息 transcript 复用 ① 的 `agent_messages`（`group_id` 索引）。进程重启不丢群、不丢纪要。
-3. **ID 改 nanoid**：`grp_<12>`；创建时查重；彻底消除 `g<N>` 重启复用与 15×15 撞名。
-4. **成员状态机 + 心跳**：`alive/busy/left/dead`，`last_seen_at` 心跳；leave 广播 `event`；roster 实时查询，不再用创建时快照。
-5. **轮次真正实现**：`rounds_used` 持久化；`max_rounds` 生效；达到上限自动 `closed` 并广播收尾事件。
-6. **广播控流**：信封 `hop/max_hops`、扇出上限、按群令牌桶、消息 ID 去重；成员回复默认定向，不自动广播。
-7. **权限/租户**：`owner_scope` + 成员校验；知道 ID 不等于能发；跨租户返回 `NOT_FOUND`。
-8. **与 ①③ 整合**：群消息 = 结构化消息；`from_*` = `sender_*`；会议纪要 = `agent_messages WHERE group_id=?` 的事件流。
+1. **用户模型只有两个动作**：
+   - **单发** = `SendMessage(to="agent:x/y")` / `session:` / IM，写 1 条 outbound + 1 条 inbound。
+   - **群发** = `SendMessage(to="group:grp_xxx")`，**遍历 `group_members(status='alive')`，对每人各发一份一样的 SendMessage**；各写各的会话库，消息带 `group_id` + `sender_*` 标记。
+2. **没有「群组消息」实体**：不存在 `to.type=group` 的消息、不存在群级消息表、不存在群组独立库。群 ID 只是**标记 + 成员表主键**。
+3. **群状态 = 主库两张小表**：`groups(id, name, owner, created_at)` + `group_members(group_id, member_addr, status, joined_at)`。
+4. **群历史 = 跨会话库按 `group_id` 聚合查询**（读每个成员会话库的 inbound 行，按 `message_id` 合并成逻辑发言）。
+5. **保留必修 bug 修复**：每条消息带发送者标识；群发前校验成员身份；hop/fanout/令牌桶防 N×N；ID 用 `grp_<nanoid(12)>`；成员状态 `alive/left`（`left` 不再投递）。
+6. **旧数据直接删**：`peer_groups.json`、内存 `GroupMembership`、`peer:` 分支、`groupCounter`、`FlushPeerGroups`，不迁移不兼容。
 
 ---
 
@@ -27,566 +40,535 @@
 
 | # | 目标 | 判据 |
 |---|---|---|
-| G1 | 统一模型，消除两套实现 | 一个 `ConversationService` 接口，两个策略实现 |
-| G2 | 群组持久化、可回放 | 重启后 `groups`/`group_members`/transcript 完整 |
-| G3 | 轮次语义真实 | `max_rounds=3` 时第 4 次触发被拒绝并自动关闭 |
-| G4 | 防 N×N | hop 限制 + 扇出上限 + 回复定向；压测无指数增长 |
-| G5 | 成员状态实时 | join/leave/busy 变化 1s 内可查；leave 广播 |
-| G6 | ID 全局唯一 | 重启/多进程不重复；创建 100 万次无碰撞（概率论证） |
-| G7 | 权限与租户隔离 | 非成员/跨租户发送被拒绝，且不泄露存在性 |
-| G8 | 与结构化消息统一 | 群消息有 `message_id/correlation_id/from_*` |
+| G1 | 群组语义唯一，消除双模型 | 代码里只有 `group:` 一种群地址；无双模型分支 |
+| G2 | 群状态持久化 | 重启后 `groups`/`group_members` 完整；内存无群状态 |
+| G3 | 群历史可查、可审计 | `GroupHistory(group_id, from, to)` 返回带 `sender_*` 的时序发言 |
+| G4 | 防 N×N | hop 限制 + fanout 上限 + 群/发送者令牌桶 + 回复默认单发 |
+| G5 | 成员身份可校验 | 非成员群发返回 `MEMBERSHIP_REQUIRED` |
+| G6 | ID 全局唯一 | `grp_<nanoid(12)>`；重启/多进程不重复；创建 100 万次无碰撞（概率论证） |
+| G7 | 与 ①③ 统一 | 群发副本是结构化消息；`sender_*` = 信封 `from.*` |
+| G8 | 旧数据干净退场 | 仓库内无 `peer_groups.json` 读写；无 `GroupMembership` |
 
 ### 1.2 非目标
 
-- 不做分布式共识/多节点群组（单进程多会话；多进程部署不在本期）。
-- 不做群公告/置顶/表情等 IM 功能。
-- 不做「成员互相私聊」的额外通道（仍走 `session:`）。
-- 不把群组做成完整 IM（无已读回执、无输入中状态）。
-- 不迁移旧 `group:`（内存态无法恢复）；只迁移 `peer_groups.json`。
+- 不做分布式共识/多节点群组（单进程部署；多进程不在本期）。
+- 不做群公告/置顶/表情/已读回执/输入中状态。
+- 不做群级消息表、不做群组独立库。
+- 不做轮次/主持人/发言权/点名顺序（prompt 约定即可，core 不建模）。
+- 不做成员互相私聊的额外通道（仍走 `agent:` 单发）。
+- **不迁移**旧群数据（决策 D）。
 
 ---
 
-## 2. 审计缺陷 D1–D17 与解决方案
+## 2. 现状与缺陷（D1–D17 重映射）
 
-| # | 缺陷 | 证据（file:line） | 解决方案 | 验收 |
+> 保留 v1 的缺陷编号，便于对照历史审计；「v2 解决」列按新模型重写。
+
+| # | 缺陷 | 证据（file:line） | v2 解决 | 验收 |
 |---|---|---|---|---|
-| **D1** | 两套模型互不相通：`group:` 是内存成员集合，`peer:` 是 JSON 文件 | `tools/group_state.go:19-26,149-152`；`tools/send_message.go:85-100` | 抽出 `Conversation Core`；`Meeting`/`PeerBus` 只实现策略接口；共用存储/路由/权限 | 同一套 `GET /api/groups` 能列出两种类型 |
-| **D2** | `max_rounds` 是空参数，从未读取 | `tools/create_chat.go:57,61-68,170-242`；`tools/group_state.go:61-65` | `groups.max_rounds`/`rounds_used` 落库；每次触发计数；达上限自动关闭 | `max_rounds=2` 第 3 次发送返回 `ROUND_LIMIT` |
-| **D3** | 群组无消息历史/无 transcript | `tools/group_state.go:11-18`（自陈无 store） | transcript 落 `agent_messages(group_id)`；纪要可查询 | `GET /api/groups/{id}/messages` 返回全部发言 |
-| **D4** | 广播 = N 个并发 full-turn，无 hop/depth，成员可再广播 → N×N | `tools/send_message.go:280-308,327-350`；`create_chat.go:247-248` | `hop/max_hops`、扇出上限 32、群令牌桶、回复默认定向、去重 | 压力测试消息数线性增长，不爆炸 |
-| **D5** | ID `g<N>` 进程内自增，重启复用；`CreateGroup` 无条件覆盖 | `tools/create_chat.go:13-14,170,242`；`tools/group_state.go:32-40` | `grp_<nanoid(12)>`；插入冲突重试；主键唯一 | 重启后新建群 ID 不重复 |
-| **D6** | 发送者无成员校验：知道 `group:g1` 就能群发 | `tools/send_message.go:240-258`（未校验 ctx/成员） | 发送前校验 `from` ∈ `group_members(status != left)`；否则 `MEMBERSHIP_REQUIRED` | 非成员发送返回 403/错误码 |
-| **D7** | 群组无持久化，重启即失忆 | `tools/group_state.go:29`（`sync.Map`） | `groups`/`group_members` 落主库；启动加载 | 重启后群与成员仍在 |
-| **D8** | roster 是创建时快照；spawn 失败仍入册；`isInGroup` 用快照 | `tools/create_chat.go:189-242`；`tools/send_message.go:223-230` | roster 实时查库；spawn 成功才置 `alive`，失败 `dead`；`isInGroup` 改为查询 | 成员崩溃后 roster 显示 `dead` |
-| **D9** | `FlushPeerGroups` 零调用者 | `tools/group_state.go:283`；全局 grep 无调用 | 迁入 DB 后删除该函数；优雅停机不再需要 | 代码中无 `FlushPeerGroups` |
-| **D10** | peer 自动 ID 仅 15×15=225 种，撞名即共享 | `tools/peer_group.go:12-31,196-200` | 统一 `grp_<nanoid(12)>`；显式 ID 也校验唯一 | 连续创建 10 万群无碰撞 |
-| **D11** | peer 单文件全局、无 GC、无租户隔离 | `tools/group_state.go:161-215,242-260,360-386` | DB 行 + `owner_scope`；空群 7 天后 `archived`；按 scope 查询 | 跨租户不可见 |
-| **D12** | peer 广播串行 O(n)，无控流/去重 | `tools/send_message.go:380-428` | 批量投递（并发度可配）+ 令牌桶 + `message_id` 去重 | 100 成员广播 < 1s 入队 |
-| **D13** | 无 round/turn 真实语义；`Closed` 是死字段 | `tools/group_state.go:61-65`；描述 `create_chat.go:29-43` | `Meeting` 显式轮次状态机；`Closed` 由 DB 状态替代 | 关闭后发送返回 `GROUP_CLOSED` |
-| **D14** | 无成员状态机/心跳/leave 广播 | `tools/group_state.go:296-327`（仅增删） | `status/last_seen_at`；心跳 sweep；leave 广播 event | leave 后其他成员收到事件 |
-| **D15** | 无 correlation/idempotency/消息 ID，无法回放去重 | `tools/send_message.go:292,336`（字符串前缀） | 复用 ① 信封；`agent_messages.id/idempotency_key` | 重发同 key 不重复 |
-| **D16** | 无权限模型；跨组目标校验仅 `sendToAgent` 有 | `tools/send_message.go:123-132,240` | 统一权限中间件：租户 + 成员 + 角色能力 | 跨组/跨租户拒绝 |
-| **D17** | 成员互相看不到发言；@ 解析过窄（`@agent:qa` 被丢弃→变广播） | `tools/send_message.go:431-447` | `@` 支持 `role`/`role/instance`；歧义返回错误；transcript 全员可见（按 visibility） | `@agent:qa` 能定向到唯一实例或报歧义 |
+| **D1** | 两套模型互不相通：`group:` 是内存成员集合，`peer:` 是 JSON 文件 | `tools/group_state.go:19-26,149-152`；`tools/send_message.go:85-100` | **两套都删**，只保留一套 DB 群组 + 一种群发语义 | 代码无 `PeerGroup`/`GroupMembership` |
+| **D2** | `max_rounds` 是空参数，从未读取 | `tools/create_chat.go:57,61-68,170-242` | **删除轮次概念与参数**（不是实现它） | 工具 schema 无 `max_rounds` |
+| **D3** | 群组无消息历史 | `tools/group_state.go:11-18` | 群历史 = 跨会话库 `group_id` 聚合（§6） | `GET /api/groups/{id}/history` 返回发言 |
+| **D4** | 广播 = N 个并发 full-turn，无 hop/depth → N×N | `tools/send_message.go:280-308,327-350` | hop/max_hops + fanout ≤128 + 令牌桶 + 回复默认单发 + `message_id` 去重 | 压测消息数线性 |
+| **D5** | ID `g<N>` 进程内自增，重启复用；`CreateGroup` 无条件覆盖 | `tools/create_chat.go:13-14,170,242` | `grp_<nanoid(12)>`；主键冲突重试；已存在则报错 | 重启后新建群 ID 不重复 |
+| **D6** | 发送者无成员校验：知道 `group:g1` 就能群发 | `tools/send_message.go:240-258` | 群发前查 `group_members(status='alive')`；否则 `MEMBERSHIP_REQUIRED` | 非成员发送被拒 |
+| **D7** | 群组无持久化，重启即失忆 | `tools/group_state.go:29`（`sync.Map`） | 主库两张表（§4） | 重启后群与成员仍在 |
+| **D8** | roster 是创建时快照；spawn 失败仍入册 | `tools/create_chat.go:189-242`；`tools/send_message.go:223-230` | roster 实时查库；spawn 成功才 INSERT `alive` | 成员崩溃/退出后 roster 反映 `left` |
+| **D9** | `FlushPeerGroups` 零调用者 | `tools/group_state.go:283` | 文件存储整体删除，函数消失 | 全仓无 `FlushPeerGroups` |
+| **D10** | peer 自动 ID 仅 15×15=225 种，撞名即共享 | `tools/peer_group.go:12-31,196-200` | `grp_<nanoid(12)>`；显式 ID 校验唯一 | 连续创建 10 万群无碰撞 |
+| **D11** | peer 单文件全局、无 GC、无租户隔离 | `tools/group_state.go:161-215,242-260,360-386` | DB 行 + `owner`；删除群时 CASCADE 清成员 | 跨 owner 不可见/不可删 |
+| **D12** | peer 广播串行 O(n)，无控流/去重 | `tools/send_message.go:380-428` | 有界并发投递 + 令牌桶 + `message_id` 去重 | 100 成员广播 < 1s 入队 |
+| **D13** | 无 round/turn 真实语义；`Closed` 是死字段 | `tools/group_state.go:61-65` | **删除 round/Closed**；群没有"轮次" | schema 无 rounds/closed |
+| **D14** | 无成员状态机/心跳/leave 广播 | `tools/group_state.go:296-327` | `status ∈ {alive,left}`；leave 后不再投递；广播 `event(member.left)` | leave 后成员收不到新群发 |
+| **D15** | 无 correlation/idempotency/消息 ID，无法回放去重 | `tools/send_message.go:292,336` | 复用 ① 信封：`message_id`/`idempotency_key` | 重发同 key 不重复 |
+| **D16** | 无权限模型；跨组目标校验仅 `sendToAgent` 有 | `tools/send_message.go:123-132,240` | 统一校验：owner + 成员 + 能力位（§7） | 非成员/跨 owner 拒绝 |
+| **D17** | 成员互相看不到发言；@ 解析过窄（`@agent:qa` 被丢弃→变广播） | `tools/send_message.go:431-447` | @ 支持 `role`/`role/instance`，歧义报错；成员能看到「发给自己的那份」，跨成员历史靠 `GroupHistory` 查询（§6.3） | `@agent:qa` 定向或报歧义 |
 
-> 补充：D2/D5/D7/D13 是「文档声称有、代码没有」的典型漂移（`docs/agent/tools.md:98,107-112`），本设计以**代码可验证行为**为准，文档同步更新。
-
----
-
-## 3. 统一模型
-
-### 3.1 分层
-
-```text
-┌──────────────────────────────────────────────────────────────┐
-│                     Conversation Core                        │
-│  · ID / owner_scope / members / permissions                  │
-│  · transcript (agent_messages)                               │
-│  · delivery (broadcast/directed, hop, fanout, rate limit)    │
-│  · idempotency / receipts                                    │
-└───────────────┬───────────────────────────┬──────────────────┘
-                │                           │
-      ┌─────────▼─────────┐       ┌─────────▼─────────┐
-      │  MeetingPolicy     │       │  PeerBusPolicy     │
-      │  group:            │       │  peer:             │
-      │  · moderator       │       │  · 无主持人         │
-      │  · rounds/max      │       │  · 任意成员广播      │
-      │  · 发言权/@定向     │       │  · 无轮次           │
-      │  · 自动关闭         │       │  · 长期存在          │
-      └────────────────────┘       └────────────────────┘
-```
-
-### 3.2 职责对比
-
-| 能力 | Meeting (`group:`) | PeerBus (`peer:`) |
-|---|---|---|
-| 创建者 | 主持人（agent/user） | 任意成员（JoinGroup） |
-| 成员加入 | 创建时指定，不可自助 | 自助 Join/Leave |
-| 谁可触发成员 | 仅主持人（`@`/directed） | 任意成员（broadcast/directed） |
-| 轮次 | 有，`max_rounds` | 无 |
-| 自动关闭 | 达到轮次/显式关闭 | 永不自动关闭（归档） |
-| Transcript | 有 | 有 |
-| 典型用途 | 朝会/部务会 | 部门间异步总线 |
-
-### 3.3 共享接口（设计级）
-
-```text
-ConversationService
-  Create(ctx, CreateSpec) (Conversation, error)
-  Get(ctx, id) (Conversation, error)
-  List(ctx, scope, filter) ([]Conversation, error)
-  Join(ctx, id, member) error
-  Leave(ctx, id, memberID, reason) error
-  Send(ctx, id, Envelope) (SendResult, error)
-  Messages(ctx, id, afterID, limit) ([]Envelope, error)
-  Close(ctx, id, reason) error
-  Heartbeat(ctx, id, memberID) error
-
-Policy (per kind)
-  CanSend(conv, sender, envelope) error
-  CanTrigger(conv, sender, target) error
-  OnSend(conv, envelope) (postActions, error)   // 轮次计数/关闭
-  OnJoin/OnLeave/OnClose(...)
-```
+> D2/D5/D7/D13 是「文档声称有、代码没有」的典型漂移（`docs/agent/tools.md:98,107-112`）；v2 的立场是：**没有的能力不留在 schema 里**。
 
 ---
 
-## 4. 存储 schema（主库 v75）
+## 3. 模型：只有群发和单发
+
+### 3.1 定义
+
+```text
+单发（direct）
+  SendMessage(to = agent:<role>/<instance> | session:<channel>:<chatID> | <IM 地址>)
+  → 1 条 outbound（发送方库）
+  → 1 条 inbound （收件方库）
+
+群发（broadcast）
+  SendMessage(to = group:<grp_id>)
+  → 1 条 outbound（发送方库，带 message_id + group_id）
+  → N 条 inbound （每个 status='alive' 的成员各一条，带同一个 message_id + group_id + sender_*）
+```
+
+**群发不是消息类型，是路由展开**：信封的 `to.type` 只有 `user/agent/session/im`，不存在 `group`。`group_id` 只是标记字段。
+
+### 3.2 明令删除的概念
+
+| 概念 | 处置 |
+|---|---|
+| 双模型分层（会议 / 对等总线） | 删除 |
+| 统一会话抽象层（v1 命名） | 删除（不需要统一抽象，因为只有一个模型） |
+| 群级消息表 / 群组独立库 | 删除 |
+| 主持人 / 观察者角色 / 发言权 | 删除 |
+| `rounds_used` / `max_rounds` / `group_rounds` | 删除 |
+| `history_visibility` / `visibility` | 删除（成员能读的 = 自己会话里的那一份 + 聚合查询结果） |
+| `kind=meeting|peer` / `status=open|closed|archived` | 删除（群只有"存在"，删除即硬删） |
+| `peer:` 地址 | 删除 |
+
+### 3.3 成员能看到什么（诚实边界）
+
+- 群发给 N 个成员 = **N 份独立副本**。每个成员在自己的会话上下文里看到「发起者发给我的一条消息」。
+- **其他成员的回答不会自动进入你的上下文**（除非发起者再次群发，或你主动调用 `GroupHistory`）。
+- 这与 IM 群聊不同，是用户模型（只有群发和单发）的直接推论。`GroupHistory` 是只读聚合视图，用于 UI/审计/首辅汇总，**不作为 LLM 上下文自动注入**（避免上下文爆炸与越权）。
+
+---
+
+## 4. 存储 schema（主库 v74）
+
+> 主库只加两张**小表**；不放任何消息。
 
 ### 4.1 `groups`
 
 ```sql
-CREATE TABLE groups (
-    id                  TEXT PRIMARY KEY,              -- grp_<nanoid(12)>
-    kind                TEXT NOT NULL,                 -- meeting | peer
-    name                TEXT NOT NULL DEFAULT '',      -- 展示名
-    owner_scope         TEXT NOT NULL,                 -- 租户/用户隔离轴
-    moderator_id        TEXT NOT NULL DEFAULT '',      -- meeting: role:instance / user id
-    max_rounds          INTEGER NOT NULL DEFAULT 10,   -- meeting only
-    rounds_used         INTEGER NOT NULL DEFAULT 0,
-    round_started_at    DATETIME,
-    status              TEXT NOT NULL DEFAULT 'open',  -- open | closed | archived
-    close_reason        TEXT NOT NULL DEFAULT '',
-    history_visibility  TEXT NOT NULL DEFAULT 'since_join', -- none | since_join | all
-    max_hops            INTEGER NOT NULL DEFAULT 4,
-    max_fanout          INTEGER NOT NULL DEFAULT 32,
-    created_at          DATETIME NOT NULL,
-    updated_at          DATETIME NOT NULL,
-    closed_at           DATETIME,
-    archived_at         DATETIME
+CREATE TABLE IF NOT EXISTS groups (
+    id          TEXT PRIMARY KEY,              -- grp_<nanoid(12)>
+    name        TEXT NOT NULL DEFAULT '',      -- 展示名
+    owner       TEXT NOT NULL,                 -- 创建者会话地址 session:<channel>/<chatID>（见 §4.5）
+    created_at  DATETIME NOT NULL
 );
-CREATE INDEX ix_groups_scope_kind ON groups(owner_scope, kind, status);
-CREATE UNIQUE INDEX ux_groups_id ON groups(id);
+CREATE INDEX IF NOT EXISTS ix_groups_owner ON groups(owner, created_at);
 ```
 
 ### 4.2 `group_members`
 
 ```sql
-CREATE TABLE group_members (
-    group_id      TEXT NOT NULL,
-    member_type   TEXT NOT NULL,                 -- user | agent | session
-    member_id     TEXT NOT NULL,                 -- user id / role:instance / channel:chatID
-    display_name  TEXT NOT NULL DEFAULT '',
-    role          TEXT NOT NULL DEFAULT 'member',-- moderator | member | observer
-    status        TEXT NOT NULL DEFAULT 'alive', -- alive | busy | left | dead
-    joined_at     DATETIME NOT NULL,
-    last_seen_at  DATETIME,
-    left_at       DATETIME,
-    left_reason   TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (group_id, member_type, member_id)
-);
-CREATE INDEX ix_group_members_lookup ON group_members(group_id, status);
-CREATE INDEX ix_group_members_member ON group_members(member_type, member_id);
-```
-
-### 4.3 transcript
-
-复用 ① 的 `agent_messages`：
-
-- 每条群消息 `group_id = groups.id`；
-- `to_type` 为 `group` 或 `agent`/`user`（定向）；
-- `delivery_mode` 建议在 v74 建 `agent_messages` 时**直接包含**（本文档把它列为群组层字段，是为了明确语义归属）；若 v74 已发布未含该列，则 v75 用 `ALTER TABLE` 补齐：
-
-```sql
-ALTER TABLE agent_messages ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'directed';
-CREATE INDEX ix_agent_messages_group_mode ON agent_messages(group_id, delivery_mode, created_at);
-```
-
-会议纪要查询：
-
-```sql
-SELECT * FROM agent_messages
- WHERE group_id = ? AND kind NOT IN ('receipt')
- ORDER BY created_at, id;
-```
-
-### 4.4 轮次记录（可选）
-
-```sql
-CREATE TABLE group_rounds (
+CREATE TABLE IF NOT EXISTS group_members (
     group_id     TEXT NOT NULL,
-    round_no     INTEGER NOT NULL,
-    started_at   DATETIME NOT NULL,
-    ended_at     DATETIME,
-    trigger_message_id TEXT NOT NULL,
-    participants TEXT NOT NULL DEFAULT '[]',      -- JSON array
-    PRIMARY KEY (group_id, round_no)
+    member_addr  TEXT NOT NULL,                -- agent:<role>/<instance> | session:<channel>/<chatID>
+    status       TEXT NOT NULL DEFAULT 'alive' CHECK (status IN ('alive','left')),
+    joined_at    DATETIME NOT NULL,
+    PRIMARY KEY (group_id, member_addr),
+    FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS ix_group_members_addr ON group_members(member_addr, status);
 ```
 
-用途：审计「第几轮谁被点名」；不参与实时判定（实时用 `groups.rounds_used`）。
+字段语义：
 
-### 4.5 为什么放主库
+| 列 | 说明 |
+|---|---|
+| `member_addr` | **规范地址**（带前缀）。只允许两种：`agent:<role>/<instance>`（相对群 owner 会话解析）与 `session:<channel>/<chatID>`（绝对）。**不支持 `user:` 成员**（一个用户可能对应多渠道会话，无法唯一解析到会话库） |
+| `status` | `alive` = 参与投递；`left` = 已退出，**不再投递**，但保留行用于审计 |
+| `joined_at` | 首次加入时间；`left` 后再加入（`UPDATE status='alive'`）不刷新该值 |
 
-- 群跨会话/跨进程，会话库只属于一个会话；
-- 与 `agent_messages` 同库，transcript join 简单；
-- 主库已有 `tenants`/`cron_jobs` 等全局表，迁移路径成熟。
-
----
-
-## 5. 生命周期与状态机
-
-### 5.1 群状态
+### 4.5 地址解析规则（群历史/投递共用）
 
 ```text
-create ──▶ open ──(max_rounds/显式 Close)──▶ closed ──(7d 无活动)──▶ archived
-              │
-              └──(成员全 left)──▶ closed(reason=empty)
+owner = session:<channel>/<chatID>            # 群的宿主会话（创建者所在会话）
+
+agent:<role>/<instance>
+  → session key = <owner.channel>:<owner.chatID>/<role>:<instance>
+  → SessionDBRelPath("agent", key)
+
+session:<channel>/<chatID>
+  → SessionDBRelPath(channel, chatID)
 ```
 
-规则：
+约束：
 
-1. `closed` 后拒绝新消息（`GROUP_CLOSED`），但 transcript 仍可读。
-2. `archived` 只读；可显式 `restore`（本期不做）。
-3. `rounds_used` 只在 `open` 且 meeting 时递增。
-4. 关闭时广播 `event(group.closed)` 给所有 `alive` 成员。
+1. **群必须由一个宿主会话创建**（main agent / user 会话）；**不允许子代理创建群**（子代理的 session key 含父会话前缀，作为 owner 会使相对解析二义）。
+2. `member_addr` 的 `agent:` 形式是**相对于 owner 会话**的地址；跨 chat 的成员请用 `session:` 绝对地址。
+3. `session:<channel>/<chatID>` 用 `SplitN(s, "/", 3)` 解析，`chatID` 可含 `/`。
+4. 解析失败（会话不存在/agent 未注册）→ 投递记 `failed`；历史查询跳过该成员并记 warning。
 
-### 5.2 成员状态
+### 4.3 为什么是两张小表
+
+- 群是跨会话的**成员关系**，不属于任何一个会话库；
+- 只有元数据（ID/名字/owner/成员），没有消息内容 —— 不违反「主库不放消息」；
+- 迁移成本最低：两张表 + 三个索引，与现有 `cron_jobs`/`tenants` 同级。
+
+### 4.4 迁移（主库 v73 → v74）
 
 ```text
-join ──▶ alive ⇄ busy
-           │
-           ├──(leave)──▶ left
-           └──(心跳超时/agent unload)──▶ dead
+migrateV73ToV74:
+  CREATE TABLE groups ...
+  CREATE TABLE group_members ...
+  CREATE INDEX ...
 ```
 
-| 状态 | 含义 | 触发 |
-|---|---|---|
-| `alive` | 在线空闲 | join / 心跳恢复 / 任务完成 |
-| `busy` | 正在处理 turn | 发言被投递且目标 run 忙碌 |
-| `left` | 主动退出 | LeaveGroup |
-| `dead` | 失联 | 心跳 > 90s 或 agent unload |
-
-- 心跳：成员每次发送/接收/处理消息时更新 `last_seen_at`；后台 sweep 每 30s 把 `alive/busy` 且 `last_seen_at < now-90s` 置 `dead`。
-- `dead` 不自动移除（保留历史）；`roster` 显示状态；主持人可 `RemoveMember`。
-- `join/leave/dead` 广播 `kind=event`（`event_type=member.*`）。
-
-### 5.3 轮次语义（meeting）
-
-- **一轮的定义**：主持人发出一次「触发消息」（带 `@` 或 `directed` 给至少一个成员）→ 被触发成员各产生一次回复（或超时）→ 轮结束。
-- `rounds_used += 1` 在触发消息持久化时原子递增；`group_rounds` 记录参与人。
-- `rounds_used >= max_rounds` 时：
-  1. 拒绝新的触发消息（`ROUND_LIMIT`）；
-  2. `status=closed`，`close_reason=max_rounds`；
-  3. 广播 `event(group.closed)`，附带 `summary_ref`（若有）。
-- 普通成员之间的定向/广播不计轮（peer 无轮；meeting 内成员广播默认禁止，除非主持人显式授权）。
+- 幂等：`CREATE ... IF NOT EXISTS`；重复执行安全。
+- **无数据迁移、无回填**（决策 D：旧群数据直接删）。
+- 回滚：`DROP TABLE group_members; DROP TABLE groups;`（只影响群元数据，不碰消息）。
 
 ---
 
-## 6. 投递、hop 与控流
+## 5. 群发流程（字段级）
 
-### 6.1 投递矩阵
+### 5.1 创建群
 
-| 发送方角色 | broadcast | directed（成员） | directed（非成员） |
-|---|---|---|---|
-| moderator | ✅（计入 1 轮） | ✅（计入 1 轮） | ❌ |
-| member | ❌（默认） | ✅（回复，不计轮） | ❌ |
-| member（被授权） | ✅（需 `allow_member_broadcast`） | ✅ | ❌ |
-| user | ✅ | ✅ | ❌ |
-| system | ✅ | ✅ | ✅（内部） |
+```text
+CreateChat(type=group, members=[addr...], name=...)
+  id = "grp_" + nanoid(12)
+  owner = <caller session address: session:<channel>/<chatID>>
+  INSERT groups(id, name, owner, created_at=now)
+  for each member:
+      spawn/解析成功 → INSERT group_members(group_id, member_addr, 'alive', now)
+      失败          → 不插入（返回 warnings[]）
+  return {id, address:"group:"+id, members:[...], warnings:[...]}
+```
 
-### 6.2 hop / depth
+- `owner` = 调用者的**会话地址**（由服务端会话上下文生成，不信任 payload）；群必须由宿主会话创建（§4.5）。
+- 已存在的 `id` 冲突：重试生成（最多 3 次）；显式 ID 冲突返回 `ID_TAKEN`。
+- spawn 失败**不入册**（修复 D8）。
 
-- 信封 `hop` 初始 0；每次「agent 收到后转发给另一个 agent」+1。
-- `hop >= max_hops` 拒绝投递，回执 `HOP_LIMIT`。
-- 防止 A→B→A 循环：`causation_id` 链上出现过的 `message_id` 不再转发（环检测）。
-- 广播消息的子消息默认 `hop+1`；成员回复不自动转发。
+### 5.2 群发
 
-### 6.3 扇出与限流
+```text
+Send(to="group:"+grpID, envelope)
+  1. 解析 from（服务端上下文）
+  2. SELECT owner FROM groups WHERE id=?           → 不存在: NOT_FOUND
+  3. 成员校验：sender session == groups.owner ? 通过 :
+       SELECT status FROM group_members
+       WHERE group_id=? AND member_addr=?          → 非 alive: MEMBERSHIP_REQUIRED
+  4. hop/TTL/idempotency 校验
+  5. SELECT member_addr FROM group_members
+       WHERE group_id=? AND status='alive'
+       AND member_addr <> <from.addr>              → 收件人集合 R
+     if len(R) > max_fanout(128): FANOUT_LIMIT
+  6. token bucket(group, sender)                    → 超限: RATE_LIMITED
+  7. message_id = "msg_" + ULID（本次逻辑消息的唯一 ID）
+  8. 写发送方会话库 outbound 行（message_id, group_id, envelope）
+  9. for addr in R (有界并发, 默认 8):
+       写收件方会话库 inbound 行（message_id 相同, group_id, sender_*）
+       成功 → 入队通知（busy/idle 见 ① §8）
+       失败 → 记录 failed
+ 10. 失败者写 receipt(failed) 到发送方库
+ 11. return {message_id, recipients:[{addr,status}], duplicate}
+```
 
-| 限制 | 默认 | 可配 |
-|---|---|---|
-| 单次广播最大收件人 | 32 | `groups.max_fanout` |
-| 每群每秒消息数 | 20 | 全局配置 |
-| 每发送者每秒消息数 | 5 | 全局配置 |
-| 单条 payload | 256 KiB | 固定 |
-| 群成员上限 | 128 | 全局配置 |
+### 5.3 原子性与部分失败
 
-超限返回 `RATE_LIMITED`/`FANOUT_LIMIT`，不静默丢弃。
+- **不承诺跨库原子性**（N 个独立 SQLite 文件，无分布式事务）。
+- 语义 = **每个收件人 at-least-once**；收件方按 `message_id` 幂等（唯一索引，① §7.2）。
+- 发送方重试同一 `idempotency_key`：outbound 行已存在 → 只补发 `failed` 的收件人，`duplicate=true`。
+- 返回体必须列出每个收件人的状态，不允许"整体成功"的模糊结论。
 
-### 6.4 去重
+### 5.4 群发副本的字段
 
-- `agent_messages.id` 主键 + `(owner_scope, idempotency_key)` 唯一索引。
-- 投递到会话时以 `message_id` 为幂等键，重复投递只更新状态。
-- 同一 `correlation_id` 内按 `created_at,id` FIFO。
-
-### 6.5 N×N 防护（关键）
-
-旧实现：主持人广播给 N 个成员；成员 prompt 鼓励「向全员汇报」→ 每个成员再广播 N 次 → O(N²) full-turn。
-
-新规则：
-
-1. **成员回复默认 `directed` 给主持人/触发者**，不自动广播。
-2. 成员要广播必须显式 `delivery.mode=broadcast`，且受 `allow_member_broadcast` 与限流约束。
-3. 广播产生的消息 `hop+1`；达到 `max_hops` 不再转发。
-4. 同一 `causation_id` 链上的重复消息 ID 直接丢弃（环检测）。
-5. 群级令牌桶；超限返回错误而非排队爆炸。
+| 字段 | 值 |
+|---|---|
+| `message_id` | 全副本共享同一个 `msg_<ULID>`（一条逻辑发言） |
+| `group_id` | 群 ID |
+| `sender_type`/`sender_id`/`sender_name` | 发起者 |
+| `to.type`/`to.id` | `agent`/`session` + 该成员地址 |
+| `structured_json.from.*` | 与 `sender_*` 一致 |
 
 ---
 
-## 7. ID 设计
+## 6. 群历史：跨会话库聚合
 
-### 7.1 格式
+### 6.1 查询模型
+
+```text
+GroupHistory(group_id, from, to, limit=200)
+  1. SELECT member_addr FROM group_members WHERE group_id=?   -- 含 left（历史仍可读）
+  2. for each member_addr:
+       按 §4.5 解析：agent: 相对 owner 会话；session: 绝对
+       (channel, chatID) → SessionDBRelPath
+       if 文件不存在: skip
+       以 **只读方式** 打开会话库
+       SELECT message_id, sender_type, sender_id, sender_name,
+              kind, content, created_at, structured_json
+         FROM session_messages
+        WHERE group_id = ? AND direction = 'in'
+          AND created_at BETWEEN ? AND ?
+        ORDER BY created_at, message_id
+        LIMIT ?
+  3. 合并 N 路有序结果（k-way merge）
+  4. 去重：按 message_id（同一逻辑发言的 N 份副本合并为一条）
+     —— 同一 broadcast 的 N 份副本合并为一条逻辑发言，
+        `delivered_to` = 命中的成员地址列表
+  5. 按 created_at 升序返回
+```
+
+### 6.2 成本与边界
+
+| 维度 | 约束 |
+|---|---|
+| 成员数 | ≤128（fanout 上限） |
+| 单库索引 | `ix_sm_group (group_id, created_at) WHERE group_id <> ''`（① §7.2） |
+| 默认窗口 | 7 天 / 2000 条（超出走归档，见开放问题 Q2） |
+| 打开方式 | `mode=ro`，**不创建**不存在的会话库 |
+| 缓存 | 进程内 LRU（key = group_id + 窗口，TTL 30s）；不落库 |
+
+### 6.3 谁能读
+
+- `owner` 与 `status='alive'` 的成员可读；
+- `left` 成员默认不可读（不再参与）；
+- 跨 owner：`NOT_FOUND`，不泄露存在性。
+
+### 6.4 与 LLM 上下文的关系
+
+- `GroupHistory` 是**只读视图**，返回给工具/UI/汇总 agent；
+- 不自动注入任何成员会话（避免上下文爆炸与越权）；
+- 首辅/汇总 agent 需要时显式调用并把摘要写进奏折。
+
+---
+
+## 7. 权限与归属
+
+### 7.1 校验顺序
+
+```text
+1. 解析 from（服务端上下文，不信 payload）
+2. 查 groups.id；owner 校验（群存在性）→ 不存在 NOT_FOUND
+3. sender session == owner ? 通过 : 查 group_members(from.addr) → 非 alive：MEMBERSHIP_REQUIRED
+4. 能力位（SubAgent 必须 capabilities.send_message=true）
+5. hop/fanout/rate/idempotency
+6. 写库 + 投递
+```
+
+### 7.2 操作权限
+
+| 操作 | owner | alive 成员 | left 成员 | 其他 |
+|---|---|---|---|---|
+| 群发 | ✅ | ✅ | ❌ | ❌ |
+| 读群历史 | ✅ | ✅ | ❌ | ❌ |
+| 读成员列表 | ✅ | ✅ | ❌ | ❌ |
+| 加成员（`JoinGroup`/`AddMember`） | ✅ | ❌（自助加入需开关） | ❌ | ❌ |
+| 移除成员 / leave | ✅ | ✅（仅自己） | — | ❌ |
+| 删除群（硬删） | ✅ | ❌ | ❌ | ❌ |
+
+- `groups.owner` 是唯一管理权来源；不引入 `role` 列（决策 B 只要四个字段）。
+- 自助加入（`JoinGroup(group_id)`）：默认允许（与现状兼容）；若需要"只有 owner 能拉人"，用配置开关关闭。
+
+### 7.3 归属隔离
+
+- 隔离轴 = `groups.owner`（群宿主会话地址，`session:<channel>/<chatID>`）。
+- 所有读写 SQL 强制 `owner = <caller session>` 或成员校验；ID 猜测返回 `NOT_FOUND`。
+- 跨 owner 邀请：本期不支持（`CROSS_OWNER_DENIED`）。
+
+---
+
+## 8. ID 设计
 
 ```text
 grp_<nanoid(12)>     例：grp_V1StGXR8_Z5j
 ```
 
-- 字母表：`0-9A-Za-z_-`（64 字符），12 位 ≈ 64^12 ≈ 4.7×10^21 组合。
-- 生日碰撞：创建 100 万个群，碰撞概率 ≈ 1 - exp(-n²/2N) ≈ 1.1×10^-10，可忽略。
-- 显式 ID（`JoinGroup(group_id=...)`）：校验 `^[A-Za-z0-9][A-Za-z0-9_-]{1,63}$` 且全局唯一；冲突返回 `ID_TAKEN`，不自动复用。
-
-### 7.2 与旧 ID 的兼容
-
-- 旧 `group:g1` / `peer:swift-team` 字符串地址**仍可解析**；内部映射到 `grp_*` 需要迁移（见 §9）。
-- 新 API 返回 `id`（`grp_*`）与 `address`（`group:grp_*`/`peer:grp_*`）两个字段；旧调用方用 `address`。
-- 不再生成 `g<N>`；`groupCounter` 删除。
+- 字母表：`0-9A-Za-z_-`（64 字符），12 位 ≈ 64^12 ≈ 4.7×10^21。
+- 生日碰撞：100 万个群，碰撞概率 ≈ 1 - exp(-n²/2N) ≈ 1.1×10^-10。
+- 显式 ID：`^[A-Za-z0-9][A-Za-z0-9_-]{1,63}$`，全局唯一；冲突返回 `ID_TAKEN`。
+- 旧 `g<N>` / `peer:<name>`：**不解析、不映射**（旧数据已删）。
 
 ---
 
-## 8. 权限与租户隔离
+## 9. hop / fanout / 限流
 
-### 8.1 校验顺序
+### 9.1 hop
+
+- 信封 `hop` 初始 0（user/system 发起）。
+- agent 收到消息后主动转发/群发：`hop = 收到消息的 hop + 1`。
+- `hop >= max_hops`（默认 4）→ 拒绝，回执 `HOP_LIMIT`。
+- 环检测：`causation_id` 链上出现过的 `message_id` 不再转发（保留最近 32 个 ID）。
+
+### 9.2 fanout
+
+| 限制 | 默认 | 可配 |
+|---|---|---|
+| 单次群发最大收件人 | 128 | 全局配置 |
+| 群成员上限 | 128 | 全局配置 |
+| 投递并发度 | 8 | 全局配置 |
+| 单条 payload | 256 KiB | 固定 |
+
+### 9.3 令牌桶
+
+| 桶 | 速率 | 突发 |
+|---|---|---|
+| 每群 | 20 条/秒 | 40 |
+| 每发送者 | 5 条/秒 | 10 |
+
+- 计费单位 = **逻辑发送**（一次群发算 1 条，不是 N 条）。
+- 超限返回 `RATE_LIMITED`，不静默丢弃。
+
+### 9.4 N×N 防护（关键）
+
+旧实现：主持人广播 N 个成员；成员 prompt 鼓励「向全员汇报」→ 每人再广播 N 次 → O(N²) full-turn。
+
+新规则：
+
+1. **成员回复默认单发给发起者**（prompt 约定 + 工具提示）。
+2. 成员要群发必须显式 `to="group:..."`，受 fanout/hop/令牌桶约束。
+3. 群发副本 `hop+1`；达到 `max_hops` 不再转发。
+4. 同一 `causation_id` 链上的重复消息直接丢弃（环检测）。
+5. `message_id` 保证同一逻辑发言不会因重试被重复计入历史。
+
+---
+
+## 10. 成员状态
 
 ```text
-1. 解析 from（服务端上下文，不信 payload）
-2. 查 groups.id，校验 owner_scope 与调用者一致 → 否则 NOT_FOUND
-3. 查 group_members(from) → 不存在/left → MEMBERSHIP_REQUIRED
-4. Policy.CanSend/CanTrigger → 否则 PERMISSION_DENIED
-5. hop/fanout/rate/idempotency
-6. 持久化 + 投递
+join ──▶ alive ──(leave)──▶ left
+          ▲                  │
+          └──(re-join)───────┘
 ```
 
-### 8.2 角色能力
+| 状态 | 含义 | 触发 |
+|---|---|---|
+| `alive` | 参与投递 | 创建/加入/重新加入 |
+| `left` | 已退出，不投递 | `LeaveGroup` / owner 移除 |
 
-| 角色 | 读 transcript | 发消息 | 触发成员 | 关闭群 | 移除成员 |
-|---|---|---|---|---|---|
-| moderator | ✅ | ✅ | ✅ | ✅ | ✅ |
-| member | ✅（按 visibility） | ✅（定向） | ❌ | ❌ | ❌ |
-| observer | ✅ | ❌ | ❌ | ❌ | ❌ |
-| user（owner） | ✅ | ✅ | ✅ | ✅ | ✅ |
-| system | ✅ | ✅ | ✅ | ✅ | ✅ |
+规则：
 
-### 8.3 租户隔离
-
-- `owner_scope` = 会话 owner 的稳定 id（与 ③ 的 sender 轴一致）。
-- 所有读写 SQL 强制 `owner_scope = ?`；群 ID 猜测返回 `NOT_FOUND`。
-- 跨租户成员邀请：本期不支持（返回 `CROSS_TENANT_DENIED`）。
+1. 群发只查 `status='alive'`。
+2. `left` 保留行（历史审计），不物理删除。
+3. 状态变更广播 `kind=event(event_type=member.left/joined)` 给其余 alive 成员（单发，不是群发；避免事件风暴）。
+4. **没有 `busy`/`dead`/心跳**：投递失败由 receipt 表达，不改变成员状态。
 
 ---
 
-## 9. 迁移策略
+## 11. 删除清单（决策 D：不迁移、不兼容）
 
-### 9.1 阶段
+| 对象 | 位置 | 处置 |
+|---|---|---|
+| `peer_groups.json` | `$XBOT_HOME/peer_groups.json` | 启动时不读取；提供一次性清理命令 `rm`（文档说明）；不导入 |
+| 内存群存储 | `tools/group_state.go:19-40`（`GroupMembership`/`groupStore`） | 删除类型与全局变量 |
+| peer 文件存储 | `tools/group_state.go:141-290`（`PeerGroup`/load/save/Flush） | 删除 |
+| `FlushPeerGroups` | `tools/group_state.go:283` | 删除调用点与函数 |
+| `peer:` 地址分支 | `tools/send_message.go:380-428`（`sendToPeerGroup`） | 删除 |
+| `peer:` 解析 | `tools/send_message.go:85-100` | 删除分支 |
+| `groupCounter` / `g<N>` | `tools/create_chat.go:13-14,170,242` | 删除；改用 `grp_<nanoid>` |
+| `max_rounds` 参数 | `tools/create_chat.go:57,61-68` | 删除 |
+| `Closed` 字段 | `tools/group_state.go:61-65` | 删除 |
+| 词表 ID 生成 | `tools/peer_group.go:196-200` | 删除；`grp_<nanoid>` |
+| 群组创建时的内存快照 | `tools/create_chat.go:189-242` | 改为 DB INSERT |
+| `CreateGroup` 无条件覆盖 | `tools/create_chat.go:164-259` | 冲突报 `ID_TAKEN` |
+
+保留并改造：
+
+| 工具 | 改造 |
+|---|---|
+| `CreateChat(type=group)` | 写 `groups`/`group_members`；返回 `group:grp_*` |
+| `SendMessage(to=group:)` | 群发展开（§5.2） |
+| `JoinGroup` | `INSERT ... ON CONFLICT DO UPDATE status='alive'` |
+| `LeaveGroup` | `UPDATE status='left'` |
+| `ListGroupMembers` | 查 `group_members`（含 status）；校验调用者是成员 |
+| 新 `GroupHistory` | 跨会话库聚合（§6） |
+
+---
+
+## 12. 迁移策略
 
 | 阶段 | 内容 | 兼容 | 回滚 |
 |---|---|---|---|
-| M1 | 文档（本设计） | — | — |
-| M2 | 主库 v75：`groups`/`group_members`/`group_rounds` + `agent_messages.delivery_mode`；`ConversationService` 双写（内存 + DB） | 旧路径仍读内存 | 关 flag，删表 |
-| M3 | 读路径切 DB；`peer_groups.json` 一次性导入 | 旧文件保留只读 | 切回文件 |
-| M4 | 删除内存 `groupStore`/`peerGroupStore`/`FlushPeerGroups` | 需要重启 | 恢复旧代码 |
-| M5 | 清理 `g<N>`/词表 ID 生成 | — | — |
+| M1 | 本文档 | — | — |
+| M2（主库 v74） | 建 `groups`/`group_members`；新代码双写（DB + 旧内存，仅一个版本） | 旧路径仍可读内存群 | 关 flag，DROP 两张表 |
+| M3 | 读路径切 DB；`peer:` 分支删除；`g<N>` 停止生成 | 旧 `g<N>` 群在重启后自然消失（本来也不持久） | 恢复旧二进制 |
+| M4 | 删除 `group_state.go` 的旧实现与 `peer_group.go` 的 ID 生成 | 无 | 代码回滚 |
 
-### 9.2 `peer_groups.json` 导入
+**没有数据迁移**（决策 D）：
 
-```text
-for each key "peer:<id>" in peer_groups.json:
-    newID = "grp_" + nanoid(12)
-    INSERT groups(id=newID, kind='peer', name=<id>, owner_scope='legacy', status='open', ...)
-    for each member {session_key, name}:
-        INSERT group_members(group_id=newID, member_type='session',
-                             member_id=session_key, display_name=name, status='alive')
-    -- 旧地址 "peer:<id>" 建立别名映射（内存/DB alias 表或 groups.name 索引）
-```
-
-- `owner_scope='legacy'` 的群在首次被非 legacy 用户访问时提示「需要认领」；本期只读。
-- 导入完成后文件重命名 `peer_groups.json.imported`，不删除。
-- 幂等：以 `name + kind` 判重；重复导入跳过。
-
-### 9.3 内存 group 无法迁移
-
-`GroupMembership` 只在进程内（`tools/group_state.go:29`），重启即失；迁移只保证「升级后新群持久化」，不承诺恢复旧群。文档需明确告知。
-
-### 9.4 数据回填
-
-- `groups.rounds_used=0`；`max_rounds=10` 默认。
-- `group_members.status='alive'`（导入时）；`last_seen_at=now`。
-- `agent_messages.delivery_mode`：旧行默认 `directed`（无法判断）。
+- `peer_groups.json` 不导入；文档/CHANGELOG 明确"升级后旧 peer 组不存在"。
+- 内存 `group:` 群本来就不持久化，升级后自然消失。
+- 不提供 `legacy` 认领命令。
 
 ---
 
-## 10. 与 ①③ 的整合
-
-### 10.1 消息 = 信封
-
-- 群消息必须是 `xbot.message/v1` 信封；`to.type=group`，`group_id` 必填。
-- `from` 由服务端从会话上下文解析，写入 `agent_messages.from_*` 与投影行 `sender_*`。
-- `ask_user` 在群内强制 `directed` 给单个成员/用户。
-- `report`/`decision` 的 `correlation_id` 贯穿群内。
-
-### 10.2 会议纪要
-
-```text
-纪要 = agent_messages
-        WHERE group_id = ?
-          AND kind IN ('text','ask_user','answer','report','decision','event')
-          AND (visibility = 'group' OR viewer 是 from/to)
-        ORDER BY created_at, id
-```
-
-- 可按 `round_no` 分段（`group_rounds`）。
-- 导出为 `court/meetings/<date>-<topic>.md`（⑤）。
-
-### 10.3 sender 统一
-
-| 概念 | `agent_messages` | `session_messages` |
-|---|---|---|
-| 发送者类型 | `from_type` | `sender_type` |
-| 发送者 ID | `from_id` | `sender_id` |
-| 显示名 | `from_name` | `sender_name` |
-| 群 | `group_id` | `structured_json.group_id` |
-
-写入投影时由 `ConversationService` 统一填充，禁止各渠道自行拼装。
-
----
-
-## 11. Rolodex / roster 实时性
-
-### 11.1 查询
-
-```text
-ListMembers(groupID):
-  SELECT member_type, member_id, display_name, role, status, last_seen_at
-    FROM group_members WHERE group_id = ?
-    ORDER BY role DESC, joined_at
-```
-
-- 不再从 `ctx.GroupMembers` 快照读（`create_chat.go:183-184` 的字段保留但仅作为「创建时提示」）。
-- `isInGroup` 改为 `ConversationService.IsMember(ctx, groupID, from)`。
-
-### 11.2 心跳来源
-
-| 事件 | 更新 |
-|---|---|
-| 成员发送消息 | `last_seen_at=now`, `status=alive`（若 was dead） |
-| 成员被投递且忙碌 | `status=busy` |
-| 成员 turn 结束 | `status=alive` |
-| agent unload | `status=dead`, `left_reason=unloaded` |
-| Join/Leave | 插入/更新 |
-| 后台 sweep | `status=dead` if stale |
-
-### 11.3 事件
-
-```json
-{
-  "kind": "event",
-  "payload": {
-    "event_type": "member.left",
-    "subject": "group:grp_...",
-    "data": {"member_type": "agent", "member_id": "qa/main", "reason": "unloaded"}
-  }
-}
-```
-
-广播给所有非 `left` 成员；observer 也收。
-
----
-
-## 12. 风险与回滚
+## 13. 风险与回滚
 
 | 风险 | 影响 | 缓解 | 回滚 |
 |---|---|---|---|
-| 迁移后旧 `peer:` 地址失效 | 现有 agent 找不到群 | 地址别名映射（`groups.name`/alias 表）；旧地址解析到新 ID | 保留 JSON 读路径 |
-| 轮次计数过于严格 | 正常讨论被提前关闭 | 默认 10；可配；`ROUND_LIMIT` 返回明确；主持人可 `extend`（后续） | 提高 max_rounds |
-| 心跳误判 dead | 成员被错误标记 | 90s 阈值 + 只在明确 unload/超时时置 dead；可手动恢复 | 放宽阈值 |
-| 扇出/限流影响性能 | 广播被拒 | 默认值足够朝廷规模（<32 成员）；可配 | 提高上限 |
-| transcript 膨胀 | 主库变大 | 按群归档；receipt 不落 transcript；7 天归档 | 清理任务 |
-| 权限过严 | agent 无法沟通 | 错误码 + 白名单；灰度 | 放宽为同租户 |
-| 双写不一致 | 内存/DB 状态分裂 | M2 以 DB 为权威；内存只做缓存；定期 reconcile | 关闭双写 |
+| 群发是 N 份副本，成员看不到别人回答 | 用户误以为"群聊" | 文档 + prompt 明确；提供 `GroupHistory` 查询 | —（模型决定） |
+| 跨库聚合慢/文件多 | 历史查询慢 | 只读打开 + 7 天窗口 + LRU 缓存 | 缩短窗口 |
+| 部分投递失败 | 成员漏消息 | 逐成员 receipt + 同 key 重试只补失败者 | 重发 |
+| 限流误伤 | 群发被拒 | 默认值足够 128 人规模；错误码明确 | 调高阈值 |
+| 删除旧 peer 数据 | 用户旧群消失 | CHANGELOG 提前说明；文档明确 | 无法回滚（数据已删） |
+| 成员校验变严 | 现有跨组用法被拒 | 发布说明 + 先 warn 日志后拒绝（一个版本） | 配置开关 `groups.strict_membership=false` |
+| 群 owner 单点 | owner 退出后无人管理 | owner 可转移（后续）；本期 owner 永久 | — |
+| 群历史越权 | 读到别人消息 | 只允许 owner/alive 成员；跨 owner `NOT_FOUND` | — |
 
 ---
 
-## 13. 验收判据
+## 14. 验收判据
 
-### 13.1 功能
+### 14.1 功能
 
-1. 创建 meeting 群：返回 `grp_*`；重启后 `GET /api/groups/{id}` 仍存在。
-2. `max_rounds=2`：第 3 次触发返回 `ROUND_LIMIT`，群 `status=closed`，成员收到 `event(group.closed)`。
-3. 非成员发送返回 `MEMBERSHIP_REQUIRED`；跨租户返回 `NOT_FOUND`。
-4. 成员 leave 后，其他成员在 1s 内收到 `event(member.left)`，roster 状态 `left`。
-5. 成员心跳超时 90s 后 roster 显示 `dead`。
-6. `@agent:qa`（无 instance）若唯一则定向成功；多实例返回 `AMBIGUOUS_MENTION`。
-7. 广播 32 人：每人恰好收到 1 条；重复 `idempotency_key` 不重复。
-8. hop 达到 `max_hops` 的消息被拒绝并回执。
-9. transcript 查询返回完整发言，含 `from_*`/`correlation_id`。
+1. 创建群：返回 `grp_*`；重启后 `GET /api/groups/{id}` 仍存在。
+2. 群发 3 成员：每人会话库各 1 条 inbound（`group_id`/`message_id`/`sender_*` 齐全），发送方 1 条 outbound；`recipients[]` 长度 = 3。
+3. 非成员群发返回 `MEMBERSHIP_REQUIRED`；跨 owner 返回 `NOT_FOUND`。
+4. 成员 leave 后：不再收到新群发；其余成员收到 `event(member.left)`。
+5. `@agent:qa`（无 instance）唯一则定向成功；多实例返回 `AMBIGUOUS_MENTION`。
+6. 重复 `idempotency_key` 不重复投递；返回 `duplicate=true`。
+7. hop 达到 `max_hops` 的消息被拒绝并回执。
+8. `GroupHistory` 返回完整发言（含 `sender_*`），同 `message_id` 合并为一条。
+9. 群成员上限/ fanout 超限返回 `FANOUT_LIMIT`；令牌桶超限返回 `RATE_LIMITED`。
 
-### 13.2 迁移
+### 14.2 删除/迁移
 
-10. `peer_groups.json` 导入后，旧 `peer:<id>` 地址仍可发送。
-11. 导入幂等：重复执行不产生重复群/成员。
-12. 重启后无内存依赖（`groupStore` 为空也能工作）。
+10. 全仓 grep 无 `peer_groups.json` 读写、无 `PeerGroup`、无 `GroupMembership`、无 `FlushPeerGroups`。
+11. `peer:` 地址返回 `NOT_FOUND`。
+12. 重启后无内存依赖（没有 `groupStore` 也能工作）。
+13. 主库 `groups`/`group_members` 行数与创建/加入操作一致；无消息表。
 
-### 13.3 压测
+### 14.3 压测
 
-13. 50 成员群，主持人连续 10 轮广播：消息总数 ≤ 50×10 + 回执，无 N×N。
-14. 1000 条群消息写入 p99 < 50ms（本地 SQLite）。
-15. 广播 32 成员入队 < 500ms（不含成员处理）。
+14. 50 成员群，连续 10 次群发：消息总数 = 50×10（每成员一份），无 N×N。
+15. 1000 条群消息写入 p99 < 50ms（本地 SQLite）。
+16. 128 成员群发入队 < 1s（并发度 8，不含成员处理）。
 
-### 13.4 回归
+### 14.4 回归
 
-16. 现有 `group:`/`peer:` 工具调用语义不破坏（text 消息）。
-17. `go test ./tools/... ./storage/... ./agent/...` 通过。
+17. 现有 1:1 `agent:`/`session:` 语义不破坏。
+18. `go test ./tools/... ./storage/... ./agent/...` 通过。
 
 ---
 
-## 14. 受影响代码清单（file:line）
+## 15. 受影响代码清单（file:line）
 
-### 14.1 新增
+### 15.1 新增
 
 | 文件 | 作用 |
 |---|---|
-| `group/core.go`（或 `tools/group_core.go`） | Conversation Core 接口与实现 |
-| `group/meeting.go` | MeetingPolicy（轮次/关闭） |
-| `group/peerbus.go` | PeerBusPolicy |
-| `group/store_sqlite.go` | DB 读写 |
-| `group/ids.go` | nanoid、ID 校验 |
-| `storage/sqlite/migrations.go`（v75） | `groups`/`group_members`/`group_rounds` |
-| `tools/group_tools.go` | 工具适配（CreateChat/Join/Leave/List/SendMessage） |
+| `tools/group_store.go` | `groups`/`group_members` 读写（SQLite） |
+| `tools/group_history.go` | 跨会话库聚合查询 |
+| `tools/group_ids.go` | nanoid、ID 校验 |
+| `storage/sqlite/migrations.go`（v74） | 建两张表 + 索引 |
+| `tools/group_tools.go` | Create/Join/Leave/List/History 适配 |
 
-### 14.2 修改
+### 15.2 修改
 
 | 文件:行 | 改动 |
 |---|---|
-| `tools/group_state.go:19-40` | 删除内存 `GroupMembership`/`groupStore`，改适配器 |
-| `tools/group_state.go:137-215` | 删除 `PeerGroup` 文件存储，改 DB |
-| `tools/group_state.go:281-290` | 删除 `FlushPeerGroups` |
-| `tools/group_state.go:296-386` | Join/Leave/IsMember/GetMembers/List 改查库 |
-| `tools/create_chat.go:13-14` | 删除 `groupCounter` |
-| `tools/create_chat.go:57,61-68` | `max_rounds` 真正传递 |
-| `tools/create_chat.go:170-242` | 创建走 `ConversationService`；spawn 失败标 dead |
-| `tools/send_message.go:240-353` | group 走结构化投递 + 轮次 + 权限 |
-| `tools/send_message.go:380-428` | peer 走结构化投递 + 限流 |
+| `tools/group_state.go` | 整文件删除（旧实现）；新实现放 `group_store.go` |
+| `tools/create_chat.go:13-14,170-259` | 删除 `groupCounter`；创建写 DB；spawn 失败不入册 |
+| `tools/create_chat.go:57,61-68` | 删除 `max_rounds` |
+| `tools/send_message.go:85-100` | 删除 `peer:` 分支 |
+| `tools/send_message.go:240-353` | 群发：成员校验 + 展开 + 限流 + receipt |
+| `tools/send_message.go:380-428` | 删除 `sendToPeerGroup` |
 | `tools/send_message.go:431-447` | `parseMentions` 支持 role-only/歧义 |
-| `tools/peer_group.go:12-31,196-200` | 删除词表 ID；改 nanoid |
-| `tools/peer_group.go:168-177` | ListGroupMembers 校验成员 |
-| `tools/subagent_roles.go:23-27` | 可选新增 `group_admin` 能力 |
-| `tools/registry_helpers.go:242-247` | 工具注册保持 |
+| `tools/peer_group.go:56-140` | Join/Leave 改为 DB 操作 |
+| `tools/peer_group.go:159-175` | ListGroupMembers 改为 DB + 成员校验 |
+| `tools/peer_group.go:196-200` | 删除词表 ID |
+| `tools/registry_helpers.go:242-247` | 注册新工具（GroupHistory） |
+| `agent/engine_wire.go:729-741` | 群组 prompt 改为「群发/单发」语义 |
 | `docs/agent/tools.md:90-115` | 更新群组语义 |
-| `tools/limits.go` | 新增 fanout/rate 常量 |
 
-### 14.3 删除
+### 15.3 删除
 
-| 文件/片段 | 时机 |
+| 文件/片段 | 依据 |
 |---|---|
-| `tools/group_state.go` 内存实现 | M4 |
-| `tools/peer_group.go` 词表生成 | M5 |
-| `peer_groups.json` 读写 | M4（保留导入后只读） |
+| `tools/group_state.go` 全部 | 决策 D |
+| `peer_groups.json` 读写 | 决策 D |
+| `SendMessage` 的 `peer:` 分支 | 决策 D |
+| `max_rounds`/`Closed`/`rounds_used` | 决策 B |
+| `GroupMembership`/`PeerGroup` 类型 | 决策 D |
 
 ---
 
-## 15. 开放问题（需用户拍板）
+## 16. 开放问题
 
-1. **Meeting 的「一轮」定义**：本设计 = 主持人一次触发 + 成员回复；若希望「全体成员各发言一次才算一轮」，需要改为屏障式轮次（实现复杂度更高）。
-2. **peer 组是否允许自助 Join**：本设计保留（兼容现状）；若朝廷场景要求「只有首辅能拉人」，可关闭自助加入。
-3. **`owner_scope` 的粒度**：本设计用「用户/租户」；若未来多用户共享群，需要新增 `visibility`/邀请模型。
-4. **旧 `peer_groups.json` 的 `legacy` 群如何认领**：本设计只读；需要确认是否要提供「认领到当前用户」的命令。
-5. **transcript 保留期**：本设计 7 天归档到 `audit` 表/文件；需要确认朝廷纪要是否要求永久保留（建议永久，归档而非删除）。
+全局仅 3 条，见 `sendmessage-structured.md` §17。与本文件相关的是 **Q2（群历史保留窗口/归档）**。
