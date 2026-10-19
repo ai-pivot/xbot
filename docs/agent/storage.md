@@ -251,6 +251,12 @@ Consequences worth knowing:
 - `oauth_tokens` is part of the main SQLite schema (`createSchema`) rather than being
   created lazily by the OAuth package: a backend-neutral store cannot rely on a
   package-level init step that only runs when OAuth happens to be enabled.
+- **A new table needs a path for existing databases.** `createSchema` only runs on a
+  brand-new file and the migration chain only runs when the version changes, so a
+  database already at the current version never receives a newly-added table. Such
+  tables go into `ensureAdditiveTables` (`storage/sqlite/db.go`), which runs at the end
+  of both the same-version branch and `migrateSchema`. Every statement there must be
+  `CREATE … IF NOT EXISTS`. Guard: `additive_tables_test.go`.
 - Nullable TEXT columns in PG projections are `COALESCEd` (`cron_expr`, `at`,
   `sender_id`) — scanning NULL into a plain `string` fails at runtime, not at compile
   time.

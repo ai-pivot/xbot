@@ -518,7 +518,9 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
-	return nil
+	// 迁移链只负责「版本差异」带来的变更；新加入 schema 的表（不伴随版本号变化）
+	// 由 ensureAdditiveTables 补齐，这样老库和刚迁移完的库走的是同一条收尾路径。
+	return db.ensureAdditiveTables()
 }
 
 // migrateV72ToV73 adds session_messages.iteration — the authoritative anchor

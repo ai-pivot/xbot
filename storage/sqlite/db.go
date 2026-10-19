@@ -346,7 +346,11 @@ func (db *DB) initSchema() error {
 		return nil
 	}
 	if version == schemaVersion {
-		return nil
+		// 已有库也要补齐「后来才加入 schema 的表」：createSchema 只在建库时跑一次，
+		// 迁移链只在版本变化时跑，两者都覆盖不到「同版本但缺某张表」的库
+		// （真实案例：oauth_tokens 曾由 oauth 包惰性建表，从未启用过 OAuth 的库
+		// 就没有这张表；改用存储层后没人建它 ⇒ 写入直接报 no such table）。
+		return db.ensureAdditiveTables()
 	}
 	if db.path != "" && db.path != ":memory:" {
 		// **确定性命名 + 已存在即跳过**：每个 from-version 最多留一份整库副本，
@@ -369,6 +373,40 @@ func (db *DB) initSchema() error {
 		}
 	}
 	return db.migrateSchema(version)
+}
+
+// ensureAdditiveTables creates tables that were added to the schema after a
+// database was first created, without bumping schema_version.
+//
+// Why this exists: createSchema only runs on a brand-new database and the
+// migration chain only runs when the version differs. A database already at the
+// current version therefore never receives a newly-added table. That is not
+// theoretical — oauth_tokens used to be created lazily by the OAuth package, so a
+// database where OAuth was never enabled lacks it, and the backend-neutral token
+// store then fails with "no such table: oauth_tokens".
+//
+// Every statement must be CREATE ... IF NOT EXISTS so this stays a no-op on
+// databases that already have everything.
+func (db *DB) ensureAdditiveTables() error {
+	additive := `
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    provider TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    expires_at INTEGER NOT NULL,
+    scopes TEXT,
+    raw TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, channel, chat_id)
+);
+CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
+`
+	if _, err := db.Conn().Exec(additive); err != nil {
+		return fmt.Errorf("ensure additive tables: %w", err)
+	}
+	return nil
 }
 
 // canonicalTimestamp 是**全部 session_messages / iteration_history created_at 写点
