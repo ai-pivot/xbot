@@ -8,6 +8,7 @@ import (
 
 	"xbot/event"
 	log "xbot/logger"
+	"xbot/storage/agentmem"
 	"xbot/storage/sqlite"
 )
 
@@ -160,15 +161,85 @@ var _ TenantStore = (*sqliteTenantStore)(nil)
 // ─── MemoryStore ───
 
 type sqliteMemoryStore struct {
-	core *sqlite.CoreMemoryService
-	mem  *sqlite.MemoryService
+	core  *sqlite.CoreMemoryService
+	mem   *sqlite.MemoryService
+	agent *sqlite.AgentMemoryService
 }
 
 func NewSQLiteMemoryStore(db *sqlite.DB) MemoryStore {
 	return &sqliteMemoryStore{
-		core: sqlite.NewCoreMemoryService(db),
-		mem:  sqlite.NewMemoryService(db),
+		core:  sqlite.NewCoreMemoryService(db),
+		mem:   sqlite.NewMemoryService(db),
+		agent: sqlite.NewAgentMemoryService(db),
 	}
+}
+
+// NewSQLiteMemoryStoreFromConn builds a MemoryStore from a raw *sql.DB (tests and
+// callers that hold only a connection). The core-memory and event-history
+// services need the wrapped *sqlite.DB, so those stay nil — only the
+// agent-memory seam is guaranteed usable through this constructor.
+func NewSQLiteMemoryStoreFromConn(conn *sql.DB) MemoryStore {
+	return &sqliteMemoryStore{agent: sqlite.NewAgentMemoryServiceFromConn(conn)}
+}
+
+// ── AgentMemoryStore (official xbot provider) — delegate to the sqlite service ──
+
+func (s *sqliteMemoryStore) EnsureAgentMemorySchema(ctx context.Context) error {
+	return s.agent.EnsureAgentMemorySchema(ctx)
+}
+func (s *sqliteMemoryStore) AddAgentShortTermMemory(ctx context.Context, mem agentmem.ShortTermMemory) (int64, error) {
+	return s.agent.AddAgentShortTermMemory(ctx, mem)
+}
+func (s *sqliteMemoryStore) SearchAgentShortTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.ShortTermMemory, error) {
+	return s.agent.SearchAgentShortTermMemories(ctx, q)
+}
+func (s *sqliteMemoryStore) EvictAgentShortTermMemories(ctx context.Context, userID, tenantID int64, keep int) error {
+	return s.agent.EvictAgentShortTermMemories(ctx, userID, tenantID, keep)
+}
+func (s *sqliteMemoryStore) AddAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) (int64, error) {
+	return s.agent.AddAgentLongTermMemory(ctx, mem)
+}
+func (s *sqliteMemoryStore) SearchAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
+	return s.agent.SearchAgentLongTermMemories(ctx, q)
+}
+func (s *sqliteMemoryStore) FindAgentDuplicateLongTerm(ctx context.Context, q agentmem.Query) (int64, error) {
+	return s.agent.FindAgentDuplicateLongTerm(ctx, q)
+}
+func (s *sqliteMemoryStore) SupersedeAgentLongTerm(ctx context.Context, q agentmem.Query, newID int64) ([]int64, error) {
+	return s.agent.SupersedeAgentLongTerm(ctx, q, newID)
+}
+func (s *sqliteMemoryStore) ListAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
+	return s.agent.ListAgentLongTermMemories(ctx, q)
+}
+func (s *sqliteMemoryStore) GetAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) (agentmem.LongTermMemory, error) {
+	return s.agent.GetAgentLongTermMemory(ctx, userID, tenantID, id)
+}
+func (s *sqliteMemoryStore) UpdateAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) error {
+	return s.agent.UpdateAgentLongTermMemory(ctx, mem)
+}
+func (s *sqliteMemoryStore) DeleteAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) error {
+	return s.agent.DeleteAgentLongTermMemory(ctx, userID, tenantID, id)
+}
+func (s *sqliteMemoryStore) TouchAgentLongTermMemory(ctx context.Context, id int64) error {
+	return s.agent.TouchAgentLongTermMemory(ctx, id)
+}
+func (s *sqliteMemoryStore) DecayAgentLongTerm(ctx context.Context, userID, tenantID int64, halfLifeDays, forgetThreshold float64) error {
+	return s.agent.DecayAgentLongTerm(ctx, userID, tenantID, halfLifeDays, forgetThreshold)
+}
+func (s *sqliteMemoryStore) PruneAgentLongTerm(ctx context.Context, userID, tenantID int64, maxEntries int) error {
+	return s.agent.PruneAgentLongTerm(ctx, userID, tenantID, maxEntries)
+}
+func (s *sqliteMemoryStore) ListAgentLongTermMissingSearchText(ctx context.Context, userID, tenantID int64, limit int) ([]agentmem.LongTermMemory, error) {
+	return s.agent.ListAgentLongTermMissingSearchText(ctx, userID, tenantID, limit)
+}
+func (s *sqliteMemoryStore) SetAgentLongTermSearchText(ctx context.Context, id int64, searchText string) error {
+	return s.agent.SetAgentLongTermSearchText(ctx, id, searchText)
+}
+func (s *sqliteMemoryStore) AddAgentLongTermMemoryWithSupersede(ctx context.Context, mem agentmem.LongTermMemory, terms []string) (int64, []int64, error) {
+	return s.agent.AddAgentLongTermMemoryWithSupersede(ctx, mem, terms)
+}
+func (s *sqliteMemoryStore) SetAgentLongTermFilePath(ctx context.Context, id int64, filePath string) error {
+	return s.agent.SetAgentLongTermFilePath(ctx, id, filePath)
 }
 
 func (s *sqliteMemoryStore) InitBlocks(tenantID int64, userID string) error {

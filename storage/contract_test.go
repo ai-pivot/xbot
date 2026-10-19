@@ -18,6 +18,7 @@ func RunStorageContractTests(t *testing.T, factory StorageFactory) {
 	t.Run("SessionStore", func(t *testing.T) { testSessionStoreContract(t, factory) })
 	t.Run("TenantStore", func(t *testing.T) { testTenantStoreContract(t, factory) })
 	t.Run("MemoryStore", func(t *testing.T) { testMemoryStoreContract(t, factory) })
+	t.Run("AgentMemoryStore", func(t *testing.T) { testAgentMemoryStoreContract(t, factory) })
 	t.Run("ConfigStore", func(t *testing.T) { testConfigStoreContract(t, factory) })
 	t.Run("CrossStore", func(t *testing.T) { testCrossStoreContract(t, factory) })
 	t.Run("EdgeCases", func(t *testing.T) { testEdgeCasesContract(t, factory) })

@@ -343,6 +343,61 @@ func initPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			PRIMARY KEY (provider, channel, chat_id)
 		)`,
 
+		// ── Agent memory (official "xbot" provider) ──
+		// Native PG full-text search: a generated tsvector column + GIN index.
+		// No extension is required (verified on PG 16: to_tsvector('simple', ...)
+		// treats a CJK run as one token, exactly like SQLite's unicode61, and the
+		// provider hands over CJK-space-separated search_text, so the token streams
+		// line up on both backends).
+		`CREATE TABLE IF NOT EXISTS xbot_short_term_memories (
+			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			user_id BIGINT NOT NULL DEFAULT 0,
+			tenant_id BIGINT NOT NULL DEFAULT 0,
+			session_id TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			key_topics TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			access_count INTEGER NOT NULL DEFAULT 0,
+			heat_score DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+			-- Mirrors the SQLite short-term FTS columns (summary, key_topics).
+			search_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', summary || ' ' || key_topics)) STORED
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_xbot_stm_user ON xbot_short_term_memories(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_xbot_stm_session ON xbot_short_term_memories(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_xbot_stm_tsv ON xbot_short_term_memories USING GIN (search_tsv)`,
+
+		`CREATE TABLE IF NOT EXISTS xbot_long_term_memories (
+			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			user_id BIGINT NOT NULL DEFAULT 0,
+			tenant_id BIGINT NOT NULL DEFAULT 0,
+			type TEXT NOT NULL DEFAULT '',
+			content TEXT NOT NULL DEFAULT '',
+			keywords TEXT NOT NULL DEFAULT '',
+			tags TEXT NOT NULL DEFAULT '',
+			source_session TEXT NOT NULL DEFAULT '',
+			importance DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+			heat_score DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+			access_count INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			file_path TEXT NOT NULL DEFAULT '',
+			search_text TEXT NOT NULL DEFAULT '',
+			scope TEXT NOT NULL DEFAULT 'global',
+			superseded_by BIGINT,
+			-- Same field set as the SQLite FTS5 index (content, keywords, tags,
+			-- search_text): indexing search_text alone would make a query on a
+			-- keyword miss on PG while hitting on SQLite.
+			search_tsv tsvector GENERATED ALWAYS AS (
+				to_tsvector('simple', content || ' ' || keywords || ' ' || tags || ' ' || search_text)
+			) STORED
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_xbot_ltm_user ON xbot_long_term_memories(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_xbot_ltm_type ON xbot_long_term_memories(type)`,
+		`CREATE INDEX IF NOT EXISTS idx_xbot_ltm_heat ON xbot_long_term_memories(heat_score)`,
+		`CREATE INDEX IF NOT EXISTS idx_xbot_ltm_tsv ON xbot_long_term_memories USING GIN (search_tsv)`,
+
 		// ── Seed: shared tenant ──
 		`INSERT INTO tenants (id, channel, chat_id) OVERRIDING SYSTEM VALUE
 		 VALUES (0, '_shared', '_shared')

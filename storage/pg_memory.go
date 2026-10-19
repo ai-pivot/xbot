@@ -7,15 +7,78 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"xbot/storage/agentmem"
 )
 
 // pgMemoryStore implements MemoryStore for PostgreSQL.
 type pgMemoryStore struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	agent *pgAgentMemoryStore
 }
 
 func newPGMemoryStore(pool *pgxpool.Pool) MemoryStore {
-	return &pgMemoryStore{pool: pool}
+	return &pgMemoryStore{pool: pool, agent: newPGAgentMemoryStore(pool)}
+}
+
+// ── AgentMemoryStore (official xbot provider) — delegate ──
+
+func (s *pgMemoryStore) EnsureAgentMemorySchema(ctx context.Context) error {
+	return s.agent.EnsureAgentMemorySchema(ctx)
+}
+func (s *pgMemoryStore) AddAgentShortTermMemory(ctx context.Context, mem agentmem.ShortTermMemory) (int64, error) {
+	return s.agent.AddAgentShortTermMemory(ctx, mem)
+}
+func (s *pgMemoryStore) SearchAgentShortTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.ShortTermMemory, error) {
+	return s.agent.SearchAgentShortTermMemories(ctx, q)
+}
+func (s *pgMemoryStore) EvictAgentShortTermMemories(ctx context.Context, userID, tenantID int64, keep int) error {
+	return s.agent.EvictAgentShortTermMemories(ctx, userID, tenantID, keep)
+}
+func (s *pgMemoryStore) AddAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) (int64, error) {
+	return s.agent.AddAgentLongTermMemory(ctx, mem)
+}
+func (s *pgMemoryStore) SearchAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
+	return s.agent.SearchAgentLongTermMemories(ctx, q)
+}
+func (s *pgMemoryStore) FindAgentDuplicateLongTerm(ctx context.Context, q agentmem.Query) (int64, error) {
+	return s.agent.FindAgentDuplicateLongTerm(ctx, q)
+}
+func (s *pgMemoryStore) SupersedeAgentLongTerm(ctx context.Context, q agentmem.Query, newID int64) ([]int64, error) {
+	return s.agent.SupersedeAgentLongTerm(ctx, q, newID)
+}
+func (s *pgMemoryStore) ListAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
+	return s.agent.ListAgentLongTermMemories(ctx, q)
+}
+func (s *pgMemoryStore) GetAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) (agentmem.LongTermMemory, error) {
+	return s.agent.GetAgentLongTermMemory(ctx, userID, tenantID, id)
+}
+func (s *pgMemoryStore) UpdateAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) error {
+	return s.agent.UpdateAgentLongTermMemory(ctx, mem)
+}
+func (s *pgMemoryStore) DeleteAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) error {
+	return s.agent.DeleteAgentLongTermMemory(ctx, userID, tenantID, id)
+}
+func (s *pgMemoryStore) TouchAgentLongTermMemory(ctx context.Context, id int64) error {
+	return s.agent.TouchAgentLongTermMemory(ctx, id)
+}
+func (s *pgMemoryStore) DecayAgentLongTerm(ctx context.Context, userID, tenantID int64, halfLifeDays, forgetThreshold float64) error {
+	return s.agent.DecayAgentLongTerm(ctx, userID, tenantID, halfLifeDays, forgetThreshold)
+}
+func (s *pgMemoryStore) PruneAgentLongTerm(ctx context.Context, userID, tenantID int64, maxEntries int) error {
+	return s.agent.PruneAgentLongTerm(ctx, userID, tenantID, maxEntries)
+}
+func (s *pgMemoryStore) ListAgentLongTermMissingSearchText(ctx context.Context, userID, tenantID int64, limit int) ([]agentmem.LongTermMemory, error) {
+	return s.agent.ListAgentLongTermMissingSearchText(ctx, userID, tenantID, limit)
+}
+func (s *pgMemoryStore) SetAgentLongTermSearchText(ctx context.Context, id int64, searchText string) error {
+	return s.agent.SetAgentLongTermSearchText(ctx, id, searchText)
+}
+func (s *pgMemoryStore) AddAgentLongTermMemoryWithSupersede(ctx context.Context, mem agentmem.LongTermMemory, terms []string) (int64, []int64, error) {
+	return s.agent.AddAgentLongTermMemoryWithSupersede(ctx, mem, terms)
+}
+func (s *pgMemoryStore) SetAgentLongTermFilePath(ctx context.Context, id int64, filePath string) error {
+	return s.agent.SetAgentLongTermFilePath(ctx, id, filePath)
 }
 
 // ── Core memory blocks ──

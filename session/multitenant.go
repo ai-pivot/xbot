@@ -484,10 +484,9 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 			UserID:  1,
 			BaseDir: memDir,
 		}
-		// PG 路径没有主库 *sqlite.DB（m.db == nil）—— flat provider 不依赖它。
-		if m.db != nil {
-			deps.DB = m.db.Conn()
-		}
+		// DB-backed memory reaches the provider ONLY through the storage seam —
+		// never a driver handle. On every backend this is store.Memory().
+		deps.AgentMemory = m.getMemoryStore()
 		// Letta-specific deps
 		if m.memoryProvider == "letta" {
 			deps.LettaDeps = &letta.Deps{

@@ -6,6 +6,7 @@ import (
 
 	"xbot/event"
 	"xbot/llm"
+	"xbot/storage/agentmem"
 	"xbot/storage/sqlite"
 )
 
@@ -159,6 +160,11 @@ type TenantStore interface {
 // memory, and event history. Conceptually independent — could use its
 // own backend (e.g., a dedicated memory DB or vector store).
 type MemoryStore interface {
+	// AgentMemoryStore is the official xbot provider's storage seam (its tables,
+	// searches and decay/prune primitives). Embedded so one Storage handle serves
+	// every memory provider without exposing a driver.
+	AgentMemoryStore
+
 	// Core memory blocks
 	InitBlocks(tenantID int64, userID string) error
 	GetBlock(tenantID int64, blockName, userID string) (content string, charLimit int, err error)
@@ -194,6 +200,64 @@ type MemoryStore interface {
 type HistoryEntry struct {
 	Entry     string
 	CreatedAt time.Time
+}
+
+// ─── Agent memory (the official "xbot" provider's storage) ───
+//
+// The xbot memory provider is DB-backed but must stay backend-agnostic: it owns
+// the memory POLICY (what to extract, prompt text, heat/decay policy, Markdown
+// mirrors) while every SQL statement lives in the storage layer. This interface
+// is the seam; the shared types live in storage/agentmem so a provider can depend
+// on them without importing a concrete backend.
+//
+// Design rules (see docs/plans/memory-providers-pg-parity.md):
+//   - Search takes an ALREADY-TOKENIZED query (Terms) — the provider owns the
+//     CJK/stopword tokenizer, the backend owns FTS syntax.
+//   - Search returns ALREADY-ORDERED results — bm25 (lower = better) and
+//     ts_rank (higher = better) never leak into the provider.
+//   - No driver, DSN or dialect knob is exposed.
+
+// AgentMemoryStore is the storage seam for the official xbot memory provider.
+// It is embedded in MemoryStore, so a single Storage handle satisfies it.
+type AgentMemoryStore interface {
+	// EnsureAgentMemorySchema creates/migrates the agent-memory tables. Idempotent.
+	EnsureAgentMemorySchema(ctx context.Context) error
+
+	// Short-term memories.
+	AddAgentShortTermMemory(ctx context.Context, mem agentmem.ShortTermMemory) (int64, error)
+	SearchAgentShortTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.ShortTermMemory, error)
+	EvictAgentShortTermMemories(ctx context.Context, userID, tenantID int64, keep int) error
+
+	// Long-term memories.
+	AddAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) (int64, error)
+	SearchAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error)
+	// FindAgentDuplicateLongTerm returns the id of an existing ACTIVE memory that
+	// strongly matches every term (the dedup guard for auto-extraction), or 0.
+	// The similarity threshold is a backend detail — it maps onto bm25 (SQLite)
+	// or ts_rank (PG) internally, so no score scale leaks to the provider.
+	FindAgentDuplicateLongTerm(ctx context.Context, q agentmem.Query) (int64, error)
+	// AddAgentLongTermMemoryWithSupersede inserts the memory and, in ONE
+	// transaction, marks older strongly-matching GLOBAL entries as superseded by
+	// the new id (the supersede chain). Atomicity matters: a crash between the
+	// two writes would leave contradictory facts both ACTIVE and both injected.
+	// Superseding only happens for global scope (a task-local session fact must
+	// never invalidate a user-level fact). Returns the new id and superseded ids.
+	AddAgentLongTermMemoryWithSupersede(ctx context.Context, mem agentmem.LongTermMemory, terms []string) (int64, []int64, error)
+	// SetAgentLongTermFilePath records the Markdown mirror path for a memory.
+	SetAgentLongTermFilePath(ctx context.Context, id int64, filePath string) error
+	ListAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error)
+	GetAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) (agentmem.LongTermMemory, error)
+	UpdateAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) error
+	DeleteAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) error
+	TouchAgentLongTermMemory(ctx context.Context, id int64) error
+	// DecayAgentLongTerm applies heat decay and slow importance decay.
+	DecayAgentLongTerm(ctx context.Context, userID, tenantID int64, halfLifeDays, forgetThreshold float64) error
+	// PruneAgentLongTerm deletes the lowest-heat entries beyond maxEntries.
+	PruneAgentLongTerm(ctx context.Context, userID, tenantID int64, maxEntries int) error
+	// ListAgentLongTermMissingSearchText returns up to limit rows whose
+	// search_text is empty (backfill driver — the transform is provider-side).
+	ListAgentLongTermMissingSearchText(ctx context.Context, userID, tenantID int64, limit int) ([]agentmem.LongTermMemory, error)
+	SetAgentLongTermSearchText(ctx context.Context, id int64, searchText string) error
 }
 
 // WebUserInfo describes a web UI user account (for listing).

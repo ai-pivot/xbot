@@ -91,6 +91,49 @@ a second copy is how masks/context edits silently diverge (that is exactly what 
 contract suite caught). `pg_session.go` adds only the record reader (`pgHistoryRecords`),
 the checkpoint lookup (`pgLatestCheckpoint`) and a trivial occurrence lookup.
 
+## Memory providers are backend-agnostic (DI invariant)
+
+> A memory provider depends **only** on `storage.*` interfaces plus pure logic. Adding or
+> switching a storage backend requires **zero** changes under `memory/`.
+
+Enforced by `memory/provider_di_test.go`: providers may not import `database/sql`,
+`xbot/storage/sqlite` or pgx, and `ProviderDeps` may not declare a driver/DSN field.
+
+Why it matters: a provider holding a driver handle eventually grows dialect-specific SQL
+(placeholders, FTS syntax, boolean literals) and then cannot run on some backend. DB-backed
+memory is therefore implemented in the storage layer and reaches providers only as a
+*semantic* interface.
+
+- `storage.AgentMemoryStore` (embedded in `MemoryStore`) is the xbot provider's seam:
+  search takes **pre-tokenized terms** and returns **already-ordered** results, so neither
+  the tokenizer (provider-owned `cjkSpaceRuns`) nor the ranking direction (`bm25` is
+  negative/lower-is-better; `ts_rank` is positive/higher-is-better) leaks across.
+- `memory/letta` takes `storage.MemoryStore` (not `*sqlite.CoreMemoryService`).
+- The chromem archival/tool-index stores are created in **one shared path**
+  (`MultiTenantSession.initMemoryServices`) used by both constructors, with directories
+  from an explicit `WithDataDir` (default `config.XbotHome()`) — never derived from
+  `dbPath`, which on PG holds a DSN. The files stay local on purpose: bodies live in the
+  database, vectors in files, keyed by `tenantID`, so preserving `tenants.id` keeps them valid.
+
+## Cross-backend FTS parity (measured, not assumed)
+
+The provider's `cjkSpaceRuns` splits CJK into single-character tokens for the **index and
+the query**, which is what makes PG's `to_tsvector('simple', ...)` usable with **no
+extension**: PG's `simple` config also treats a CJK run as one token, so both backends see
+the same token stream. `zhparser`/`pg_jieba` are not needed (and were unavailable on the
+test PG); `pg_trgm` is unnecessary.
+
+Two consequences worth remembering:
+
+- **Index the same field set on both backends.** SQLite's FTS5 table indexes
+  `content, keywords, tags, search_text`; the PG generated `search_tsv` must concatenate
+  the same four, otherwise a keyword-only query hits on SQLite and misses on PG.
+- **`bm25` is corpus-scaled; `ts_rank` is not.** Measured with a perfect match: bm25 ≈ 0
+  with 2 rows, −5.99 with 20, −7.53 with 40 — so the provider's dedup threshold (−6.0)
+  only becomes reachable on a realistically sized corpus. Contract tests for dedup must
+  seed a corpus; asserting on a 2-row fixture tests corpus size, not the contract.
+
+
 ## Contract test suite
 
 One suite, both backends, registered via `StorageFactory`:

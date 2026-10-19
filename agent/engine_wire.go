@@ -1361,11 +1361,9 @@ func (a *Agent) buildSubAgentMemory(
 		UserID:   parentCtx.UserID, // canonical owner — same user across all sessions
 		BaseDir:  memDir,
 	}
-	// ⚠️ PG 后端没有主库 *sqlite.DB（m.db == nil）—— flat provider 不依赖它
-	// （与 GetOrCreateSession 的同款守卫，见 multitenant.go）。
-	if db := a.multiSession.DB(); db != nil {
-		deps.DB = db.Conn()
-	}
+	// DB-backed memory reaches the provider ONLY through the storage seam (never a
+	// driver handle), so it works on every backend.
+	deps.AgentMemory = a.multiSession.MemoryService()
 
 	// Letta-specific deps
 	if a.memoryProvider == "letta" || a.memoryProvider == "" {
