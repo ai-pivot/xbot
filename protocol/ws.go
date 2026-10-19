@@ -33,6 +33,7 @@ const (
 	MsgTypeResyncRequired  = "resync_required"
 	MsgTypeBgTaskOutput    = "bg_task_output"
 	MsgTypeQueueState      = "queue_state"
+	MsgTypeGroupMessage    = "group.message"
 	MsgTypePong            = "__pong__"
 
 	// Channel Plugin → xbot: tool declaration

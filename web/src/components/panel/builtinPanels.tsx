@@ -19,6 +19,7 @@ import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo as SessionInfoPanel } from '@/components/sidebar/SessionInfo'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
+import { CourtConsole } from '@/components/court/CourtConsole'
 import { useTerminal } from '@/hooks/useTerminal'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
@@ -329,6 +330,16 @@ const BUILTIN_PANELS: PanelDefinition[] = [
     defaultSlot: 'left',
     defaultMode: 'docked',
     render: (ctx) => <CoreTerminalPanel ctx={ctx} />,
+    source: 'core',
+  },
+  {
+    id: 'core.court',
+    title: '指挥室',
+    icon: 'git-branch',
+    defaultSlot: 'left',
+    defaultMode: 'docked',
+    render: () => <CourtConsole />,
+    emptyHint: '暂无群组通信数据',
     source: 'core',
   },
 ]

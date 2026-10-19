@@ -320,10 +320,12 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 	result, err := execer.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-		 detail, display_only, internal_only, reasoning_content, reasoning_items, record_type, created_at, turn_id, iteration)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?, ?)
+		 detail, display_only, internal_only, reasoning_content, reasoning_items, record_type, record_data,
+		 group_id, sender_type, sender_id, sender_name, created_at, turn_id, iteration)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?, ?, ?, ?, ?, ?, ?)
 	`, tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName, msg.ToolArguments,
 		toolCallsJSON, msg.Detail, displayOnly, internalOnly, msg.ReasoningContent, reasoningItemsJSON,
+		msg.RecordData, msg.GroupID, msg.SenderType, msg.SenderID, msg.SenderName,
 		canonicalTimestamp(ts), msg.TurnID, msg.Iteration)
 	if err != nil {
 		return 0, fmt.Errorf("insert session message: %w", err)

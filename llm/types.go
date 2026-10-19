@@ -57,6 +57,17 @@ type ChatMessage struct {
 	TurnID      uint64 `json:"-"` // Agent turn that produced this message (for dedup)
 	Interrupted bool   `json:"-"` // true = this message marks a cancelled/interrupted turn (replaces string content "[interrupted]" checks)
 
+	// ── 群组消息信封（Agent 通信指挥室）──────────────────────────────────
+	// 群发 = 遍历成员各发一份：每个成员会话库里的副本都带同一 group_id 与
+	// 发送者身份。这些字段只在持久化/可视化层使用，绝不进入 LLM 上下文。
+	GroupID    string `json:"-"`
+	SenderType string `json:"-"` // agent | user | system
+	SenderID   string `json:"-"` // 例如 hubu/main 或 web-1
+	SenderName string `json:"-"` // 可读名（户部 / 用户）
+	// RecordData 是结构化展示元数据（群消息信封：kind / correlation_id / to /
+	// payload）。沿用 session_messages.record_data 列，普通消息恒为空。
+	RecordData string `json:"-"`
+
 	// CacheHint 提示 LLM 层此消息的缓存特性。
 	// "static" — 跨请求不变的静态内容（system prompt 基础模板等）
 	// "" (默认) — 动态内容，不标注缓存

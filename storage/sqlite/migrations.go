@@ -518,6 +518,15 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v74: 群组元数据（Agent 通信指挥室）+ 会话库群消息信封列。
+	// 主库建 groups/group_members；会话库在 OpenSessionDB 的幂等 DDL 里补齐
+	// group_id/sender_* 列与 ix_sm_group_cursor 索引（主库 v72 后无消息表）。
+	if from < 74 {
+		if err := migrateV73ToV74(db); err != nil {
+			return fmt.Errorf("migrate to v74: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -556,6 +565,66 @@ func migrateV72ToV73(db *DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v73: session_messages.iteration records synthetic pair anchor")
+	return nil
+}
+
+// migrateV73ToV74 建立群组元数据两张小表（groups / group_members）。
+//
+// 会话库的 group_id / sender_* 列与 ix_sm_group_cursor 索引不在这里改：
+// v72 之后主库已无 session_messages（数据在每会话独立 DB），列由
+// OpenSessionDB 的幂等 DDL + columnExists 守卫补齐（见 initSessionSchema）。
+// 本迁移只做纯增量 CREATE TABLE IF NOT EXISTS，幂等、可回滚（DROP 两表）。
+func migrateV73ToV74(db *DB) error {
+	conn := db.Conn()
+	if _, err := conn.Exec(`
+CREATE TABLE IF NOT EXISTS groups (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_members (
+  group_id TEXT NOT NULL,
+  member_addr TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'alive',
+  joined_at TEXT NOT NULL,
+  PRIMARY KEY (group_id, member_addr)
+);
+CREATE INDEX IF NOT EXISTS ix_group_members_addr ON group_members(member_addr, status);
+`); err != nil {
+		return fmt.Errorf("create groups/group_members: %w", err)
+	}
+	// 兼容遗留主库：v72 后主库理论上无 session_messages，但手工构造/中断迁移的库
+	// 可能仍有；有表则补齐群消息列与索引（列顺序无关，先列后索引）。
+	tableOK, err := tableExists(conn, "session_messages")
+	if err != nil {
+		return fmt.Errorf("check session_messages exists: %w", err)
+	}
+	if tableOK {
+		for _, c := range []struct{ name, ddl string }{
+			{"group_id", "ALTER TABLE session_messages ADD COLUMN group_id TEXT NOT NULL DEFAULT ''"},
+			{"sender_type", "ALTER TABLE session_messages ADD COLUMN sender_type TEXT NOT NULL DEFAULT ''"},
+			{"sender_id", "ALTER TABLE session_messages ADD COLUMN sender_id TEXT NOT NULL DEFAULT ''"},
+			{"sender_name", "ALTER TABLE session_messages ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''"},
+		} {
+			ok, err := columnExists(conn, "session_messages", c.name)
+			if err != nil {
+				return fmt.Errorf("check session_messages.%s: %w", c.name, err)
+			}
+			if !ok {
+				if _, err := conn.Exec(c.ddl); err != nil {
+					return fmt.Errorf("add session_messages.%s: %w", c.name, err)
+				}
+			}
+		}
+		if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS ix_sm_group_cursor ON session_messages(group_id, id DESC)`); err != nil {
+			return fmt.Errorf("create ix_sm_group_cursor: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 74"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v74: groups + group_members created")
 	return nil
 }
 

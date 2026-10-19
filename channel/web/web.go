@@ -150,6 +150,19 @@ type WebCallbacks struct {
 	SetCWD func(senderID string, sel SessionSelector, dir string) error
 	// BackgroundTasks returns background shell tasks for a Web-accessible session.
 	BackgroundTasks func(senderID string, sel SessionSelector) (any, error)
+	// ─── Agent 通信指挥室（群组可视化最小后端）────────────────────────────
+	// GroupList 返回调用者可见的群（owner 或 alive 成员）。
+	GroupList func(memberAddr string) ([]protocol.Group, error)
+	// GroupMembers 返回群成员（含 left）。
+	GroupMembers func(memberAddr, groupID string) ([]protocol.GroupMember, error)
+	// GroupMessages 读取调用者会话库中该群的消息（channel/chatID 为空 = 当前会话）。
+	GroupMessages func(memberAddr, groupID, channelName, chatID string, cursor int64, limit int) ([]protocol.GroupMessage, int64, bool, error)
+	// GroupCreate 创建群（演示用；owner = memberAddr）。
+	GroupCreate func(memberAddr, name string, members []string) (*protocol.Group, error)
+	// GroupAddMember 添加成员。
+	GroupAddMember func(memberAddr, groupID, addr string) (*protocol.GroupMember, error)
+	// GroupAppendMessage 向会话库追加一条群消息（演示写入 + 事件验证）。
+	GroupAppendMessage func(memberAddr, groupID, channelName, chatID string, input protocol.GroupMessageInput) (*protocol.GroupMessage, error)
 	// CronTasks returns scheduled tasks for a Web-accessible session.
 	CronTasks func(senderID string, sel SessionSelector) (any, error)
 	// CronRemove deletes a scheduled task owned by the given session. Session
@@ -954,6 +967,12 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/chats/{chatID}/rename", wc.authenticatedPOST(wc.handleChatRename))
 	mux.HandleFunc("/api/chats/{chatID}/delete", wc.authenticatedPOST(wc.handleChatDeletePOST))
 	mux.HandleFunc("/api/session-tree", wc.authenticatedPOST(wc.handleSessionTreePOST))
+
+	// Agent 通信指挥室（群组可视化）：真实 REST + group.message 事件。
+	mux.HandleFunc("/api/groups", wc.authMiddleware(wc.handleGroups))
+	mux.HandleFunc("/api/groups/create", wc.authenticatedPOST(wc.handleGroupCreate))
+	mux.HandleFunc("/api/groups/{id}/members", wc.authMiddleware(wc.handleGroupMembers))
+	mux.HandleFunc("/api/groups/{id}/messages", wc.authMiddleware(wc.handleGroupMessages))
 
 	// Channel discovery — the surviving piece of the removed account-identity
 	// endpoints. The frontend ActivityBar uses the discovered channel list to

@@ -41,7 +41,7 @@ import (
 //     (turn_id, iteration) 详情单查。**该变更不需要迁移链**：initSessionSchema
 //     每次打开会话库都重放整份幂等 DDL（CREATE ... IF NOT EXISTS），新库与既有库
 //     在同一收口点收敛；版本号只记录 schema 修订，不参与分支判断。
-const sessionSchemaVersion = 3
+const sessionSchemaVersion = 4
 
 // sessionSchema 是会话库的完整 DDL（主库 schema 的子集，FK 省略）。
 // 与 schema.go 的 session_messages/iteration_history 列定义保持逐列一致——
@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS session_messages (
     record_type TEXT NOT NULL DEFAULT 'message',
     target_history_id INTEGER,
     record_data TEXT,
+    group_id TEXT NOT NULL DEFAULT '',
+    sender_type TEXT NOT NULL DEFAULT '',
+    sender_id TEXT NOT NULL DEFAULT '',
+    sender_name TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
@@ -194,6 +198,27 @@ func (db *DB) initSessionSchema() error {
 		if _, err := db.Conn().Exec("ALTER TABLE session_messages ADD COLUMN iteration INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return fmt.Errorf("add session_messages.iteration: %w", err)
 		}
+	}
+	// v4: 群组消息信封列（group_id / sender_type / sender_id / sender_name）。
+	// 与 v3 同策略：旧库逐列幂等补齐；索引随会话库 DDL 的 IF NOT EXISTS 建好。
+	for _, c := range []struct{ name, ddl string }{
+		{"group_id", "ALTER TABLE session_messages ADD COLUMN group_id TEXT NOT NULL DEFAULT ''"},
+		{"sender_type", "ALTER TABLE session_messages ADD COLUMN sender_type TEXT NOT NULL DEFAULT ''"},
+		{"sender_id", "ALTER TABLE session_messages ADD COLUMN sender_id TEXT NOT NULL DEFAULT ''"},
+		{"sender_name", "ALTER TABLE session_messages ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''"},
+	} {
+		ok, err := columnExists(db.Conn(), "session_messages", c.name)
+		if err != nil {
+			return fmt.Errorf("check session_messages.%s: %w", c.name, err)
+		}
+		if !ok {
+			if _, err := db.Conn().Exec(c.ddl); err != nil {
+				return fmt.Errorf("add session_messages.%s: %w", c.name, err)
+			}
+		}
+	}
+	if _, err := db.Conn().Exec(`CREATE INDEX IF NOT EXISTS ix_sm_group_cursor ON session_messages(group_id, id DESC)`); err != nil {
+		return fmt.Errorf("create ix_sm_group_cursor: %w", err)
 	}
 	return nil
 }

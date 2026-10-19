@@ -57,6 +57,12 @@ CREATE TABLE session_messages (
     record_type TEXT NOT NULL DEFAULT 'message',
     target_history_id INTEGER,
     record_data TEXT,
+    -- v74: 群组消息信封（Agent 通信指挥室）。群发 = 遍历成员各发一份，
+    -- 每个成员会话库里的副本都带同一 group_id 与发送者身份。
+    group_id TEXT NOT NULL DEFAULT '',
+    sender_type TEXT NOT NULL DEFAULT '',
+    sender_id TEXT NOT NULL DEFAULT '',
+    sender_name TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
 );
@@ -72,6 +78,8 @@ CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, r
 -- message per tenant). WHERE role IN ('user','assistant') keeps tool/assistant-tool rows
 -- out of the index.
 CREATE INDEX IF NOT EXISTS idx_sm_tenant_role_id ON session_messages(tenant_id, role, id) WHERE role IN ('user','assistant');
+-- v74: 群组展示的游标分页索引（按群取一页，id DESC 直接走索引）。
+CREATE INDEX IF NOT EXISTS ix_sm_group_cursor ON session_messages(group_id, id DESC);
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,
@@ -138,7 +146,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (73);
+INSERT INTO schema_version (version) VALUES (74);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -352,6 +360,23 @@ CREATE TABLE IF NOT EXISTS shared_artifacts (
     revoked_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_shared_artifacts_creator ON shared_artifacts(created_by);
+
+-- v74: 群组元数据（Agent 通信指挥室）。只有两张小表，没有群级消息表：
+-- 群发 = 遍历 alive 成员各发一份，消息落在各自会话库。
+CREATE TABLE IF NOT EXISTS groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL,
+    member_addr TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'alive',
+    joined_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, member_addr)
+);
+CREATE INDEX IF NOT EXISTS ix_group_members_addr ON group_members(member_addr, status);
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
