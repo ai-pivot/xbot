@@ -2341,6 +2341,22 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 	}
 }
 
+// systemReminderRefreshEvery 是 transient system reminder 的重建周期（按 iteration 计）。
+const systemReminderRefreshEvery = 10
+
+// shouldRefreshSystemReminder 决定本轮是否重建 transient system reminder：
+// 首轮必建（current == ""），之后每 systemReminderRefreshEvery 轮刷新一次。
+//
+// 逐轮重建的代价：每轮都要重新拉 todo/子代理状态并拼字符串，且 reminder 位于
+// prompt 尾部、内容逐轮抖动会让 KV cache 前缀失配。它是 cwd/todo/subagent 的
+// 摘要，10 轮粒度足够新鲜。
+func shouldRefreshSystemReminder(iteration int, current string) bool {
+	if current == "" {
+		return true
+	}
+	return iteration%systemReminderRefreshEvery == 0
+}
+
 // postToolProcessing handles dynamic context injection, system reminder,
 // session persistence, background task draining, and waiting user check.
 // Returns a RunOutput if the loop should terminate, nil otherwise.
@@ -2362,7 +2378,13 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	// commitPending 用 len(messages) 推进 watermark，把被跳过的 reminder 也
 	// 算进「已持久化」），下一轮删除 reminder 后真实消息索引前移、落到虚高
 	// watermark 之下被当作已持久化跳过 —— AskUser 报 "no pending messages"。
-	if len(response.ToolCalls) > 0 {
+	//
+	// 刷新节奏：每 10 个 iteration 重建一次（首轮必建）。逐轮重建有两个代价：
+	//   1) 每轮都要重新拉 todo / 子代理状态并拼字符串；
+	//   2) reminder 是 prompt 尾部的一段固定结构，内容逐轮抖动会让 KV cache
+	//      前缀失配。reminder 承载的是 cwd/todo/subagent 的摘要，本来就不需要
+	//      逐轮精确 —— 10 轮的粒度足够新鲜，且把重建开销摊薄到 1/10。
+	if len(response.ToolCalls) > 0 && shouldRefreshSystemReminder(iteration, s.systemReminder) {
 		var todoItems []TodoProgressItem
 		if s.cfg.TodoManager != nil && s.todoKey() != "" {
 			todoItems = s.cfg.TodoManager.GetTodoItems(s.todoKey())
