@@ -89,6 +89,17 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   `iteration_history` — a genuine pure copy — stays server-side as one
   `INSERT … SELECT`. Before turning any "just copy the rows" idea into SQL here,
   ask which of the two you are looking at.
+- **The UI history projection is not the raw table.** `GetHistoryBeforeForDisplay`
+  must apply the same visibility rule as SQLite's `replayDisplayRecords`: a
+  `display_only` **message** row is *not* part of the displayed conversation (it is
+  a runtime artefact — cron results, synthetic tool pairs), while a `command` row
+  always is (being shown is its purpose), and the `total` it returns must count the
+  same rows or `has_more` disagrees between backends. PG read raw rows until
+  2026-10-20, so a forked session rendered the source session's `⏰` cron
+  notifications where SQLite showed nothing — a bug that looks like "the fork
+  received the source's notification" but is purely a projection difference.
+  `displayRowPredicate` in `storage/pg_session.go` is that rule; the contract test
+  `GetHistoryBeforeForDisplay_MatchesReplayDisplay` pins it on both backends.
 - **Round trips, not SQL, dominate on a remote PG.** A single `INSERT` costs one
   network round trip (~50ms on a cross-host link), so any loop that writes "one row
   at a time" turns into minutes: forking a 2235-message session used to spend ~4

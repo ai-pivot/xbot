@@ -156,22 +156,66 @@ func (s *pgSessionStore) GetMessagesCount(tenantID int64) (int, error) {
 	return len(replay.Messages), nil
 }
 
-// rawHistoryBefore returns append-only rows before beforeID (newest `limit`,
-// chronological order). This is the DISPLAY projection: compression snapshots
-// are not folded in and masks/context edits are not applied, so the UI keeps
-// showing what actually happened (mirrors SQLite's ReplayForDisplay).
-func (s *pgSessionStore) rawHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
+// displayRowPredicate is the visibility rule for the UI history projection.
+//
+// It mirrors SQLite's replayDisplayRecords exactly: a `display_only` MESSAGE row
+// is not part of the displayed conversation (it is a runtime artefact — a cron
+// result, a synthetic tool pair), while a `command` row always is, because being
+// shown is its entire purpose (see HistoryRecordCommand).
+//
+// Divergence this closes (2026-10-20): PG's projection used to read raw rows and
+// therefore rendered display-only artefacts — a forked session showed the source
+// session's ⏰ cron notifications in its history, which SQLite never does.
+const displayRowPredicate = `(COALESCE(record_type, 'message') = 'command' OR COALESCE(display_only, false) = false)`
+
+// displayHistoryBefore returns the rows the UI may render, newest `limit` before
+// beforeID, in chronological order.
+//
+// Same shape as SQLite's ReplayForDisplay: compression snapshots are not folded
+// in and masks/context edits are not applied — the UI keeps showing what actually
+// happened. Unlike the LLM-facing reads, this one keeps `command` rows and drops
+// display-only message rows (see displayRowPredicate).
+func (s *pgSessionStore) displayHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	ctx := context.Background()
-	rows, err := s.pool.Query(ctx, s.selectMessageSQL()+` WHERE tenant_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3`, tenantID, beforeID, limit)
+	// record_type rides along so command rows can be tagged like SQLite's
+	// projection does (CommandRow drives where the UI re-inserts the block).
+	rows, err := s.pool.Query(ctx, `SELECT id, role, content,
+			COALESCE(tool_call_id, ''), COALESCE(tool_name, ''), COALESCE(tool_arguments, ''),
+			COALESCE(tool_calls, ''), COALESCE(detail, ''), COALESCE(reasoning_content, ''),
+			COALESCE(reasoning_items, ''), COALESCE(display_only, false), COALESCE(internal_only, false),
+			COALESCE(context_tokens, 0), COALESCE(turn_id, 0), COALESCE(iteration, 0),
+			COALESCE(record_type, 'message')
+		FROM session_messages
+		WHERE tenant_id = $1 AND id < $2 AND `+displayRowPredicate+`
+		ORDER BY id DESC LIMIT $3`, tenantID, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	msgs, err := scanMessages(rows)
-	if err != nil {
+	var msgs []llm.ChatMessage
+	for rows.Next() {
+		var msg llm.ChatMessage
+		var toolCallsStr, reasoningItemsStr, recordType string
+		var ctxTokens int
+		if err := rows.Scan(&msg.ID, &msg.Role, &msg.Content, &msg.ToolCallID, &msg.ToolName,
+			&msg.ToolArguments, &toolCallsStr, &msg.Detail, &msg.ReasoningContent, &reasoningItemsStr,
+			&msg.DisplayOnly, &msg.Internal, &ctxTokens, &msg.TurnID, &msg.Iteration,
+			&recordType); err != nil {
+			return nil, err
+		}
+		if toolCallsStr != "" && toolCallsStr != "null" {
+			_ = json.Unmarshal([]byte(toolCallsStr), &msg.ToolCalls)
+		}
+		if reasoningItemsStr != "" && reasoningItemsStr != "null" {
+			_ = json.Unmarshal([]byte(reasoningItemsStr), &msg.ReasoningItems)
+		}
+		msg.CommandRow = recordType == string(sqlite.HistoryRecordCommand)
+		msgs = append(msgs, msg)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
@@ -900,15 +944,21 @@ func (s *pgSessionStore) GetHistoryBeforeForDisplay(tenantID int64, beforeID int
 		beforeID = math.MaxInt64
 	}
 	ctx := context.Background()
+	// Count the same rows the projection renders — SQLite's displayMessageCountQuery
+	// counts display-only-excluded message rows, so PG must too, or has_more
+	// disagrees between backends for the same history.
 	var total int
 	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM session_messages WHERE tenant_id = $1 AND id < $2`, tenantID, beforeID).Scan(&total); err != nil {
+		`SELECT COUNT(*) FROM session_messages
+		 WHERE tenant_id = $1 AND record_type = 'message'
+		   AND COALESCE(display_only, false) = false AND id < $2`,
+		tenantID, beforeID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count display rows before %d: %w", beforeID, err)
 	}
 	if total == 0 {
 		return nil, 0, nil
 	}
-	msgs, err := s.rawHistoryBefore(tenantID, beforeID, limit)
+	msgs, err := s.displayHistoryBefore(tenantID, beforeID, limit)
 	if err != nil {
 		return nil, 0, err
 	}

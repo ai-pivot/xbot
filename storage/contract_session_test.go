@@ -292,6 +292,74 @@ func testSessionStoreContract(t *testing.T, factory StorageFactory) {
 		}
 	})
 
+	t.Run("GetHistoryBeforeForDisplay_MatchesReplayDisplay", func(t *testing.T) {
+		// Parity guard (2026-10-20): the UI projection must hide display-only
+		// MESSAGE rows — runtime artefacts (cron results, synthetic tool pairs),
+		// not conversation — while keeping command rows, whose purpose is to be
+		// shown. SQLite's replayDisplayRecords has always done this; PG returned
+		// raw rows, so a forked session rendered the SOURCE session's cron
+		// notifications in its history where SQLite showed nothing.
+		s := factory(t)
+		defer s.Close()
+		tenantID := createTestTenant(t, s, uniqueChatID(t))
+		ss := getSessionStore(t, s, tenantID)
+
+		if _, err := ss.AppendMessages(tenantID, []llm.ChatMessage{
+			{Role: "user", Content: "Q1", TurnID: 1},
+			{Role: "assistant", Content: "A1", TurnID: 1},
+		}); err != nil {
+			t.Fatalf("seed conversation: %v", err)
+		}
+		if _, err := ss.AppendMessages(tenantID, []llm.ChatMessage{
+			{Role: "assistant", TurnID: 2, DisplayOnly: true,
+				ToolCalls: []llm.ToolCall{{ID: "cron_1", Name: "cron_fired"}}},
+			{Role: "tool", TurnID: 2, DisplayOnly: true, ToolCallID: "cron_1",
+				ToolName: "cron_fired", Content: "A scheduled cron job fired."},
+		}); err != nil {
+			t.Fatalf("seed display-only pair: %v", err)
+		}
+		if _, err := ss.AppendCommandMessage(tenantID, "command", "ls -la"); err != nil {
+			t.Fatalf("append command message: %v", err)
+		}
+		if _, err := ss.AppendMessages(tenantID, []llm.ChatMessage{
+			{Role: "user", Content: "Q2", TurnID: 3},
+		}); err != nil {
+			t.Fatalf("seed Q2: %v", err)
+		}
+
+		msgs, total, err := ss.GetHistoryBeforeForDisplay(tenantID, 0, 100)
+		if err != nil {
+			t.Fatalf("GetHistoryBeforeForDisplay: %v", err)
+		}
+		for _, m := range msgs {
+			if m.ToolName == "cron_fired" || m.Content == "A scheduled cron job fired." {
+				t.Errorf("display projection rendered a display-only cron artefact: role=%s tool=%s content=%q",
+					m.Role, m.ToolName, m.Content)
+			}
+		}
+		var sawQ1, sawQ2, sawCmd bool
+		for _, m := range msgs {
+			switch m.Content {
+			case "Q1":
+				sawQ1 = true
+			case "Q2":
+				sawQ2 = true
+			case "ls -la":
+				sawCmd = true
+			}
+		}
+		if !sawQ1 || !sawQ2 {
+			t.Errorf("display projection lost conversation: Q1=%v Q2=%v (msgs=%d)", sawQ1, sawQ2, len(msgs))
+		}
+		if !sawCmd {
+			t.Errorf("display projection dropped the command row (SQLite includes command rows)")
+		}
+		// Count mirrors SQLite's displayMessageCountQuery: message rows only.
+		if total != 3 {
+			t.Errorf("total = %d, want 3 (Q1, A1, Q2)", total)
+		}
+	})
+
 	t.Run("AppendIterationHistories", func(t *testing.T) {
 		// Fork copies a whole session's iteration history through this batch API.
 		// It must behave exactly like N single appends: same rows, same order,
