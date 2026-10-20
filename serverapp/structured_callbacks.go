@@ -146,7 +146,7 @@ func toProtocolStructured(m sqlite.StructuredMessage) *protocol.StructuredMessag
 }
 
 // structuredCallbacks 构造 WebCallbacks 的结构化消息五件套。
-func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error), answerFn func(string, web.SessionSelector, protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error), inboxFn func(web.SessionSelector, int64, int) ([]protocol.StructuredMessage, bool, int64, error), countFn func(web.SessionSelector) (int, error), listFn func(web.SessionSelector, string, int64, int) ([]protocol.StructuredMessage, bool, int64, error)) {
+func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error), answerFn func(string, web.SessionSelector, protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error), inboxFn func(web.SessionSelector, int64, int) ([]protocol.StructuredMessage, bool, int64, error), countFn func(web.SessionSelector) (int, error), listFn func(web.SessionSelector, string, int64, int64, int) ([]protocol.StructuredMessage, bool, int64, error)) {
 	sessionOf := func(sel web.SessionSelector) (*sqlite.SessionService, int64, error) {
 		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
 		if err != nil {
@@ -252,12 +252,20 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		return svc.CountInbox(tenantID)
 	}
 
-	listFn = func(sel web.SessionSelector, kind string, cursor int64, limit int) ([]protocol.StructuredMessage, bool, int64, error) {
+	listFn = func(sel web.SessionSelector, kind string, cursor, afterID int64, limit int) ([]protocol.StructuredMessage, bool, int64, error) {
 		svc, tenantID, err := sessionOf(sel)
 		if err != nil {
 			return nil, false, 0, err
 		}
-		rows, more, next, err := svc.ListStructuredMessages(tenantID, kind, cursor, limit)
+		// afterID > 0 ⇒ 增量补齐（SSE 重连），按 id 升序；否则走分页（id DESC）。
+		var rows []sqlite.StructuredMessage
+		var more bool
+		var next int64
+		if afterID > 0 {
+			rows, more, next, err = svc.ListStructuredMessagesAfter(tenantID, kind, afterID, limit)
+		} else {
+			rows, more, next, err = svc.ListStructuredMessages(tenantID, kind, cursor, limit)
+		}
 		if err != nil {
 			return nil, false, 0, err
 		}

@@ -181,8 +181,9 @@ func (wc *WebChannel) handleStructuredMessages(w http.ResponseWriter, r *http.Re
 		return
 	}
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
+	afterID, _ := strconv.ParseInt(r.URL.Query().Get("after_id"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items, hasMore, next, err := wc.callbacks.StructuredMessages(sel, kind, cursor, limit)
+	items, hasMore, next, err := wc.callbacks.StructuredMessages(sel, kind, cursor, afterID, limit)
 	if err != nil {
 		writeStructuredError(w, err)
 		return

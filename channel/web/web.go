@@ -287,7 +287,7 @@ type WebCallbacks struct {
 	// StructuredCount returns the unanswered ask_user count for the badge.
 	StructuredCount func(sel SessionSelector) (int, error)
 	// StructuredMessages lists structured messages filtered by kind.
-	StructuredMessages func(sel SessionSelector, kind string, cursor int64, limit int) ([]protocol.StructuredMessage, bool, int64, error)
+	StructuredMessages func(sel SessionSelector, kind string, cursor, afterID int64, limit int) ([]protocol.StructuredMessage, bool, int64, error)
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.

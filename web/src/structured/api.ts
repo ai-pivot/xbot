@@ -35,10 +35,11 @@ function scopeQuery(scope: StructuredScope): string {
 
 export async function fetchStructuredMessages(
   scope: StructuredScope,
-  opts: { kind?: string; cursor?: number; limit?: number; signal?: AbortSignal } = {},
+  opts: { kind?: string; cursor?: number; after_id?: number; limit?: number; signal?: AbortSignal } = {},
 ): Promise<{ items: StructuredMessage[]; has_more: boolean; next_cursor: number }> {
   const q = new URLSearchParams(scopeQuery(scope))
   if (opts.kind) q.set('kind', opts.kind)
+  if (opts.after_id && opts.after_id > 0) q.set('after_id', String(opts.after_id))
   q.set('cursor', String(opts.cursor ?? 0))
   q.set('limit', String(opts.limit ?? 200))
   return getAPI(`/api/messages?${q.toString()}`, opts.signal)

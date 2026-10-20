@@ -334,3 +334,56 @@ func TestAppendDecisionRequiresTarget(t *testing.T) {
 		t.Fatal("decision without reply_to target must be rejected")
 	}
 }
+
+// after_id 增量补齐：按 id 升序、可续、不重复不遗漏。
+// 这是 SSE 重连补洞的正确性基础 —— 漏一条 decision 会让已批红状态回退，
+// 跨端就永远收敛不到一致视图。
+func TestListStructuredMessagesAfterIsResumable(t *testing.T) {
+	svc, tenant := newStructuredTestService(t)
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		id, _, err := svc.AppendStructuredMessage(tenant, StructuredMessage{
+			ChatID: "chat-1", Kind: StructuredKindEvent, Content: "e",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+
+	batch1, more1, next1, err := svc.ListStructuredMessagesAfter(tenant, "", 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch1) != 2 || !more1 {
+		t.Fatalf("batch1 len=%d more=%v, want 2/true", len(batch1), more1)
+	}
+	if batch1[0].ID != ids[0] || batch1[1].ID != ids[1] {
+		t.Fatalf("batch1 ids=%d,%d want %d,%d", batch1[0].ID, batch1[1].ID, ids[0], ids[1])
+	}
+	if next1 != ids[1] {
+		t.Fatalf("next=%d want %d", next1, ids[1])
+	}
+
+	all := append([]StructuredMessage{}, batch1...)
+	after := next1
+	for i := 0; i < 10; i++ {
+		batch, more, next, err := svc.ListStructuredMessagesAfter(tenant, "", after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, batch...)
+		after = next
+		if !more {
+			break
+		}
+	}
+	if len(all) != 5 {
+		t.Fatalf("total=%d want 5", len(all))
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i].ID <= all[i-1].ID {
+			t.Fatalf("ids not strictly ascending at %d: %d <= %d", i, all[i].ID, all[i-1].ID)
+		}
+	}
+}

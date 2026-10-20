@@ -59,8 +59,73 @@ function mergeMessages(prev: StructuredMessage[], incoming: StructuredMessage[])
   return sortMessages([...map.values()])
 }
 
+/**
+ * deriveTargetStates —— 把 answer/decision 行投影回被它们闭环的目标消息。
+ *
+ * 这是跨端同步的核心，设计上保证线性一致性：
+ * - 服务端 CAS 在同一个 IMMEDIATE 事务里完成（单写者 ⇒ 线性化点明确），
+ *   decision/answer 行一旦提交就不再变化；
+ * - 客户端只做幂等 + 单调的 OR 合并：answered 只会 false→true（不存在「撤销批红」），
+ *   所以事件重复、乱序、重连补齐都不会让状态回退；
+ * - 于是所有客户端（含刚重连的）都收敛到「消息流的纯函数」，而不是各自的本地状态。
+ *
+ * 服务端字段 answered 保留为兜底：decision 行落在未加载的历史窗口外时，
+ * 仍能靠服务端快照显示「已批红」。
+ */
+function deriveTargetStates(list: StructuredMessage[]): StructuredMessage[] {
+  const answered = new Set<number>()
+  const cancelled = new Set<number>()
+  // 批红结果也要投影：卡片是否显示「准/驳/改」按钮取决于 payload.decision，
+  // 而跨端收到的 decision 是一条独立消息。只投影 answered 会出现
+  // 「状态已批红、按钮还在」的不一致视图。
+  const decisions = new Map<number, { verdict: string; comments?: string }>()
+  for (const m of list) {
+    if (m.kind !== 'answer' && m.kind !== 'decision') continue
+    const target = Number(m.reply_to)
+    if (!Number.isFinite(target) || target <= 0) continue
+    if (m.cancelled) {
+      cancelled.add(target)
+      continue
+    }
+    answered.add(target)
+    if (m.kind === 'decision') {
+      const verdict = typeof m.payload?.verdict === 'string' ? m.payload.verdict : ''
+      if (verdict) {
+        decisions.set(target, {
+          verdict,
+          comments: typeof m.payload?.comments === 'string' ? m.payload.comments : undefined,
+        })
+      }
+    }
+  }
+  if (!answered.size && !cancelled.size) return list
+  let changed = false
+  const out = list.map((m) => {
+    const a = answered.has(m.message_id) && !m.answered
+    const c = cancelled.has(m.message_id) && !m.cancelled
+    const d = decisions.get(m.message_id)
+    const hasDecision = !!d && !(m.payload && typeof m.payload.decision === 'object')
+    if (!a && !c && !hasDecision) return m
+    changed = true
+    return {
+      ...m,
+      answered: m.answered || a,
+      cancelled: m.cancelled || c,
+      ...(hasDecision ? { payload: { ...(m.payload ?? {}), decision: d } } : {}),
+    }
+  })
+  return changed ? out : list
+}
+
 export function useStructuredMessages(scope: StructuredScope): UseStructuredMessages {
-  const [messages, setMessages] = useState<StructuredMessage[]>([])
+  const [rawMessages, setRawMessages] = useState<StructuredMessage[]>([])
+  // 派生状态：answered/cancelled 由消息流投影得出（见 deriveTargetStates）。
+  // 放在 useMemo 里而不是 merge 时改写，是为了让「任何来源的新行」（SSE、重连补齐、
+  // 分页加载、本端乐观写入）都走同一条推导路径 —— 多端最终收敛到同一投影。
+  const messages = useMemo(() => deriveTargetStates(rawMessages), [rawMessages])
+  useEffect(() => {
+    rawRef.current = rawMessages
+  }, [rawMessages])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
@@ -69,6 +134,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
   const [inboxError, setInboxError] = useState<string | null>(null)
 
   const cursorRef = useRef(0)
+  const rawRef = useRef<StructuredMessage[]>([])
   const pendingRef = useRef<Set<string>>(new Set())
   const scopeKey = `${scope.channel ?? ''}:${scope.chat_id ?? ''}`
 
@@ -89,7 +155,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
         if (!res.items.length) break
       }
       cursorRef.current = cursor
-      setMessages(acc)
+      setRawMessages(acc)
       setHasMore(more)
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载失败')
@@ -108,7 +174,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
       const res = await fetchStructuredMessages(scope, { cursor: cursorRef.current, limit: 200 })
       cursorRef.current = res.next_cursor
       setHasMore(res.has_more)
-      setMessages((prev) => mergeMessages(prev, res.items))
+      setRawMessages((prev) => mergeMessages(prev, res.items))
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载失败')
     }
@@ -132,14 +198,50 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
     void refreshInbox()
   }, [refreshInbox])
 
-  // SSE 增量：按 message_id 去重。断线重连后重新拉一页（游标补齐）。
+  // scheduleInboxRefresh 合并短时间内的多次收件箱刷新（150ms 窗口）。
+  // SSE 事件可能成批到达（一次回答紧跟一次批红），逐个刷新会造成请求风暴。
+  const inboxTimerRef = useRef<number | null>(null)
+  const scheduleInboxRefresh = useCallback(() => {
+    if (inboxTimerRef.current !== null) return
+    inboxTimerRef.current = window.setTimeout(() => {
+      inboxTimerRef.current = null
+      void refreshInbox()
+    }, 150)
+  }, [refreshInbox])
+  useEffect(() => {
+    return () => {
+      if (inboxTimerRef.current !== null) {
+        window.clearTimeout(inboxTimerRef.current)
+        inboxTimerRef.current = null
+      }
+    }
+  }, [])
+
+  // backfill 按 id 单调补齐断线期间漏掉的结构化消息。
+  // 上限 20 批 × 200 条，避免异常情况下无限拉取；每批都是 id 升序，天然可续。
+  const backfill = useCallback(async () => {
+    let after = rawRef.current.reduce((mx, m) => Math.max(mx, m.message_id), 0)
+    for (let i = 0; i < 20; i++) {
+      const res = await fetchStructuredMessages(scope, { after_id: after, limit: 200 })
+      if (!res.items.length) break
+      setRawMessages((prev) => mergeMessages(prev, res.items))
+      after = res.next_cursor
+      if (!res.has_more) break
+    }
+  }, [scopeKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // SSE 增量：按 message_id 去重；重连后走 backfill 按 id 补齐。
   useEffect(() => {
     if (!scope.chat_id) return
     const q = new URLSearchParams()
     if (scope.channel) q.set('channel', scope.channel)
     q.set('chat_id', scope.chat_id)
     const es = new EventSource(`/api/sse?${q.toString()}`)
-    es.onmessage = (ev) => {
+    // 服务端以「命名事件」发送：`id:..\nevent:structured_message\ndata:...`
+    // （见 channel/web/web_sse.go writeSSEEvent）。EventSource 只把默认 message
+    // 事件派发给 onmessage，命名事件必须 addEventListener —— 之前用 onmessage
+    // 导致「服务端广播成功、前端永远收不到」：单端靠乐观更新看不出来，双端 e2e 必挂。
+    const handleStructuredEvent = (ev: MessageEvent) => {
       try {
         const payload = JSON.parse(ev.data) as {
           type?: string
@@ -147,17 +249,21 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
         }
         if (payload.type !== 'structured_message' || !payload.structured) return
         if (!payload.structured.message_id) return
-        setMessages((prev) => mergeMessages(prev, [payload.structured!]))
-        void refreshInbox()
+        setRawMessages((prev) => mergeMessages(prev, [payload.structured!]))
+        // 只有会改变收件箱的 kind 才刷新：event/text/report 不影响未答集合。
+        // 1000 条 event 灌入时若每条都 refreshInbox，会产生 1000 次 HTTP 请求。
+        const k = payload.structured.kind
+        if (k === 'ask_user' || k === 'answer' || k === 'decision') scheduleInboxRefresh()
       } catch {
         /* 非 JSON 事件（心跳等）忽略 */
       }
     }
+    es.addEventListener('structured_message', handleStructuredEvent as EventListener)
     es.onopen = () => {
-      // 重连补齐：重新拉最新一页，merge 去重，不覆盖已有更早消息。
-      void fetchStructuredMessages(scope, { limit: 200 })
-        .then((res) => setMessages((prev) => mergeMessages(prev, res.items)))
-        .catch(() => {})
+      // 重连补齐：按 after_id 增量拉取（不能只拉最新一页）。
+      // 深历史下「最新一页」会漏掉中间的 answer/decision 行，而派生状态依赖它们 ——
+      // 漏一条 decision 就会让已批红的卡片在重连后回退，破坏跨端一致性。
+      void backfill()
       void refreshInbox()
     }
     return () => es.close()
@@ -178,7 +284,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
           channel: scope.channel,
           chat_id: scope.chat_id,
         })
-        setMessages((prev) =>
+        setRawMessages((prev) =>
           mergeMessages(prev, [
             {
               ...res.message,
@@ -188,7 +294,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
           ]),
         )
         // 更新原问题的终态（乐观 + 服务端权威）。
-        setMessages((prev) =>
+        setRawMessages((prev) =>
           sortMessages(
             prev.map((m) =>
               m.correlation_id === correlationId && m.kind === 'ask_user'
@@ -212,7 +318,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
       pendingRef.current.add(key)
       const previous = target
       // 乐观更新：报告卡立即显示批红结果；失败回滚。
-      setMessages((prev) =>
+      setRawMessages((prev) =>
         prev.map((m) =>
           m.message_id === target.message_id
             ? { ...m, answered: true, payload: { ...(m.payload ?? {}), decision: { verdict, comments } } }
@@ -236,10 +342,10 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
           channel: scope.channel,
           chat_id: scope.chat_id,
         })
-        setMessages((prev) => mergeMessages(prev, [res.message]))
+        setRawMessages((prev) => mergeMessages(prev, [res.message]))
         void refreshInbox()
       } catch (e) {
-        setMessages((prev) =>
+        setRawMessages((prev) =>
           prev.map((m) => (m.message_id === target.message_id ? previous : m)),
         )
         throw e

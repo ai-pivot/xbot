@@ -497,6 +497,66 @@ func (s *SessionService) ListStructuredMessages(tenantID int64, kind string, cur
 	return out, hasMore, next, nil
 }
 
+// ListStructuredMessagesAfter 返回 id > afterID 的结构化消息，按 id 升序。
+//
+// 供 SSE 断线重连做增量补齐：客户端带上已加载的最大 id，精确拉取缺口。
+// 「只拉最新一页」在深历史下会丢掉中间的 answer/decision 行，而派生状态
+// （answered 由消息流投影得出）依赖这些行 —— 丢一条 decision 就会让已批红
+// 的卡片在重连后回退成「待批红」，破坏跨端一致性。所以这里按 id 单调补齐。
+func (s *SessionService) ListStructuredMessagesAfter(tenantID int64, kind string, afterID int64, limit int) ([]StructuredMessage, bool, int64, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	conn, err := s.conn()
+	if err != nil {
+		return nil, false, 0, err
+	}
+	q := `SELECT id, COALESCE(chat_id,''), COALESCE(kind,''), COALESCE(correlation_id,''),
+	             COALESCE(reply_to,''), COALESCE(idempotency_key,''), COALESCE(structured_json,''),
+	             COALESCE(direction,''), COALESCE(answered,0), COALESCE(cancelled,0),
+	             role, content, COALESCE(sender_type,''), COALESCE(sender_id,''),
+	             COALESCE(sender_name,''), created_at
+	        FROM session_messages
+	       WHERE tenant_id = ? AND kind <> '' AND id > ?`
+	args := []any{tenantID, afterID}
+	if kind != "" {
+		q += ` AND kind = ?`
+		args = append(args, kind)
+	}
+	q += ` ORDER BY id ASC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := conn.QueryContext(context.Background(), q, args...)
+	if err != nil {
+		return nil, false, 0, fmt.Errorf("query structured messages after %d: %w", afterID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]StructuredMessage, 0, limit)
+	for rows.Next() {
+		m, err := scanStructuredRow(rows)
+		if err != nil {
+			return nil, false, 0, err
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, 0, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	next := afterID
+	if len(out) > 0 {
+		next = out[len(out)-1].ID
+	}
+	return out, hasMore, next, nil
+}
+
 // ListInbox 返回当前会话未回答、未取消的 ask_user（收件箱）。
 // 按 id DESC（最新在前），cursor = 上一页最后一条 id。
 func (s *SessionService) ListInbox(tenantID int64, cursor int64, limit int) ([]StructuredMessage, bool, int64, error) {

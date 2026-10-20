@@ -265,4 +265,68 @@ test.describe('结构化消息卡片', () => {
     // eslint-disable-next-line no-console
     console.log(`[perf] 1000 条消息首屏渲染 ${elapsed}ms`)
   })
+
+  test('跨端同步：A 端批红/回答，B 端状态与收件箱立即跟上', async ({ browser }) => {
+    // 两个独立浏览器上下文 = 两台设备（各自 cookie / SSE 连接）。
+    const ctxA = await browser.newContext()
+    const ctxB = await browser.newContext()
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    try {
+      await login(pageA)
+      await login(pageB)
+      const chatID = await newChat(pageA, 'xdev')
+      const question = `跨端问题（${RUN}）`
+      const summary = `跨端奏折（${RUN}）`
+      await postStructured(pageA, chatID, {
+        kind: 'ask_user',
+        correlation_id: `cor_xdev_q_${RUN}`,
+        idempotency_key: `xdq_${RUN}`,
+        text: question,
+        payload: {
+          questions: [{ id: 'q1', question, options: [{ id: 'yes', label: '是' }] }],
+          allow_cancel: true,
+        },
+      })
+      await postStructured(pageA, chatID, {
+        kind: 'report',
+        correlation_id: `cor_xdev_r_${RUN}`,
+        idempotency_key: `xdr_${RUN}`,
+        text: summary,
+        payload: {
+          summary,
+          state_ref: 'court/state/x.yaml',
+          state_sha256: 'deadbeef',
+          evidence: [{ path: 'court/evidence/x.log', kind: 'log' }],
+        },
+      })
+
+      await gotoStructured(pageA, chatID)
+      await gotoStructured(pageB, chatID)
+
+      // B 端初始视图：一件待答 + 一张待批红。
+      await expect(pageB.getByTestId('inbox-badge')).toHaveText('1')
+      const cardB = pageB.getByTestId('report-card').filter({ hasText: summary }).first()
+      await expect(cardB.getByText('待批红')).toBeVisible()
+
+      // A 端批红 —— B 端不刷新、不重连，仅靠广播 + 消息流派生。
+      const cardA = pageA.getByTestId('report-card').filter({ hasText: summary }).first()
+      await cardA.getByTestId('report-approve').click()
+      await expect(cardB.getByText('已批红')).toBeVisible({ timeout: 8000 })
+      await expect(cardB.getByTestId('report-approve')).toHaveCount(0)
+
+      // A 端回答 —— B 端收件箱徽标归零、问题卡变已回答。
+      const askA = pageA.getByTestId('ask-user-card').filter({ hasText: question }).first()
+      await askA.getByRole('radio').first().check()
+      await askA.getByTestId('ask-user-submit').click()
+      await expect(pageB.getByTestId('inbox-badge')).toHaveText('0', { timeout: 8000 })
+      const askB = pageB.getByTestId('ask-user-card').filter({ hasText: question }).first()
+      await expect(askB.getByText('已回答')).toBeVisible({ timeout: 8000 })
+
+      await pageB.screenshot({ path: 'e2e/artifacts/cards-cross-device.png' })
+    } finally {
+      await ctxA.close()
+      await ctxB.close()
+    }
+  })
 })

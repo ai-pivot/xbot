@@ -683,6 +683,10 @@ func isSSEEventType(msgType string) bool {
 		protocol.MsgTypeSyncProgress,
 		protocol.MsgTypeResyncRequired,
 		protocol.MsgTypeBgTaskOutput,
+		// structured_message 必须进 SSE 通道：跨端同步依赖它。
+		// 早前漏了这一项，导致广播只走 WebSocket，SSE（EventSource）客户端
+		// 完全收不到 —— 单端测试靠乐观更新看不出来，双端 e2e 立刻暴露。
+		protocol.MsgTypeStructuredMessage,
 		protocol.MsgTypeQueueState:
 		return true
 	default:
