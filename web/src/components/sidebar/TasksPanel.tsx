@@ -7,7 +7,7 @@
  * Icons: ⏰ cron task, ▶ running bg command, ✓ completed, ✗ failed.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { AlarmClock, Bot, Check, Loader2, Play, Square, Trash2, X } from 'lucide-react'
+import { AlarmClock, Bot, Check, Loader2, Network, Play, Square, Trash2, X } from 'lucide-react'
 import { useI18n } from '@/providers/i18n'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useSessionStore } from '@/hooks/useSessionStore'
@@ -98,6 +98,30 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
     // truncate 链在 table 布局测量中失效——纯垂直列表没有横向滚动需求。
     <div className="h-full overflow-y-auto overflow-x-hidden overscroll-contain">
       <div className="flex flex-col gap-4 px-3 py-3 text-sm">
+        {/* 通信视图入口：三栏整页视图（组织树 / 时间轴 / 线程），必须以主视图
+            tab 打开 —— 塞进侧栏 300px 会挤成竖排（2026-10-20 用户截图）。 */}
+        <button
+          type="button"
+          data-testid="open-court"
+          onClick={() =>
+            tabManager?.openTab({
+              type: 'panel',
+              title: '通信视图',
+              icon: 'git-branch',
+              closable: true,
+              data: { panelId: 'court' },
+            })
+          }
+          className="flex w-full items-center gap-2 rounded-md bg-bg-tertiary px-2 py-2 text-left transition-colors hover:bg-bg-secondary"
+        >
+          <Network className="size-3.5 shrink-0 text-text-secondary" />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs font-medium text-text-primary">通信视图</span>
+            <span className="block truncate text-[10px] text-text-muted">群组通信 · 组织树 · 时间轴</span>
+          </span>
+          <span className="shrink-0 text-[10px] text-text-muted">打开 →</span>
+        </button>
+
         {/* Cron tasks */}
         <section className="flex flex-col gap-2">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">

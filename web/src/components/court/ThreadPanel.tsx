@@ -38,13 +38,13 @@ export function ThreadPanel({ messages, selected, onSelect, onClose }: Props) {
           !list.some((m) => m.kind === 'answer' && m.correlation_id === last.correlation_id)
         return { key, list, open, title: list[0]?.payload?.topic ?? list[0]?.content ?? key }
       })
-    // 无 correlation_id 的零散消息聚合为一条，避免右侧被单条消息刷屏。
+    // 无 correlation_id 的未定向消息聚合为一条，避免右侧被单条消息刷屏。
     const singles = [...map.entries()]
       .filter(([key]) => key.startsWith('single:'))
       .flatMap(([, list]) => list)
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
     if (singles.length > 0) {
-      out.push({ key: 'singles', list: singles, open: false, title: '零散消息' })
+      out.push({ key: 'singles', list: singles, open: false, title: '未定向消息' })
     }
     out.sort((a, b) => Number(b.open) - Number(a.open))
     return out

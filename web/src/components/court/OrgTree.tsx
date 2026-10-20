@@ -7,9 +7,11 @@ interface Props {
   laneFilter: string | null
   onLaneFilter: (id: string | null) => void
   counts: Record<string, number>
+  /** 与画布泳道一致的高度（px），保证左侧节点与弧线端点对齐 */
+  laneHeight: number
 }
 
-export function OrgTree({ lanes, laneFilter, onLaneFilter, counts }: Props) {
+export function OrgTree({ lanes, laneFilter, onLaneFilter, counts, laneHeight }: Props) {
   const owner = lanes.find((l) => l.type === 'user')
   const agents = lanes.filter((l) => l.type !== 'user')
   const node = (lane: Lane, depth: number) => {
@@ -21,8 +23,9 @@ export function OrgTree({ lanes, laneFilter, onLaneFilter, counts }: Props) {
         type="button"
         data-lane={lane.id}
         onClick={() => onLaneFilter(active ? null : lane.id)}
-        className="group relative w-full rounded-lg border px-2.5 py-2 text-left transition-colors"
+        className="group relative flex w-full flex-col justify-center rounded-lg border px-2.5 py-2 text-left transition-colors"
         style={{
+          height: laneHeight,
           marginLeft: depth * 14,
           borderColor: active ? 'rgba(56,189,248,0.55)' : 'rgba(148,163,184,0.12)',
           background: active ? 'rgba(56,189,248,0.08)' : 'rgba(15,23,42,0.35)',
@@ -38,7 +41,7 @@ export function OrgTree({ lanes, laneFilter, onLaneFilter, counts }: Props) {
             {counts[lane.id] ?? 0}
           </span>
         </div>
-        <div className="mt-1 truncate text-[10px]" style={{ color: 'rgba(148,163,184,0.72)' }}>
+        <div className="mt-1 line-clamp-2 text-[10px] leading-[1.35]" style={{ color: 'rgba(148,163,184,0.72)' }}>
           {lane.task || '暂无任务'}
         </div>
         <div className="mt-1.5 flex items-center gap-2">
@@ -56,10 +59,10 @@ export function OrgTree({ lanes, laneFilter, onLaneFilter, counts }: Props) {
 
   return (
     <aside
-      className="hidden w-[228px] shrink-0 flex-col border-r md:flex"
+      className="hidden w-[252px] shrink-0 flex-col border-r md:flex"
       style={{ borderColor: 'rgba(148,163,184,0.12)', background: 'rgba(9,14,24,0.72)' }}
     >
-      <div className="flex items-center justify-between px-3 pb-1 pt-3">
+      <div className="flex h-[48px] shrink-0 items-center justify-between px-3">
         <span className="text-[10px] font-semibold uppercase tracking-[0.16em]"
           style={{ color: 'rgba(148,163,184,0.7)' }}>组织树</span>
         {laneFilter ? (
@@ -68,7 +71,8 @@ export function OrgTree({ lanes, laneFilter, onLaneFilter, counts }: Props) {
             style={{ color: '#38bdf8', background: 'rgba(56,189,248,0.1)' }}>清除</button>
         ) : null}
       </div>
-      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-2.5 pb-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-3">
+        {/* 条目高度固定 92px（= 画布 LANE_H），保证每条泳道与左侧节点像素对齐 */}
         {owner ? (
           <>
             {node(owner, 0)}
@@ -85,7 +89,7 @@ export function OrgTree({ lanes, laneFilter, onLaneFilter, counts }: Props) {
         )}
       </div>
       <div className="border-t px-3 py-2 text-[9px] leading-4" style={{ borderColor: 'rgba(148,163,184,0.12)', color: 'rgba(148,163,184,0.55)' }}>
-        绿=空闲 黄=忙碌<br />红=等待回答 灰=已离开
+        绿=空闲 黄=忙碌<br />红=等待处理 灰=已离开
       </div>
     </aside>
   )

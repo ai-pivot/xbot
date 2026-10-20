@@ -1,5 +1,5 @@
 /**
- * 指挥室数据层：真实 API + SSE 实时事件 + 演示数据兜底。
+ * 通信视图数据层：真实 API + SSE 实时事件 + 演示数据兜底。
  *
  * 真实接口（见 channel/web/web_group.go）：
  *   GET /api/groups

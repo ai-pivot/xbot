@@ -68,7 +68,7 @@ export default function App() {
           {/* 公开分享页：token 即凭据，**必须**在 AuthGuard 之外（打开链接的朋友没有账号）。
               未分享的内容在这条路径上不可达 —— 只有主动创建过的 artifact 才有 token。 */}
           <Route path="/s/:token" element={<SharePageRoute />} />
-          {/* 指挥室全屏路由：与侧边栏面板共用 CourtConsole。 */}
+          {/* 通信视图全屏路由：与侧边栏面板共用 CourtConsole。 */}
           <Route path="/court" element={<AuthGuard><CourtPage /></AuthGuard>} />
           {/* 结构化消息页依赖 SessionStore（activeSession）与 WSProvider。 */}
           <Route
@@ -83,7 +83,7 @@ export default function App() {
               </AuthGuard>
             }
           />
-          {/* 指挥室演示路由：只用内置 seed 数据、不发起任何认证请求。
+          {/* 通信视图演示路由：只用内置 seed 数据、不发起任何认证请求。
               供 e2e 截图与「未登录预览」使用；真实数据请走 /court。 */}
           <Route path="/court-demo" element={<CourtPage demo />} />
           <Route

@@ -80,7 +80,7 @@ export function Inbox({
           </p>
         ) : items.length === 0 ? (
           <p data-testid="inbox-empty" className="p-3 text-xs opacity-60">
-            没有待回答的问题。
+            没有待处理的问题。
           </p>
         ) : (
           <ul className="space-y-1.5">

@@ -65,19 +65,19 @@ function mergeMessages(prev: StructuredMessage[], incoming: StructuredMessage[])
  * 这是跨端同步的核心，设计上保证线性一致性：
  * - 服务端 CAS 在同一个 IMMEDIATE 事务里完成（单写者 ⇒ 线性化点明确），
  *   decision/answer 行一旦提交就不再变化；
- * - 客户端只做幂等 + 单调的 OR 合并：answered 只会 false→true（不存在「撤销批红」），
+ * - 客户端只做幂等 + 单调的 OR 合并：answered 只会 false→true（不存在「撤销决策」），
  *   所以事件重复、乱序、重连补齐都不会让状态回退；
  * - 于是所有客户端（含刚重连的）都收敛到「消息流的纯函数」，而不是各自的本地状态。
  *
  * 服务端字段 answered 保留为兜底：decision 行落在未加载的历史窗口外时，
- * 仍能靠服务端快照显示「已批红」。
+ * 仍能靠服务端快照显示「已决策」。
  */
 function deriveTargetStates(list: StructuredMessage[]): StructuredMessage[] {
   const answered = new Set<number>()
   const cancelled = new Set<number>()
-  // 批红结果也要投影：卡片是否显示「准/驳/改」按钮取决于 payload.decision，
+  // 决策结果也要投影：卡片是否显示「准/驳/改」按钮取决于 payload.decision，
   // 而跨端收到的 decision 是一条独立消息。只投影 answered 会出现
-  // 「状态已批红、按钮还在」的不一致视图。
+  // 「状态已决策、按钮还在」的不一致视图。
   const decisions = new Map<number, { verdict: string; comments?: string }>()
   for (const m of list) {
     if (m.kind !== 'answer' && m.kind !== 'decision') continue
@@ -199,7 +199,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
   }, [refreshInbox])
 
   // scheduleInboxRefresh 合并短时间内的多次收件箱刷新（150ms 窗口）。
-  // SSE 事件可能成批到达（一次回答紧跟一次批红），逐个刷新会造成请求风暴。
+  // SSE 事件可能成批到达（一次回答紧跟一次决策），逐个刷新会造成请求风暴。
   const inboxTimerRef = useRef<number | null>(null)
   const scheduleInboxRefresh = useCallback(() => {
     if (inboxTimerRef.current !== null) return
@@ -262,7 +262,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
     es.onopen = () => {
       // 重连补齐：按 after_id 增量拉取（不能只拉最新一页）。
       // 深历史下「最新一页」会漏掉中间的 answer/decision 行，而派生状态依赖它们 ——
-      // 漏一条 decision 就会让已批红的卡片在重连后回退，破坏跨端一致性。
+      // 漏一条 decision 就会让已决策的卡片在重连后回退，破坏跨端一致性。
       void backfill()
       void refreshInbox()
     }
@@ -317,7 +317,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
       if (pendingRef.current.has(key)) return
       pendingRef.current.add(key)
       const previous = target
-      // 乐观更新：报告卡立即显示批红结果；失败回滚。
+      // 乐观更新：报告卡立即显示决策结果；失败回滚。
       setRawMessages((prev) =>
         prev.map((m) =>
           m.message_id === target.message_id

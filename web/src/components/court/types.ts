@@ -1,4 +1,4 @@
-/** 指挥室数据结构（与 Go 侧 protocol.Group* 一一对应）。 */
+/** 通信视图数据结构（与 Go 侧 protocol.Group* 一一对应）。 */
 
 export type MessageKind =
   | 'ask_user'
@@ -111,7 +111,7 @@ export function memberDisplayName(m: GroupMember): string {
   return addr
 }
 
-/** 发送者地址归一化：后端 sender_id 可能是 `hubu/main`，成员表是 `agent:hubu/main`。 */
+/** 发送者地址归一化：后端 sender_id 可能是 `data/main`，成员表是 `agent:data/main`。 */
 export function senderAddr(msg: GroupMessage): string {
   if (msg.sender_type === 'agent' && !msg.sender_id.startsWith('agent:')) {
     return `agent:${msg.sender_id}`

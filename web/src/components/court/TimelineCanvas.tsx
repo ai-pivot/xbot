@@ -1,5 +1,5 @@
 /**
- * TimelineCanvas —— 指挥室主视图（v2 密度自适应版）。
+ * TimelineCanvas —— 通信视图主视图（v2 密度自适应版）。
  *
  * 三项核心改造：
  *  1. 非线性时间轴：把消息按 45 分钟间隔切成「事件簇」，簇内按消息数分配宽度，
@@ -7,7 +7,7 @@
  *  2. 弧线分层：report/decision 2.5px 亮色；ask_user/answer 1.8px；text 1px + 30% 透明。
  *     同一对 agent 在同一时间桶内的密集消息聚合成一条粗束带（带宽=条数），
  *     hover 束带展开成单条弧线；选中线程/悬停 agent 时其他弧线降到 15%。
- *  3. 朝会簇可展开：点击顶部 `☀ 朝会` 标记或双击簇 → 局部 zoom；双击画布退出。
+ *  3. 时段簇可展开：点击顶部 `☀ 时段` 标记或双击簇 → 局部 zoom；双击画布退出。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { GroupMessage, Lane } from './types'
@@ -22,6 +22,8 @@ interface Props {
   onLaneFilter: (id: string | null) => void
   /** 回放游标（ms）：只绘制 <= cutoff 的消息。 */
   cutoff: number
+  /** 实际泳道高度（随画布高度自适应）——组织树用它对齐每条泳道 */
+  onLaneHeightChange?: (h: number) => void
 }
 
 const HEADER_W = 140
@@ -208,9 +210,11 @@ function dominantKind(msgs: GroupMessage[]): string {
 }
 
 export function TimelineCanvas({
-  lanes, messages, selectedId, onSelect, laneFilter, onLaneFilter, cutoff,
+  lanes, messages, selectedId, onSelect, laneFilter, onLaneFilter, cutoff, onLaneHeightChange,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement | null>(null)
+  const laneHRef = useRef(LANE_H)
+  const reportedLaneH = useRef(LANE_H)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const arcsRef = useRef<ArcRec[]>([])
   const bandsRef = useRef<BandRec[]>([])
@@ -236,7 +240,7 @@ export function TimelineCanvas({
 
   const enterFocus = useCallback((seg: Segment) => {
     const pad = Math.max(20 * 60e3, (seg.end - seg.start) * 0.18)
-    setFocus({ start: seg.start - pad, end: seg.end + pad, label: `${fmtStamp(seg.start)} 朝会` })
+    setFocus({ start: seg.start - pad, end: seg.end + pad, label: `${fmtStamp(seg.start)} 时段` })
     setMode('focus')
   }, [])
 
@@ -285,18 +289,26 @@ export function TimelineCanvas({
 
     const threadOf = selectedId == null ? null : messages.find((m) => m.id === selectedId)?.correlation_id ?? null
     const focusLane = hoverLane ?? laneFilter
-    const laneY = (id: string) => AXIS_H + (laneIndex.get(id) ?? 0) * LANE_H + LANE_H / 2
+    // 泳道高度自适应：把可用高度平分给所有泳道（最少 laneH），
+    // 否则 4 条泳道只占 416px、画布 800px 会出现半屏死空白。
+    const laneH = Math.min(148, Math.max(LANE_H, (h - AXIS_H) / Math.max(1, lanes.length)))
+    laneHRef.current = laneH
+    if (onLaneHeightChange && Math.abs(reportedLaneH.current - laneH) > 0.5) {
+      reportedLaneH.current = laneH
+      onLaneHeightChange(laneH)
+    }
+    const laneY = (id: string) => AXIS_H + (laneIndex.get(id) ?? 0) * laneH + laneH / 2
 
     // ── 泳道 ──────────────────────────────────────────────────────────────
     lanes.forEach((lane, i) => {
-      const y = AXIS_H + i * LANE_H
+      const y = AXIS_H + i * laneH
       const active = !focusLane || focusLane === lane.id
       const statusColor = STATUS_COLORS[lane.status] ?? STATUS_COLORS.idle
       if (lane.status !== 'idle') {
         ctx.fillStyle = lane.status === 'blocked'
           ? 'rgba(248,113,113,0.07)'
           : 'rgba(251,191,36,0.055)'
-        ctx.fillRect(HEADER_W, y, w - HEADER_W - PAD_R, LANE_H)
+        ctx.fillRect(HEADER_W, y, w - HEADER_W - PAD_R, laneH)
       }
       if (i > 0) {
         ctx.strokeStyle = 'rgba(148,163,184,0.10)'
@@ -306,13 +318,13 @@ export function TimelineCanvas({
       ctx.fillStyle = lane.type === 'user' ? '#f1f5f9' : '#e2e8f0'
       ctx.font = '600 13px system-ui, -apple-system, "Segoe UI", sans-serif'
       ctx.textAlign = 'left'
-      ctx.fillText(lane.name, 30, y + LANE_H / 2 - 12)
+      ctx.fillText(lane.name, 30, y + laneH / 2 - 12)
       ctx.font = '10.5px ui-monospace, SFMono-Regular, monospace'
       ctx.fillStyle = 'rgba(148,163,184,0.8)'
-      ctx.fillText(lane.id.replace('agent:', ''), 30, y + LANE_H / 2 + 4)
+      ctx.fillText(lane.id.replace('agent:', ''), 30, y + laneH / 2 + 4)
 
       ctx.beginPath()
-      ctx.arc(16, y + LANE_H / 2 - 8, 4, 0, Math.PI * 2)
+      ctx.arc(16, y + laneH / 2 - 8, 4, 0, Math.PI * 2)
       ctx.fillStyle = statusColor
       ctx.shadowColor = statusColor
       ctx.shadowBlur = 9
@@ -321,13 +333,13 @@ export function TimelineCanvas({
 
       const pw = 82
       ctx.fillStyle = 'rgba(148,163,184,0.18)'
-      ctx.fillRect(30, y + LANE_H / 2 + 12, pw, 3)
+      ctx.fillRect(30, y + laneH / 2 + 12, pw, 3)
       ctx.fillStyle = statusColor
-      ctx.fillRect(30, y + LANE_H / 2 + 12, pw * lane.progress, 3)
+      ctx.fillRect(30, y + laneH / 2 + 12, pw * lane.progress, 3)
 
       ctx.font = '9.5px system-ui, -apple-system, sans-serif'
       ctx.fillStyle = 'rgba(148,163,184,0.72)'
-      ctx.fillText(truncateCanvas(ctx, lane.task || '暂无任务', 104), 30, y + LANE_H / 2 + 30)
+      ctx.fillText(truncateCanvas(ctx, lane.task || '暂无任务', 104), 30, y + laneH / 2 + 30)
       ctx.globalAlpha = 1
     })
 
@@ -342,7 +354,7 @@ export function TimelineCanvas({
         ctx.beginPath(); ctx.moveTo(s.x0, AXIS_H); ctx.lineTo(s.x0, h); ctx.stroke()
 
         if (s.morning) {
-          const label = `☀ ${new Date(s.start).getMonth() + 1}/${new Date(s.start).getDate()} 朝会`
+          const label = `☀ ${new Date(s.start).getMonth() + 1}/${new Date(s.start).getDate()} 时段`
           ctx.font = '600 9.5px system-ui, sans-serif'
           const pw = ctx.measureText(label).width + 12
           ctx.fillStyle = 'rgba(192,132,252,0.18)'
@@ -362,12 +374,17 @@ export function TimelineCanvas({
         }
       }
       for (const g of layout.gaps) {
-        ctx.fillStyle = 'rgba(2,6,23,0.72)'
+        // 折叠区（无数据时段）：只用一层很浅的暗底 + 一条中心虚线。
+        // 早期的 45° 斜线填充在宽 gap 上会变成半屏噪点（用户 2026-10-20
+        // 「大片斜线阴影」），它传达的信息（"这里没有数据"）靠暗底和
+        // `·· 2h ··` 标签已经足够。
+        ctx.fillStyle = 'rgba(2,6,23,0.42)'
         ctx.fillRect(g.x0, AXIS_H, g.x1 - g.x0, h - AXIS_H)
-        ctx.strokeStyle = 'rgba(148,163,184,0.06)'
-        for (let gx = g.x0 - (h - AXIS_H); gx < g.x1; gx += 14) {
-          ctx.beginPath(); ctx.moveTo(gx, h); ctx.lineTo(gx + (h - AXIS_H), AXIS_H); ctx.stroke()
-        }
+        ctx.strokeStyle = 'rgba(148,163,184,0.12)'
+        ctx.setLineDash([2, 8])
+        const gcx = (g.x0 + g.x1) / 2
+        ctx.beginPath(); ctx.moveTo(gcx, AXIS_H + 8); ctx.lineTo(gcx, h - 8); ctx.stroke()
+        ctx.setLineDash([])
         ctx.strokeStyle = 'rgba(148,163,184,0.18)'
         ctx.setLineDash([3, 4])
         ctx.beginPath(); ctx.moveTo(g.x0, AXIS_H); ctx.lineTo(g.x0, h); ctx.stroke()
@@ -453,7 +470,7 @@ export function TimelineCanvas({
         ctx.lineWidth = lw
         ctx.stroke()
       } else {
-        const dx = Math.max(30, Math.abs(x1 - x0) * 0.5)
+        const dx = Math.max(90, Math.abs(x1 - x0) * 0.9)
         ctx.beginPath()
         ctx.moveTo(x0, y0)
         ctx.bezierCurveTo(x0 + dx, y0, x1 - dx, y1, x1, y1)
@@ -471,7 +488,7 @@ export function TimelineCanvas({
       ctx.globalAlpha = dim ? 0.2 : selected ? 1 : 0.9
       ctx.fill()
       if (!self && !text && !dim) {
-        const dx = Math.max(30, Math.abs(x1 - x0) * 0.5)
+        const dx = Math.max(90, Math.abs(x1 - x0) * 0.9)
         const phase = ((performance.now() / 3000) + (m.id % 7) * 0.14) % 1
         const px = bezierPoint(phase, x0, x0 + dx, x1 - dx, x1)
         const py = bezierPoint(phase, y0, y0, y1, y1)
@@ -490,6 +507,9 @@ export function TimelineCanvas({
     const buckets = new Map<string, Bucket>()
     for (const e of entries) {
       if (e.from === e.to) continue
+      // 按 (from, to, 时间桶) 聚合：保留「何时通信」的局部性。
+      // ⚠️ 曾试过跨桶合并成一条束，结果弧线横跨整天、失去时间语义（更糟），
+      // 已回退。密集时段的交叉靠降低透明度 + hover 聚焦缓解。
       const bucket = layout.kind === 'overview'
         ? String(segmentAt(layout, e.t)?.index ?? Math.floor(e.t / BUNDLE_BUCKET_MS))
         : String(Math.floor(e.t / BUNDLE_BUCKET_MS))
@@ -515,15 +535,18 @@ export function TimelineCanvas({
       const xStart = Math.min(...xs)
       const xEnd = Math.max(...xs)
       const dim = msgs.every(isDim)
-      const stagger = ((bi % 3) - 1) * 3
+      // 7 档 ±10px 错开（原为 3 档 ±3px，密集时几乎重合）
+      const stagger = ((bi % 7) - 3) * 3.5
       if (msgs.length > 1 && !expanded) {
         const kind = dominantKind(msgs)
         const color = KIND_COLORS[kind] ?? KIND_COLORS.text
         const weight = Math.min(10, 1.6 + msgs.length * 1.15)
-        const alpha = dim ? 0.08 : kind === 'text' ? 0.18 : 0.36
+        const alpha = dim ? 0.06 : kind === 'text' ? 0.12 : 0.20
         const y0 = b.ys[0] + stagger
         const y1 = b.ys[1] + stagger
-        const dx = Math.max(58, Math.abs(xEnd - xStart) * 0.85)
+        // 弧线跨度下限从 58 提到 150：短距离交互原先几乎垂直落下，多条并排时
+        // 会叠成「毛线球」。加大 dx 让曲线更平缓，交叉点更少。
+        const dx = Math.max(150, Math.abs(xEnd - xStart) * 1.15)
         ctx.beginPath()
         ctx.moveTo(xStart, y0)
         ctx.bezierCurveTo(xStart + dx, y0, xEnd - dx, y1, xEnd, y1)
@@ -649,7 +672,7 @@ export function TimelineCanvas({
     return () => ob.disconnect()
   }, [draw])
 
-  // focus 模式没有 focus 值时，自动聚焦最近一次朝会。
+  // focus 模式没有 focus 值时，自动聚焦最近一个时段。
   useEffect(() => {
     if (mode === 'focus' && !focus && latestMorning) enterFocus(latestMorning)
   }, [mode, focus, latestMorning, enterFocus])
@@ -771,7 +794,7 @@ export function TimelineCanvas({
     const mx = e.clientX - rect.left
     const my = e.clientY - rect.top
 
-    // 朝会标记 → 局部 zoom
+    // 时段标记 → 局部 zoom
     for (const m of markersRef.current) {
       if (mx >= m.x && mx <= m.x + m.w && my >= m.y && my <= m.y + m.h) {
         enterFocus(m.seg)
@@ -808,6 +831,15 @@ export function TimelineCanvas({
     dragRef.current = null
   }, [])
 
+  // 没有任何泳道（无群组 / 无成员）时给一个明确的空状态，而不是一片黑。
+  if (lanes.length === 0) {
+    return (
+      <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center text-xs text-text-muted">
+        暂无通信数据
+      </div>
+    )
+  }
+
   return (
     <div ref={wrapRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
       <canvas
@@ -842,7 +874,7 @@ export function TimelineCanvas({
             background: mode === 'focus' ? 'rgba(192,132,252,0.18)' : 'transparent',
             color: mode === 'focus' ? '#d8b4fe' : 'rgba(148,163,184,0.75)',
           }}>
-          聚焦朝会
+          聚焦时段
         </button>
       </div>
 

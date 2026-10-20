@@ -1,5 +1,5 @@
 /**
- * CourtConsole —— Agent 通信指挥室完整面板。
+ * CourtConsole —— Agent 通信视图完整面板。
  *
  * 布局：顶栏 · 左侧组织树 · 主视图（时间轴/Sankey）· 右侧线程详情 · 底部回放条。
  * 数据：真实 `/api/groups*` + `group.message` SSE；无数据/失败时切到内置 seed。
@@ -26,11 +26,13 @@ const WINDOW_OPTIONS = [
 ]
 
 export function CourtConsole({ demo = false }: { demo?: boolean }) {
-  const [groups, setGroups] = useState<Group[]>([demoGroup])
-  const [activeGroup, setActiveGroup] = useState<string>(DEMO_GROUP_ID)
-  const [members, setMembers] = useState<GroupMember[]>(demoMembers)
-  const [messages, setMessages] = useState<GroupMessage[]>(() => buildDemoMessages())
-  const [source, setSource] = useState<'api' | 'seed'>('seed')
+  // 只有 /court-demo（离线预览）才预置演示数据；真实的 /court 页面从空状态开始，
+  // API 失败时展示错误 + 空视图，绝不伪造内容（用户 2026-10-20：不要演示数据）。
+  const [groups, setGroups] = useState<Group[]>(demo ? [demoGroup] : [])
+  const [activeGroup, setActiveGroup] = useState<string>(demo ? DEMO_GROUP_ID : '')
+  const [members, setMembers] = useState<GroupMember[]>(demo ? demoMembers : [])
+  const [messages, setMessages] = useState<GroupMessage[]>(demo ? buildDemoMessages() : [])
+  const [source, setSource] = useState<'api' | 'seed'>(demo ? 'seed' : 'api')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(!demo)
   const [streamChat, setStreamChat] = useState(DEMO_CHAT_ID)
@@ -38,6 +40,8 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
   const [windowMs, setWindowMs] = useState(24 * 60 * 60e3)
   const [selected, setSelected] = useState<GroupMessage | null>(null)
   const [laneFilter, setLaneFilter] = useState<string | null>(null)
+  // 实际泳道高度（由画布自适应算出来，回传给组织树保持像素对齐）
+  const [laneHeight, setLaneHeight] = useState(92)
 
   const [playing, setPlaying] = useState(false)
   const [speed, setSpeed] = useState(10)
@@ -71,11 +75,12 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
     } catch (e) {
       if (signal?.aborted) return
       setError(e instanceof Error ? e.message : String(e))
-      setGroups([demoGroup])
-      setActiveGroup(DEMO_GROUP_ID)
-      setMembers(demoMembers)
-      setMessages(buildDemoMessages())
-      setSource('seed')
+      // 不留演示数据：失败就是失败，展示空状态 + 错误信息。
+      setGroups([])
+      setActiveGroup('')
+      setMembers([])
+      setMessages([])
+      setSource('api')
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
@@ -100,6 +105,9 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
   }, [source, streamChat])
 
   const lanes: Lane[] = useMemo(() => deriveLanes(members, messages), [members, messages])
+  // 没有泳道 = 没有可展示的通信数据：此时隐藏「待处理 / 视图切换」等工具条，
+  // 只留「刷新」，避免空界面上堆一排无意义按钮（用户 2026-10-20「看起来全是 bug」）。
+  const hasData = lanes.length > 0
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {}
@@ -174,7 +182,7 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
           <span className="flex size-7 items-center justify-center rounded-lg text-[13px]"
             style={{ background: 'rgba(56,189,248,0.14)', color: '#38bdf8' }}>◈</span>
           <div>
-            <div className="text-[13px] font-semibold tracking-wide">Agent 通信指挥室</div>
+            <div className="text-[13px] font-semibold tracking-wide">Agent 通信视图</div>
             <div className="text-[9.5px]" style={{ color: 'rgba(148,163,184,0.65)' }}>
               泳道时间轴 · 组织树 · 线程 · Sankey · 回放
             </div>
@@ -182,51 +190,65 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
         </div>
 
         <div className="ml-3 flex items-center gap-2">
-          <select
-            value={activeGroup}
-            onChange={(e) => {
-              setActiveGroup(e.target.value)
-              setSelected(null)
-            }}
-            className="rounded-md border px-2 py-1 text-[11px] outline-none"
-            style={{ background: 'rgba(15,23,42,0.8)', borderColor: 'rgba(148,163,184,0.2)', color: '#e2e8f0' }}
-            aria-label="选择群组"
-          >
-            {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-          </select>
-          <span className="rounded-full px-2 py-0.5 text-[9px]"
+          {/* 无群组时不渲染选择器：空 <select> 只剩一个箭头，是明显的 UI bug
+              （2026-10-20 用户截图）。群组多于 1 个才有选择的意义。 */}
+          {groups.length > 1 ? (
+            <select
+              value={activeGroup}
+              onChange={(e) => {
+                setActiveGroup(e.target.value)
+                setSelected(null)
+              }}
+              className="rounded-md border px-2 py-1 text-[11px] outline-none"
+              style={{ background: 'rgba(15,23,42,0.8)', borderColor: 'rgba(148,163,184,0.2)', color: '#e2e8f0' }}
+              aria-label="选择群组"
+            >
+              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+          ) : groups.length === 1 ? (
+            <span className="text-[11px]" style={{ color: 'rgba(226,232,240,0.85)' }}>{groups[0].name}</span>
+          ) : null}
+          {/* 连接状态只用一个点 + 文案；失败原因放 title（hover 可见），
+              不再用整行横幅（用户 2026-10-20：别用横幅、别提演示数据）。 */}
+          <span
+            title={error ?? (source === 'api' ? '已连接服务端' : '未连接')}
+            className="rounded-full px-2 py-0.5 text-[9px]"
             style={{
-              background: source === 'api' ? 'rgba(34,197,94,0.12)' : 'rgba(245,165,36,0.14)',
-              color: source === 'api' ? '#22c55e' : '#f5a524',
+              background: error ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.12)',
+              color: error ? '#f87171' : '#22c55e',
             }}>
-            {loading ? '加载中…' : source === 'api' ? '真实 API' : '演示数据'}
+            {loading ? '加载中…' : error ? '离线' : demo ? '预览' : '已连接'}
           </span>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <span className="rounded-md px-2 py-1 text-[10px]"
-            style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}>
-            待回答 {pending.length}
-          </span>
-          <div className="flex overflow-hidden rounded-md border" style={{ borderColor: 'rgba(148,163,184,0.18)' }}>
-            {(['timeline', 'sankey'] as const).map((v) => (
-              <button key={v} type="button" onClick={() => setView(v)}
-                className="px-2.5 py-1 text-[10px]"
-                style={{
-                  background: view === v ? 'rgba(56,189,248,0.16)' : 'transparent',
-                  color: view === v ? '#38bdf8' : 'rgba(148,163,184,0.75)',
-                }}>
-                {v === 'timeline' ? '时间轴' : 'Sankey'}
-              </button>
-            ))}
-          </div>
-          {view === 'sankey' ? (
-            <select value={windowMs} onChange={(e) => setWindowMs(Number(e.target.value))}
-              className="rounded-md border px-2 py-1 text-[10px] outline-none"
-              style={{ background: 'rgba(15,23,42,0.8)', borderColor: 'rgba(148,163,184,0.2)', color: '#cbd5e1' }}
-              aria-label="流量时间窗口">
-              {WINDOW_OPTIONS.map((o) => <option key={o.label} value={o.ms}>{o.label}</option>)}
-            </select>
+          {hasData ? (
+            <>
+              <span className="rounded-md px-2 py-1 text-[10px]"
+                style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171' }}>
+                待处理 {pending.length}
+              </span>
+              <div className="flex overflow-hidden rounded-md border" style={{ borderColor: 'rgba(148,163,184,0.18)' }}>
+                {(['timeline', 'sankey'] as const).map((v) => (
+                  <button key={v} type="button" onClick={() => setView(v)}
+                    className="px-2.5 py-1 text-[10px]"
+                    style={{
+                      background: view === v ? 'rgba(56,189,248,0.16)' : 'transparent',
+                      color: view === v ? '#38bdf8' : 'rgba(148,163,184,0.75)',
+                    }}>
+                    {v === 'timeline' ? '时间轴' : 'Sankey'}
+                  </button>
+                ))}
+              </div>
+              {view === 'sankey' ? (
+                <select value={windowMs} onChange={(e) => setWindowMs(Number(e.target.value))}
+                  className="rounded-md border px-2 py-1 text-[10px] outline-none"
+                  style={{ background: 'rgba(15,23,42,0.8)', borderColor: 'rgba(148,163,184,0.2)', color: '#cbd5e1' }}
+                  aria-label="流量时间窗口">
+                  {WINDOW_OPTIONS.map((o) => <option key={o.label} value={o.ms}>{o.label}</option>)}
+                </select>
+              ) : null}
+            </>
           ) : null}
           <button type="button" onClick={() => void load()}
             className="rounded-md px-2 py-1 text-[10px]"
@@ -236,17 +258,9 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
         </div>
       </header>
 
-      {error ? (
-        <div className="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-[10px]"
-          style={{ borderColor: 'rgba(239,68,68,0.2)', background: 'rgba(239,68,68,0.08)', color: '#fca5a5' }}>
-          <span className="font-semibold">API 不可用</span>
-          <span className="truncate">{error}</span>
-          <span className="ml-auto shrink-0" style={{ color: 'rgba(252,165,165,0.75)' }}>已切换到内置演示数据</span>
-        </div>
-      ) : null}
 
       <div className="flex min-h-0 flex-1">
-        <OrgTree lanes={lanes} laneFilter={laneFilter} onLaneFilter={setLaneFilter} counts={counts} />
+        <OrgTree lanes={lanes} laneFilter={laneFilter} onLaneFilter={setLaneFilter} counts={counts} laneHeight={laneHeight} />
         {view === 'timeline' ? (
           <TimelineCanvas
             lanes={lanes}
@@ -256,6 +270,7 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
             laneFilter={laneFilter}
             onLaneFilter={setLaneFilter}
             cutoff={cursor}
+            onLaneHeightChange={setLaneHeight}
           />
         ) : (
           <SankeyView messages={visibleMessages} lanes={lanes} windowMs={windowMs} now={timeRange.max} onPick={onPickSankey} />

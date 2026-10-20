@@ -2,9 +2,9 @@
  * StructuredCards —— 结构化消息卡片/行渲染器。
  *
  * 统一行头（每行必有）：`HH:mm:ss` 本地时间（zh-CN，24h）+ kind 徽标 + 发送者。
- *   ask_user → 琥珀「请旨」卡（单选/多选/自定义/取消；等待=脉冲、已回答/已取消=禁用）
- *   report   → 紫色「奏折」卡（结论 + evidence 路径 + 准/驳/改）
- *   decision → 绿色实心「批红」卡（准/驳/改 + 理由）
+ *   ask_user → 琥珀「提问」卡（单选/多选/自定义/取消；等待=脉冲、已回答/已取消=禁用）
+ *   report   → 紫色「汇报」卡（结论 + evidence 路径 + 准/驳/改）
+ *   decision → 绿色实心「决策」卡（准/驳/改 + 理由）
  *   answer   → 绿色描边「回答」卡
  *   event / text / command → 32–36px 紧凑单行（摘要超长省略）
  *
@@ -49,15 +49,15 @@ interface KindMeta {
 /** kind 区色：徽标底色 + 文字色（深色主题单独提亮）。 */
 export const KIND_META: Record<StructuredKind, KindMeta> = {
   ask_user: {
-    label: '请旨',
+    label: '提问',
     badge: 'border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300',
   },
   report: {
-    label: '奏折',
+    label: '汇报',
     badge: 'border-violet-500/40 bg-violet-500/15 text-violet-700 dark:text-violet-300',
   },
   decision: {
-    label: '批红',
+    label: '决策',
     badge: 'border-emerald-600 bg-emerald-600 text-white dark:border-emerald-400 dark:bg-emerald-500 dark:text-emerald-950',
   },
   answer: {
@@ -295,7 +295,7 @@ export function AskUserCard({
     <CardShell
       message={message}
       tone="amber"
-      state={message.cancelled ? '已取消' : message.answered ? '已回答' : '等待回答'}
+      state={message.cancelled ? '已取消' : message.answered ? '已回答' : '等待处理'}
       testId="ask-user-card"
     >
       <div className={waiting ? 'animate-pulse' : ''}>
@@ -407,7 +407,7 @@ export function ReportCard({
     try {
       await onDecide(message, verdict, verdict === 'modify' ? comments : comments || undefined)
     } catch (e) {
-      setErr(e instanceof Error ? e.message : '批红失败')
+      setErr(e instanceof Error ? e.message : '决策失败')
     } finally {
       setSubmitting(false)
     }
@@ -417,7 +417,7 @@ export function ReportCard({
     <CardShell
       message={message}
       tone="violet"
-      state={message.answered ? '已批红' : '待批红'}
+      state={message.answered ? '已决策' : '待决策'}
       testId="report-card"
     >
       <LongText text={payload.summary ?? message.text} />

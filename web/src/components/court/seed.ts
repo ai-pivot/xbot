@@ -12,17 +12,17 @@ export const DEMO_CHAT_ID = 'court-demo'
 
 export const demoGroup: Group = {
   id: DEMO_GROUP_ID,
-  name: '朝廷晨会',
+  name: '示例群组',
   owner: 'web-1',
   created_at: new Date().toISOString(),
   member_count: 4,
 }
 
 export const demoMembers: GroupMember[] = [
-  { group_id: DEMO_GROUP_ID, member_addr: 'web-1', status: 'alive', joined_at: '', name: '首辅', role: 'owner' },
-  { group_id: DEMO_GROUP_ID, member_addr: 'agent:hubu/main', status: 'alive', joined_at: '', name: '户部', role: 'hubu', instance: 'main' },
-  { group_id: DEMO_GROUP_ID, member_addr: 'agent:gongbu/main', status: 'alive', joined_at: '', name: '工部', role: 'gongbu', instance: 'main' },
-  { group_id: DEMO_GROUP_ID, member_addr: 'agent:libu/main', status: 'alive', joined_at: '', name: '吏部', role: 'libu', instance: 'main' },
+  { group_id: DEMO_GROUP_ID, member_addr: 'web-1', status: 'alive', joined_at: '', name: 'Coordinator', role: 'owner' },
+  { group_id: DEMO_GROUP_ID, member_addr: 'agent:data/main', status: 'alive', joined_at: '', name: 'Data', role: 'data', instance: 'main' },
+  { group_id: DEMO_GROUP_ID, member_addr: 'agent:infra/main', status: 'alive', joined_at: '', name: 'Infra', role: 'infra', instance: 'main' },
+  { group_id: DEMO_GROUP_ID, member_addr: 'agent:ops/main', status: 'alive', joined_at: '', name: 'Ops', role: 'ops', instance: 'main' },
 ]
 
 interface Topic {
@@ -36,18 +36,18 @@ interface Topic {
 
 const TOPICS: Topic[] = [
   {
-    corr: 'corr_d1_gpu', title: 'B300 集群今日吞吐', askee: 'agent:gongbu/main', askeeName: '工部',
-    report: '工部回报：8 卡 B300 集群 2P1D 稳定，TPOT P50 18.2ms，TPM 142k。',
+    corr: 'corr_d1_gpu', title: 'B300 集群今日吞吐', askee: 'agent:infra/main', askeeName: 'Infra',
+    report: 'Infra回报：8 卡 B300 集群 2P1D 稳定，TPOT P50 18.2ms，TPM 142k。',
     metrics: { tpm: 142000, tpot_ms: 18.2, nodes: 8 },
   },
   {
-    corr: 'corr_d1_serve', title: '户部：昨日 token 用量', askee: 'agent:hubu/main', askeeName: '户部',
-    report: '户部回报：昨日总 token 8.4B，缓存命中率 63%，成本环比 -7%。',
+    corr: 'corr_d1_serve', title: 'Data：昨日 token 用量', askee: 'agent:data/main', askeeName: 'Data',
+    report: 'Data回报：昨日总 token 8.4B，缓存命中率 63%，成本环比 -7%。',
     metrics: { tokens: '8.4B', cache_hit: 0.63, cost_delta: -0.07 },
   },
   {
-    corr: 'corr_d1_people', title: '吏部：值班与技能清单', askee: 'agent:libu/main', askeeName: '吏部',
-    report: '吏部回报：三名值守 agent 技能齐备，轮值表已更新。',
+    corr: 'corr_d1_people', title: 'Ops：值班与技能清单', askee: 'agent:ops/main', askeeName: 'Ops',
+    report: 'Ops回报：三名值守 agent 技能齐备，轮值表已更新。',
     metrics: { agents: 3, skills: 14 },
   },
 ]
@@ -65,10 +65,10 @@ function msg(
   payload?: Record<string, unknown>,
 ): GroupMessage {
   const name =
-    sender === 'web-1' ? '首辅'
-      : sender === 'agent:hubu/main' ? '户部'
-        : sender === 'agent:gongbu/main' ? '工部'
-          : sender === 'agent:libu/main' ? '吏部' : sender
+    sender === 'web-1' ? 'Coordinator'
+      : sender === 'agent:data/main' ? 'Data'
+        : sender === 'agent:infra/main' ? 'Infra'
+          : sender === 'agent:ops/main' ? 'Ops' : sender
   return {
     id: nextId++,
     group_id: DEMO_GROUP_ID,
@@ -124,17 +124,17 @@ export function buildDemoMessages(now = new Date()): GroupMessage[] {
       out.push(msg(at(d, h, 55), 'web-1', 'user', 'text', '',
         '收到，散会。', []))
     })
-    out.push(msg(at(d, 14, 0), 'agent:gongbu/main', 'agent', 'text', '',
-      'B300-3 节点网卡抖动，已切流；观察 30 分钟。', ['agent:hubu/main', 'web-1'],
+    out.push(msg(at(d, 14, 0), 'agent:infra/main', 'agent', 'text', '',
+      'B300-3 节点网卡抖动，已切流；观察 30 分钟。', ['agent:data/main', 'web-1'],
       { severity: 'warn' }))
-    out.push(msg(at(d, 14, 9), 'agent:hubu/main', 'agent', 'text', '',
-      '收到，已把流量切到 B300-4，业务无感。', ['agent:gongbu/main']))
+    out.push(msg(at(d, 14, 9), 'agent:data/main', 'agent', 'text', '',
+      '收到，已把流量切到 B300-4，业务无感。', ['agent:infra/main']))
   }
   // 最后一条“未回答的 ask_user”，用于展示呼吸脉冲与 blocked 状态。
   const last = new Date(out[out.length - 1].created_at)
   last.setMinutes(last.getMinutes() + 6)
   out.push(msg(last, 'web-1', 'user', 'ask_user', 'corr_pending',
-    '工部：16 卡扩容的预算评估今晚能给吗？', ['agent:gongbu/main'],
+    'Infra：16 卡扩容的预算评估今晚能给吗？', ['agent:infra/main'],
     { question: '预算评估今晚能给吗？', pending: true }))
   return out
 }
@@ -176,14 +176,14 @@ export function deriveLanes(members: GroupMember[], messages: GroupMessage[]): L
       name: mb.name ?? memberNameOf(mb.member_addr),
       type: mb.member_addr.startsWith('agent:') ? 'agent' : 'user',
       status: mb.status !== 'alive' ? 'left' : pending > 0 ? 'blocked' : 'idle',
-      task: pending > 0 ? `等待回答 · ${lastSeen.get(mb.member_addr) ?? '—'}` : (lastSeen.get(mb.member_addr) ?? '暂无任务'),
+      task: pending > 0 ? `等待处理 · ${lastSeen.get(mb.member_addr) ?? '—'}` : (lastSeen.get(mb.member_addr) ?? '暂无任务'),
       progress,
     } satisfies Lane
   })
 }
 
 function memberNameOf(addr: string): string {
-  if (addr === 'web-1') return '首辅'
+  if (addr === 'web-1') return 'Coordinator'
   const m = demoMembers.find((x) => x.member_addr === addr)
   return m?.name ?? addr
 }
