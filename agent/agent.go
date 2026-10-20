@@ -4742,7 +4742,13 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 	}
 
 	// Store snapshot for mid-session reconnect
-	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
+	// ⛔ D1：字段级更新（todos/goal 这类会话级字段的事件绝不能整对象替换快照）。
+	goalVal := payload.Goal
+	todosVal := payload.Todos
+	a.updateSnapshotFields(progressKey, func(p *protocol.ProgressEvent) {
+		p.Goal = goalVal
+		p.Todos = todosVal
+	})
 	a.clearStreamState(progressKey)
 }
 

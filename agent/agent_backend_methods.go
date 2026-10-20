@@ -535,6 +535,25 @@ func (a *Agent) SetTodos(ch, chatID string, items []protocol.TodoItem) {
 // TODO list (plus the goal when one is active). Mirrors emitGoalProgress, but
 // does not require a goal to exist — an edit to the todo list must reach the UI
 // even in a session with no goal.
+// updateSnapshotFields 对**已有的**权威快照做字段级更新（read-modify-write）。
+//
+// ⛔ 审计确证（2026-10-21，后端审计 D1）：todos/goal 这类"只改一个会话级字段"的事件
+//   此前用「新建 payload + Store」**整对象替换** `lastProgressSnapshot`
+//   ⇒ 正在跑的 turn 被抹成 `phase="" / iteration=0`、active_tools/iteration_history 全丢：
+//   · 心跳 live 推送直接跳过（`phase==""` 就 return）；
+//   · 重连 fallback 把降级快照发出去 ⇒ 客户端迭代号回退到 0、工具列表消失；
+//   · `/api/history` 的 active_progress 同样降级 ⇒ 刷新后 live 态丢失。
+//   ⇒ 只改指定字段，其余原样保留；**没有快照就不写**（不能凭空造一个降级快照）。
+func (a *Agent) updateSnapshotFields(key string, mutate func(p *protocol.ProgressEvent)) {
+	if v, ok := a.lastProgressSnapshot.Load(key); ok {
+		if prev, ok2 := v.(*protocol.ProgressEvent); ok2 && prev != nil {
+			clone := *prev
+			mutate(&clone)
+			a.lastProgressSnapshot.Store(key, &clone)
+		}
+	}
+}
+
 func (a *Agent) emitTodosProgress(chName, chatID string) {
 	progressKey := qualifyChatID(chName, chatID)
 	seqPtr := a.progressSeqFor(progressKey)
@@ -557,7 +576,13 @@ func (a *Agent) emitTodosProgress(chName, chatID string) {
 		})
 	}
 	// Keep the snapshot fresh so GetActiveProgress returns the edited list.
-	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
+	// ⛔ D1：**字段级**更新（只覆盖 Todos/Goal），绝不整对象替换（否则会抹掉在飞 turn 的快照）。
+	todos := payload.Todos
+	goal := payload.Goal
+	a.updateSnapshotFields(progressKey, func(p *protocol.ProgressEvent) {
+		p.Todos = todos
+		p.Goal = goal
+	})
 }
 
 // GetGoal returns the goal state for the given channel:chatID session.
@@ -605,7 +630,13 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 			return true
 		})
 	}
-	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
+	// ⛔ D1：字段级更新（只覆盖 Goal/Todos），不整对象替换（否则抹掉在飞 turn 的快照）。
+	clearGoal := payload.Goal
+	clearTodos := payload.Todos
+	a.updateSnapshotFields(progressKey, func(p *protocol.ProgressEvent) {
+		p.Goal = clearGoal
+		p.Todos = clearTodos
+	})
 }
 
 // GetExportIterations returns per-iteration records for session export,

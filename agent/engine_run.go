@@ -265,9 +265,14 @@ func (s *runState) initProgress() {
 			s.progressMu.Lock()
 			if len(s.structuredProgress.ActiveTools) > 0 {
 				for _, t := range s.structuredProgress.ActiveTools {
-					if t.Status == ToolDone || t.Status == ToolError {
-						s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, t)
+					// ⛔ D6（审计确证 2026-10-21）：终帧此前只保留 done/error，**pending/running
+					//   直接蒸发** ⇒ 用户正看着转圈的 pill 在 turn 结束后凭空消失（以为没执行）。
+					//   终帧是权威收尾快照 ⇒ 未完成的工具以 error + 中断原因保留（可见地失败）。
+					if t.Status != ToolDone && t.Status != ToolError {
+						t.Status = ToolError
+						t.Summary = "interrupted: turn ended before the tool finished"
 					}
+					s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, t)
 				}
 				s.structuredProgress.ActiveTools = nil
 			}
@@ -382,7 +387,7 @@ func (s *runState) refreshStructuredTodos() {
 	s.structuredProgress.Todos = todos
 	// Also inject goal state so the frontend can display/modify the active goal.
 	if s.cfg.GoalManager != nil {
-		s.structuredProgress.Goal = s.cfg.GoalManager.GoalInfo(s.sessionKey)
+		s.structuredProgress.Goal = s.cfg.GoalManager.GoalInfo(s.todoKey())   // D4: 与 todos 同键（跨渠道浏览时 sessionKey 会被改成 physical channel ⇒ goal 恒空）
 	}
 }
 
