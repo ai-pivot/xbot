@@ -189,4 +189,6 @@ type WSClientMessage struct {
 	IdempotencyKey string         `json:"idempotency_key,omitempty"`
 	To             string         `json:"to,omitempty"`
 	Text           string         `json:"text,omitempty"`
+	// CreatedAt 可选（RFC3339）：导入/回填/演示数据用；缺省由服务端取 now。
+	CreatedAt string `json:"created_at,omitempty"`
 }

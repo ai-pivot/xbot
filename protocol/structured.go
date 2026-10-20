@@ -18,6 +18,9 @@ type StructuredMessageInput struct {
 	Text           string         `json:"text,omitempty"`
 	Channel        string         `json:"channel,omitempty"`
 	ChatID         string         `json:"chat_id,omitempty"`
+	// CreatedAt 可选（RFC3339）：仅用于导入/回填/演示数据，缺省由服务端取 now。
+	// 消息顺序与时间线展示以它为准，因此调用方要保证单调递增。
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // StructuredAnswerInput 是 POST /api/answer 的请求体。

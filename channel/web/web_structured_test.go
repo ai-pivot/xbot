@@ -121,3 +121,91 @@ func TestInboxReturnsItemsAndCount(t *testing.T) {
 		t.Fatalf("body = %+v", body)
 	}
 }
+
+// P1：批红失败必须映射为 409/404，而不是 200。
+func TestDecisionRepeatVerdictMapsTo409(t *testing.T) {
+	wc := newStructuredTestChannel(t)
+	wc.callbacks.StructuredAppend = func(string, SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
+		return nil, false, sqlite.ErrAskUserAnswered
+	}
+	rec := httptest.NewRecorder()
+	wc.handleMessage(rec, authedAPIRequest(http.MethodPost, "/api/message",
+		[]byte(`{"kind":"decision","reply_to":"6","idempotency_key":"k2","payload":{"verdict":"approve"}}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "already answered") {
+		t.Fatalf("body = %s, want already answered", rec.Body.String())
+	}
+}
+
+func TestDecisionMissingTargetMapsTo404(t *testing.T) {
+	wc := newStructuredTestChannel(t)
+	wc.callbacks.StructuredAppend = func(string, SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
+		return nil, false, sqlite.ErrStructuredNotFound
+	}
+	rec := httptest.NewRecorder()
+	wc.handleMessage(rec, authedAPIRequest(http.MethodPost, "/api/message",
+		[]byte(`{"kind":"decision","reply_to":"9999","payload":{"verdict":"approve"}}`)))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDecisionWithoutTargetRejected400(t *testing.T) {
+	wc := newStructuredTestChannel(t)
+	called := false
+	wc.callbacks.StructuredAppend = func(string, SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
+		called = true
+		return &protocol.StructuredMessage{MessageID: 1}, false, nil
+	}
+	rec := httptest.NewRecorder()
+	wc.handleMessage(rec, authedAPIRequest(http.MethodPost, "/api/message",
+		[]byte(`{"kind":"decision","payload":{"verdict":"approve"}}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("decision without reply_to must not reach storage")
+	}
+}
+
+// P2：kind=answer 走 /api/message 时必须用 reply_to 寻址，并复用同一套 409/404 映射。
+func TestMessageKindAnswerRequiresReplyTo(t *testing.T) {
+	wc := newStructuredTestChannel(t)
+	rec := httptest.NewRecorder()
+	wc.handleMessage(rec, authedAPIRequest(http.MethodPost, "/api/message",
+		[]byte(`{"kind":"answer","payload":{"answers":[{"question_id":"q1","option_ids":["a"]}]}}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "reply_to") {
+		t.Fatalf("body = %s, want hint about reply_to / /api/answer", rec.Body.String())
+	}
+}
+
+func TestMessageKindAnswerRepeatMapsTo409(t *testing.T) {
+	wc := newStructuredTestChannel(t)
+	wc.callbacks.StructuredAppend = func(string, SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
+		return nil, false, sqlite.ErrAskUserAnswered
+	}
+	rec := httptest.NewRecorder()
+	wc.handleMessage(rec, authedAPIRequest(http.MethodPost, "/api/message",
+		[]byte(`{"kind":"answer","reply_to":"1","idempotency_key":"a2","payload":{"answers":[{"question_id":"q1","option_ids":["a"]}]}}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMessageKindAnswerMissingTargetMapsTo404(t *testing.T) {
+	wc := newStructuredTestChannel(t)
+	wc.callbacks.StructuredAppend = func(string, SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
+		return nil, false, sqlite.ErrStructuredNotFound
+	}
+	rec := httptest.NewRecorder()
+	wc.handleMessage(rec, authedAPIRequest(http.MethodPost, "/api/message",
+		[]byte(`{"kind":"answer","reply_to":"404","payload":{"answers":[{"question_id":"q1","option_ids":["a"]}]}}`)))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+}

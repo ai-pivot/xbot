@@ -37,6 +37,7 @@ func (wc *WebChannel) handleStructuredMessageBody(w http.ResponseWriter, r *http
 		Text:           firstNonEmpty(request.Text, request.Content),
 		Channel:        request.Channel,
 		ChatID:         request.ChatID,
+		CreatedAt:      request.CreatedAt,
 	})
 }
 
@@ -238,10 +239,19 @@ func validateStructuredPayload(input protocol.StructuredMessageInput) error {
 			return errors.New("payload.questions is required for kind=ask_user")
 		}
 	case "answer":
+		// kind=answer 走 /api/message 时必须用 reply_to 定位问题行（与 /api/answer
+		// 的 correlation_id 寻址共用同一套 CAS 闭环）。
+		if strings.TrimSpace(input.ReplyTo) == "" {
+			return errors.New("reply_to is required for kind=answer (or use /api/answer with correlation_id)")
+		}
 		if _, ok := input.Payload["answers"]; !ok && input.Payload["cancelled"] != true {
 			return errors.New("payload.answers is required for kind=answer")
 		}
 	case "decision":
+		// 批红必须闭环到具体目标（reply_to 优先，兼容 payload.target_message_id）。
+		if strings.TrimSpace(input.ReplyTo) == "" && payloadString(input.Payload, "target_message_id") == "" {
+			return errors.New("reply_to is required for kind=decision")
+		}
 		verdict := payloadString(input.Payload, "verdict")
 		if verdict != "approve" && verdict != "reject" && verdict != "modify" {
 			return errors.New("payload.verdict must be approve/reject/modify")

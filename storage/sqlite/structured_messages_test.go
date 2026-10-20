@@ -235,3 +235,102 @@ func TestListStructuredMessagesByKind(t *testing.T) {
 		t.Fatalf("report rows = %d more=%v, want 2/false", len(rows), more)
 	}
 }
+
+// mustAppend 是测试里的落库助手（失败即 Fatal）。
+func mustAppend(t *testing.T, svc *SessionService, tenant int64, m StructuredMessage) int64 {
+	t.Helper()
+	if m.ChatID == "" {
+		m.ChatID = "chat-1"
+	}
+	id, _, err := svc.AppendStructuredMessage(tenant, m)
+	if err != nil {
+		t.Fatalf("append %s: %v", m.Kind, err)
+	}
+	return id
+}
+
+func TestAppendDecisionClosesReportOnce(t *testing.T) {
+	svc, tenant := newStructuredTestService(t)
+	reportID := mustAppend(t, svc, tenant, StructuredMessage{
+		Kind: StructuredKindReport, CorrelationID: "cor_rep", Content: "扩容完成",
+	})
+
+	dec := StructuredMessage{
+		ChatID: "chat-1", Kind: StructuredKindDecision, CorrelationID: "cor_rep",
+		ReplyTo: fmt.Sprintf("%d", reportID), IdempotencyKey: "k_dec_1",
+		Content: "准", SenderType: "user", SenderID: "web-1",
+	}
+	id1, created1, err := svc.AppendDecision(tenant, dec)
+	if err != nil {
+		t.Fatalf("first decision: %v", err)
+	}
+	if !created1 {
+		t.Fatal("first decision must be created")
+	}
+	report, err := svc.GetStructuredMessageByID(tenant, reportID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Answered {
+		t.Fatal("target report must be marked answered after the first decision")
+	}
+
+	// 同一个 key 重复提交 → 幂等：返回原 decision 行，不新增行。
+	id2, created2, err := svc.AppendDecision(tenant, dec)
+	if err != nil {
+		t.Fatalf("duplicate decision with same key must be idempotent: %v", err)
+	}
+	if created2 || id2 != id1 {
+		t.Fatalf("duplicate decision created=%v id1=%d id2=%d", created2, id1, id2)
+	}
+
+	// 不同 key 重复批红 → 必须 409（不能只靠幂等键去重）。
+	dec.IdempotencyKey = "k_dec_2"
+	if _, _, err := svc.AppendDecision(tenant, dec); !errors.Is(err, ErrAskUserAnswered) {
+		t.Fatalf("second verdict error = %v, want ErrAskUserAnswered", err)
+	}
+
+	var decisions int
+	if err := svc.db.Conn().QueryRow(
+		`SELECT COUNT(1) FROM session_messages WHERE tenant_id=? AND kind='decision'`,
+		tenant).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 1 {
+		t.Fatalf("decision rows = %d, want 1 (duplicate verdict must not be written)", decisions)
+	}
+}
+
+func TestAppendDecisionMissingTargetNotFound(t *testing.T) {
+	svc, tenant := newStructuredTestService(t)
+	_, _, err := svc.AppendDecision(tenant, StructuredMessage{
+		ChatID: "chat-1", Kind: StructuredKindDecision, ReplyTo: "99999",
+		IdempotencyKey: "k_missing", Content: "准",
+	})
+	if !errors.Is(err, ErrStructuredNotFound) {
+		t.Fatalf("error = %v, want ErrStructuredNotFound", err)
+	}
+}
+
+func TestAppendDecisionCancelledTargetRejected(t *testing.T) {
+	svc, tenant := newStructuredTestService(t)
+	reportID := mustAppend(t, svc, tenant, StructuredMessage{
+		Kind: StructuredKindReport, Content: "已撤销的奏折", Cancelled: true,
+	})
+	_, _, err := svc.AppendDecision(tenant, StructuredMessage{
+		ChatID: "chat-1", Kind: StructuredKindDecision,
+		ReplyTo: fmt.Sprintf("%d", reportID), IdempotencyKey: "k_cancel", Content: "准",
+	})
+	if !errors.Is(err, ErrAskUserCancelled) {
+		t.Fatalf("error = %v, want ErrAskUserCancelled", err)
+	}
+}
+
+func TestAppendDecisionRequiresTarget(t *testing.T) {
+	svc, tenant := newStructuredTestService(t)
+	if _, _, err := svc.AppendDecision(tenant, StructuredMessage{
+		ChatID: "chat-1", Kind: StructuredKindDecision, ReplyTo: "", Content: "准",
+	}); err == nil {
+		t.Fatal("decision without reply_to target must be rejected")
+	}
+}

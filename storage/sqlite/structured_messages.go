@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -48,11 +49,15 @@ var StructuredMessageKinds = map[string]bool{
 	StructuredKindEvent:    true,
 }
 
-// 回答失败的可判别错误（handler 映射为 HTTP 状态码）。
+// 闭环失败的可判别错误（handler 映射为 HTTP 状态码）。
+//
+// 命名沿用最早只有 ask_user 时的 ErrAskUser*，但语义已泛化为「目标行」：
+// answer 闭环的目标是 ask_user 行，decision 闭环的目标是 report 行，
+// 两者共用同一套 CAS（AnswerAskUser / AppendDecision）。
 var (
 	ErrStructuredNotFound  = errors.New("structured message not found")
-	ErrAskUserAnswered     = errors.New("ask_user already answered")
-	ErrAskUserCancelled    = errors.New("ask_user already cancelled")
+	ErrAskUserAnswered     = errors.New("target already answered")
+	ErrAskUserCancelled    = errors.New("target already cancelled")
 	ErrIdempotencyConflict = errors.New("idempotency key conflict")
 )
 
@@ -167,6 +172,131 @@ func (s *SessionService) AppendStructuredMessage(tenantID int64, m StructuredMes
 		return nil
 	})
 	return id, created, err
+}
+
+// AppendDecision 原子地写入一条批红（kind=decision）并把目标行置 answered。
+//
+// 与 AnswerAskUser 共用同一套 CAS 闭环，语义逐条对齐：
+//   - 目标行（m.ReplyTo 指向的 message_id）不存在 → ErrStructuredNotFound（HTTP 404）
+//   - 目标行已 answered → ErrAskUserAnswered（HTTP 409；**不同 idempotency_key 也必须拒绝**，
+//     不能只靠幂等键去重）
+//   - 目标行已 cancelled → ErrAskUserCancelled（HTTP 409）
+//   - 同一 (chat_id, idempotency_key) 重复提交 → 返回已有行，created=false（HTTP 200 duplicate）
+//
+// 「先查幂等、再 CAS」的顺序很关键：双击同键要返回原 decision 行（200），
+// 而不是因为目标已被自己置 answered 而报 409。
+func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id int64, created bool, err error) {
+	if m.Kind == "" {
+		m.Kind = StructuredKindDecision
+	}
+	if m.Kind != StructuredKindDecision {
+		return 0, false, fmt.Errorf("invalid decision kind %q", m.Kind)
+	}
+	targetID, perr := strconv.ParseInt(strings.TrimSpace(m.ReplyTo), 10, 64)
+	if perr != nil || targetID <= 0 {
+		return 0, false, fmt.Errorf("invalid decision target %q", m.ReplyTo)
+	}
+	if m.Direction == "" {
+		m.Direction = "in"
+	}
+	if m.Direction != "in" && m.Direction != "out" {
+		return 0, false, fmt.Errorf("invalid direction %q", m.Direction)
+	}
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = time.Now()
+	}
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	err = s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+		// 1. 幂等：同 key 重复提交直接返回已有行，不再动目标状态。
+		if m.IdempotencyKey != "" {
+			var existing int64
+			qerr := store.QueryRow(`
+				SELECT id FROM session_messages
+				 WHERE tenant_id = ? AND chat_id = ? AND idempotency_key = ?
+				 LIMIT 1`, tenantID, m.ChatID, m.IdempotencyKey).Scan(&existing)
+			if qerr == nil {
+				id, created = existing, false
+				return nil
+			}
+			if !errors.Is(qerr, sql.ErrNoRows) {
+				return fmt.Errorf("lookup decision idempotency key: %w", qerr)
+			}
+		}
+
+		// 2. 目标必须存在且仍然开着。
+		var answered, cancelledCol int
+		qerr := store.QueryRow(`
+			SELECT COALESCE(answered, 0), COALESCE(cancelled, 0)
+			  FROM session_messages WHERE tenant_id = ? AND id = ?`,
+			tenantID, targetID).Scan(&answered, &cancelledCol)
+		if errors.Is(qerr, sql.ErrNoRows) {
+			return ErrStructuredNotFound
+		}
+		if qerr != nil {
+			return fmt.Errorf("lookup decision target: %w", qerr)
+		}
+		if cancelledCol != 0 {
+			return ErrAskUserCancelled
+		}
+		if answered != 0 {
+			return ErrAskUserAnswered
+		}
+
+		// 3. CAS：只有未批红未取消才推进（并发批红只有一次成功）。
+		res, uerr := store.Exec(`
+			UPDATE session_messages SET answered = 1
+			 WHERE tenant_id = ? AND id = ? AND answered = 0 AND cancelled = 0`,
+			tenantID, targetID)
+		if uerr != nil {
+			return fmt.Errorf("mark decision target answered: %w", uerr)
+		}
+		affected, rerr := res.RowsAffected()
+		if rerr != nil {
+			return fmt.Errorf("read decision target update rows: %w", rerr)
+		}
+		if affected == 0 {
+			return ErrAskUserAnswered
+		}
+
+		// 4. 写 decision 行（reply_to 指向被批目标，线程可回溯）。
+		ires, ierr := store.Exec(`
+			INSERT INTO session_messages
+			(tenant_id, role, content, display_only, record_type, created_at, turn_id,
+			 chat_id, kind, correlation_id, reply_to, idempotency_key, structured_json,
+			 direction, answered, cancelled, sender_type, sender_id, sender_name)
+			VALUES (?, ?, ?, 0, 'message', ?, 0,
+			        ?, 'decision', ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`,
+			tenantID, structuredRole(m), m.Content, canonicalTimestamp(m.CreatedAt),
+			m.ChatID, m.CorrelationID, m.ReplyTo, m.IdempotencyKey, m.StructuredJSON,
+			m.Direction, m.SenderType, m.SenderID, m.SenderName)
+		if ierr != nil {
+			// UNIQUE(chat_id, idempotency_key) 并发冲突：回读已有行，保持幂等。
+			if m.IdempotencyKey != "" && strings.Contains(strings.ToLower(ierr.Error()), "unique") {
+				var existing int64
+				if qerr := store.QueryRow(`
+					SELECT id FROM session_messages
+					 WHERE tenant_id = ? AND chat_id = ? AND idempotency_key = ?
+					 LIMIT 1`, tenantID, m.ChatID, m.IdempotencyKey).Scan(&existing); qerr == nil {
+					id, created = existing, false
+					return nil
+				}
+			}
+			return fmt.Errorf("insert decision: %w", ierr)
+		}
+		id, ierr = ires.LastInsertId()
+		if ierr != nil {
+			return fmt.Errorf("read decision id: %w", ierr)
+		}
+		created = true
+		return nil
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return id, created, nil
 }
 
 // AnswerAskUser 原子地把某条 ask_user 标记为已回答/已取消，并写入一行
@@ -421,22 +551,6 @@ func (s *SessionService) ListInbox(tenantID int64, cursor int64, limit int) ([]S
 		next = out[len(out)-1].ID
 	}
 	return out, hasMore, next, nil
-}
-
-// MarkStructuredAnswered 把任意结构化消息标记为已回答（批红报告卡用）。
-// 幂等：已为 1 时重复调用无副作用。
-func (s *SessionService) MarkStructuredAnswered(tenantID, id int64) error {
-	lock := s.db.historyLock(tenantID)
-	lock.Lock()
-	defer lock.Unlock()
-	return s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
-		if _, err := store.Exec(
-			`UPDATE session_messages SET answered = 1 WHERE tenant_id = ? AND id = ?`,
-			tenantID, id); err != nil {
-			return fmt.Errorf("mark structured message answered: %w", err)
-		}
-		return nil
-	})
 }
 
 // CountInbox 返回未回答 ask_user 数量（未读徽标）。

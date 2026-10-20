@@ -160,10 +160,19 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		if err != nil {
 			return nil, false, err
 		}
+		// kind=answer 与 /api/answer 共用同一套 CAS 闭环（见 answerViaMessage）：
+		// 否则 /api/message 写一行 answer 却不会把 ask_user 置 answered，收件箱永远不收敛。
+		if input.Kind == "answer" {
+			return answerViaMessage(senderID, sel, svc, tenantID, ag, input)
+		}
+		createdAt, err := parseStructuredCreatedAt(input.CreatedAt)
+		if err != nil {
+			return nil, false, err
+		}
 		envelope := buildStructuredEnvelope(senderID, sel, input)
 		raw, _ := json.Marshal(envelope)
 		senderName := senderID
-		id, created, err := svc.AppendStructuredMessage(tenantID, sqlite.StructuredMessage{
+		stored := sqlite.StructuredMessage{
 			ChatID:         sel.ChatID,
 			Kind:           input.Kind,
 			CorrelationID:  input.CorrelationID,
@@ -176,11 +185,22 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			SenderType:     "user",
 			SenderID:       senderID,
 			SenderName:     senderName,
-		})
+			CreatedAt:      createdAt,
+		}
+		var id int64
+		var created bool
+		if input.Kind == "decision" {
+			// 批红闭环：目标行必须存在且未批红/未取消（CAS）。
+			// reply_to 是权威目标；兼容老客户端只用 payload.target_message_id。
+			stored.ReplyTo = structuredFirstNonEmpty(input.ReplyTo, structuredPayloadString(input.Payload, "target_message_id"))
+			id, created, err = svc.AppendDecision(tenantID, stored)
+		} else {
+			id, created, err = svc.AppendStructuredMessage(tenantID, stored)
+		}
 		if err != nil {
 			return nil, false, err
 		}
-		stored, err := svc.GetStructuredMessageByID(tenantID, id)
+		row, err := svc.GetStructuredMessageByID(tenantID, id)
 		if err != nil {
 			return nil, false, err
 		}
@@ -191,21 +211,13 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 				ChatID:        sel.ChatID,
 				SenderID:      senderID,
 				SenderName:    senderName,
-				Content:       stored.Content,
+				Content:       row.Content,
 				Kind:          input.Kind,
 				CorrelationID: input.CorrelationID,
 				Priority:      structuredPriority(input.Kind),
 			})
 		}
-		// 批红：把被批的报告卡标记为已回答（持久化，刷新后仍显示「已批红」）。
-		if created && input.Kind == "decision" {
-			if rawID, ok := input.Payload["target_message_id"].(string); ok {
-				if targetID, perr := strconv.ParseInt(rawID, 10, 64); perr == nil && targetID > 0 {
-					_ = svc.MarkStructuredAnswered(tenantID, targetID)
-				}
-			}
-		}
-		return toProtocolStructured(*stored), !created, nil
+		return toProtocolStructured(*row), !created, nil
 	}
 
 	answerFn = func(senderID string, sel web.SessionSelector, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error) {
@@ -213,40 +225,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		if err != nil {
 			return nil, false, err
 		}
-		// 校验答案形状（multi_select=false 时 option_ids ≤ 1 等）。
-		if err := validateAskUserAnswers(svc, tenantID, input); err != nil {
-			return nil, false, err
-		}
-		payload := map[string]any{
-			"answers":     input.Answers,
-			"cancelled":   input.Cancelled,
-			"answered_by": senderID,
-		}
-		raw, _ := json.Marshal(payload)
-		text := answerText(input)
-		id, _, created, err := svc.AnswerAskUser(tenantID, sel.ChatID, input.CorrelationID,
-			text, string(raw), input.IdempotencyKey, senderID, senderID, input.Cancelled)
-		if err != nil {
-			return nil, false, err
-		}
-		stored, err := svc.GetStructuredMessageByID(tenantID, id)
-		if err != nil {
-			return nil, false, err
-		}
-		if created {
-			ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
-				ID:            fmt.Sprintf("answer:%d", id),
-				Channel:       sel.Channel,
-				ChatID:        sel.ChatID,
-				SenderID:      senderID,
-				SenderName:    senderID,
-				Content:       text,
-				Kind:          "answer",
-				CorrelationID: input.CorrelationID,
-				Priority:      agent.StructuredPriorityHigh,
-			})
-		}
-		return toProtocolStructured(*stored), !created, nil
+		return applyStructuredAnswer(senderID, sel, svc, tenantID, ag, input)
 	}
 
 	inboxFn = func(sel web.SessionSelector, cursor int64, limit int) ([]protocol.StructuredMessage, bool, int64, error) {
@@ -289,6 +268,152 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		return out, more, next, nil
 	}
 	return
+}
+
+// structuredFirstNonEmpty 返回第一个非空字符串（reply_to 与旧字段兼容用）。
+func structuredFirstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// structuredPayloadString 读取 payload 的字符串字段（缺省空串）。
+func structuredPayloadString(payload map[string]any, key string) string {
+	if payload == nil {
+		return ""
+	}
+	if v, ok := payload[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// parseStructuredCreatedAt 解析可选的 created_at（导入/回填/演示用）。// 空串 ⇒ 零值（由存储层取 now）；非法格式 ⇒ 错误（web 层映射 400）。
+func parseStructuredCreatedAt(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05"} {
+		if ts, err := time.Parse(layout, raw); err == nil {
+			return ts, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid created_at %q (want RFC3339)", raw)
+}
+
+// answerViaMessage 让 POST /api/message 的 kind=answer 与 POST /api/answer 共用
+// 同一套 CAS 闭环（方案 a）：目标不存在 → 404；已答/已取消 → 409；成功后目标
+// ask_user 置 answered=1，收件箱立即收敛。
+//
+// 与 /api/answer 的唯一区别是寻址方式：这里用 reply_to（message_id）定位问题行，
+// correlation_id 从目标行派生（客户端显式传了就必须一致）。
+func answerViaMessage(senderID string, sel web.SessionSelector, svc *sqlite.SessionService, tenantID int64, ag *agent.Agent, input protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
+	targetID, perr := strconv.ParseInt(strings.TrimSpace(input.ReplyTo), 10, 64)
+	if perr != nil || targetID <= 0 {
+		return nil, false, fmt.Errorf("invalid: reply_to must be the ask_user message_id for kind=answer")
+	}
+	target, err := svc.GetStructuredMessageByID(tenantID, targetID)
+	if err != nil {
+		return nil, false, err // ErrStructuredNotFound → 404
+	}
+	if target.Kind != "ask_user" {
+		return nil, false, fmt.Errorf("invalid: reply_to %d points to kind=%s, want ask_user", targetID, target.Kind)
+	}
+	if strings.TrimSpace(target.CorrelationID) == "" {
+		return nil, false, fmt.Errorf("invalid: ask_user %d has no correlation_id", targetID)
+	}
+	if input.CorrelationID != "" && input.CorrelationID != target.CorrelationID {
+		return nil, false, fmt.Errorf("invalid: correlation_id %q does not match target %q", input.CorrelationID, target.CorrelationID)
+	}
+	answers, cancelled, err := answersFromPayload(input.Payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return applyStructuredAnswer(senderID, sel, svc, tenantID, ag, protocol.StructuredAnswerInput{
+		CorrelationID:  target.CorrelationID,
+		Answers:        answers,
+		Cancelled:      cancelled,
+		IdempotencyKey: input.IdempotencyKey,
+		Channel:        sel.Channel,
+		ChatID:         sel.ChatID,
+	})
+}
+
+// answersFromPayload 把 /api/message 的 payload.answers 转成协议结构。
+func answersFromPayload(payload map[string]any) ([]protocol.StructuredAnswer, bool, error) {
+	if payload == nil {
+		return nil, false, fmt.Errorf("invalid: payload.answers is required for kind=answer")
+	}
+	cancelled, _ := payload["cancelled"].(bool)
+	rawAnswers, ok := payload["answers"].([]any)
+	if !ok {
+		if cancelled && payload["answers"] == nil {
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("invalid: payload.answers must be an array")
+	}
+	out := make([]protocol.StructuredAnswer, 0, len(rawAnswers))
+	for i, raw := range rawAnswers {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			return nil, false, fmt.Errorf("invalid: payload.answers[%d] must be an object", i)
+		}
+		a := protocol.StructuredAnswer{}
+		a.QuestionID, _ = m["question_id"].(string)
+		a.Text, _ = m["text"].(string)
+		if opts, ok := m["option_ids"].([]any); ok {
+			for _, o := range opts {
+				if s, ok := o.(string); ok {
+					a.OptionIDs = append(a.OptionIDs, s)
+				}
+			}
+		}
+		out = append(out, a)
+	}
+	return out, cancelled, nil
+}
+
+// applyStructuredAnswer 是 /api/answer 与 /api/message(kind=answer) 的共同闭环：
+// 校验答案形状 → CAS 置位目标 ask_user → 写 answer 行 → 投递 agent。
+func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc *sqlite.SessionService, tenantID int64, ag *agent.Agent, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error) {
+	// 校验答案形状（multi_select=false 时 option_ids ≤ 1 等）。
+	if err := validateAskUserAnswers(svc, tenantID, input); err != nil {
+		return nil, false, err
+	}
+	payload := map[string]any{
+		"answers":     input.Answers,
+		"cancelled":   input.Cancelled,
+		"answered_by": senderID,
+	}
+	raw, _ := json.Marshal(payload)
+	text := answerText(input)
+	id, _, created, err := svc.AnswerAskUser(tenantID, sel.ChatID, input.CorrelationID,
+		text, string(raw), input.IdempotencyKey, senderID, senderID, input.Cancelled)
+	if err != nil {
+		return nil, false, err
+	}
+	stored, err := svc.GetStructuredMessageByID(tenantID, id)
+	if err != nil {
+		return nil, false, err
+	}
+	if created {
+		ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
+			ID:            fmt.Sprintf("answer:%d", id),
+			Channel:       sel.Channel,
+			ChatID:        sel.ChatID,
+			SenderID:      senderID,
+			SenderName:    senderID,
+			Content:       text,
+			Kind:          "answer",
+			CorrelationID: input.CorrelationID,
+			Priority:      agent.StructuredPriorityHigh,
+		})
+	}
+	return toProtocolStructured(*stored), !created, nil
 }
 
 // validateAskUserAnswers 按 ask_user 信封校验回答。
