@@ -40,7 +40,12 @@ export function setReasoningOpen(key: string, open: boolean): void {
 
 /** 思考块展开态的共享 key（live 与 committed 必须用同一个构造函数）。 */
 export function reasoningKey(turnID: number | null | undefined, iteration: number): string {
-  return `${turnID ?? 0}:${iteration}`
+  // ⚠️ turnID 无效时**不能**退化成 "0:N"：那会让所有 turn 中同号的迭代共用同一个
+  // key —— 点开任意一个「思考」，其他 turn 的思考块也跟着展开（2026-10-20 用户
+  // 报告：没点过的思考内容自己显示出来）。返回空串 → ThinkingLine 退回组件本地
+  // state（默认折叠、不跨迭代共享），也不会写入共享表。
+  if (turnID == null || turnID <= 0) return ''
+  return `${turnID}:${iteration}`
 }
 
 /** 测试用：清空（模块级单例，跨用例必须隔离）。 */
