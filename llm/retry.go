@@ -31,7 +31,7 @@ func getRetryNotify(ctx context.Context) RetryNotifyFunc {
 
 // RetryConfig 重试配置
 type RetryConfig struct {
-	Attempts      uint          // 最大尝试次数（含首次），默认 5
+	Attempts      uint          // 最大尝试次数（含首次）；0 使用默认 5，不表示无限重试
 	Delay         time.Duration // 初始延迟，默认 1s
 	MaxDelay      time.Duration // 最大延迟，默认 30s
 	MaxConcurrent int           // 最大并发数（0 表示不限制）
@@ -57,6 +57,19 @@ type RetryLLM struct {
 
 // NewRetryLLM 创建重试包装器；inner 可选实现 StreamingLLM
 func NewRetryLLM(inner LLM, cfg RetryConfig) *RetryLLM {
+	// Application zero values mean the documented retry defaults. retry-go
+	// gives Attempts(0) a different meaning (unlimited), so resolve them here
+	// before constructing a retrier, including clients created outside config.Load.
+	defaults := DefaultRetryConfig()
+	if cfg.Attempts == 0 {
+		cfg.Attempts = defaults.Attempts
+	}
+	if cfg.Delay == 0 {
+		cfg.Delay = defaults.Delay
+	}
+	if cfg.MaxDelay == 0 {
+		cfg.MaxDelay = defaults.MaxDelay
+	}
 	r := &RetryLLM{inner: inner, config: cfg}
 	if cfg.MaxConcurrent > 0 {
 		r.sem = make(chan struct{}, cfg.MaxConcurrent)
@@ -129,14 +142,19 @@ func IsInputTooLongError(err error) bool {
 // 白名单的先天缺陷：无法穷举 provider/网关/SDK 的错误形态（自定义错误串、
 // 代理改写过的响应、新的状态码描述……），漏一个就退化成「一次失败即失败」。
 //
-// 只有两类例外：
+// 只有三类例外：
+//
 //  1. context.Canceled —— 用户主动取消（/cancel），这不是失败；重试等于对抗
 //     用户意图。
+//
 //  2. 输入超长（IsInputTooLongError）—— 确定性失败：同样的 payload 重发必然
 //     同样失败。调用方（agent.handleInputTooLong）有专门的「压缩上下文 + 重试」
 //     恢复路径；在这里空转 Attempts 次只会推迟真正的修复并多烧几次调用。
 //
-// 其余一切（含 4xx、未知错误、纯字符串错误）都重试：由 retryOptions 的
+//  3. unsupported_country_region_territory —— 出口地区被服务商拒绝，
+//     重发同一个请求不能改变地区；直接返回以便用户修正服务配置。
+//
+// 其余一切（含普通 4xx、未知错误、纯字符串错误）都重试：由 retryOptions 的
 // 指数退避 + 抖动处理瞬时故障，最终仍失败时错误照常返回。
 func IsRetryableError(err error) bool {
 	if err == nil {
@@ -148,6 +166,9 @@ func IsRetryableError(err error) bool {
 	}
 	// 确定性失败：重试无意义，且有专门的恢复路径。
 	if IsInputTooLongError(err) {
+		return false
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "unsupported_country_region_territory") {
 		return false
 	}
 	return true
