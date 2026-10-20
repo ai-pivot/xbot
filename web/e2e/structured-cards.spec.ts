@@ -85,6 +85,10 @@ test.describe('结构化消息卡片', () => {
     await gotoStructured(page, chatID)
     const card = page.getByTestId('ask-user-card').filter({ hasText: question }).first()
     await expect(card).toBeVisible()
+    // 行头：HH:mm:ss + 「请旨」徽标 + 发送者。
+    await expect(card.getByTestId('row-time')).toHaveText(/^\d{2}:\d{2}:\d{2}$/)
+    await expect(card.getByTestId('kind-badge')).toHaveText('请旨')
+    await expect(card.getByText('web-1')).toBeVisible()
     await page.screenshot({ path: 'e2e/artifacts/cards-ask-user.png' })
 
     await card.getByRole('radio').nth(2).check()
@@ -121,6 +125,12 @@ test.describe('结构化消息卡片', () => {
     const card = page.getByTestId('report-card').filter({ hasText: summary }).first()
     await expect(card).toBeVisible()
     await expect(card.getByText('court/evidence/gongbu-ppu.log')).toBeVisible()
+    // 次要文字（证据路径）≥13px，深色主题可读。
+    const evidenceFont = await card
+      .getByText('court/evidence/gongbu-ppu.log')
+      .evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize))
+    expect(evidenceFont, `证据字号 ${evidenceFont}px，应 ≥ 13px`).toBeGreaterThanOrEqual(13)
+    await expect(card.getByTestId('kind-badge')).toHaveText('奏折')
     await page.screenshot({ path: 'e2e/artifacts/cards-report.png' })
 
     await card.getByTestId('report-approve').click()
@@ -149,25 +159,58 @@ test.describe('结构化消息卡片', () => {
     await expect(page.getByTestId('inbox-badge')).toHaveText('1')
     const item = inbox.getByTestId('inbox-item').filter({ hasText: question }).first()
     await expect(item).toBeVisible()
+    // 收件箱条目必须有相对时间（刚刚 / N 分钟前 / N 小时前）。
+    await expect(item.getByText(/刚刚|分钟前|小时前|天前|月.*日/)).toBeVisible()
     await item.click()
     await expect(inbox.getByTestId('ask-user-card').filter({ hasText: question })).toBeVisible()
     await page.screenshot({ path: 'e2e/artifacts/cards-inbox.png' })
   })
 
-  test('1000 条消息虚拟列表：首屏 < 2s', async ({ page }) => {
+  test('1000 条消息虚拟列表：首屏 < 2s，且行有区分度', async ({ page }) => {
     await login(page)
     const chatID = await newChat(page, 'bulk')
-    // 用 kind=event（不触发 turn）批量灌入；idempotency_key 保证可重复执行。
-    const base = 1000
-    for (let i = 0; i < base; i++) {
+    // 演示数据要能肉眼区分：递增时间戳 + 序号 + kind 混合（event/report/ask_user）。
+    // 只用非投递 kind（event/report/ask_user），避免 1000 条消息各起一个 agent turn。
+    const total = 1000
+    const base = Date.parse('2026-10-20T00:00:00Z')
+    for (let i = 0; i < total; i++) {
+      const kind = i % 12 === 0 ? 'report' : i % 12 === 6 ? 'ask_user' : 'event'
+      const createdAt = new Date(base + i * 1000).toISOString()
+      const text =
+        kind === 'event'
+          ? `#${i} 状态事件 · ${i % 3 === 0 ? '告警' : '心跳'}${i % 5 === 0 ? ' · 节点 b300-5 已回收' : ''}`
+          : kind === 'report'
+            ? `#${i} 第 ${i} 份奏折：批量状态汇总`
+            : `#${i} 第 ${i} 次请旨：是否继续扩容？`
+      const payload =
+        kind === 'report'
+          ? {
+              report_id: `rep_bulk_${i}`,
+              department: 'gongbu',
+              summary: `#${i} 第 ${i} 份奏折：批量状态汇总`,
+              evidence: [{ path: `court/evidence/bulk-${i}.log`, kind: 'log' }],
+            }
+          : kind === 'ask_user'
+            ? {
+                questions: [
+                  {
+                    id: 'q1',
+                    question: `#${i} 第 ${i} 次请旨：是否继续扩容？`,
+                    options: [{ id: 'yes', label: '准' }],
+                    allow_other: true,
+                  },
+                ],
+              }
+            : { event_type: 'state.changed', severity: i % 3 === 0 ? 'warn' : 'info', index: i }
       const res = await page.request.post('/api/message', {
         data: {
           channel: 'web',
           chat_id: chatID,
-          kind: 'event',
+          kind,
           idempotency_key: `bulk_${RUN}_${i}`,
-          text: `事件 ${RUN} #${i}`,
-          payload: { event_type: 'state.changed', severity: 'info', index: i },
+          created_at: createdAt,
+          text,
+          payload,
         },
         timeout: 30_000,
       })
@@ -186,6 +229,38 @@ test.describe('结构化消息卡片', () => {
     const elapsed = Date.now() - started
     expect(elapsed, `首屏渲染 ${elapsed}ms，应 < 2000ms`).toBeLessThan(2000)
     await expect(page.getByText('虚拟滚动')).toBeVisible()
+
+    // 每行必须有 HH:mm:ss（zh-CN 24h，不能出现 AM/PM）。
+    const timeText = (await page.getByTestId('row-time').last().textContent()) ?? ''
+    expect(timeText, `时间戳应形如 03:04:05，实际 ${timeText}`).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+    expect(timeText).not.toMatch(/AM|PM/)
+
+    // kind 混合分布：可见区里应有「事件」紧凑行 + 「奏折/请旨」卡片。
+    const badgeCount = await page.getByTestId('kind-badge').count()
+    expect(badgeCount).toBeGreaterThan(0)
+    await expect(page.getByTestId('kind-badge').filter({ hasText: '事件' }).first()).toBeVisible()
+    const cardCount =
+      (await page.getByTestId('report-card').count()) +
+      (await page.getByTestId('ask-user-card').count())
+    expect(cardCount, '演示数据必须有非 event 的卡片').toBeGreaterThan(0)
+
+    // 紧凑 event 行 32–36px（不再是被撑开的灰框 + 大空隙）。
+    const rowHeight = await page
+      .getByTestId('event-row')
+      .last()
+      .evaluate((el) => el.getBoundingClientRect().height)
+    expect(rowHeight, `event 行高 ${rowHeight}px，应在 32–36px`).toBeGreaterThanOrEqual(32)
+    expect(rowHeight, `event 行高 ${rowHeight}px，应在 32–36px`).toBeLessThanOrEqual(36)
+
+    // 消息流列 max-width 880px 居中，卡片不横跨全宽。
+    const columnWidth = await page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="stream-scroll"]')
+      const column = scroller?.firstElementChild as HTMLElement | null
+      return column?.getBoundingClientRect().width ?? 0
+    })
+    expect(columnWidth, `消息列宽 ${columnWidth}px，应 ≤ 880px`).toBeGreaterThan(0)
+    expect(columnWidth).toBeLessThanOrEqual(880)
+
     await page.screenshot({ path: 'e2e/artifacts/cards-1000.png' })
     // eslint-disable-next-line no-console
     console.log(`[perf] 1000 条消息首屏渲染 ${elapsed}ms`)

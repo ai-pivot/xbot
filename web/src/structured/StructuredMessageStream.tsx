@@ -9,8 +9,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 
-import { StructuredCard, type AnswerFn, type DecideFn } from './StructuredCards'
+import { StructuredCard, isCompactKind, type AnswerFn, type DecideFn } from './StructuredCards'
 import type { StructuredMessage } from './types'
+
+/** 消息列最大宽度：卡片不再横跨全宽（1500px 视口下居中留白）。 */
+const COLUMN_MAX_WIDTH = 880
 
 function LazyMount({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement | null>(null)
@@ -98,35 +101,40 @@ export function StructuredMessageStream({
         </p>
       )
     ) : virtual ? (
-      <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
-        {virtualizer.getVirtualItems().map((row) => (
-          <div
-            key={messages[row.index].message_id}
-            data-index={row.index}
-            ref={virtualizer.measureElement}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              transform: `translateY(${row.start}px)`,
-              paddingBottom: 10,
-            }}
-          >
-            <LazyMount>
-              <StructuredCard
-                message={messages[row.index]}
-                onAnswer={onAnswer}
-                onDecide={onDecide}
-              />
-            </LazyMount>
-          </div>
-        ))}
+      <div className="mx-auto w-full" style={{ maxWidth: COLUMN_MAX_WIDTH }}>
+        <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
+          {virtualizer.getVirtualItems().map((row) => (
+            <div
+              key={messages[row.index].message_id}
+              data-index={row.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${row.start}px)`,
+                // 紧凑行只留 2px 行距；卡片留 8px 呼吸感。
+                paddingBottom: isCompactKind(messages[row.index].kind) ? 2 : 8,
+              }}
+            >
+              <LazyMount>
+                <StructuredCard
+                  message={messages[row.index]}
+                  onAnswer={onAnswer}
+                  onDecide={onDecide}
+                />
+              </LazyMount>
+            </div>
+          ))}
+        </div>
       </div>
     ) : (
-      <div className="space-y-2.5">
+      <div className="mx-auto w-full" style={{ maxWidth: COLUMN_MAX_WIDTH }}>
         {messages.map((m) => (
-          <StructuredCard key={m.message_id} message={m} onAnswer={onAnswer} onDecide={onDecide} />
+          <div key={m.message_id} className={isCompactKind(m.kind) ? 'mb-0.5' : 'mb-2'}>
+            <StructuredCard message={m} onAnswer={onAnswer} onDecide={onDecide} />
+          </div>
         ))}
       </div>
     )

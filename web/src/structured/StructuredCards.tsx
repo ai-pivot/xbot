@@ -1,11 +1,12 @@
 /**
- * StructuredCards —— 结构化消息卡片渲染器。
+ * StructuredCards —— 结构化消息卡片/行渲染器。
  *
- * kind=ask_user → 琥珀问题卡（单选/多选/自定义/取消；等待=脉冲、已回答/已取消=禁用）
- * kind=report   → 紫色奏折卡（结论 + evidence 路径 + 准/驳/改）
- * kind=decision → 绿色结果卡（准/驳/改 + 理由）
- * kind=answer   → 绿色回答记录
- * kind=text     → 普通文本
+ * 统一行头（每行必有）：`HH:mm:ss` 本地时间（zh-CN，24h）+ kind 徽标 + 发送者。
+ *   ask_user → 琥珀「请旨」卡（单选/多选/自定义/取消；等待=脉冲、已回答/已取消=禁用）
+ *   report   → 紫色「奏折」卡（结论 + evidence 路径 + 准/驳/改）
+ *   decision → 绿色实心「批红」卡（准/驳/改 + 理由）
+ *   answer   → 绿色描边「回答」卡
+ *   event / text / command → 32–36px 紧凑单行（摘要超长省略）
  *
  * 安全：全部走 React 文本节点（不做 dangerouslySetInnerHTML）。
  */
@@ -17,10 +18,121 @@ import type {
   DecisionPayload,
   ReportPayload,
   StructuredAnswerInput,
+  StructuredKind,
   StructuredMessage,
 } from './types'
 
 const FOLD_LIMIT = 2000
+
+/** 本地时间 HH:mm:ss（zh-CN 24 小时制，不用美式 12h AM/PM）。 */
+export function formatClock(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '--:--:--'
+  return d.toLocaleTimeString('zh-CN', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+/** 发送者展示名（agent 行可能只有 id）。 */
+export function formatSender(m: StructuredMessage): string {
+  return m.sender?.name || m.sender?.id || '系统'
+}
+
+interface KindMeta {
+  label: string
+  badge: string
+}
+
+/** kind 区色：徽标底色 + 文字色（深色主题单独提亮）。 */
+export const KIND_META: Record<StructuredKind, KindMeta> = {
+  ask_user: {
+    label: '请旨',
+    badge: 'border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300',
+  },
+  report: {
+    label: '奏折',
+    badge: 'border-violet-500/40 bg-violet-500/15 text-violet-700 dark:text-violet-300',
+  },
+  decision: {
+    label: '批红',
+    badge: 'border-emerald-600 bg-emerald-600 text-white dark:border-emerald-400 dark:bg-emerald-500 dark:text-emerald-950',
+  },
+  answer: {
+    label: '回答',
+    badge: 'border-emerald-500/60 bg-transparent text-emerald-700 dark:text-emerald-300',
+  },
+  event: {
+    label: '事件',
+    badge: 'border-slate-400/40 bg-slate-500/15 text-slate-600 dark:text-slate-300',
+  },
+  text: {
+    label: '消息',
+    badge: 'border-sky-500/40 bg-sky-500/15 text-sky-700 dark:text-sky-300',
+  },
+  command: {
+    label: '指令',
+    badge: 'border-indigo-500/40 bg-indigo-500/15 text-indigo-700 dark:text-indigo-300',
+  },
+}
+
+const COMPACT_KINDS: StructuredKind[] = ['event', 'text', 'command']
+
+/** 紧凑行（event/text/command）判定：流层用它决定行距。 */
+export function isCompactKind(kind: StructuredKind): boolean {
+  return COMPACT_KINDS.includes(kind)
+}
+
+/** 行内容摘要：text 优先，其次按 kind 从 payload 派生。 */
+export function messageSummary(m: StructuredMessage): string {
+  if (m.text) return m.text
+  const payload = (m.payload ?? {}) as Record<string, unknown>
+  if (m.kind === 'report' && typeof payload.summary === 'string') return payload.summary
+  if (m.kind === 'ask_user') {
+    const questions = (payload.questions ?? []) as AskQuestion[]
+    if (questions[0]?.question) return questions[0].question
+  }
+  if (m.kind === 'event' && typeof payload.message === 'string') return payload.message
+  if (typeof payload.text === 'string') return payload.text
+  return ''
+}
+
+function KindBadge({ kind }: { kind: StructuredKind }) {
+  const meta = KIND_META[kind] ?? KIND_META.event
+  return (
+    <span
+      data-testid="kind-badge"
+      className={`shrink-0 rounded border px-1.5 py-[1px] text-[11px] font-semibold leading-4 ${meta.badge}`}
+    >
+      {meta.label}
+    </span>
+  )
+}
+
+function RowMeta({ message, state }: { message: StructuredMessage; state?: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 text-[13px]">
+      <time
+        dateTime={message.created_at}
+        data-testid="row-time"
+        className="shrink-0 tabular-nums text-slate-500 dark:text-slate-400"
+      >
+        {formatClock(message.created_at)}
+      </time>
+      <KindBadge kind={message.kind} />
+      <span className="min-w-0 truncate text-slate-600 dark:text-slate-300">
+        {formatSender(message)}
+      </span>
+      {state ? (
+        <span className="ml-auto shrink-0 rounded-full bg-black/[0.06] px-2 py-0.5 text-[12px] font-medium text-slate-600 dark:bg-white/10 dark:text-slate-300">
+          {state}
+        </span>
+      ) : null}
+    </div>
+  )
+}
 
 export function LongText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false)
@@ -35,7 +147,7 @@ export function LongText({ text }: { text: string }) {
       </p>
       <button
         type="button"
-        className="mt-1 text-[11px] text-sky-400 hover:underline"
+        className="mt-1 text-[13px] text-sky-600 hover:underline dark:text-sky-400"
         onClick={() => setExpanded((v) => !v)}
       >
         {expanded ? '收起' : `展开（共 ${text.length} 字）`}
@@ -44,40 +156,64 @@ export function LongText({ text }: { text: string }) {
   )
 }
 
+// 卡片外壳：统一行头（时间 + kind 徽标 + 发送者 + 状态），正文可留呼吸感。
 function CardShell({
+  message,
   tone,
-  title,
-  badge,
+  state,
   children,
   testId,
 }: {
-  tone: 'amber' | 'violet' | 'emerald' | 'slate'
-  title: string
-  badge?: string
+  message: StructuredMessage
+  tone: 'amber' | 'violet' | 'emerald'
+  state?: string
   children: React.ReactNode
   testId: string
 }) {
   const palette = {
-    amber: 'border-amber-400/40 bg-amber-50/80 dark:bg-amber-950/30',
-    violet: 'border-violet-400/40 bg-violet-50/80 dark:bg-violet-950/30',
-    emerald: 'border-emerald-400/40 bg-emerald-50/80 dark:bg-emerald-950/30',
-    slate: 'border-slate-300/50 bg-white/70 dark:bg-slate-900/50',
+    amber: 'border-amber-400/40 bg-amber-50/80 dark:border-amber-500/30 dark:bg-amber-950/30',
+    violet: 'border-violet-400/40 bg-violet-50/80 dark:border-violet-500/30 dark:bg-violet-950/30',
+    emerald:
+      'border-emerald-400/40 bg-emerald-50/80 dark:border-emerald-500/30 dark:bg-emerald-950/30',
   }[tone]
   return (
     <section
       data-testid={testId}
-      className={`rounded-xl border ${palette} px-3.5 py-3 shadow-sm backdrop-blur`}
+      className={`rounded-xl border ${palette} px-3.5 py-2.5 shadow-sm backdrop-blur`}
     >
-      <header className="mb-2 flex items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wide opacity-70">{title}</span>
-        {badge ? (
-          <span className="rounded-full bg-black/10 px-2 py-0.5 text-[10px] font-medium dark:bg-white/10">
-            {badge}
-          </span>
-        ) : null}
-      </header>
-      {children}
+      <RowMeta message={message} state={state} />
+      <div className="mt-2">{children}</div>
     </section>
+  )
+}
+
+/** 紧凑行：event/text/command。固定 34px 行高，摘要单行省略。 */
+export function CompactRow({ message }: { message: StructuredMessage }) {
+  const summary = messageSummary(message)
+  return (
+    <div
+      data-testid={`${message.kind}-row`}
+      className="flex h-[34px] items-center gap-2 rounded-md px-2 text-[13px] hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+    >
+      <time
+        dateTime={message.created_at}
+        data-testid="row-time"
+        className="shrink-0 tabular-nums text-slate-500 dark:text-slate-400"
+      >
+        {formatClock(message.created_at)}
+      </time>
+      <KindBadge kind={message.kind} />
+      <span className="max-w-[128px] shrink-0 truncate text-slate-600 dark:text-slate-300">
+        {formatSender(message)}
+      </span>
+      <span
+        data-testid="row-summary"
+        className="min-w-0 flex-1 truncate text-slate-800 dark:text-slate-100"
+        title={summary}
+      >
+        {summary}
+      </span>
+    </div>
   )
 }
 
@@ -157,9 +293,9 @@ export function AskUserCard({
 
   return (
     <CardShell
+      message={message}
       tone="amber"
-      title="请旨"
-      badge={message.cancelled ? '已取消' : message.answered ? '已回答' : '等待回答'}
+      state={message.cancelled ? '已取消' : message.answered ? '已回答' : '等待回答'}
       testId="ask-user-card"
     >
       <div className={waiting ? 'animate-pulse' : ''}>
@@ -191,7 +327,9 @@ export function AskUserCard({
                       <span>
                         <span className="font-medium">{opt.label}</span>
                         {opt.description ? (
-                          <span className="ml-1 text-[11px] opacity-60">{opt.description}</span>
+                          <span className="ml-1 text-[13px] text-slate-500 dark:text-slate-400">
+                            {opt.description}
+                          </span>
                         ) : null}
                       </span>
                     </label>
@@ -205,7 +343,7 @@ export function AskUserCard({
                     disabled={done}
                     onChange={(e) => setCustom((prev) => ({ ...prev, [q.id]: e.target.value }))}
                     placeholder="自定义回答…"
-                    className="rounded-lg border border-amber-300/50 bg-white/70 px-2.5 py-1.5 text-sm outline-none focus:border-amber-500 disabled:opacity-60 dark:bg-slate-900/60"
+                    className="rounded-lg border border-amber-300/50 bg-white/70 px-2.5 py-1.5 text-sm outline-none focus:border-amber-500 disabled:opacity-60 dark:border-amber-500/30 dark:bg-slate-900/60"
                   />
                 ) : null}
               </div>
@@ -214,9 +352,11 @@ export function AskUserCard({
         })}
       </div>
       {payload.context_refs?.length ? (
-        <p className="mt-1 text-[11px] opacity-60">依据：{payload.context_refs.join(' · ')}</p>
+        <p className="mt-1 text-[13px] text-slate-500 dark:text-slate-400">
+          依据：{payload.context_refs.join(' · ')}
+        </p>
       ) : null}
-      {err ? <p className="mt-1 text-[11px] text-red-500">{err}</p> : null}
+      {err ? <p className="mt-1 text-[13px] text-red-500">{err}</p> : null}
       <div className="mt-2 flex items-center gap-2">
         <button
           type="button"
@@ -238,7 +378,9 @@ export function AskUserCard({
             取消
           </button>
         ) : null}
-        {done ? <span className="text-[11px] opacity-60">该问题已关闭</span> : null}
+        {done ? (
+          <span className="text-[13px] text-slate-500 dark:text-slate-400">该问题已关闭</span>
+        ) : null}
       </div>
     </CardShell>
   )
@@ -273,31 +415,37 @@ export function ReportCard({
 
   return (
     <CardShell
+      message={message}
       tone="violet"
-      title="奏折"
-      badge={message.answered ? '已批红' : '待批红'}
+      state={message.answered ? '已批红' : '待批红'}
       testId="report-card"
     >
       <LongText text={payload.summary ?? message.text} />
       {payload.evidence?.length ? (
-        <ul className="mt-2 space-y-0.5 text-[11px]">
+        <ul className="mt-2 space-y-0.5">
           {payload.evidence.map((ev, i) => (
-            <li key={`${ev.path}-${i}`} className="flex gap-1.5">
-              <span className="opacity-50">证据</span>
-              <code className="break-all rounded bg-black/10 px-1 dark:bg-white/10">{ev.path}</code>
+            <li key={`${ev.path}-${i}`} className="flex gap-1.5 text-[13px]">
+              <span className="shrink-0 text-slate-500 dark:text-slate-400">证据</span>
+              <code className="break-all rounded bg-black/10 px-1 text-slate-700 dark:bg-white/10 dark:text-slate-200">
+                {ev.path}
+              </code>
             </li>
           ))}
         </ul>
       ) : null}
       {payload.state_ref ? (
-        <p className="mt-1 text-[11px] opacity-60">事实源：{payload.state_ref}</p>
+        <p className="mt-1 text-[13px] text-slate-500 dark:text-slate-400">
+          事实源：{payload.state_ref}
+        </p>
       ) : null}
       {decision ? (
-        <div className="mt-2 rounded-lg bg-emerald-500/15 px-2.5 py-1.5 text-xs">
+        <div className="mt-2 rounded-lg bg-emerald-500/15 px-2.5 py-1.5 text-[13px]">
           <span className="font-semibold">
             {decision.verdict === 'approve' ? '准' : decision.verdict === 'reject' ? '驳' : '改'}
           </span>
-          {decision.comments ? <span className="ml-1 opacity-80">{decision.comments}</span> : null}
+          {decision.comments ? (
+            <span className="ml-1 text-slate-700 dark:text-slate-200">{decision.comments}</span>
+          ) : null}
         </div>
       ) : (
         <>
@@ -308,10 +456,10 @@ export function ReportCard({
               value={comments}
               onChange={(e) => setComments(e.target.value)}
               placeholder="修改意见…"
-              className="mt-2 w-full rounded-lg border border-violet-300/50 bg-white/70 px-2.5 py-1.5 text-sm outline-none focus:border-violet-500 dark:bg-slate-900/60"
+              className="mt-2 w-full rounded-lg border border-violet-300/50 bg-white/70 px-2.5 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-violet-500/30 dark:bg-slate-900/60"
             />
           ) : null}
-          {err ? <p className="mt-1 text-[11px] text-red-500">{err}</p> : null}
+          {err ? <p className="mt-1 text-[13px] text-red-500">{err}</p> : null}
           <div className="mt-2 flex items-center gap-2">
             <button
               type="button"
@@ -358,10 +506,12 @@ export function DecisionCard({ message }: { message: StructuredMessage }) {
           ? '改'
           : payload.verdict
   return (
-    <CardShell tone="emerald" title="批红" badge={String(label ?? '')} testId="decision-card">
+    <CardShell message={message} tone="emerald" state={String(label ?? '')} testId="decision-card">
       <LongText text={message.text} />
       {payload.comments ? (
-        <p className="mt-1 text-[11px] opacity-70">理由：{payload.comments}</p>
+        <p className="mt-1 text-[13px] text-slate-600 dark:text-slate-300">
+          理由：{payload.comments}
+        </p>
       ) : null}
     </CardShell>
   )
@@ -370,24 +520,13 @@ export function DecisionCard({ message }: { message: StructuredMessage }) {
 export function AnswerCard({ message }: { message: StructuredMessage }) {
   return (
     <CardShell
+      message={message}
       tone="emerald"
-      title="回答"
-      badge={message.cancelled ? '已取消' : '已回答'}
+      state={message.cancelled ? '已取消' : '已回答'}
       testId="answer-card"
     >
       <LongText text={message.text} />
     </CardShell>
-  )
-}
-
-export function TextCard({ message }: { message: StructuredMessage }) {
-  return (
-    <div
-      data-testid="text-card"
-      className="rounded-xl border border-slate-300/40 bg-white/60 px-3.5 py-2.5 dark:bg-slate-900/40"
-    >
-      <LongText text={message.text} />
-    </div>
   )
 }
 
@@ -411,7 +550,7 @@ export function StructuredCard({
       case 'answer':
         return <AnswerCard message={message} />
       default:
-        return <TextCard message={message} />
+        return <CompactRow message={message} />
     }
   }, [message, onAnswer, onDecide])
   return <div data-message-id={message.message_id}>{content}</div>

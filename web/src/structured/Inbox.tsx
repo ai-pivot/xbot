@@ -1,24 +1,33 @@
 /**
  * Inbox —— 收件箱（未回答的 ask_user）。
  *
- * 列表：谁问的 / 问题 / 时间；点击展开直接回答（复用 AskUserCard）。
+ * 列表：谁问的 / 问题 / 相对时间（「3 分钟前」）；点击展开直接回答（复用 AskUserCard）。
  * 空态/加载态/错误态完整。
  */
 import { useState } from 'react'
 
-import { AskUserCard, type AnswerFn } from './StructuredCards'
-import type { AskPayload, InboxResult, StructuredMessage } from './types'
+import { AskUserCard, formatClock, formatSender, messageSummary, type AnswerFn } from './StructuredCards'
+import type { InboxResult } from './types'
 
-function questionPreview(m: StructuredMessage): string {
-  const payload = (m.payload ?? {}) as Partial<AskPayload>
-  const first = payload.questions?.[0]
-  return first?.question ?? m.text
-}
-
-function formatTime(iso: string): string {
+/** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / M月D日 HH:mm。 */
+export function relativeTime(iso: string, now: number = Date.now()): string {
   const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  return d.toLocaleString()
+  const ts = d.getTime()
+  if (Number.isNaN(ts)) return ''
+  const diff = Math.max(0, now - ts)
+  const min = Math.floor(diff / 60_000)
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
+  const hours = Math.floor(min / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days} 天前`
+  // 老条目回落到本地日期（手工拼，避免 zh-CN toLocaleString 输出 "9/1"）。
+  const mm = String(d.getMonth() + 1)
+  const dd = String(d.getDate())
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  return `${mm}月${dd}日 ${hh}:${mi}`
 }
 
 export function Inbox({
@@ -84,12 +93,17 @@ export function Inbox({
                   className="w-full rounded-lg border border-amber-400/30 bg-white/70 px-2.5 py-2 text-left hover:bg-amber-50 dark:bg-slate-900/60 dark:hover:bg-amber-950/30"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-[11px] font-medium opacity-70">
-                      {m.sender.name || m.sender.id || '未知'}
+                    <span className="truncate text-[13px] font-medium text-slate-600 dark:text-slate-300">
+                      {formatSender(m)}
                     </span>
-                    <span className="shrink-0 text-[10px] opacity-50">{formatTime(m.created_at)}</span>
+                    <span
+                      className="shrink-0 text-[13px] text-slate-500 dark:text-slate-400"
+                      title={`${m.created_at} · ${formatClock(m.created_at)}`}
+                    >
+                      {relativeTime(m.created_at)}
+                    </span>
                   </div>
-                  <p className="mt-0.5 line-clamp-2 text-xs">{questionPreview(m)}</p>
+                  <p className="mt-0.5 line-clamp-2 text-xs">{messageSummary(m)}</p>
                 </button>
                 {expanded === m.message_id ? (
                   <div className="mt-1.5">
