@@ -48,7 +48,18 @@
   4. 写 `kind=answer` 行（`reply_to` = 问题行 id）。
 - `ListInbox`：`kind='ask_user' AND answered=0 AND cancelled=0`，id DESC keyset。
 - `ListStructuredMessages`：按 kind 过滤 + keyset。
-- `CountInbox` / `MarkStructuredAnswered`（批红后持久化报告态）。
+- `CountInbox`（未读徽标）。
+- `AppendDecision`：批红闭环，与 `AnswerAskUser` **共用同一套 CAS**：
+  1. 先查 `(chat_id, idempotency_key)`，命中即返回原 decision 行（`duplicate=true`）；
+  2. 目标行（`reply_to` 指向的 message_id）不存在 → `ErrStructuredNotFound`（404）；
+     已 `answered` → `ErrAskUserAnswered`（409）；已 `cancelled` → `ErrAskUserCancelled`（409）；
+  3. `UPDATE ... SET answered=1 WHERE answered=0 AND cancelled=0` CAS（并发批红只成功一次）；
+  4. 写 `kind=decision` 行（`reply_to` = 目标行 id）。
+  > 旧实现用无条件 `MarkStructuredAnswered` 且只读 `payload.target_message_id`，
+  > 导致重复批红返回 200、目标 `answered` 永远为 0 —— 该函数已删除，杜绝无 CAS 的置位路径。
+- `AnswerAskUser` 同时服务 `POST /api/answer` 与 `POST /api/message{kind:"answer"}`：
+  后者按 `reply_to` 定位 ask_user、派生 correlation，再走同一事务（见 1.3）。
+- `kind=event` / `kind=command` 只做展示与控制，**不进 LLM 回放**（见 1.5）。
 - `row_to_llm` 路径：`getHistoryFromWith` 同时读取新列，`llm.ChatMessage` /
   `protocol.HistoryMessage` 携带 `kind/correlation_id/reply_to/structured_json/
   direction/answered/cancelled`，历史/回放零额外查询。
@@ -57,7 +68,7 @@
 
 | 端点 | 行为 |
 |---|---|
-| `POST /api/message` | 兼容旧 `{content}` 文本；出现 `kind`/`payload` 时走结构化分支。kind 白名单校验、payload ≤256KB、幂等写入、成功后向该会话广播 `structured_message` |
+| `POST /api/message` | 兼容旧 `{content}` 文本；出现 `kind`/`payload` 时走结构化分支。kind 白名单校验、payload ≤256KB、幂等写入、成功后向该会话广播 `structured_message`。`kind=decision` 走批红 CAS（`reply_to` 必需，目标不存在 404 / 已答已取消 409）；`kind=answer` 走回答 CAS（`reply_to` 必需，等价 `POST /api/answer`）。可选 `created_at`（RFC3339）只用于导入/回填/演示 |
 | `POST /api/answer` | `{correlation_id, answers[], cancelled?, idempotency_key?}`；服务端按 ask_user 信封校验单选/多选/自定义；幂等；409 映射 |
 | `GET /api/inbox?cursor=&limit=` | 未回答 ask_user + `unanswered` 计数 |
 | `GET /api/messages?kind=&cursor=&limit=` | 按 kind 过滤 |
@@ -108,7 +119,18 @@
 - `src/pages/StructuredPage.tsx` + `/structured` 路由（AuthGuard + WSProvider +
   SessionStoreProvider）；`core.structured` 面板注册（侧边栏入口）。
 - 决策卡：准/驳/改（改带输入框）→ `POST /api/message (kind=decision)`；成功后
-  服务端把被批报告标记 `answered=1`（刷新后仍显示已批红）。
+  服务端 CAS 把被批报告置 `answered=1`（刷新后仍显示已批红）。
+
+### 2.1 行渲染（视觉规范）
+
+- 每行统一带 `HH:mm:ss`（`toLocaleTimeString('zh-CN', {hour12:false})`）+ kind 徽标
+  （ask_user 琥珀 / report 紫 / decision 绿实心 / answer 绿描边 / event 灰 / text 蓝）
+  + 发送者 + 单行省略的内容摘要。
+- event/text/command 为紧凑行（32–36px，行间 2px）；ask_user/report 卡保留内边距。
+- 消息列 `max-w-[880px]` 居中，卡片不再横跨全宽。
+- 次要文字（时间戳、证据路径）≥13px 且用显式颜色（`text-slate-500 dark:text-slate-400`），
+  不再依赖 `opacity-50` 在深色主题下压暗。
+- 收件箱条目显示相对时间（刚刚 / N 分钟前 / N 小时前 / M月D日 HH:mm）。
 
 ## 3. 测试与性能
 
@@ -117,9 +139,13 @@
 | 幂等（同 key 两写） | `storage/sqlite/structured_messages_test.go` | PASS |
 | 双击回答 / 重复回答拒绝 | 同上 | PASS |
 | 取消后回答拒绝 | 同上 | PASS |
+| 批红 CAS（同键幂等 / 不同键 409 / 目标 404 / 已取消 409） | 同上（`TestAppendDecision*`） | PASS |
+| event/command 不进 LLM 回放、UI 仍可见 | 同上（`TestReplayExcludesEventAndCommand*`） | PASS |
 | 收件箱 + 游标分页 | 同上 | PASS |
 | reply_to 悬空 | 同上 | PASS |
 | 非法 kind / 256KB 超限 | `channel/web/web_structured_test.go` | PASS（400） |
+| 批红/回答 409/404/400 映射 | 同上（`TestDecision*` / `TestMessageKindAnswer*`） | PASS |
+| 行渲染格式（HH:mm:ss / kind 徽标 / 相对时间） | `web/src/structured/structuredRowFormat.test.ts` | PASS（8 例） |
 | 未知会话 404 | 同上 | PASS |
 | 插队优先级 / 8 条让位 / FIFO | `agent/structured_queue_test.go` | PASS |
 | iteration 边界 drain 真接线 | 同上 | PASS |
@@ -136,3 +162,32 @@
    + message_id 去重」；服务端不存事件回放缓冲。
 3. 主库 schema 75 仅用于迁移期旧表；v72 之后主库无消息表时迁移自动跳过。
 4. CLI/Feishu 旧 AskUser 面板与 agent 暂停分支残留（工具已删除，不可达）。
+5. `POST /api/message` 的 `created_at` 允许客户端回填（导入/演示）。服务端不做
+   单调性校验；调用方要自己保证递增，否则时间线顺序按 `created_at + message_id` 排序。
+
+## 5. 决策记录
+
+### 2026-10-20 · 闭环语义统一到存储列 `answered`（取代「派生存在性」）
+
+**问题**：设计文档曾写「`answered` 由同库 `EXISTS(kind='answer' AND reply_to=msg_X)` 派生」，
+实现用的是存储列。两套语义并存导致：
+- `POST /api/message{kind:"decision"}` 重复批红返回 200、目标 `answered` 永远 0；
+- `POST /api/message{kind:"answer"}` 写行但不闭环，收件箱不收敛。
+
+**决策**：统一到存储列 `answered`，由 `AnswerAskUser` / `AppendDecision` 的 CAS 原子置位。
+派生查询无法原子拒绝并发重复提交，无法保证收件箱与卡片刷新后一致。文档（§7.5 / §8.2 /
+§12 字段表）同步改写。`kind=answer` 走 `/api/message` 时复用同一闭环（`answerViaMessage`），
+不另开第二条写入路径。
+
+### 2026-10-20 · `event` / `command` 不进 LLM 回放
+
+**问题**：`display_only` 写死 0、`structuredRole` 把 event 当 user，`getHistoryFromWith`
+全表读，导致批量事件（e2e 1000 条）作为 user 消息进入下次 prompt，直接爆 context。
+
+**决策**：不改 `display_only`（主聊天视图 `useChatMessages.ts` 会丢弃这些行，改了事件就消失），
+而是在 `history.go replayWith()` 的回放点按 kind 过滤：`structuredKindHiddenFromLLM()`
+跳过 `event` + `command`。UI 展示路径（`replayForDisplayRecords` / `/api/messages` /
+主聊天视图）完全不过滤 —— 「可见但不进上下文」是单一明确语义。
+
+**测试**：`TestReplayExcludesEventAndCommandButKeepsDialogue`：写 N 条 event + 1 条 command
++ ask_user/report/answer/text，`Replay()` 只含后四类；`ReplayForDisplay()` 仍含 3 条 event。

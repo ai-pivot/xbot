@@ -517,7 +517,7 @@ B/C/D 的会话库：各 1 条 inbound（message_id 同为 msg_X, group_id=G）
 |---|---|
 | `delivered` | 收件方会话库存在该 `message_id` 的 inbound 行 |
 | `failed` | 发送方会话库存在 `kind=receipt, ack_of=msg_X, status=failed` 行 |
-| `answered` | 发送方会话库存在 `kind=answer, reply_to=msg_X` 行 |
+| `answered` | 目标行的存储列 `answered=1`；由 `kind=answer` / `kind=decision` 的 **CAS 更新**原子置位（不是「派生存在性查询」，见 §8.2 闭环） |
 | `duplicate` | 重复提交时新写的 receipt 行 `duplicate=true` |
 
 **没有 `expired` 状态**：消息不会过期，`ask_user` 未回答状态永久保留（Q3 拍板）。因此也没有 sweeper / 惰性结算 / 定时 tick 扫描。
@@ -563,6 +563,22 @@ AsyncMessageNotification {
 Q1: 改 — 先扩 4 节点，观察 24h
 </from>
 ```
+
+**闭环规则（answer / decision 共用同一套 CAS）**：
+
+| 场景 | HTTP | 结果 |
+|---|---|---|
+| 目标行不存在 | `404` | 不写回程行 |
+| 目标行已 `answered`（不同 `idempotency_key`） | `409 already answered` | 不写回程行（不能只靠幂等键去重） |
+| 目标行已 `cancelled` | `409 cancelled` | 不写回程行 |
+| 同一 `idempotency_key` 重复 | `200 duplicate=true` | 返回原行，不重复置位 |
+| 成功 | `200` | 目标行 `answered=1`（CAS），写入回程行 |
+
+两个入口等价：
+
+- `POST /api/answer {correlation_id, answers[]}` —— 按 correlation 寻址问题行；
+- `POST /api/message {kind:"answer", reply_to:"<ask_user message_id>", payload:{answers[]}}` —— 按 message_id 寻址，内部复用同一闭环（`answerViaMessage`）。
+- `POST /api/message {kind:"decision", reply_to:"<report message_id>", payload:{verdict}}` —— 批红闭环，成功把 report 置 `answered=1`。
 
 ### 8.3 顺序与去重
 
@@ -821,7 +837,7 @@ GET /api/groups/{id}/messages?cursor=<msg_id>&limit=50
 | `items[].text` | string | 人读文本 |
 | `items[].payload` | object | 解析后的 `structured_json.payload`（`text` 类型可为空对象） |
 | `items[].recipients` | array | 仅 `direction=out`：`[{addr, status}]`，取自信封 `meta.recipients`（群发展开结果，供流向图；不新增记录） |
-| `items[].answered` | bool | 仅 `ask_user` 有意义：同库存在 `kind=answer AND reply_to=<message_id>` |
+| `items[].answered` | bool | 目标行存储列 `answered`（`answer`/`decision` 经 CAS 置位）。`ask_user` 回答后为 true；`report` 批红后为 true，供卡片显示「已批红」 |
 | `next_cursor` | string | 下一页游标（本页最后一条 `message_id`）；`has_more=false` 时为空串 |
 | `has_more` | bool | 是否还有更早的消息 |
 
@@ -867,7 +883,7 @@ LIMIT :limit + 1;
 
 - 依赖索引 `ix_sm_group_cursor ON session_messages(group_id, id DESC) WHERE group_id <> ''`（§7.2）。单库查询，无跨库扫描。
 - 多取一条判断 `has_more`；`next_cursor` = 本页最后一条 `message_id`。
-- `answered` 由同库 `EXISTS(kind='answer' AND reply_to=message_id)` 派生，**不新增状态列、不新增表**。
+- `answered` 是**存储列**（`session_messages.answered`），由 `kind=answer` / `kind=decision` 的 CAS 更新原子置位，**不靠 `EXISTS(...)` 派生**：派生查询无法原子地拒绝并发重复提交（会写出两条 answer/decision 行），也无法让收件箱与卡片在刷新后看到一致终态。
 
 **权限与错误**：
 
