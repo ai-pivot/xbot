@@ -4674,11 +4674,22 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	seqPtr := a.progressSeqFor(progressKey)
 	seq := seqPtr.Add(1)
 
+	// ⛔ 审计（2026-10-21）：本 payload 会**覆盖** lastProgressSnapshot（见下方 Store），
+	//   但它此前**不带会话级字段** ⇒ 从 turn_started 到首个 iteration 事件之间若断线/心跳
+	//   重连，`GetActiveProgress` 返回的快照里 `todos:null`、无 goal ⇒ 前端只能保留旧值
+	//   （冷启动时干脆没有）⇒ 表现为「发消息后 todo/goal 空一段」。
+	//   这里补齐（todos 恒给：`[]` = 显式清空；goal 可空）。
+	var turnGoal *protocol.GoalInfo
+	if a.goalManager != nil {
+		turnGoal = a.goalManager.GoalInfo(progressKey)
+	}
 	payload := &protocol.ProgressEvent{
-		ChatID: progressKey,
-		Phase:  "turn_started",
-		Seq:    seq,
-		TurnID: turnID,
+		ChatID:     progressKey,
+		Phase:      "turn_started",
+		Seq:        seq,
+		TurnID:     turnID,
+		Todos:      a.GetTodos(msg.Channel, msg.ChatID),
+		Goal:       turnGoal,
 		TurnStart: &protocol.TurnStartInfo{
 			Trigger:    trigger,
 			Content:    content,
@@ -4787,6 +4798,9 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 		Phase:            string(PhaseDone),
 		Seq:              seq,
 		TurnID:           a.getActiveTurnID(progressKey),
+		// ⛔ 审计：本帧发出后快照就被删（下方 Delete），而合成 done 分支不带 todos/cwd
+		//   ⇒ `/compress` 之后重连的客户端拿不到权威 todo 列表与工作目录。这里一并带上。
+		Todos:            a.GetTodos(chName, chatID),
 		TokenUsage:       tokenUsage,
 		HistoryCompacted: historyCompacted,
 	}

@@ -204,7 +204,16 @@ func cloneProgressEvent(src *protocol.ProgressEvent) *protocol.ProgressEvent {
 	clone.CompletedTools = append([]protocol.ToolProgress(nil), src.CompletedTools...)
 	clone.StreamingTools = append([]protocol.ToolProgress(nil), src.StreamingTools...)
 	clone.SubAgents = append([]protocol.SubAgentInfo(nil), src.SubAgents...)
-	clone.Todos = append([]protocol.TodoItem(nil), src.Todos...)
+	// ⛔ 审计（2026-10-21）：`append([]T(nil), src...)` 会把**空数组折成 nil** ⇒ JSON 变 `null`。
+	//   而 `Todos` 没有 omitempty，客户端按「`null`=未携带（保持旧值） / `[]`=显式清空」区分
+	//   ⇒ `todo_write([])`（清空列表）在克隆路径上**被当成"没带"** ⇒ 前端永远学不到"已清空"。
+	//   这里显式区分 nil / 空数组。
+	if src.Todos != nil {
+		clone.Todos = make([]protocol.TodoItem, len(src.Todos))
+		copy(clone.Todos, src.Todos)
+	} else {
+		clone.Todos = nil
+	}
 	clone.IterationHistory = progressHistoryWithoutNested(src.IterationHistory)
 	if src.TokenUsage != nil {
 		tokens := *src.TokenUsage
