@@ -20,6 +20,7 @@ import { SessionInfo as SessionInfoPanel } from '@/components/sidebar/SessionInf
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
 import { CourtConsole } from '@/components/court/CourtConsole'
+import { StructuredWorkspace } from '@/structured/StructuredWorkspace'
 import { useTerminal } from '@/hooks/useTerminal'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
@@ -330,6 +331,16 @@ const BUILTIN_PANELS: PanelDefinition[] = [
     defaultSlot: 'left',
     defaultMode: 'docked',
     render: (ctx) => <CoreTerminalPanel ctx={ctx} />,
+    source: 'core',
+  },
+  {
+    id: 'core.structured',
+    title: '消息/收件箱',
+    icon: 'mail',
+    defaultSlot: 'left',
+    defaultMode: 'docked',
+    render: () => <StructuredWorkspace />,
+    emptyHint: '暂无结构化消息',
     source: 'core',
   },
   {

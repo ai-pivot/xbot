@@ -24,6 +24,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
 import { SharePage } from '@/pages/SharePage'
 import { CourtPage } from '@/pages/CourtPage'
+import { StructuredPage } from '@/pages/StructuredPage'
 import { ImageLightboxHost } from '@/components/agent/Lightbox'
 import { registerBuiltinLayoutItems } from '@/plugin-runtime/layoutRegistry'
 
@@ -69,6 +70,19 @@ export default function App() {
           <Route path="/s/:token" element={<SharePageRoute />} />
           {/* 指挥室全屏路由：与侧边栏面板共用 CourtConsole。 */}
           <Route path="/court" element={<AuthGuard><CourtPage /></AuthGuard>} />
+          {/* 结构化消息页依赖 SessionStore（activeSession）与 WSProvider。 */}
+          <Route
+            path="/structured"
+            element={
+              <AuthGuard>
+                <WSProvider>
+                  <SessionStoreProvider>
+                    <StructuredPage />
+                  </SessionStoreProvider>
+                </WSProvider>
+              </AuthGuard>
+            }
+          />
           {/* 指挥室演示路由：只用内置 seed 数据、不发起任何认证请求。
               供 e2e 截图与「未登录预览」使用；真实数据请走 /court。 */}
           <Route path="/court-demo" element={<CourtPage demo />} />

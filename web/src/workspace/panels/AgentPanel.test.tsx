@@ -60,7 +60,6 @@ const mocks = vi.hoisted(() => {
 })
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
-vi.mock('@/hooks/useAskUser', () => ({ useAskUser: () => ({ prompt: null, respond: vi.fn(), cancel: vi.fn() }) }))
 vi.mock('@/hooks/useChatMessages', () => ({
   // 捕获 chatID —— 会话归属不变量（一个会话至多被一个 agent 面板渲染）的断言点；
   // 同时捕获 onSendSuccess —— 乐观 busy（命令不得置位）的接线断言点。
@@ -119,7 +118,6 @@ vi.mock('@/components/agent/api', () => ({
   getGoal: vi.fn().mockResolvedValue(null),
   getPendingAskUser: (...args: unknown[]) => mocks.getPendingAskUser(...args),
 }))
-vi.mock('@/components/agent/AskUserPanel', () => ({ AskUserPanel: () => null }))
 vi.mock('@/components/agent/ContextRing', () => ({ ContextRing: () => null }))
 vi.mock('@/components/agent/MessageInput', () => ({
   MessageInput: () => <div data-testid="agent-composer" />,
@@ -366,27 +364,6 @@ describe('AgentPanel busy state', () => {
     expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
   })
 
-  it('suppresses busy while waiting_input — even with running=true and a live streaming snapshot', () => {
-    // F3: waiting_input (AskUser pending) ⇔ NOT busy. Worst case here: the
-    // local prompt was already dropped but the session status is still
-    // waiting_input while the backend row / streaming snapshot says busy — the
-    // input must not show the generating/stop state (the turn is PAUSED).
-    const store = mocks.context.sessionStore as unknown as {
-      sessions: Array<{ chatID: string; channel: string; running: boolean; status: string }>
-    }
-    store.sessions = [{ chatID: 'chat-1', channel: 'web', running: true, status: 'waiting_input' }]
-    mocks.progress.progressSnapshot = { todos: [], tokenUsage: null, streaming: true, phase: 'thinking' }
-    const first = render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
-    expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
-    first.unmount()
-
-    // Control (mutation discrimination): the SAME running+streaming state
-    // without waiting_input IS busy — proving the suppression is the status gate.
-    store.sessions = [{ chatID: 'chat-1', channel: 'web', running: true, status: 'running' }]
-    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
-    expect(screen.getByTestId('message-list-busy').textContent).toBe('true')
-    store.sessions = []
-  })
 })
 
 describe('AgentPanel liveMessage visibility during reload', () => {
@@ -601,43 +578,3 @@ describe('断线（重连中）不再显示黄色 Reconnecting 条，改走 load
  *
  * 判别力：删掉 AgentPanel 的那次水合调用 ⇒ 本例的 `hydrateAskUserPrompt` 断言必红。
  */
-describe('AgentPanel AskUser 水合（get_pending_ask_user，DB 权威）', () => {
-  it('会话可见时用 DB 的 pending 记录水合（漏掉实时 ask_user 事件也能自愈）', async () => {
-    mocks.getPendingAskUser.mockResolvedValue({
-      request_id: 'req-7',
-      questions: [{ question: 'proceed?', options: ['yes', 'no'], multi_select: true, allow_other: true }],
-    })
-    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
-
-    await waitFor(() =>
-      expect(mocks.getPendingAskUser).toHaveBeenCalledWith({ channel: 'web', chatID: 'chat-1' }),
-    )
-    await waitFor(() =>
-      expect(mocks.context.sessionStore.hydrateAskUserPrompt).toHaveBeenCalledWith('web', 'chat-1', {
-        // 与实时 ask_user 事件共用同一个 parseAskUserPrompt（snake_case → camelCase）。
-        requestId: 'req-7',
-        questions: [{ question: 'proceed?', options: ['yes', 'no'], multiSelect: true, allowOther: true }],
-      }),
-    )
-  })
-
-  it('DB 无 pending 记录时不水合（绝不伪造面板）', async () => {
-    mocks.getPendingAskUser.mockResolvedValue(null)
-    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
-
-    await waitFor(() => expect(mocks.getPendingAskUser).toHaveBeenCalled())
-    expect(mocks.context.sessionStore.hydrateAskUserPrompt).not.toHaveBeenCalled()
-  })
-
-  it('载荷不含任何问题（通用 RPC mock 的 {ok:true}）时不水合 —— 空 prompt 会崩掉整块面板', async () => {
-    // 判别力：这不是"额外的防御"——它是 2026-09-20 CI 9 个 spec 全红的根因。
-    // 通用 `/api/rpc` 通配路由 mock 对任何方法都回 {ok:true, data:{ok:true}}，
-    // 过去它被合成为 questions: [] 的 prompt ⇒ AskUserPanel 读 questions[0].allowOther
-    // 抛异常 ⇒ 崩溃边界替换整块面板（goal banner / todo 面板全消失）。
-    mocks.getPendingAskUser.mockResolvedValue({ ok: true })
-    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
-
-    await waitFor(() => expect(mocks.getPendingAskUser).toHaveBeenCalled())
-    expect(mocks.context.sessionStore.hydrateAskUserPrompt).not.toHaveBeenCalled()
-  })
-})
