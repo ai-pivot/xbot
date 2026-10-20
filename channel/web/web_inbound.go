@@ -441,40 +441,6 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 	return sel, err
 }
 
-func (wc *WebChannel) dispatchAskUserResponse(ctx context.Context, identity inboundIdentity, channelName, chatID string, response protocol.AskUserResponse) (SessionSelector, error) {
-	sel, err := wc.resolveInboundSession(ctx, identity, channelName, chatID)
-	if err != nil {
-		return SessionSelector{}, err
-	}
-	if response.Cancelled {
-		return wc.dispatchCancel(ctx, identity, sel.Channel, sel.ChatID)
-	}
-	if len(response.Answers) == 0 {
-		return SessionSelector{}, fmt.Errorf("answer is required")
-	}
-	parts := make([]string, 0, len(response.Answers))
-	for questionID, answer := range response.Answers {
-		parts = append(parts, fmt.Sprintf("Q%s: %s", questionID, answer))
-	}
-	_, err = wc.enqueueInbound(ctx, bus.InboundMessage{
-		Channel:    sel.Channel,
-		SenderID:   identity.SenderID,
-		SenderName: identity.SenderName,
-		ChatID:     sel.ChatID,
-		ChatType:   "p2p",
-		Content:    strings.Join(parts, "\n\n"),
-		Time:       time.Now(),
-		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-		From:       bus.NewIMAddress(sel.Channel, identity.SenderID),
-		Metadata: func() map[string]string {
-			m := map[string]string{"ask_user_answered": "true"}
-			withPhysicalChannel(m, identity.IsCLI)
-			return m
-		}(),
-	})
-	return sel, err
-}
-
 func (wc *WebChannel) enqueueInbound(ctx context.Context, message bus.InboundMessage) (bus.DeliveryResult, error) {
 	if wc.msgBus == nil {
 		return bus.DeliveryResult{}, errInboundUnavailable

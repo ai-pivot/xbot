@@ -274,6 +274,20 @@ type WebCallbacks struct {
 	// Tray drag-and-drop). Returns false when nothing is queued or the order is
 	// unchanged (no broadcast then).
 	ReorderQueued func(channel, chatID string, msgIDs []string) bool
+
+	// ── 结构化消息（sendmessage-structured）────────────────────────────────
+	// StructuredAppend persists a structured message for the caller's session
+	// and delivers it (busy → priority queue, idle → new turn). Returns
+	// (message, duplicate, error).
+	StructuredAppend func(senderID string, sel SessionSelector, input protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error)
+	// StructuredAnswer answers an ask_user question idempotently.
+	StructuredAnswer func(senderID string, sel SessionSelector, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error)
+	// StructuredInbox lists unanswered ask_user rows (keyset cursor = row id).
+	StructuredInbox func(sel SessionSelector, cursor int64, limit int) ([]protocol.StructuredMessage, bool, int64, error)
+	// StructuredCount returns the unanswered ask_user count for the badge.
+	StructuredCount func(sel SessionSelector) (int, error)
+	// StructuredMessages lists structured messages filtered by kind.
+	StructuredMessages func(sel SessionSelector, kind string, cursor int64, limit int) ([]protocol.StructuredMessage, bool, int64, error)
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.
@@ -912,7 +926,11 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/queue/list", wc.authenticatedPOST(wc.handleQueueList))
 	mux.HandleFunc("/api/queue/cancel", wc.authenticatedPOST(wc.handleQueueCancel))
 	mux.HandleFunc("/api/queue/reorder", wc.authenticatedPOST(wc.handleQueueReorder))
-	mux.HandleFunc("/api/ask_user/respond", wc.authenticatedPOST(wc.handleAskUserRespond))
+	// 结构化消息（sendmessage-structured）：/api/message 已在上方注册（kind/payload
+	// 分支由 handleMessage 转发）；这里补回答、收件箱、按 kind 查询。
+	mux.HandleFunc("/api/answer", wc.authenticatedPOST(wc.handleStructuredAnswer))
+	mux.HandleFunc("/api/inbox", wc.authMiddleware(wc.handleInbox))
+	mux.HandleFunc("/api/messages", wc.authMiddleware(wc.handleStructuredMessages))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
 	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。
 	mux.HandleFunc("/api/plugin-files/upload", wc.authMiddleware(postOnly(wc.handlePluginFileUpload)))

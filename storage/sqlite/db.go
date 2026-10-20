@@ -64,7 +64,7 @@ type DB struct {
 	lastWALSize int64
 }
 
-const schemaVersion = 74
+const schemaVersion = 75
 const historyLockStripes = 64
 
 // Open opens or creates a SQLite database at the given path

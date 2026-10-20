@@ -238,20 +238,27 @@ func userCancelledSyntheticTool() (llm.ChatMessage, llm.ChatMessage, IterationTo
 // that returns only notifications matching the given session key.
 func (a *Agent) wireBgNotificationDrain(sessionKey string) func() []tools.BgNotification {
 	return func() []tools.BgNotification {
+		// 插队优先队列优先：结构化消息（answer/decision/普通插话）在同一个
+		// iteration 边界被消费，且排在后台通知之前（设计 §9.2 严格优先）。
+		structured := a.drainStructuredQueue(sessionKey)
 		mine := a.takePendingBgNotifications(sessionKey)
 		// Track drained notifications so cancel can persist them explicitly. If the
 		// Run is cancelled after draining, these notifications were consumed from
 		// bgRunPending and must be recorded in the interrupted turn instead of
 		// delivered as a fresh user message after Ctrl+C.
-		if len(mine) > 0 {
+		if len(mine) > 0 || len(structured) > 0 {
 			if state, ok := a.bgSessionStates.Load(sessionKey); ok {
 				ss := state.(*bgSessionState)
 				ss.drainedThisRunMu.Lock()
+				ss.drainedThisRun = append(ss.drainedThisRun, structured...)
 				ss.drainedThisRun = append(ss.drainedThisRun, mine...)
 				ss.drainedThisRunMu.Unlock()
 			}
 		}
-		return mine
+		if len(structured) == 0 {
+			return mine
+		}
+		return append(structured, mine...)
 	}
 }
 

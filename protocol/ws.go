@@ -34,7 +34,10 @@ const (
 	MsgTypeBgTaskOutput    = "bg_task_output"
 	MsgTypeQueueState      = "queue_state"
 	MsgTypeGroupMessage    = "group.message"
-	MsgTypePong            = "__pong__"
+	// MsgTypeStructuredMessage carries a structured message (ask_user/answer/
+	// report/decision/...) to the session. Clients dedupe by Structured.MessageID.
+	MsgTypeStructuredMessage = "structured_message"
+	MsgTypePong              = "__pong__"
 
 	// Channel Plugin → xbot: tool declaration
 	MsgTypeChannelTools = "channel_tools"
@@ -127,6 +130,9 @@ type WSMessage struct {
 	// type — the front-end reads msg.reason / msg.chat_id directly).
 	AskUserResolvedRequestID string `json:"request_id,omitempty"`
 	AskUserResolvedReason    string `json:"reason,omitempty"`
+	// Structured carries a structured-message event (kind=ask_user/answer/...)
+	// when Type == MsgTypeStructuredMessage. Clients dedupe by MessageID.
+	Structured *StructuredMessage `json:"structured,omitempty"`
 }
 
 // QueueItemPayload describes a single queued message in the session queue
@@ -172,4 +178,15 @@ type WSClientMessage struct {
 	Method     string             `json:"method,omitempty"`
 	Params     json.RawMessage    `json:"params,omitempty"`
 	TUIControl *TUIControlPayload `json:"tui_control,omitempty"`
+
+	// ── 结构化消息（POST /api/message）──────────────────────────────────
+	// 只要出现 Kind 或 Payload，handleMessage 就转入结构化分支（见
+	// channel/web/web_structured.go）；旧客户端不带这些字段，走原有文本路径。
+	Kind           string         `json:"kind,omitempty"`
+	Payload        map[string]any `json:"payload,omitempty"`
+	CorrelationID  string         `json:"correlation_id,omitempty"`
+	ReplyTo        string         `json:"reply_to,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	To             string         `json:"to,omitempty"`
+	Text           string         `json:"text,omitempty"`
 }

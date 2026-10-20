@@ -63,6 +63,16 @@ CREATE TABLE session_messages (
     sender_type TEXT NOT NULL DEFAULT '',
     sender_id TEXT NOT NULL DEFAULT '',
     sender_name TEXT NOT NULL DEFAULT '',
+    -- v75: 结构化消息列（与会话库 v5 同一列清单；主库仅遗留迁移期使用）。
+    chat_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    reply_to TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    structured_json TEXT NOT NULL DEFAULT '',
+    direction TEXT NOT NULL DEFAULT '',
+    answered INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
 );
@@ -146,7 +156,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (74);
+INSERT INTO schema_version (version) VALUES (75);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.

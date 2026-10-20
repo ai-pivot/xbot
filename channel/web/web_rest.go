@@ -68,6 +68,12 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// 结构化消息（kind/payload）与普通文本共用 POST /api/message：旧客户端
+	// 不带 kind/payload，行为完全不变；结构化请求转入独立分支。
+	if request.Kind != "" || len(request.Payload) > 0 {
+		wc.handleStructuredMessageBody(w, r, request)
+		return
+	}
 	identity := wc.inboundIdentityFromRequest(r)
 	if request.ChatID != "" && request.Channel == "" {
 		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
@@ -306,40 +312,6 @@ func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {
 		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
 	sel, err := wc.dispatchCancel(r.Context(), identity, request.Channel, request.ChatID)
-	if err != nil {
-		writeInboundError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"chat_id": sel.ChatID, "channel": sel.Channel})
-}
-
-func (wc *WebChannel) handleAskUserRespond(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		Channel    string            `json:"channel,omitempty"`
-		ChatID     string            `json:"chat_id,omitempty"`
-		QuestionID string            `json:"question_id,omitempty"`
-		Answer     string            `json:"answer,omitempty"`
-		Answers    map[string]string `json:"answers,omitempty"`
-		Cancelled  bool              `json:"cancelled,omitempty"`
-	}
-	if err := decodeJSONBody(r, &request, false); err != nil {
-		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if request.Answers == nil && (request.QuestionID != "" || request.Answer != "") {
-		questionID := request.QuestionID
-		if questionID == "" {
-			questionID = "1"
-		}
-		request.Answers = map[string]string{questionID: request.Answer}
-	}
-	identity := wc.inboundIdentityFromRequest(r)
-	if request.ChatID != "" && request.Channel == "" {
-		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
-	}
-	sel, err := wc.dispatchAskUserResponse(r.Context(), identity, request.Channel, request.ChatID, protocol.AskUserResponse{
-		Answers: request.Answers, Cancelled: request.Cancelled,
-	})
 	if err != nil {
 		writeInboundError(w, err)
 		return

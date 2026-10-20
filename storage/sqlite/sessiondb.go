@@ -41,7 +41,12 @@ import (
 //     (turn_id, iteration) 详情单查。**该变更不需要迁移链**：initSessionSchema
 //     每次打开会话库都重放整份幂等 DDL（CREATE ... IF NOT EXISTS），新库与既有库
 //     在同一收口点收敛；版本号只记录 schema 修订，不参与分支判断。
-const sessionSchemaVersion = 4
+//   - 3: iteration 列（合成工具对归属迭代）。
+//   - 4: 群组信封列（group_id / sender_type / sender_id / sender_name）。
+//   - 5: 结构化消息列（chat_id / kind / correlation_id / reply_to /
+//     idempotency_key / structured_json / direction / answered / cancelled）
+//     与三个索引。旧库按列幂等 ALTER 补齐。
+const sessionSchemaVersion = 5
 
 // sessionSchema 是会话库的完整 DDL（主库 schema 的子集，FK 省略）。
 // 与 schema.go 的 session_messages/iteration_history 列定义保持逐列一致——
@@ -72,6 +77,24 @@ CREATE TABLE IF NOT EXISTS session_messages (
     sender_type TEXT NOT NULL DEFAULT '',
     sender_id TEXT NOT NULL DEFAULT '',
     sender_name TEXT NOT NULL DEFAULT '',
+    -- v5: 结构化消息信封（sendmessage-structured 设计 §7.2 的会话库子集）。
+    --   chat_id          会话 ID（会话库本身已按 chat 隔离；列用于幂等复合索引）
+    --   kind             消息语义类型（text/ask_user/answer/report/decision/command/event）
+    --   correlation_id   请求—响应关联键
+    --   reply_to         直接回复的行 id（字符串形式，允许悬空）
+    --   idempotency_key  发送者作用域幂等键
+    --   structured_json  完整信封 JSON
+    --   direction        in | out
+    --   answered/cancelled  ask_user 终态（0/1）
+    chat_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    reply_to TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    structured_json TEXT NOT NULL DEFAULT '',
+    direction TEXT NOT NULL DEFAULT '',
+    answered INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
@@ -219,6 +242,49 @@ func (db *DB) initSessionSchema() error {
 	}
 	if _, err := db.Conn().Exec(`CREATE INDEX IF NOT EXISTS ix_sm_group_cursor ON session_messages(group_id, id DESC)`); err != nil {
 		return fmt.Errorf("create ix_sm_group_cursor: %w", err)
+	}
+	// v5: 结构化消息列。与 v3/v4 同策略：旧库逐列幂等补齐（新库由上面的
+	// CREATE TABLE 直接建好）。列顺序与 sessionSchema 末尾一致，便于人工核对。
+	for _, c := range []struct{ name, ddl string }{
+		{"chat_id", "ALTER TABLE session_messages ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''"},
+		{"kind", "ALTER TABLE session_messages ADD COLUMN kind TEXT NOT NULL DEFAULT ''"},
+		{"correlation_id", "ALTER TABLE session_messages ADD COLUMN correlation_id TEXT NOT NULL DEFAULT ''"},
+		{"reply_to", "ALTER TABLE session_messages ADD COLUMN reply_to TEXT NOT NULL DEFAULT ''"},
+		{"idempotency_key", "ALTER TABLE session_messages ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''"},
+		{"structured_json", "ALTER TABLE session_messages ADD COLUMN structured_json TEXT NOT NULL DEFAULT ''"},
+		{"direction", "ALTER TABLE session_messages ADD COLUMN direction TEXT NOT NULL DEFAULT ''"},
+		{"answered", "ALTER TABLE session_messages ADD COLUMN answered INTEGER NOT NULL DEFAULT 0"},
+		{"cancelled", "ALTER TABLE session_messages ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0"},
+	} {
+		ok, err := columnExists(db.Conn(), "session_messages", c.name)
+		if err != nil {
+			return fmt.Errorf("check session_messages.%s: %w", c.name, err)
+		}
+		if !ok {
+			if _, err := db.Conn().Exec(c.ddl); err != nil {
+				return fmt.Errorf("add session_messages.%s: %w", c.name, err)
+			}
+		}
+	}
+	// 幂等索引：同一会话 + 同一业务键只有一行。空键不参与（否则第二条空键
+	// 消息会被误判为重复）。
+	if _, err := db.Conn().Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS ux_sm_chat_idem
+		    ON session_messages(chat_id, idempotency_key)
+		    WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''`); err != nil {
+		return fmt.Errorf("create ux_sm_chat_idem: %w", err)
+	}
+	// 收件箱：未回答的 ask_user（kind, answered 前缀直接命中）。
+	if _, err := db.Conn().Exec(`
+		CREATE INDEX IF NOT EXISTS ix_sm_kind_answered
+		    ON session_messages(kind, answered)`); err != nil {
+		return fmt.Errorf("create ix_sm_kind_answered: %w", err)
+	}
+	// 线程视图：同一 correlation_id 的完整链路。
+	if _, err := db.Conn().Exec(`
+		CREATE INDEX IF NOT EXISTS ix_sm_correlation
+		    ON session_messages(correlation_id)`); err != nil {
+		return fmt.Errorf("create ix_sm_correlation: %w", err)
 	}
 	return nil
 }

@@ -991,6 +991,25 @@ func (m *QueuedUserMessage) SessionKey() string { return m.Key }
 // SenderID implements BgNotification.
 func (m *QueuedUserMessage) SenderID() string { return m.Sid }
 
+// StructuredNotice carries a structured message (answer/decision/plain interject)
+// drained from the session priority queue at an engine iteration boundary.
+// The run loop injects it as a synthetic tool result so the model sees the
+// reply without the current tool call being interrupted.
+type StructuredNotice struct {
+	Key           string // session key
+	Sid           string // sender id
+	Kind          string // answer/decision/text/command/event
+	CorrelationID string
+	Content       string // rendered human-readable text
+	Priority      int
+}
+
+// SessionKey implements BgNotification.
+func (n *StructuredNotice) SessionKey() string { return n.Key }
+
+// SenderID implements BgNotification.
+func (n *StructuredNotice) SenderID() string { return n.Sid }
+
 // SendAsyncMessage sends an async message notification through BgTaskManager.NotifyCh.
 // Safe to call from any goroutine. Drops silently if channel is full or closed.
 func (m *BackgroundTaskManager) SendAsyncMessage(n *AsyncMessageNotification) {

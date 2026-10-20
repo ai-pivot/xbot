@@ -2516,6 +2516,8 @@ func (s *runState) drainAndInjectBgNotifications(ctx context.Context, iteration 
 			err = s.injectCronFiredNotification(ctx, iteration, n)
 		case *tools.QueuedUserMessage:
 			err = s.injectQueuedUserMessage(ctx, iteration, n)
+		case *tools.StructuredNotice:
+			err = s.injectStructuredNotice(ctx, iteration, n)
 		case *tools.AsyncMessageNotification:
 			// Async messages (peer/webhook/UI-action) were previously silently
 			// consumed here (no case → err=nil → acknowledged + dropped) —
@@ -2907,6 +2909,46 @@ func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m
 		m.ReplyFn(err)
 	}
 	return err
+}
+
+// injectStructuredNotice injects a structured message (answer/decision/plain
+// interject) that was queued in the session priority queue while a turn was
+// running. Injected at an iteration boundary as a synthetic tool result so the
+// current tool call is never interrupted (sendmessage-structured §9.1/§9.2).
+func (s *runState) injectStructuredNotice(ctx context.Context, iteration int, n *tools.StructuredNotice) error {
+	toolName := "structured_message"
+	toolID := fmt.Sprintf("structured_%d_%d", iteration, time.Now().UnixNano())
+	label := "结构化消息（" + n.Kind + "）"
+	switch n.Kind {
+	case "answer":
+		label = "用户回答了你的问题"
+	case "decision":
+		label = "用户已批红"
+	}
+	content := fmt.Sprintf("📨 [%s]%s\n\n%s", label, correlationSuffix(n.CorrelationID), n.Content)
+
+	err := s.injectSyntheticToolPair(ctx, iteration,
+		toolName, toolID,
+		content, toolName,
+		label,
+		tools.EncodeSyntheticToolHints(tools.MessageHints("structured", n.Kind)),
+		0,
+	)
+	if err == nil {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"kind":        n.Kind,
+			"content_len": len(n.Content),
+			"iteration":   iteration,
+		}).Info("Injected structured message at iteration boundary")
+	}
+	return err
+}
+
+func correlationSuffix(id string) string {
+	if id == "" {
+		return ""
+	}
+	return " correlation=" + id
 }
 
 // (buildMaxIterOutput removed with max_iterations: the main loop has no iteration cap.)

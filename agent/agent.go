@@ -664,6 +664,11 @@ type Agent struct {
 	// chatWorker registers on entry and deregisters on exit.
 	bgSessionStates sync.Map
 
+	// structuredQueues maps chatKey → *StructuredQueue：插队优先队列（结构化消息）。
+	// 运行中的 turn 在 iteration 边界消费；空闲时 DeliverStructuredMessage 直接
+	// 开启新 turn。见 structured_queue.go。
+	structuredQueues sync.Map
+
 	// agentCtx is the Agent-level context, set when Run() starts and cancelled when Run() exits.
 	// Background interactive subagents derive their context from this (not from per-request ctx)
 	// so they survive across multiple requests and only stop when the parent Agent process exits.
@@ -3975,7 +3980,12 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// the original Run() started). InjectInboundResume sends an empty message
 	// with resume_turn metadata — Assemble skips appending a user message
 	// entirely (UserMessage is empty), so no duplicate to remove.
-	resumeTurn := msg.Metadata != nil && msg.Metadata["resume_turn"] == "true"
+	//
+	// structured_delivery: an answer/decision/text was already persisted as a
+	// structured row by the API before delivery. The turn must not persist a
+	// second user row for it — same skip semantics as resume_turn (empty content).
+	resumeTurn := msg.Metadata != nil &&
+		(msg.Metadata["resume_turn"] == "true" || msg.Metadata["structured_delivery"] == "true")
 
 	// 运行 Agent 循环（统一 Run）
 	// Eager-save user message BEFORE Run() so incrementally persisted assistant/tool
@@ -4371,7 +4381,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	)
 
 	// Resume turn: skip user message synthesis (already in DB history)
-	if msg.Metadata != nil && msg.Metadata["resume_turn"] == "true" {
+	if msg.Metadata != nil && (msg.Metadata["resume_turn"] == "true" || msg.Metadata["structured_delivery"] == "true") {
 		mc.ResumeTurn = true
 	}
 
@@ -4623,7 +4633,7 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	// are atomic). The turn_started SSE event is emitted AFTER this Delete,
 	// so the frontend's reload (triggered by turn_started) sees the clean
 	// state.
-	if msg.Metadata == nil || msg.Metadata["resume_turn"] != "true" {
+	if msg.Metadata == nil || (msg.Metadata["resume_turn"] != "true" && msg.Metadata["structured_delivery"] != "true") {
 		a.iterationHistories.Delete(progressKey)
 	}
 

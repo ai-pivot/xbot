@@ -527,6 +527,58 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v75: 主库遗留 session_messages 补结构化消息列（迁移期 migrated=0 的会话仍
+	// 从主库读）。v72 之后主库通常已无该表 ⇒ 表不存在时静默跳过（幂等）。
+	if from < 75 {
+		if err := migrateV74ToV75(db); err != nil {
+			return fmt.Errorf("migrate to v75: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV74ToV75 给主库遗留 session_messages 补 v5 结构化消息列。
+// 会话库自己的列由 OpenSessionDB 的幂等 DDL/ALTER 补齐；这里只处理主库旧表，
+// 保证迁移期（tenants.migrated=0）读取路径的列清单完整。
+func migrateV74ToV75(db *DB) error {
+	conn := db.Conn()
+	tableOK, err := tableExists(conn, "session_messages")
+	if err != nil {
+		return fmt.Errorf("check session_messages exists: %w", err)
+	}
+	if !tableOK {
+		if _, err := conn.Exec("UPDATE schema_version SET version = 75"); err != nil {
+			return fmt.Errorf("update schema version: %w", err)
+		}
+		log.Info("Database migrated to v75: main session_messages absent — structured columns skipped")
+		return nil
+	}
+	for _, c := range []struct{ name, ddl string }{
+		{"chat_id", "ALTER TABLE session_messages ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''"},
+		{"kind", "ALTER TABLE session_messages ADD COLUMN kind TEXT NOT NULL DEFAULT ''"},
+		{"correlation_id", "ALTER TABLE session_messages ADD COLUMN correlation_id TEXT NOT NULL DEFAULT ''"},
+		{"reply_to", "ALTER TABLE session_messages ADD COLUMN reply_to TEXT NOT NULL DEFAULT ''"},
+		{"idempotency_key", "ALTER TABLE session_messages ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''"},
+		{"structured_json", "ALTER TABLE session_messages ADD COLUMN structured_json TEXT NOT NULL DEFAULT ''"},
+		{"direction", "ALTER TABLE session_messages ADD COLUMN direction TEXT NOT NULL DEFAULT ''"},
+		{"answered", "ALTER TABLE session_messages ADD COLUMN answered INTEGER NOT NULL DEFAULT 0"},
+		{"cancelled", "ALTER TABLE session_messages ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0"},
+	} {
+		ok, err := columnExists(conn, "session_messages", c.name)
+		if err != nil {
+			return fmt.Errorf("check session_messages.%s: %w", c.name, err)
+		}
+		if !ok {
+			if _, err := conn.Exec(c.ddl); err != nil {
+				return fmt.Errorf("add session_messages.%s: %w", c.name, err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 75"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v75: main session_messages structured columns added")
 	return nil
 }
 

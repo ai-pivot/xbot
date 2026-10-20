@@ -68,6 +68,17 @@ type ChatMessage struct {
 	// payload）。沿用 session_messages.record_data 列，普通消息恒为空。
 	RecordData string `json:"-"`
 
+	// ── 结构化消息信封（v5，sendmessage-structured 设计）──────────────────
+	// 这些字段来自 session_messages 的专用列；只在持久化/可视化层使用，
+	// 绝不进入 LLM 上下文。
+	Kind           string `json:"-"` // text/ask_user/answer/report/decision/command/event
+	CorrelationID  string `json:"-"`
+	ReplyTo        string `json:"-"`
+	StructuredJSON string `json:"-"` // 完整信封 JSON
+	Direction      string `json:"-"` // in | out
+	Answered       bool   `json:"-"`
+	Cancelled      bool   `json:"-"`
+
 	// CacheHint 提示 LLM 层此消息的缓存特性。
 	// "static" — 跨请求不变的静态内容（system prompt 基础模板等）
 	// "" (默认) — 动态内容，不标注缓存

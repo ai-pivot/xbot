@@ -861,7 +861,10 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 		SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
 		       role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail,
 		       reasoning_content, reasoning_items, display_only, internal_only, created_at, turn_id,
-		       COALESCE(iteration, 0)
+		       COALESCE(iteration, 0),
+		       COALESCE(kind, ''), COALESCE(correlation_id, ''), COALESCE(reply_to, ''),
+		       COALESCE(structured_json, ''), COALESCE(direction, ''),
+		       COALESCE(answered, 0), COALESCE(cancelled, 0)
 		FROM session_messages WHERE tenant_id = ?`
 	args := []any{tenantID}
 	if fromHistoryID > 0 {
@@ -887,9 +890,12 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 		var internalOnly int
 		var turnID sql.NullInt64
 		var iterCol int
+		var kind, correlationID, replyTo, structuredJSON, direction string
+		var answered, cancelled int
 		if err := rows.Scan(&record.HistoryID, &record.Type, &record.TargetHistoryID, &rawData,
 			&role, &content, &toolCallID, &toolName, &toolArguments, &toolCallsJSON, &detail,
-			&reasoning, &reasoningItems, &displayOnly, &internalOnly, &createdAt, &turnID, &iterCol); err != nil {
+			&reasoning, &reasoningItems, &displayOnly, &internalOnly, &createdAt, &turnID, &iterCol,
+			&kind, &correlationID, &replyTo, &structuredJSON, &direction, &answered, &cancelled); err != nil {
 			return nil, fmt.Errorf("scan history record: %w", err)
 		}
 		record.CreatedAt = internal.ParseTimestamp(createdAt)
@@ -898,7 +904,9 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 			record.Message = llm.ChatMessage{ID: record.HistoryID, Role: role, Content: content,
 				DisplayOnly: displayOnly != 0, Internal: internalOnly != 0,
 				CommandRow: record.Type == HistoryRecordCommand, Timestamp: record.CreatedAt,
-				Iteration: iterCol}
+				Iteration: iterCol, Kind: kind, CorrelationID: correlationID, ReplyTo: replyTo,
+				StructuredJSON: structuredJSON, Direction: direction,
+				Answered: answered != 0, Cancelled: cancelled != 0}
 			if turnID.Valid {
 				record.Message.TurnID = uint64(turnID.Int64)
 			}

@@ -1044,6 +1044,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return ag.ReorderQueue(channel, chatID, msgIDs)
 	}
 
+	// ─── 结构化消息（sendmessage-structured）───
+	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList := structuredCallbacks(ag)
+	callbacks.StructuredAppend = structuredAppend
+	callbacks.StructuredAnswer = structuredAnswer
+	callbacks.StructuredInbox = structuredInbox
+	callbacks.StructuredCount = structuredCount
+	callbacks.StructuredMessages = structuredList
+
 	return callbacks
 }
 

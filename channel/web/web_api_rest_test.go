@@ -101,7 +101,6 @@ func TestProductionRoutesUseWebPOSTContract(t *testing.T) {
 		"/api/auth/config",
 		"/api/message",
 		"/api/cancel",
-		"/api/ask_user/respond",
 		"/api/rpc",
 		"/api/history",
 		"/api/history/rewind",
@@ -316,18 +315,6 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 		t.Fatalf("cancel status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 
-	recorder = httptest.NewRecorder()
-	go func() {
-		answer := <-msgBus.Inbound
-		if answer.Content != "Qq1: yes" || answer.Metadata["ask_user_answered"] != "true" {
-			t.Errorf("unexpected AskUser message: %#v", answer)
-		}
-		answer.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
-	}()
-	wc.handleAskUserRespond(recorder, authedAPIRequest(http.MethodPost, "/api/ask_user/respond", []byte(`{"chat_id":"web-1","question_id":"q1","answer":"yes"}`)))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("AskUser status = %d: %s", recorder.Code, recorder.Body.String())
-	}
 }
 
 func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
