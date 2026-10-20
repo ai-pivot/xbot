@@ -756,7 +756,7 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 			return out
 		}
 
-		response, err := s.callLLM(ctx, retryNotifyCtx)
+		response, err := s.callLLM(ctx, retryNotifyCtx, i)
 		log.Ctx(ctx).WithFields(log.Fields{
 			"iteration": i,
 			"chat_id":   s.cfg.ChatID,
