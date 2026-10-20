@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"xbot/storage"
 
 	_ "modernc.org/sqlite"
 )
@@ -146,14 +147,16 @@ func TestTruncateRunes(t *testing.T) {
 	}
 }
 
-// newTestMemory builds an XbotMemory on an in-memory SQLite DB.
+// newTestMemory builds an XbotMemory on an in-memory SQLite DB, wired through the
+// same storage seam production uses (the provider never takes a driver handle).
 func newTestMemory(t *testing.T) (*XbotMemory, *sql.DB) {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := New(42, 7, t.TempDir(), db)
+	store := storage.NewSQLiteMemoryStoreFromConn(db)
+	m := New(42, 7, t.TempDir(), store)
 	t.Cleanup(func() { db.Close() })
 	return m, db
 }

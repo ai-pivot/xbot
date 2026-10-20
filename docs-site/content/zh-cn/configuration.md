@@ -267,6 +267,28 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 }
 ```
 
+### 存储配置
+
+所有持久化状态（会话、消息、记忆、用户设置、LLM 订阅）默认存放在 SQLite。
+亦支持 PostgreSQL 后端：
+
+```json
+{
+  "storage": {
+    "type": "pg",
+    "dsn": "postgres://user:password@host:5432/xbot?sslmode=disable"
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `type` | `"sqlite"`（默认）或 `"pg"` |
+| `dsn` | PostgreSQL 连接串 —— 仅当 `type` 为 `"pg"` 时使用 |
+
+两个后端实现同一套存储接口，切换后端不改变 agent 行为。PostgreSQL 后端为纯 Go
+实现（无需 `libpq`/cgo）。整段省略 `storage` 即保持 SQLite 默认。
+
 ### CLI 配置（Remote 模式）
 
 ```json

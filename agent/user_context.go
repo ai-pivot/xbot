@@ -6,6 +6,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -79,7 +80,7 @@ type UserContext struct {
 	// alternative implementations (e.g. file-based).
 
 	// SubSvc provides LLM subscription CRUD operations.
-	SubSvc *sqlite.LLMSubscriptionService
+	SubSvc storage.SubscriptionBackend
 
 	// SettingsSvc provides user settings read/write (for config tool callbacks
 	// and /settings command — these need live DB access, not the snapshot).

@@ -338,21 +338,14 @@ func (wc *WebChannel) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 // handleGetSettings returns all settings for the current user
 func (wc *WebChannel) handleGetSettings(w http.ResponseWriter, r *http.Request, senderID string) {
-	rows, err := wc.db.Query(
-		"SELECT key, value FROM user_settings WHERE channel = 'web' AND sender_id = ?", senderID,
-	)
+	all, err := wc.store.Config().GetUserSettings("web", senderID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, settingsResponse{OK: false, Error: "query failed"})
 		return
 	}
-	defer rows.Close()
 
-	settings := make(map[string]string)
-	for rows.Next() {
-		var k, v string
-		if err := rows.Scan(&k, &v); err != nil {
-			continue
-		}
+	settings := make(map[string]string, len(all))
+	for k, v := range all {
 		// Mask sensitive values — never expose credentials to the browser
 		if isSensitiveSettingKey(k) {
 			settings[k] = "***"
@@ -410,13 +403,8 @@ func (wc *WebChannel) handleUpdateSettings(w http.ResponseWriter, r *http.Reques
 		settings[k] = sv
 	}
 
-	now := time.Now().Unix()
 	for k, v := range settings {
-		_, err := wc.db.Exec(
-			"INSERT OR REPLACE INTO user_settings (channel, sender_id, key, value, updated_at) VALUES ('web', ?, ?, ?, ?)",
-			senderID, k, v, now,
-		)
-		if err != nil {
+		if err := wc.store.Config().SetUserSetting("web", senderID, k, v); err != nil {
 			writeJSON(w, http.StatusInternalServerError, settingsResponse{OK: false, Error: "update failed"})
 			return
 		}
@@ -1276,56 +1264,46 @@ func (wc *WebChannel) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var tenantID int64
-	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
-	).Scan(&tenantID)
-	if err != nil {
+	tenantID, err := wc.store.Tenant().GetTenantIDByChannelChatID(sel.Channel, sel.ChatID)
+	if err != nil || tenantID == 0 {
 		writeJSON(w, http.StatusOK, searchResponse{OK: true, Results: nil})
 		return
 	}
 
-	// Case-insensitive LIKE search (escape wildcards in user input)
-	like := "%" + escapeLike(q) + "%"
-	rows, err := wc.db.Query(`
-		SELECT id, role, content, created_at
-		FROM session_messages
-		WHERE tenant_id = ? AND role IN ('user', 'assistant') AND content LIKE ? COLLATE NOCASE ESCAPE '\'
-		ORDER BY id DESC
-		LIMIT ?
-	`, tenantID, like, limit)
+	// The store surface has no search method — load the session's messages
+	// (via its per-session DB, v71) and match in Go. Newest first, capped at
+	// limit, mirroring the previous SQL (role IN ('user','assistant'),
+	// case-insensitive, ORDER BY id DESC LIMIT ?).
+	sess, err := wc.store.Session(tenantID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, searchResponse{OK: false, Error: "search failed"})
 		return
 	}
-	defer rows.Close()
+	msgs, err := sess.GetAllMessages(tenantID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, searchResponse{OK: false, Error: "search failed"})
+		return
+	}
 
-	var results []searchHit
 	qLower := strings.ToLower(q)
-	for rows.Next() {
-		var hit searchHit
-		var content string
-		if err := rows.Scan(&hit.ID, &hit.Role, &content, &hit.CreatedAt); err != nil {
+	results := make([]searchHit, 0, limit)
+	for i := len(msgs) - 1; i >= 0 && len(results) < limit; i-- {
+		m := msgs[i]
+		if m.Role != "user" && m.Role != "assistant" {
 			continue
 		}
-		hit.Snippet = snippetAround(content, qLower)
-		results = append(results, hit)
+		if !strings.Contains(strings.ToLower(m.Content), qLower) {
+			continue
+		}
+		results = append(results, searchHit{
+			ID:        m.ID,
+			Role:      m.Role,
+			Snippet:   snippetAround(m.Content, qLower),
+			CreatedAt: m.Timestamp.Format(time.RFC3339),
+		})
 	}
 
 	writeJSON(w, http.StatusOK, searchResponse{OK: true, Results: results})
-}
-
-// escapeLike escapes SQL LIKE wildcard characters in user input.
-func escapeLike(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '%' || c == '_' || c == '\\' {
-			b.WriteByte('\\')
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
 }
 
 // snippetAround returns a snippet of text around the first occurrence of the
@@ -1793,15 +1771,11 @@ func (wc *WebChannel) canAccessSessionAs(identity sessionAccessIdentity, channel
 }
 
 func (wc *WebChannel) tenantExists(channelName, chatID string) bool {
-	if wc.db == nil {
+	if wc.store == nil {
 		return false
 	}
-	var count int
-	err := wc.db.QueryRow(
-		"SELECT COUNT(*) FROM tenants WHERE channel = ? AND chat_id = ?",
-		channelName, chatID,
-	).Scan(&count)
-	return err == nil && count > 0
+	id, err := wc.store.Tenant().GetTenantIDByChannelChatID(channelName, chatID)
+	return err == nil && id != 0
 }
 
 // IsAdminIdentity reports whether a Web senderID belongs to an admin web user.

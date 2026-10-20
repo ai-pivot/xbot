@@ -309,6 +309,29 @@ See the per-channel docs:
 }
 ```
 
+## Storage configuration
+
+All persistent state (sessions, messages, memory, user settings, LLM
+subscriptions) lives in SQLite by default. A PostgreSQL backend is available:
+
+```json
+{
+  "storage": {
+    "type": "pg",
+    "dsn": "postgres://user:password@host:5432/xbot?sslmode=disable"
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `type` | `"sqlite"` (default) or `"pg"` |
+| `dsn` | PostgreSQL connection string — only used when `type` is `"pg"` |
+
+Both backends implement the same storage interfaces, so switching backends does
+not change agent behaviour. The PostgreSQL backend is pure Go (no `libpq`/cgo).
+Omit the whole `storage` block to keep the SQLite default.
+
 ## CLI configuration (Remote mode)
 
 ```json

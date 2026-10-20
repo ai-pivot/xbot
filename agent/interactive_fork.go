@@ -207,12 +207,15 @@ func copyForkMessages(src, dst *session.TenantSession) ([]llm.ChatMessage, error
 	if recs, err := src.GetAllIterationHistory(); err != nil {
 		log.WithError(err).Warn("fork: read source iteration history failed (skipped)")
 	} else {
-		for _, r := range recs {
-			r.MessageID = 0
-			if err := dst.AppendIterationHistory(0, r.TurnID, r); err != nil {
-				log.WithError(err).Warn("fork: copy iteration history record failed (skipped)")
-				break
-			}
+		for i := range recs {
+			recs[i].MessageID = 0
+		}
+		// One batched write. A per-record loop here meant one network round trip
+		// per iteration (an 800-iteration session spent ~40s on the wire alone
+		// against a remote PG) — the whole copy is a single transaction either
+		// way, so there is no reason to serialize the round trips.
+		if err := dst.AppendIterationHistories(recs); err != nil {
+			log.WithError(err).Warn("fork: copy iteration history record failed (skipped)")
 		}
 	}
 	return copied, nil
@@ -244,8 +247,15 @@ func (a *Agent) ForkSessionMessages(srcChannel, srcChatID, dstChannel, dstChatID
 	if err != nil {
 		return fmt.Errorf("open destination session %s:%s: %w", dstChannel, dstChatID, err)
 	}
-	_, err = copyForkMessages(srcSess, dstSess)
-	return err
+	// This path only needs the copy to happen — it discards the messages — so ask
+	// the storage layer to do it server-side instead of reading every row into
+	// memory and writing it straight back. On PG that is two `INSERT … SELECT`
+	// statements and no payload transfer at all. (The SubAgent fork below keeps
+	// the read-in-memory path because it needs the messages as this Run's context.)
+	if _, err := a.multiSession.Store().CopySessionFrom(dstSess.TenantID(), srcSess.TenantID()); err != nil {
+		return fmt.Errorf("copy session %s:%s -> %s:%s: %w", srcChannel, srcChatID, dstChannel, dstChatID, err)
+	}
+	return nil
 }
 
 // forkContextNote returns the system-prompt section explaining the inherited

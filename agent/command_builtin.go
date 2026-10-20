@@ -215,8 +215,7 @@ func (c *continueCmd) Match(s string) bool { return strings.ToLower(s) == "/cont
 func (c *continueCmd) Concurrent() bool    { return false } // serializes with the enqueued resume turn
 
 func (c *continueCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
-	db := a.multiSession.DB()
-	if db == nil {
+	if a.multiSession == nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 数据库未连接"}, nil
 	}
 

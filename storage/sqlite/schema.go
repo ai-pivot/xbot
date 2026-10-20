@@ -352,6 +352,23 @@ CREATE TABLE IF NOT EXISTS shared_artifacts (
     revoked_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_shared_artifacts_creator ON shared_artifacts(created_by);
+
+-- OAuth credentials. Lives in the main schema (not created by the OAuth package)
+-- because token storage now goes through the storage backend: on PG there is no
+-- SQLite file to open, so the table must exist wherever the backend points.
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    provider TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    expires_at INTEGER NOT NULL,
+    scopes TEXT,
+    raw TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, channel, chat_id)
+);
+CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)

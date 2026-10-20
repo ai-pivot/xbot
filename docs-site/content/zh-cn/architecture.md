@@ -357,6 +357,10 @@ Layer 4: ContextEdit → 精确删除/裁剪/替换
 
 单个 SQLite 文件，WAL 模式，`MaxOpenConns=1`（SQLite 单写者模型），`BusyTimeout=5000ms`。Schema Version 21。
 
+存储层与后端无关：所有读写都经 `storage.Storage` 接口（`Session`/`Tenant`/`Memory`/`Config`），
+因此 PostgreSQL 后端（`storage.type = "pg"`，`storage/pg_*.go`）可在不改动 agent 行为的前提下
+承载同一套数据模型。SQLite 仍是默认后端。
+
 | 表名 | 用途 |
 |------|------|
 | `tenants` | 租户（channel+chatID → tenantID） |

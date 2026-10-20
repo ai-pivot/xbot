@@ -11,11 +11,13 @@ import (
 
 	"xbot/agent/hooks"
 	"xbot/bus"
+	"xbot/internal/textutil"
 	"xbot/llm"
 	"xbot/memory"
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
 	"xbot/tools"
@@ -425,9 +427,9 @@ type SubAgentStatus struct {
 // 已迁移到 RunConfig 中。
 type ToolContextExtras struct {
 	TenantID        int64
-	CoreMemory      *sqlite.CoreMemoryService
+	CoreMemory      storage.MemoryStore
 	ArchivalMemory  *vectordb.ArchivalService
-	MemorySvc       *sqlite.MemoryService
+	MemorySvc       storage.MemoryStore
 	RecallTimeRange vectordb.RecallTimeRangeFunc
 	ToolIndexer     memory.ToolIndexer
 	// MemoryProvider is the generic memory provider instance.
@@ -949,7 +951,7 @@ func executeWithHooks(
 			}
 			const maxToolOutput = 8192
 			if len(toolOutput) > maxToolOutput {
-				toolOutput = toolOutput[:maxToolOutput] + "\n... (truncated)"
+				toolOutput = textutil.TruncateBytesWithSuffix(toolOutput, maxToolOutput, "\n... (truncated)")
 			}
 			postEvent = &hooks.PostToolUseEvent{
 				BasePayload:   base,

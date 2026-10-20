@@ -8,6 +8,7 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/internal/textutil"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
@@ -226,9 +227,7 @@ func summarizeToolCall(name, args string) string {
 			return fmt.Sprintf("- **%s**: ...", name)
 		}
 		// Strip common prefixes for brevity
-		if len(cmd) > 80 {
-			cmd = cmd[:80] + "..."
-		}
+		cmd = textutil.TruncateBytesWithSuffix(cmd, 80, "...")
 		return fmt.Sprintf("- **%s**: `%s`", name, cmd)
 	case "Read":
 		path := ExtractJSONString(args, "path")

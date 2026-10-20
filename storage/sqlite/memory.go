@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	log "xbot/logger"
+	"xbot/storage/internal"
 )
 
 // MemoryService handles long-term memory and event history operations
@@ -155,6 +157,48 @@ func (s *MemoryService) GetHistoryEntries(ctx context.Context, tenantID int64, l
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate history entries: %w", err)
+	}
+	return entries, nil
+}
+
+// HistoryEntry is one event_history row with its timestamp.
+type HistoryEntry struct {
+	Entry     string
+	CreatedAt time.Time
+}
+
+// GetHistoryEntriesInRange returns event_history rows within [start, end],
+// newest first (limit <= 0 means 20). Moved verbatim from the former
+// SQLite-only vectordb.RecallTimeRangeFunc, so recall semantics are unchanged and
+// are now available to every backend through storage.MemoryStore.
+func (s *MemoryService) GetHistoryEntriesInRange(ctx context.Context, tenantID int64, start, end time.Time, limit int) ([]HistoryEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	conn := s.db.Conn()
+	rows, err := conn.QueryContext(ctx, `
+		SELECT entry, created_at FROM event_history
+		WHERE tenant_id = ? AND created_at >= ? AND created_at <= ?
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, tenantID, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"), limit)
+	if err != nil {
+		return nil, fmt.Errorf("recall time range: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []HistoryEntry
+	for rows.Next() {
+		var e HistoryEntry
+		var createdAt string
+		if err := rows.Scan(&e.Entry, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan recall entry: %w", err)
+		}
+		e.CreatedAt = internal.ParseTimestamp(createdAt)
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recall entries: %w", err)
 	}
 	return entries, nil
 }

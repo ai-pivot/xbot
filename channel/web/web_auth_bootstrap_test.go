@@ -30,7 +30,7 @@ func TestRegisterInviteOnlyBootstrap(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
 	wc := NewWebChannel(WebChannelConfig{
-		Host: "127.0.0.1", Port: 0, DB: db,
+		Host: "127.0.0.1", Port: 0, Store: newTestStorage(t, db),
 		InviteOnly: true,
 	}, msgBus)
 	t.Cleanup(wc.Stop)
@@ -65,7 +65,7 @@ func TestAuthConfigBootstrapFlag(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
 	wc := NewWebChannel(WebChannelConfig{
-		Host: "127.0.0.1", Port: 0, DB: db,
+		Host: "127.0.0.1", Port: 0, Store: newTestStorage(t, db),
 		InviteOnly: true,
 	}, msgBus)
 	t.Cleanup(wc.Stop)
@@ -91,7 +91,7 @@ func TestAuthConfigBootstrapFlag(t *testing.T) {
 	}
 
 	// After the first account, bootstrap flips false (normal invite-only).
-	if _, err := db.Exec("INSERT INTO web_users (username, password) VALUES ('someone', 'x')"); err != nil {
+	if _, err := db.Conn().Exec("INSERT INTO web_users (username, password) VALUES ('someone', 'x')"); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	rec2 := postJSON(t, wc.handleAuthConfig, map[string]string{})

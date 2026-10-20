@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"xbot/internal/textutil"
 	"xbot/llm"
 	"xbot/tools"
 
@@ -550,11 +551,14 @@ func (s *OffloadStore) PurgeStaleMessages(sessionKey string, messages []llm.Chat
 }
 
 // truncateOffloadArgs 截断工具参数用于 offload 显示。
+//
+// ⛔ 必须走 rune 安全的截断：工具参数里常年是中文（文件路径、grep 模式、echo
+// 文案），而 args[:80] 是**按字节**切，会把一个 3 字节汉字切成残片。这个残片
+// 进了 session_messages.content 之后，SQLite 照单全收（TEXT 不校验编码），
+// 但迁到 PostgreSQL 后整条 INSERT 会被拒（SQLSTATE 22021 invalid byte sequence），
+// 代价是**整个对话轮次**失败，而不是丢一个字符。参见 internal/textutil。
 func truncateOffloadArgs(args string) string {
-	if len(args) <= 80 {
-		return args
-	}
-	return args[:80] + "..."
+	return textutil.TruncateBytesWithSuffix(args, 80, "...")
 }
 
 // generateRuleSummary 按工具类型生成规则摘要（同步，无 LLM 依赖）。

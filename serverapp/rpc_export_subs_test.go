@@ -9,13 +9,14 @@ import (
 	"xbot/agent"
 	"xbot/config"
 	"xbot/llm"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
 const exportRealKey = "sk-real-secret-abcd1234"
 
 // newSubsTable 建一个只挂 LLMFactory（订阅服务）的 RPC 表，供导出/导入测试用。
-func newSubsTable(t *testing.T) (RPCTable, *sqlite.LLMSubscriptionService) {
+func newSubsTable(t *testing.T) (RPCTable, storage.SubscriptionBackend) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XBOT_HOME", dir)
@@ -26,9 +27,9 @@ func newSubsTable(t *testing.T) (RPCTable, *sqlite.LLMSubscriptionService) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
-	subSvc := sqlite.NewLLMSubscriptionService(db)
+	subSvc := storage.NewSQLiteConfigStore(db)
 	factory.SetSubscriptionSvc(subSvc)
-	factory.SetTenantSvc(sqlite.NewTenantService(db))
+	factory.SetTenantSvc(storage.NewSQLiteTenantStore(db))
 
 	ag := &agent.Agent{}
 	ag.SetLLMFactory(factory)

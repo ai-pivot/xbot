@@ -12,7 +12,6 @@ package xbot
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -25,6 +24,8 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/prompt"
+	"xbot/storage"
+	"xbot/storage/agentmem"
 )
 
 const (
@@ -66,86 +67,6 @@ const (
 // the same user must see the same memories across ALL their sessions/tenants.
 // tenant_id is kept as an informational column (source tenant) but all
 // queries filter on user_id.
-const schemaSQL = `
-CREATE TABLE IF NOT EXISTS xbot_short_term_memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL DEFAULT 0,
-    tenant_id INTEGER NOT NULL DEFAULT 0,
-    session_id TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    key_topics TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    access_count INTEGER DEFAULT 0,
-    heat_score REAL DEFAULT 1.0
-);
-CREATE INDEX IF NOT EXISTS idx_xbot_stm_user ON xbot_short_term_memories(user_id);
-CREATE INDEX IF NOT EXISTS idx_xbot_stm_session ON xbot_short_term_memories(session_id);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS xbot_short_term_memories_fts USING fts5(
-    summary, key_topics,
-    content='xbot_short_term_memories', content_rowid='id',
-    tokenize='unicode61'
-);
-CREATE TRIGGER IF NOT EXISTS xbot_stm_ai AFTER INSERT ON xbot_short_term_memories BEGIN
-    INSERT INTO xbot_short_term_memories_fts(rowid, summary, key_topics)
-    VALUES (new.id, new.summary, new.key_topics);
-END;
-CREATE TRIGGER IF NOT EXISTS xbot_stm_ad AFTER DELETE ON xbot_short_term_memories BEGIN
-    INSERT INTO xbot_short_term_memories_fts(xbot_short_term_memories_fts, rowid, summary, key_topics)
-    VALUES('delete', old.id, old.summary, old.key_topics);
-END;
-CREATE TRIGGER IF NOT EXISTS xbot_stm_au AFTER UPDATE ON xbot_short_term_memories BEGIN
-    INSERT INTO xbot_short_term_memories_fts(xbot_short_term_memories_fts, rowid, summary, key_topics)
-    VALUES('delete', old.id, old.summary, old.key_topics);
-    INSERT INTO xbot_short_term_memories_fts(rowid, summary, key_topics)
-    VALUES (new.id, new.summary, new.key_topics);
-END;
-
-CREATE TABLE IF NOT EXISTS xbot_long_term_memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL DEFAULT 0,
-    tenant_id INTEGER NOT NULL DEFAULT 0,
-    type TEXT NOT NULL,
-    content TEXT NOT NULL,
-    keywords TEXT,
-    tags TEXT,
-    source_session TEXT,
-    importance REAL DEFAULT 0.5,
-    heat_score REAL DEFAULT 1.0,
-    access_count INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    file_path TEXT,
-    search_text TEXT NOT NULL DEFAULT '',  -- CJK 逐字空格切分后的检索文本
-    scope TEXT NOT NULL DEFAULT 'global',  -- 'global' = 注入所有会话；'session' = 自动提取的会话内记忆（永不跨会话注入）
-    superseded_by INTEGER                  -- 被替代条目的 ID（新事实取代旧事实，如集群搬迁；NULL = 活跃）
-);
-CREATE INDEX IF NOT EXISTS idx_xbot_ltm_user ON xbot_long_term_memories(user_id);
-CREATE INDEX IF NOT EXISTS idx_xbot_ltm_type ON xbot_long_term_memories(type);
-CREATE INDEX IF NOT EXISTS idx_xbot_ltm_heat ON xbot_long_term_memories(heat_score);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS xbot_long_term_memories_fts USING fts5(
-    content, keywords, tags, search_text,
-    content='xbot_long_term_memories', content_rowid='id',
-    tokenize='unicode61'
-);
-CREATE TRIGGER IF NOT EXISTS xbot_ltm_ai AFTER INSERT ON xbot_long_term_memories BEGIN
-    INSERT INTO xbot_long_term_memories_fts(rowid, content, keywords, tags, search_text)
-    VALUES (new.id, new.content, new.keywords, new.tags, new.search_text);
-END;
-CREATE TRIGGER IF NOT EXISTS xbot_ltm_ad AFTER DELETE ON xbot_long_term_memories BEGIN
-    INSERT INTO xbot_long_term_memories_fts(xbot_long_term_memories_fts, rowid, content, keywords, tags, search_text)
-    VALUES('delete', old.id, old.content, old.keywords, old.tags, old.search_text);
-END;
-CREATE TRIGGER IF NOT EXISTS xbot_ltm_au AFTER UPDATE ON xbot_long_term_memories BEGIN
-    INSERT INTO xbot_long_term_memories_fts(xbot_long_term_memories_fts, rowid, content, keywords, tags, search_text)
-    VALUES('delete', old.id, old.content, old.keywords, old.tags, old.search_text);
-    INSERT INTO xbot_long_term_memories_fts(rowid, content, keywords, tags, search_text)
-    VALUES (new.id, new.content, new.keywords, new.tags, new.search_text);
-END;
-`
 
 // XbotMemory is the xbot memory provider with three-tier memory and BM25 retrieval.
 // It implements memory.MemoryProvider and memory.CompressionAware.
@@ -168,8 +89,11 @@ type XbotMemory struct {
 	userID   int64  // canonical owner user_id (isolation scope)
 	tenantID int64  // source tenant (informational, not used for filtering)
 	baseDir  string // ~/.xbot/memory/{tenantID}/
-	db       *sql.DB
-	mu       sync.RWMutex
+	// store is the backend-agnostic storage seam (storage.AgentMemoryStore).
+	// The provider holds NO driver handle: every read/write goes through it, so
+	// the same provider code runs on SQLite and PostgreSQL.
+	store storage.AgentMemoryStore
+	mu    sync.RWMutex
 
 	// Time-based consolidation throttle (guarded by mu).
 	// At most ONE LLM extraction per consolidateInterval per provider instance.
@@ -187,7 +111,7 @@ func (m *XbotMemory) Name() string { return "xbot" }
 
 func init() {
 	memory.RegisterProviderFactory("xbot", func(deps memory.ProviderDeps) memory.MemoryProvider {
-		return New(deps.UserID, deps.TenantID, deps.BaseDir, deps.DB)
+		return New(deps.UserID, deps.TenantID, deps.BaseDir, deps.AgentMemory)
 	})
 	memory.RegisterPromptParts("xbot", memory.PromptParts{
 		ToolsPrompt:  prompt.ToolsXbot,
@@ -197,56 +121,28 @@ func init() {
 }
 
 // New creates a XbotMemory instance.
-// userID is the canonical owner — memories are scoped and shared by this ID
-// across all sessions.
 //
-// IMPORTANT: if userID is 0 (the caller used GetOrCreateSession without an
-// owner — e.g. buildToolContextExtras, async ConsolidateTurn, feishu channels),
-// we LOOK UP the real owner from the tenants table. Falling back to tenant_id
-// would write user_id=tenant_id and re-split memories per session — the exact
-// bug that made different sessions see different memories.
-// db is the shared SQLite connection (reuses xbot's existing DB).
-// baseDir is the per-tenant memory directory for Markdown files.
-func New(userID, tenantID int64, baseDir string, db *sql.DB) *XbotMemory {
-	os.MkdirAll(baseDir, 0o755)
-	os.MkdirAll(filepath.Join(baseDir, "notes"), 0o755)
-
-	// Resolve the canonical owner from the tenants table when not provided.
-	// This is authoritative: tenants.owner_user_id is set by GetOrCreateTenantIDWithOwner
-	// and links every session of the same user to the same owner id.
-	if userID <= 0 && tenantID > 0 && db != nil {
-		var owner int64
-		err := db.QueryRow(
-			`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE id = ?`,
-			tenantID,
-		).Scan(&owner)
-		if err == nil && owner > 0 {
-			userID = owner
-		}
+// userID is the canonical owner — memories are scoped and shared by this ID across
+// all sessions (0 matches only ownerless rows; it never falls back to tenantID,
+// which would re-split memories per session).
+//
+// store is the backend-agnostic storage seam (storage.AgentMemoryStore); the
+// provider never receives a driver handle. baseDir holds the Markdown mirrors.
+func New(userID, tenantID int64, baseDir string, store storage.AgentMemoryStore) *XbotMemory {
+	if baseDir != "" {
+		os.MkdirAll(baseDir, 0o755)
+		os.MkdirAll(filepath.Join(baseDir, "notes"), 0o755)
 	}
-
 	m := &XbotMemory{
 		userID:   userID,
 		tenantID: tenantID,
 		baseDir:  baseDir,
-		db:       db,
+		store:    store,
 	}
-	m.initSchema()
-	m.migrateLegacyTenantData()
+	ctx := context.Background()
+	m.initSchema(ctx)
+	m.migrateLegacyTenantData(ctx)
 	return m
-}
-
-// scopeWhere returns the WHERE clause fragment for memory isolation.
-// user_id > 0 → user-scoped (cross-session shared).
-// user_id == 0 → no owner resolved; matches ONLY user_id=0 rows (isolated).
-// NEVER falls back to tenant_id — writing user_id=tenant_id was the root cause
-// of "different sessions see different memories" (each session had its own
-// tenant_id → memories re-split per session).
-func (m *XbotMemory) scopeWhere(alias string) string {
-	if alias != "" {
-		return alias + ".user_id = ?"
-	}
-	return "user_id = ?"
 }
 
 // scopeArg returns the argument for the scope WHERE clause.
@@ -315,11 +211,9 @@ func (m *XbotMemory) SetOwnerUserID(userID int64) {
 	}
 }
 
-func (m *XbotMemory) initSchema() {
-	_, err := m.db.Exec(schemaSQL)
-	if err != nil {
-		log.WithError(err).Error("xbot-memory: failed to initialize schema")
-	}
+func (m *XbotMemory) initSchema(ctx context.Context) {
+	// Schema/DDL belongs to the storage layer (see storage.AgentMemoryStore).
+	m.ensureSchema(ctx)
 }
 
 // migrateLegacyTenantData ensures the user_id column exists and backfills it
@@ -335,149 +229,19 @@ func (m *XbotMemory) initSchema() {
 //
 // SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS, so we check
 // pragma table_info first and only ALTER when the column is missing.
-func (m *XbotMemory) migrateLegacyTenantData() {
-	// Step 1: ensure user_id column exists on both tables — ALWAYS runs.
-	for _, table := range []string{"xbot_long_term_memories", "xbot_short_term_memories"} {
-		var hasUserID bool
-		rows, err := m.db.Query("PRAGMA table_info(" + table + ")")
-		if err == nil {
-			for rows.Next() {
-				var cid int
-				var name, typ string
-				var notNull, pk int
-				var dflt any
-				if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil && name == "user_id" {
-					hasUserID = true
-				}
-			}
-			rows.Close()
-		}
-		if !hasUserID {
-			if _, err := m.db.Exec("ALTER TABLE " + table + " ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0"); err != nil {
-				log.WithError(err).WithField("table", table).Warn("xbot-memory: failed to add user_id column")
-			} else {
-				log.WithField("table", table).Info("xbot-memory: added user_id column")
-			}
-		}
-	}
-
-	// Step 1b: ensure scope + superseded_by columns exist (session isolation,
-	// 2026-09-02 redesign). scope DEFAULT 'global' keeps existing rows'
-	// behavior unchanged — they were user-scoped global memories. superseded_by
-	// is the supersede-chain link (new facts replace stale ones instead of
-	// double-storing both). Same idempotent columnExists pattern as Step 1.
-	for _, col := range []struct{ name, ddl string }{
-		{"scope", `ALTER TABLE xbot_long_term_memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'`},
-		{"superseded_by", "ALTER TABLE xbot_long_term_memories ADD COLUMN superseded_by INTEGER"},
-	} {
-		var hasCol bool
-		rows, err := m.db.Query("PRAGMA table_info(xbot_long_term_memories)")
-		if err == nil {
-			for rows.Next() {
-				var cid int
-				var name, typ string
-				var notNull, pk int
-				var dflt any
-				if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil && name == col.name {
-					hasCol = true
-				}
-			}
-			rows.Close()
-		}
-		if !hasCol {
-			if _, err := m.db.Exec(col.ddl); err != nil {
-				log.WithError(err).WithField("column", col.name).Warn("xbot-memory: failed to add column")
-			} else {
-				log.WithField("column", col.name).Info("xbot-memory: added column")
-			}
-		}
-	}
-
-	// Step 2: backfill user_id from tenants.owner_user_id (runs once per owner).
-	// The UPDATE is idempotent: user_id=0 rows get filled; already-filled rows
-	// are untouched. This is safe to run every startup.
-	m.db.Exec(`
-		UPDATE xbot_long_term_memories
-		SET user_id = (SELECT owner_user_id FROM tenants WHERE tenants.id = xbot_long_term_memories.tenant_id)
-		WHERE user_id = 0 AND tenant_id IN (SELECT id FROM tenants WHERE owner_user_id IS NOT NULL)
-	`)
-	m.db.Exec(`
-		UPDATE xbot_short_term_memories
-		SET user_id = (SELECT owner_user_id FROM tenants WHERE tenants.id = xbot_short_term_memories.tenant_id)
-		WHERE user_id = 0 AND tenant_id IN (SELECT id FROM tenants WHERE owner_user_id IS NOT NULL)
-	`)
-
-	// Step 3: ensure search_text column exists (CJK-aware FTS indexing).
-	// Added for Chinese retrieval support. Existing rows are backfilled with
-	// buildSearchText(content, keywords, tags) — the same transform applied on
-	// new writes, so the FTS index and query transform stay symmetric.
-	var hasSearchText bool
-	rows, err := m.db.Query("PRAGMA table_info(xbot_long_term_memories)")
-	if err == nil {
-		for rows.Next() {
-			var cid int
-			var name, typ string
-			var notNull, pk int
-			var dflt any
-			if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil && name == "search_text" {
-				hasSearchText = true
-			}
-		}
-		rows.Close()
-	}
-	if !hasSearchText {
-		if _, err := m.db.Exec("ALTER TABLE xbot_long_term_memories ADD COLUMN search_text TEXT NOT NULL DEFAULT ''"); err != nil {
-			log.WithError(err).Warn("xbot-memory: failed to add search_text column")
-		} else {
-			log.Info("xbot-memory: added search_text column")
-		}
-	}
-
-	// Backfill search_text for rows where it's empty. Idempotent: only fills
-	// empty values, safe every startup. Uses a Go-side backfill because the
-	// CJK spacing transform is a Go function (buildSearchText), not expressible
-	// in pure SQL.
-	m.backfillSearchText()
+// migrateLegacyTenantData used to backfill user_id from tenants.owner_user_id.
+// That column no longer exists (the multi-user system was removed in v63), so the
+// backfill is dead code: isolation is by the canonical owner user_id, resolved by
+// the caller. Schema migration now lives in the storage layer
+// (EnsureAgentMemorySchema), which is idempotent on both backends.
+func (m *XbotMemory) migrateLegacyTenantData(ctx context.Context) {
+	m.backfillSearchText(ctx)
 }
 
 // backfillSearchText fills search_text for rows that have an empty value.
 // Only the current provider's scope (user_id or tenant_id) is touched.
-func (m *XbotMemory) backfillSearchText() {
-	rows, err := m.db.Query(`
-		SELECT id, content, keywords, tags
-		FROM xbot_long_term_memories
-		WHERE `+m.scopeWhere("")+` AND (search_text = '' OR search_text IS NULL)
-		LIMIT 500
-	`, m.scopeArg())
-	if err != nil {
-		log.WithError(err).Debug("xbot-memory: search_text backfill query failed")
-		return
-	}
-	defer rows.Close()
-
-	type row struct {
-		id       int64
-		content  string
-		keywords string
-		tags     string
-	}
-	var pending []row
-	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.id, &r.content, &r.keywords, &r.tags); err == nil {
-			pending = append(pending, r)
-		}
-	}
-	for _, r := range pending {
-		m.db.Exec(
-			`UPDATE xbot_long_term_memories SET search_text = ? WHERE id = ?`,
-			buildSearchText(r.content, r.keywords, r.tags), r.id,
-		)
-	}
-	if len(pending) > 0 {
-		log.WithField("backfilled", len(pending)).Info("xbot-memory: backfilled search_text")
-	}
-}
+// backfillSearchText is implemented in store.go (provider-owned transform,
+// storage-owned row selection).
 
 // --- MemoryProvider interface ---
 
@@ -917,16 +681,8 @@ func (m *XbotMemory) ConsolidateTurn(ctx context.Context, input memory.MemorizeI
 // pruneLongTerm enforces the per-user long-term memory cap. Entries beyond
 // longTermMaxEntries with the lowest heat_score are deleted.
 func (m *XbotMemory) pruneLongTerm() {
-	_, err := m.db.Exec(`
-		DELETE FROM xbot_long_term_memories
-		WHERE `+m.scopeWhere("")+` AND id NOT IN (
-			SELECT id FROM xbot_long_term_memories
-			WHERE `+m.scopeWhere("")+`
-			ORDER BY heat_score DESC, importance DESC
-			LIMIT ?
-		)
-	`, m.scopeArg(), m.scopeArg(), longTermMaxEntries)
-	if err != nil {
+	if err := m.store.PruneAgentLongTerm(context.Background(), m.scopeArg(), m.tenantID,
+		longTermMaxEntries); err != nil {
 		log.WithError(err).Debug("xbot-memory: pruneLongTerm failed")
 	}
 }
@@ -994,48 +750,20 @@ type MemoryEntry struct {
 // --- Internal search methods ---
 
 func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, error) {
-	if query == "" {
-		// No query — return recent high-importance memories
-		return m.recentLongTerm(topK)
-	}
-
-	// FTS5 BM25 search
-	// Note: SQLite FTS5 bm25() returns negative values (lower = more relevant)
-	// Session isolation (2026-09-02 redesign): the Recall injection path is
-	// GLOBAL-scope, non-superseded only — session-scoped memories (auto-extracted
-	// task state from other sessions) never leak into this session; superseded
-	// entries (replaced by newer contradicting facts) are filtered at the query
-	// level. memory_search (SearchMemories) searches all scopes on demand.
-	rows, err := m.db.Query(`
-		SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
-		       ltm.source_session, ltm.importance, ltm.heat_score, ltm.access_count,
-		       ltm.created_at, ltm.last_accessed_at,
-		       bm25(xbot_long_term_memories_fts) as score
-		FROM xbot_long_term_memories_fts fts
-		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-		WHERE `+m.scopeWhere("ltm")+` AND ltm.scope = 'global' AND ltm.superseded_by IS NULL AND xbot_long_term_memories_fts MATCH ?
-		ORDER BY score ASC
-		LIMIT ?
-	`, m.scopeArg(), fts5OrQuery(query), topK)
+	// Recall injection path: GLOBAL scope, non-superseded only — session-scoped
+	// memories from other sessions must never leak into this session.
+	q := toAgentQuery(m, query, topK, agentmem.OrderRelevance)
+	q.Scope = "global"
+	rows, err := m.store.SearchAgentLongTermMemories(context.Background(), q)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var results []LongTermMemory
-	for rows.Next() {
-		var mem LongTermMemory
-		var score float64
-		if err := rows.Scan(&mem.ID, &mem.Type, &mem.Content, &mem.Keywords, &mem.Tags,
-			&mem.SourceSession, &mem.Importance, &mem.HeatScore, &mem.AccessCount,
-			&mem.CreatedAt, &mem.LastAccessedAt, &score); err != nil {
-			continue
-		}
-		results = append(results, mem)
-		// Update access count and heat
-		m.touchMemory(mem.ID)
+	out := make([]LongTermMemory, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromAgentLongTerm(r))
+		m.touchMemory(r.ID)
 	}
-	return results, nil
+	return out, nil
 }
 
 // sessionMemories returns THIS session's scoped memories (auto-extracted task
@@ -1043,129 +771,61 @@ func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, e
 // source_session=sessionID, non-superseded), top-K by importance then
 // recency. Other sessions' scoped memories NEVER appear (the session
 // isolation contract); used only by the session's own Recall injection.
+// sessionMemories returns THIS session's scoped memories (auto-extracted task
+// state: scope='session' AND source_session=sessionID, non-superseded), top-K by
+// importance then recency. Other sessions' memories never appear.
 func (m *XbotMemory) sessionMemories(sessionID string, topK int) ([]LongTermMemory, error) {
-	rows, err := m.db.Query(`
-		SELECT id, type, content, keywords, tags, source_session,
-		       importance, heat_score, access_count, created_at, last_accessed_at
-		FROM xbot_long_term_memories
-		WHERE `+m.scopeWhere("")+` AND scope = 'session' AND superseded_by IS NULL AND source_session = ?
-		ORDER BY importance DESC, created_at DESC
-		LIMIT ?
-	`, m.scopeArg(), sessionID, topK)
+	q := toAgentQuery(m, "", topK, agentmem.OrderImportance)
+	q.Scope = "session"
+	q.SourceSession = sessionID
+	rows, err := m.store.SearchAgentLongTermMemories(context.Background(), q)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var mems []LongTermMemory
-	for rows.Next() {
-		var mem LongTermMemory
-		if err := rows.Scan(&mem.ID, &mem.Type, &mem.Content, &mem.Keywords, &mem.Tags,
-			&mem.SourceSession, &mem.Importance, &mem.HeatScore, &mem.AccessCount,
-			&mem.CreatedAt, &mem.LastAccessedAt); err != nil {
-			continue
-		}
-		mems = append(mems, mem)
+	out := make([]LongTermMemory, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromAgentLongTerm(r))
 	}
-	return mems, nil
+	return out, nil
 }
 
 func (m *XbotMemory) recentLongTerm(topK int) ([]LongTermMemory, error) {
-	// Global-scope, non-superseded only (same filter as searchLongTerm — this
-	// feeds the Recall injection, updateCoreSummary and CompressContext, all
-	// user-global paths).
-	rows, err := m.db.Query(`
-		SELECT id, type, content, keywords, tags, source_session,
-		       importance, heat_score, access_count, created_at, last_accessed_at
-		FROM xbot_long_term_memories
-		WHERE `+m.scopeWhere("")+` AND scope = 'global' AND superseded_by IS NULL
-		ORDER BY importance DESC, heat_score DESC, created_at DESC
-		LIMIT ?
-	`, m.scopeArg(), topK)
+	q := toAgentQuery(m, "", topK, agentmem.OrderImportance)
+	q.Scope = "global"
+	rows, err := m.store.SearchAgentLongTermMemories(context.Background(), q)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var results []LongTermMemory
-	for rows.Next() {
-		var mem LongTermMemory
-		if err := rows.Scan(&mem.ID, &mem.Type, &mem.Content, &mem.Keywords, &mem.Tags,
-			&mem.SourceSession, &mem.Importance, &mem.HeatScore, &mem.AccessCount,
-			&mem.CreatedAt, &mem.LastAccessedAt); err != nil {
-			continue
-		}
-		results = append(results, mem)
+	out := make([]LongTermMemory, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromAgentLongTerm(r))
 	}
-	return results, nil
+	return out, nil
 }
 
 func (m *XbotMemory) searchShortTerm(query string, topK int) ([]ShortTermMemory, error) {
-	if query == "" {
-		return m.recentShortTerm(topK)
-	}
-
-	rows, err := m.db.Query(`
-		SELECT stm.id, stm.tenant_id, stm.session_id, stm.summary, stm.key_topics,
-		       stm.created_at, stm.heat_score, stm.access_count,
-		       bm25(xbot_short_term_memories_fts) as score
-		FROM xbot_short_term_memories_fts fts
-		JOIN xbot_short_term_memories stm ON stm.id = fts.rowid
-		WHERE `+m.scopeWhere("stm")+` AND xbot_short_term_memories_fts MATCH ?
-		ORDER BY score ASC
-		LIMIT ?
-	`, m.scopeArg(), fts5OrQuery(query), topK)
+	q := toAgentQuery(m, query, topK, agentmem.OrderRecency)
+	rows, err := m.store.SearchAgentShortTermMemories(context.Background(), q)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var results []ShortTermMemory
-	for rows.Next() {
-		var mem ShortTermMemory
-		var score float64
-		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.SessionID, &mem.Summary,
-			&mem.KeyTopics, &mem.CreatedAt, &mem.HeatScore, &mem.AccessCount, &score); err != nil {
-			continue
-		}
-		results = append(results, mem)
+	out := make([]ShortTermMemory, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromAgentShortTerm(r))
 	}
-	return results, nil
-}
-
-func (m *XbotMemory) recentShortTerm(topK int) ([]ShortTermMemory, error) {
-	rows, err := m.db.Query(`
-		SELECT id, tenant_id, session_id, summary, key_topics,
-		       created_at, heat_score, access_count
-		FROM xbot_short_term_memories
-		WHERE `+m.scopeWhere("")+`
-		ORDER BY created_at DESC
-		LIMIT ?
-	`, m.scopeArg(), topK)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []ShortTermMemory
-	for rows.Next() {
-		var mem ShortTermMemory
-		if err := rows.Scan(&mem.ID, &mem.TenantID, &mem.SessionID, &mem.Summary,
-			&mem.KeyTopics, &mem.CreatedAt, &mem.HeatScore, &mem.AccessCount); err != nil {
-			continue
-		}
-		results = append(results, mem)
-	}
-	return results, nil
+	return out, nil
 }
 
 // --- Write methods ---
 
 func (m *XbotMemory) addShortTermMemory(summary, topics, sessionID string) error {
-	_, err := m.db.Exec(`
-		INSERT INTO xbot_short_term_memories (user_id, tenant_id, session_id, summary, key_topics)
-		VALUES (?, ?, ?, ?, ?)
-	`, m.scopeArg(), m.tenantID, sessionID, summary, topics)
+	_, err := m.store.AddAgentShortTermMemory(context.Background(), agentmem.ShortTermMemory{
+		UserID:    m.scopeArg(),
+		TenantID:  m.tenantID,
+		SessionID: sessionID,
+		Summary:   summary,
+		KeyTopics: topics,
+	})
 	if err != nil {
 		return err
 	}
@@ -1173,79 +833,37 @@ func (m *XbotMemory) addShortTermMemory(summary, topics, sessionID string) error
 	return nil
 }
 
+// addLongTermMemory is the auto-extraction write path: it DEDUP-SKIPS near-identical
+// facts and never supersedes (a task-local session fact must not invalidate a
+// user-level one). The dedup scope is global rows + this session's own rows —
+// otherwise session A's extraction would suppress session B's identical one.
 func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
 
-	// Check for similar memories using FTS5 BM25 similarity.
-	// bm25() returns negative values; LOWER = more relevant (SQLite docs:
-	// "better matches are assigned numerically lower scores" — same ordering
-	// as the `ORDER BY score ASC` in searchLongTerm). A candidate whose
-	// bm25() score is BELOW the threshold (more negative) has strong keyword
-	// overlap → treat as duplicate and skip. This prevents memory bloat from
-	// near-identical facts.
-	var dupID int64
-	err := m.db.QueryRow(`
-		SELECT ltm.id
-		FROM xbot_long_term_memories_fts fts
-		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-		WHERE `+m.scopeWhere("ltm")+`
-		  AND ltm.superseded_by IS NULL
-		  -- Dedup scope filter (CR xbotgh): a session-scoped extraction must ONLY
-		  -- dedup against global entries + ITS OWN session's entries. Without this,
-		  -- session A's extracted fact makes session B's identical extraction
-		  -- dedup-skip — B's Recall sees nothing (A's entry doesn't inject into B,
-		  -- and B never wrote its own). Global-scope callers (empty SourceSession)
-		  -- match only global rows: a task-local session fact must never swallow
-		  -- an explicit global write either.
-		  AND (ltm.scope = 'global' OR (ltm.scope = 'session' AND ltm.source_session = ?))
-		  AND xbot_long_term_memories_fts MATCH ?
-		  AND bm25(xbot_long_term_memories_fts) < ?
-		ORDER BY bm25(xbot_long_term_memories_fts) ASC
-		LIMIT 1
-	`, m.scopeArg(), entry.SourceSession, fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold).Scan(&dupID)
-	if err == nil && dupID > 0 {
-		// Duplicate found — skip. Log at debug to avoid noise.
-		log.WithFields(log.Fields{
-			"dup_id": dupID,
-			"type":   entry.Type,
-		}).Debug("xbot-memory: duplicate memory skipped (BM25 similarity)")
+	searchText := buildSearchText(entry.Content, entry.Keywords, entry.Tags)
+	dupQuery := agentmem.Query{
+		UserID:        entry.UserID,
+		Terms:         queryTerms(entry.Keywords),
+		Join:          agentmem.JoinAll,
+		SourceSession: entry.SourceSession,
+	}
+	dupID, err := m.store.FindAgentDuplicateLongTerm(context.Background(), dupQuery)
+	if err != nil {
+		log.WithError(err).Debug("xbot-memory: duplicate lookup failed")
+	} else if dupID > 0 {
+		log.WithFields(log.Fields{"dup_id": dupID, "type": entry.Type}).
+			Debug("xbot-memory: duplicate memory skipped (text similarity)")
 		return nil
 	}
 
-	// Session isolation: resolve the scope ('global' default — legacy callers
-	// and explicit memory_add; auto-extraction sets 'session').
-	scope := entry.Scope
-	if scope == "" {
-		scope = "global"
-	}
-
-	result, err := m.db.Exec(`
-		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text, scope)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, entry.UserID, entry.TenantID, entry.Type, entry.Content, entry.Keywords, entry.Tags,
-		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags), scope)
+	id, err := m.store.AddAgentLongTermMemory(context.Background(), toAgentLongTerm(entry, searchText))
 	if err != nil {
 		return err
 	}
-
-	id, _ := result.LastInsertId()
-
-	// Write Markdown file (source of truth, human-readable)
 	m.writeMemoryFile(id, entry)
-
-	log.WithFields(log.Fields{
-		"id":   id,
-		"type": entry.Type,
-	}).Debug("xbot-memory: long-term memory added")
+	log.WithFields(log.Fields{"id": id, "type": entry.Type}).Debug("xbot-memory: long-term memory added")
 	return nil
-}
-
-// buildSearchText concatenates content + keywords + tags into the FTS search
-// column with CJK runs space-separated (each Chinese char becomes its own
-// token), matching the query-side cjkSpaceRuns transform in fts5SafeQuery.
-func buildSearchText(parts ...string) string {
-	return cjkSpaceRuns(strings.Join(parts, " "))
 }
 
 func (m *XbotMemory) writeMemoryFile(id int64, entry LongTermMemory) {
@@ -1268,19 +886,19 @@ func (m *XbotMemory) writeMemoryFile(id int64, entry LongTermMemory) {
 	sb.WriteString(entry.Content)
 	sb.WriteString("\n")
 
-	// Update file_path in DB
-	m.db.Exec(`UPDATE xbot_long_term_memories SET file_path = ? WHERE id = ?`, path, id)
-
-	os.WriteFile(path, []byte(sb.String()), 0o644)
+	// Record the mirror path through the storage seam.
+	if err := m.store.SetAgentLongTermFilePath(context.Background(), id, path); err != nil {
+		log.WithError(err).Debug("xbot-memory: failed to record memory file path")
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		log.WithError(err).Debug("xbot-memory: failed to write memory file")
+	}
 }
 
 func (m *XbotMemory) touchMemory(id int64) {
-	m.db.Exec(`
-		UPDATE xbot_long_term_memories
-		SET access_count = access_count + 1,
-		    last_accessed_at = CURRENT_TIMESTAMP
-		WHERE id = ?
-	`, id)
+	if err := m.store.TouchAgentLongTermMemory(context.Background(), id); err != nil {
+		log.WithError(err).Debug("xbot-memory: touch failed")
+	}
 }
 
 func (m *XbotMemory) readCoreSummary() string {
@@ -1360,43 +978,15 @@ Return ONLY the updated summary text, no explanations.`, currentSummary, memSB.S
 // --- Heat decay and eviction ---
 
 func (m *XbotMemory) decayMemories() {
-	// heat_score = importance * recency_factor * frequency_factor
-	// recency_factor = exp(-days_since_last_access / half_life)
-	// frequency_factor = log(1 + access_count)
-	_, err := m.db.Exec(`
-		UPDATE xbot_long_term_memories
-		SET heat_score = importance *
-		    exp(-(julianday('now') - julianday(last_accessed_at)) / ?) *
-		    log(1 + access_count)
-		WHERE `+m.scopeWhere("")+`
-	`, heatHalfLifeDays, m.scopeArg())
-	if err != nil {
+	if err := m.store.DecayAgentLongTerm(context.Background(), m.scopeArg(), m.tenantID,
+		heatHalfLifeDays, forgetThreshold); err != nil {
 		log.WithError(err).Debug("xbot-memory: decay failed")
-	}
-
-	// Slow importance decay for low-heat memories
-	_, err = m.db.Exec(`
-		UPDATE xbot_long_term_memories
-		SET importance = importance * 0.95
-		WHERE heat_score < ? AND `+m.scopeWhere("")+`
-	`, forgetThreshold, m.scopeArg())
-	if err != nil {
-		log.WithError(err).Debug("xbot-memory: forget decay failed")
 	}
 }
 
 func (m *XbotMemory) evictShortTerm() {
-	// Keep only the most recent N short-term memories
-	_, err := m.db.Exec(`
-		DELETE FROM xbot_short_term_memories
-		WHERE id NOT IN (
-			SELECT id FROM xbot_short_term_memories
-			WHERE `+m.scopeWhere("")+`
-			ORDER BY created_at DESC
-			LIMIT ?
-		) AND `+m.scopeWhere("")+`
-	`, m.scopeArg(), defaultShortTermCapacity, m.scopeArg())
-	if err != nil {
+	if err := m.store.EvictAgentShortTermMemories(context.Background(), m.scopeArg(), m.tenantID,
+		defaultShortTermCapacity); err != nil {
 		log.WithError(err).Debug("xbot-memory: short-term eviction failed")
 	}
 }
@@ -1716,51 +1306,32 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 		limit = 10
 	}
 
-	var entries []MemoryEntry
-
-	// Search long-term memories (superseded entries filtered — only current
-	// facts are visible; the DB keeps the supersede chain for rollback).
-	var rows *sql.Rows
-	var err error
+	// Long-term: relevance search over ACTIVE facts (superseded entries are
+	// filtered by the store). memType "all"/"" searches every type.
+	q := toAgentQuery(m, query, limit, agentmem.OrderRelevance)
 	if memType != "" && memType != "all" {
-		rows, err = m.db.Query(`
-			SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
-			       ltm.importance, ltm.created_at, ltm.scope,
-			       bm25(xbot_long_term_memories_fts) as score
-			FROM xbot_long_term_memories_fts fts
-			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-			WHERE `+m.scopeWhere("ltm")+` AND ltm.type = ? AND ltm.superseded_by IS NULL AND xbot_long_term_memories_fts MATCH ?
-			ORDER BY score ASC
-			LIMIT ?
-		`, m.scopeArg(), memType, fts5OrQuery(query), limit)
-	} else {
-		rows, err = m.db.Query(`
-			SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
-			       ltm.importance, ltm.created_at, ltm.scope,
-			       bm25(xbot_long_term_memories_fts) as score
-			FROM xbot_long_term_memories_fts fts
-			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-			WHERE `+m.scopeWhere("ltm")+` AND ltm.superseded_by IS NULL AND xbot_long_term_memories_fts MATCH ?
-			ORDER BY score ASC
-			LIMIT ?
-		`, m.scopeArg(), fts5OrQuery(query), limit)
+		q.Type = memType
 	}
+	rows, err := m.store.SearchAgentLongTermMemories(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var e MemoryEntry
-			if err := rows.Scan(&e.ID, &e.Type, &e.Content, &e.Keywords, &e.Tags,
-				&e.Importance, &e.CreatedAt, &e.Scope, &e.Score); err != nil {
-				continue
-			}
-			entries = append(entries, e)
-		}
+	entries := make([]MemoryEntry, 0, len(rows)+3)
+	for _, r := range rows {
+		entries = append(entries, MemoryEntry{
+			ID:         r.ID,
+			Type:       r.Type,
+			Content:    r.Content,
+			Keywords:   r.Keywords,
+			Tags:       r.Tags,
+			Importance: r.Importance,
+			CreatedAt:  r.CreatedAt.Format(time.RFC3339),
+			Scope:      r.Scope,
+			Score:      r.Relevance,
+		})
 	}
 
-	// Also search short-term memories
+	// Short-term summaries are searchable on demand too.
 	stMems, _ := m.searchShortTerm(query, 3)
 	for _, stm := range stMems {
 		entries = append(entries, MemoryEntry{
@@ -1775,13 +1346,16 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 	if len(entries) > limit {
 		entries = entries[:limit]
 	}
-
 	return entries, nil
 }
 
 // AddMemory manually adds a long-term memory entry.
 // The entry's Scope is respected ("" defaults to 'global' — the explicit
 // memory_add path; auto-extraction writes 'session' via addLongTermMemory).
+//
+// The insert and the supersede of older contradicting facts happen in ONE
+// transaction (storage.AgentMemoryStore): a crash between them would leave two
+// contradictory facts both ACTIVE and both injected.
 func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64, error) {
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
@@ -1791,112 +1365,39 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 	if entry.Keywords == "" {
 		entry.Keywords = extractKeywords(entry.Content)
 	}
-	scope := entry.Scope
-	if scope == "" {
-		scope = "global"
+	if entry.Scope == "" {
+		entry.Scope = "global"
 	}
 
-	// Transaction (CR CjiW Low + CR xbotgh): INSERT + supersede UPDATE must be
-	// atomic. A crash between the two left the new row written while the old
-	// contradictory rows stayed ACTIVE (both injected — the pre-redesign state).
-	// Concurrency guard (CR xbotgh): two concurrent AddMemory calls with
-	// strong-matching facts each SELECT the other's row (inserted but not yet
-	// superseded) → both UPDATE superseded_by → both disappear from every view
-	// (Recall/SearchMemories/ListMemories filter superseded rows — not even
-	// memory_manage list shows them). SELECT is bounded to ltm.id < new id
-	// (only supersede OLDER rows — concurrent same-fact writes break the tie
-	// naturally, last writer wins) and the UPDATE carries a superseded_by IS
-	// NULL guard (a second writer never overwrites an already-superseded row).
-	tx, err := m.db.BeginTx(ctx, nil)
+	searchText := buildSearchText(entry.Content, entry.Keywords, entry.Tags)
+	id, superseded, err := m.store.AddAgentLongTermMemoryWithSupersede(ctx,
+		toAgentLongTerm(entry, searchText), queryTerms(entry.Keywords))
 	if err != nil {
 		return 0, err
 	}
-	txCommitted := false
-	defer func() {
-		if !txCommitted {
-			_ = tx.Rollback()
-		}
-	}()
-
-	result, err := tx.Exec(`
-		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text, scope)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, entry.UserID, entry.TenantID, entry.Type, entry.Content, entry.Keywords, entry.Tags,
-		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags), scope)
-	if err != nil {
-		return 0, err
+	for _, staleID := range superseded {
+		log.WithFields(log.Fields{"stale_id": staleID, "new_id": id, "type": entry.Type}).
+			Debug("xbot-memory: stale memory superseded")
 	}
-
-	id, _ := result.LastInsertId()
 	entry.ID = id
-
-	// Supersede chain (2026-09-02 redesign): an explicit add is the model
-	// DELIBERATELY writing an updated fact. Strong-matching ACTIVE GLOBAL
-	// entries are marked superseded_by=<new id> (rows preserved for rollback,
-	// filtered from injection/search) instead of double-storing contradictory
-	// facts ("cluster at X" + "cluster moved to Y" both injected — the model
-	// could not tell which was current: the "stale memory" complaint).
-	// Session-scoped auto-extraction (addLongTermMemory) keeps its dedup-skip
-	// and NEVER supersedes: task-local state must not invalidate user-level facts.
-	if scope == "global" {
-		rows, err := tx.Query(`
-			SELECT ltm.id
-			FROM xbot_long_term_memories_fts fts
-			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-			WHERE `+m.scopeWhere("ltm")+` AND ltm.scope = 'global' AND ltm.superseded_by IS NULL
-			  AND ltm.id < ?
-			  AND xbot_long_term_memories_fts MATCH ?
-			  AND bm25(xbot_long_term_memories_fts) < ?
-		`, m.scopeArg(), id, fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold)
-		if err == nil {
-			var staleIDs []int64
-			for rows.Next() {
-				var staleID int64
-				if err := rows.Scan(&staleID); err == nil {
-					staleIDs = append(staleIDs, staleID)
-				}
-			}
-			rows.Close()
-			for _, staleID := range staleIDs {
-				if _, err := tx.Exec(`UPDATE xbot_long_term_memories SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND superseded_by IS NULL`, id, staleID); err != nil {
-					log.WithError(err).WithFields(log.Fields{
-						"stale_id": staleID,
-						"new_id":   id,
-					}).Warn("xbot-memory: supersede update failed")
-				} else {
-					log.WithFields(log.Fields{
-						"stale_id": staleID,
-						"new_id":   id,
-						"type":     entry.Type,
-					}).Debug("xbot-memory: stale memory superseded")
-				}
-			}
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	txCommitted = true
-
 	m.writeMemoryFile(id, entry)
 	return id, nil
 }
 
-// DeleteMemory deletes a long-term memory by ID.
+// DeleteMemory deletes a long-term memory by ID (and its Markdown mirror).
 func (m *XbotMemory) DeleteMemory(ctx context.Context, id int64) error {
-	// Get file_path before deleting
+	// Read the mirror path before deleting so the file can be removed.
 	var filePath string
-	m.db.QueryRow(`SELECT file_path FROM xbot_long_term_memories WHERE id = ? AND `+m.scopeWhere("")+``, id, m.scopeArg()).Scan(&filePath)
-
-	_, err := m.db.Exec(`DELETE FROM xbot_long_term_memories WHERE id = ? AND `+m.scopeWhere("")+``, id, m.scopeArg())
-	if err != nil {
+	if mem, err := m.store.GetAgentLongTermMemory(ctx, m.scopeArg(), m.tenantID, id); err == nil {
+		filePath = mem.FilePath
+	}
+	if err := m.store.DeleteAgentLongTermMemory(ctx, m.scopeArg(), m.tenantID, id); err != nil {
 		return err
 	}
-
-	// Remove Markdown file
 	if filePath != "" {
-		os.Remove(filePath)
+		if err := os.Remove(filePath); err != nil {
+			log.WithError(err).Debug("xbot-memory: failed to remove memory file")
+		}
 	}
 	return nil
 }
@@ -1906,59 +1407,40 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 	if limit <= 0 {
 		limit = 20
 	}
-
 	log.WithFields(log.Fields{
-		"user_id":   m.scopeArg(),
-		"tenant_id": m.tenantID,
-		"type":      memType,
-		"limit":     limit,
+		"user_id": m.scopeArg(), "tenant_id": m.tenantID, "type": memType, "limit": limit,
 	}).Info("xbot-memory: ListMemories called")
 
-	var rows *sql.Rows
-	var err error
+	q := agentmem.Query{UserID: m.scopeArg(), TenantID: m.tenantID, Limit: limit, Order: agentmem.OrderImportance}
 	if memType != "" && memType != "all" {
-		rows, err = m.db.Query(`
-			SELECT id, type, content, keywords, tags, importance, created_at, scope
-			FROM xbot_long_term_memories
-			WHERE `+m.scopeWhere("")+` AND superseded_by IS NULL AND type = ?
-			ORDER BY importance DESC, created_at DESC
-			LIMIT ?
-		`, m.scopeArg(), memType, limit)
-	} else {
-		rows, err = m.db.Query(`
-			SELECT id, type, content, keywords, tags, importance, created_at, scope
-			FROM xbot_long_term_memories
-			WHERE `+m.scopeWhere("")+` AND superseded_by IS NULL
-			ORDER BY importance DESC, created_at DESC
-			LIMIT ?
-		`, m.scopeArg(), limit)
+		q.Type = memType
 	}
+	rows, err := m.store.ListAgentLongTermMemories(ctx, q)
 	if err != nil {
 		log.WithError(err).WithField("user_id", m.scopeArg()).Error("xbot-memory: ListMemories query failed")
 		return nil, err
 	}
-	defer rows.Close()
-
-	var entries []MemoryEntry
-	for rows.Next() {
-		var e MemoryEntry
-		if err := rows.Scan(&e.ID, &e.Type, &e.Content, &e.Keywords, &e.Tags, &e.Importance, &e.CreatedAt, &e.Scope); err != nil {
-			continue
-		}
-		entries = append(entries, e)
+	entries := make([]MemoryEntry, 0, len(rows))
+	for _, r := range rows {
+		entries = append(entries, MemoryEntry{
+			ID: r.ID, Type: r.Type, Content: r.Content, Keywords: r.Keywords, Tags: r.Tags,
+			Importance: r.Importance, CreatedAt: r.CreatedAt.Format(time.RFC3339), Scope: r.Scope,
+		})
 	}
 	return entries, nil
 }
 
 // UpdateMemory updates a memory's content.
 func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywords, tags string, importance float64) error {
-	_, err := m.db.Exec(`
-		UPDATE xbot_long_term_memories
-		SET content = ?, keywords = ?, tags = ?, importance = ?,
-		    search_text = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ? AND `+m.scopeWhere("")+`
-	`, content, keywords, tags, importance, buildSearchText(content, keywords, tags), id, m.scopeArg())
-	return err
+	return m.store.UpdateAgentLongTermMemory(ctx, agentmem.LongTermMemory{
+		ID:         id,
+		UserID:     m.scopeArg(),
+		Content:    content,
+		Keywords:   keywords,
+		Tags:       tags,
+		Importance: importance,
+		SearchText: buildSearchText(content, keywords, tags),
+	})
 }
 
 // --- CompressionAware interface implementation ---

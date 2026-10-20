@@ -8,6 +8,7 @@ import (
 	"xbot/agent"
 	"xbot/config"
 	"xbot/llm"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
@@ -25,9 +26,9 @@ func TestImportSubscriptionsDupCheckSnapshotsExistingNames(t *testing.T) {
 	defer db.Close()
 
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
-	subSvc := sqlite.NewLLMSubscriptionService(db)
+	subSvc := storage.NewSQLiteConfigStore(db)
 	factory.SetSubscriptionSvc(subSvc)
-	factory.SetTenantSvc(sqlite.NewTenantService(db))
+	factory.SetTenantSvc(storage.NewSQLiteTenantStore(db))
 
 	// Pre-existing subscription named "dup" owned by the canonical user.
 	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-dup", SenderID: "cli_user", Name: "dup", Provider: "openai", BaseURL: "https://api.example/v1", APIKey: "sk-x", Model: "m1"}); err != nil {

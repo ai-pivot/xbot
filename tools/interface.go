@@ -6,7 +6,7 @@ import (
 	"xbot/bus"
 	"xbot/llm"
 	"xbot/memory"
-	"xbot/storage/sqlite"
+	"xbot/storage"
 	"xbot/storage/vectordb"
 )
 
@@ -47,9 +47,9 @@ type ToolContext struct {
 
 	// Letta memory fields (nil when memory provider is not letta)
 	TenantID        int64                        // 当前租户 ID
-	CoreMemory      *sqlite.CoreMemoryService    // 核心记忆存储
+	CoreMemory      storage.MemoryStore          // 核心记忆存储（后端无关接口）
 	ArchivalMemory  *vectordb.ArchivalService    // 归档记忆存储（chromem-go 向量数据库）
-	MemorySvc       *sqlite.MemoryService        // 事件历史存储（用于 rethink 日志）
+	MemorySvc       storage.MemoryStore          // 事件历史存储（用于 rethink 日志）
 	RecallTimeRange vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
 	ToolIndexer     memory.ToolIndexer           // 工具索引服务（Letta 模式下可用）
 

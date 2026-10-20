@@ -7,6 +7,7 @@ import (
 	"xbot/agent/hooks"
 	"xbot/config"
 	"xbot/llm"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
@@ -399,7 +400,7 @@ func TestResolveSubContext_UsesSubscriptionModels(t *testing.T) {
 	}
 	defer db.Close()
 
-	subSvc := sqlite.NewLLMSubscriptionService(db)
+	subSvc := storage.NewSQLiteConfigStore(db)
 	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.SetSubscriptionSvc(subSvc)
 
@@ -456,7 +457,7 @@ func TestResolveSubContextFor_ReadsFromSubscriptionModels(t *testing.T) {
 	}
 	defer db.Close()
 
-	subSvc := sqlite.NewLLMSubscriptionService(db)
+	subSvc := storage.NewSQLiteConfigStore(db)
 	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.SetSubscriptionSvc(subSvc)
 
@@ -491,8 +492,8 @@ func TestResolveContextConfig_UsesSessionThenUserDefaultWithoutSideEffects(t *te
 	}
 	defer db.Close()
 
-	subSvc := sqlite.NewLLMSubscriptionService(db)
-	tenantSvc := sqlite.NewTenantService(db)
+	subSvc := storage.NewSQLiteConfigStore(db)
+	tenantSvc := storage.NewSQLiteTenantStore(db)
 	f := NewLLMFactory(&llm.MockLLM{}, "system-model")
 	f.SetSubscriptionSvc(subSvc)
 	f.SetTenantSvc(tenantSvc)

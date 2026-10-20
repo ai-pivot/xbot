@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"xbot/config"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
@@ -53,7 +54,7 @@ func TestGetLLMForModel_TierNamesStillResolve(t *testing.T) {
 		t.Fatalf("open db2: %v", err)
 	}
 	t.Cleanup(func() { db2.Close() })
-	settingsSvc := NewSettingsService(sqlite.NewUserSettingsService(db2))
+	settingsSvc := NewSettingsService(storage.NewSQLiteConfigStore(db2))
 	f.SetSettingsService(settingsSvc)
 
 	sub := &sqlite.LLMSubscription{
