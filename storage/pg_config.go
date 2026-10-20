@@ -77,7 +77,17 @@ func (s *pgConfigStore) GetSubscription(id string) (*sqlite.LLMSubscription, err
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
-	return sub, err
+	if err != nil {
+		return nil, err
+	}
+	// Every read path must decode this column. Forgetting it here left
+	// CachedModels nil, and a nil []string is encoded by pgx as SQL NULL — which
+	// the NOT NULL column rejects (23502) the moment the caller writes the row
+	// back (see UpdateSubscription).
+	if cachedModelsStr.Valid && cachedModelsStr.String != "" {
+		json.Unmarshal([]byte(cachedModelsStr.String), &sub.CachedModels)
+	}
+	return sub, nil
 }
 
 func (s *pgConfigStore) GetDefaultSubscription(senderID string) (*sqlite.LLMSubscription, error) {
@@ -117,17 +127,26 @@ func (s *pgConfigStore) AddSubscription(sub *sqlite.LLMSubscription) error {
 	return err
 }
 
+// UpdateSubscription rewrites the user-editable columns of a subscription.
+//
+// `cached_models` is deliberately NOT in the SET list. It is not user-editable —
+// it is the API-discovered model cache — and SQLite's LLMSubscriptionService.Update
+// does not write it either. Keeping the two backends identical here also removes a
+// data-loss trap: a caller that loads a subscription, edits its name and writes it
+// back must not wipe the cache. (The previous code passed `sub.CachedModels`
+// straight into this TEXT column, so pgx encoded a nil []string as SQL NULL and the
+// NOT NULL column rejected the statement — SQLSTATE 23502 on every edit.)
 func (s *pgConfigStore) UpdateSubscription(sub *sqlite.LLMSubscription) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE user_llm_subscriptions SET
 		 name=$1, provider=$2, base_url=$3, api_key=$4, model=$5,
 		 max_context=$6, max_output_tokens=$7, thinking_mode=$8,
-		 cached_models=$9, api_type=$10, enabled=$11, updated_at=now()
-		 WHERE id=$12`,
+		 api_type=$9, enabled=$10, updated_at=now()
+		 WHERE id=$11`,
 		sub.Name, sub.Provider, sub.BaseURL, sub.APIKey, sub.Model,
 		sub.MaxContext, sub.MaxOutputTokens, sub.ThinkingMode,
-		sub.CachedModels, sub.APIType, sub.Enabled, sub.ID)
+		sub.APIType, sub.Enabled, sub.ID)
 	return err
 }
 

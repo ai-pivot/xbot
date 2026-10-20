@@ -92,6 +92,20 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   an unforeseen producer (third-party API, PDF/OCR extractor) degrades to U+FFFD
   instead of killing the turn. `encoding/json` already repairs invalid bytes, so JSON
   columns are safe by construction.
+- **Go slices must never be passed into a TEXT column.** pgx has no encode plan for
+  `[]string → text`: a **nil** slice becomes SQL `NULL` (→ `23502` on a NOT NULL
+  column) and a non-nil one fails with `unable to encode []string into text format`.
+  Serialize explicitly with `encoding/json` first. Pair this with the read side:
+  **every read path must decode what it writes.** `pgConfigStore.GetSubscription` used
+  to scan `cached_models` into a throwaway `sql.NullString` and drop it, so the struct
+  a caller loaded and wrote back carried a nil slice — the two bugs combined to make
+  every "edit subscription" request fail on PG while SQLite was fine.
+- **Not every column in a row is user-editable.** `cached_models` (API-discovered model
+  cache) is written by the discovery path, never by `Update`. SQLite's
+  `LLMSubscriptionService.Update` omits it, and the PG store must too — otherwise an
+  innocent rename wipes the cache. When the two backends disagree about which columns
+  an operation touches, contract tests catch it; "it compiles and SQLite passes" does
+  not.
 
 ## One replay implementation, both backends
 

@@ -11,10 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// newPGTestStorage creates a fresh PG Storage for contract testing.
-// Uses XBOT_PG_TEST_DSN env var. Each test gets a fresh schema to avoid
-// interference; all test schemas are dropped in t.Cleanup.
-func newPGTestStorage(t *testing.T) Storage {
+// newPGTestPool creates a fresh PG database (unique per test) with the runtime
+// schema applied, and returns its pool. Tests that need raw SQL — to seed a
+// column the public interface cannot write, or to assert one was not touched —
+// use this instead of newPGTestStorage.
+func newPGTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("XBOT_PG_TEST_DSN")
 	if dsn == "" {
@@ -53,13 +54,8 @@ func newPGTestStorage(t *testing.T) Storage {
 		t.Fatalf("initPGSchema: %v", err)
 	}
 
-	store, err := NewPGStorageWithPool(pool)
-	if err != nil {
-		t.Fatalf("NewPGStorageWithPool: %v", err)
-	}
-
 	t.Cleanup(func() {
-		store.Close()
+		pool.Close()
 		// Drop the test database
 		dropPool, _ := pgxpool.New(context.Background(), dsn)
 		defer dropPool.Close()
@@ -67,6 +63,20 @@ func newPGTestStorage(t *testing.T) Storage {
 		dropPool.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName))
 	})
 
+	return pool
+}
+
+// newPGTestStorage creates a fresh PG Storage for contract testing.
+// Uses XBOT_PG_TEST_DSN env var. Each test gets a fresh schema to avoid
+// interference; all test schemas are dropped in t.Cleanup.
+func newPGTestStorage(t *testing.T) Storage {
+	t.Helper()
+	pool := newPGTestPool(t)
+	store, err := NewPGStorageWithPool(pool)
+	if err != nil {
+		t.Fatalf("NewPGStorageWithPool: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
 	return store
 }
 

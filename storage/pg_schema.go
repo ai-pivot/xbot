@@ -161,7 +161,7 @@ func initPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			max_context INTEGER NOT NULL DEFAULT 0,
 			max_output_tokens INTEGER NOT NULL DEFAULT 0,
 			thinking_mode TEXT NOT NULL DEFAULT '',
-			cached_models TEXT DEFAULT '',
+			cached_models TEXT NOT NULL DEFAULT '',
 			api_type TEXT NOT NULL DEFAULT '',
 			enabled BOOLEAN NOT NULL DEFAULT true,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

@@ -100,6 +100,38 @@ func testConfigStoreContract(t *testing.T, factory StorageFactory) {
 		requireNilSubscription(t, cs, sub.ID)
 	})
 
+	t.Run("Subscriptions_UpdateWithoutCachedModels", func(t *testing.T) {
+		// Regression: the PG store used to pass `sub.CachedModels` (a []string)
+		// into the NOT NULL TEXT column `cached_models`. pgx encodes a nil slice
+		// as SQL NULL, so every edit failed with SQLSTATE 23502 — and a non-nil
+		// one failed to encode at all. `cached_models` is API-discovered state,
+		// not a user-editable field: Update must neither write it nor require it.
+		s := factory(t)
+		defer s.Close()
+		cs := s.Config()
+		sender := configTestID(t)
+
+		sub := addTestSubscription(t, cs, sender)
+
+		// A caller that never loaded the cache (nil slice) must still be able to
+		// rename the subscription.
+		bare := &sqlite.LLMSubscription{
+			ID: sub.ID, SenderID: sender, Name: "Renamed Without Cache",
+			Provider: "openai", BaseURL: "https://api.example.com",
+			APIKey: "sk-contract-test", Model: "gpt-4o", Enabled: true,
+		}
+		if err := cs.Update(bare); err != nil {
+			t.Fatalf("Update with nil CachedModels: %v", err)
+		}
+		got, err := cs.Get(sub.ID)
+		if err != nil {
+			t.Fatalf("Get after Update: %v", err)
+		}
+		if got == nil || got.Name != "Renamed Without Cache" {
+			t.Fatalf("Get after Update = %+v, want Name=Renamed Without Cache", got)
+		}
+	})
+
 	t.Run("UpsertModel", func(t *testing.T) {
 		s := factory(t)
 		defer s.Close()
