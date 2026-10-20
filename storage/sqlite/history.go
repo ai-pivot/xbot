@@ -1393,6 +1393,23 @@ func (s *SessionService) replayLocked(tenantID int64) (*ReplayResult, error) {
 	return replayWith(conn, tenantID)
 }
 
+// structuredKindHiddenFromLLM 判断某个结构化 kind 是否**只用于展示/控制**、永不进入
+// LLM 上下文（唯一过滤点：本文件 replayWith）。
+//
+//   - event：状态事件（UI 时间线/监控），语义上不是对话输入。若进上下文，一次
+//     1000 条的批量事件会直接把 prompt 撑爆并烧 token（实测事故：e2e 批量事件
+//     随后作为 user 消息进入下一次请求）。
+//   - command：控制平面指令（spawn/kill/pause/cancel…），已通过插队队列投递给
+//     agent 执行，不属于对话历史，重复回放只会让模型误以为用户在说话。
+//
+// 其余 kind（text/ask_user/answer/report/decision）都是真实对话回合，必须进上下文。
+//
+// 注意：这里只影响 **LLM 回放**。UI 的 replayForDisplay / replayForDisplayRecords
+// 与 /api/messages 不做过滤 —— 事件必须仍然可见（「可见但不进上下文」）。
+func structuredKindHiddenFromLLM(kind string) bool {
+	return kind == StructuredKindEvent || kind == StructuredKindCommand
+}
+
 func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 	checkpoint, hasCheckpoint, err := latestCheckpointWith(queryer, tenantID)
 	if err != nil {
@@ -1417,7 +1434,7 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 			//（default 分支对未知类型直接报错，不能靠 default 兜底）。这里什么都不做，
 			// 仍走循环尾部的 known 记账，供后续控制记录的 target 校验。
 		case HistoryRecordMessage:
-			if !record.Message.DisplayOnly {
+			if !record.Message.DisplayOnly && !structuredKindHiddenFromLLM(record.Message.Kind) {
 				result.Messages = append(result.Messages, record.Message)
 				msgIdx.add(record.Message.ID, len(result.Messages)-1)
 			}
