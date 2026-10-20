@@ -220,6 +220,11 @@ func isStructuredKind(kind string) bool { return structuredKinds[kind] }
 
 // validateStructuredPayload 校验 payload 体积与 kind 必需字段。
 func validateStructuredPayload(input protocol.StructuredMessageInput) error {
+	// 顶层 text 与 payload 同受 256 KiB 限制：text 会落库并进入 LLM 上下文，
+	// 只限制 payload 会让客户端用 text 绕过体积上限（HTTP 层 1MB body 兜不住语义）。
+	if len(input.Text) > maxStructuredPayloadBytes {
+		return errors.New("text exceeds 256KB limit")
+	}
 	if input.Payload != nil {
 		raw, err := json.Marshal(input.Payload)
 		if err != nil {

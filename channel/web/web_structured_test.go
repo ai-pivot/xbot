@@ -42,6 +42,21 @@ func TestStructuredMessageRejectsOversizePayload(t *testing.T) {
 	}
 }
 
+func TestStructuredMessageRejectsOversizeText(t *testing.T) {
+	// 顶层 text 也受 256KB 限制：否则客户端可用 text 绕过 payload 体积上限，
+	// 把 MB 级文本写进会话库并带进 LLM 上下文。
+	wc := newStructuredTestChannel(t)
+	raw, _ := json.Marshal(map[string]any{"kind": "text", "text": strings.Repeat("a", 300*1024)})
+	rec := httptest.NewRecorder()
+	wc.handleMessage(rec, authedAPIRequest(http.MethodPost, "/api/message", raw))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "256KB") {
+		t.Fatalf("body = %s, want 256KB message", rec.Body.String())
+	}
+}
+
 func TestStructuredMessageDispatchesCallbackAndBroadcasts(t *testing.T) {
 	wc := newStructuredTestChannel(t)
 	called := false
