@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"xbot/llm"
+	"xbot/storage/sqlite"
 )
 
 // contract_cross_test.go — Cross-store contract tests
@@ -132,6 +133,93 @@ func testCrossStoreContract(t *testing.T, factory StorageFactory) {
 		}
 		if cid != chatID {
 			t.Errorf("chatID: got %q, want %q", cid, chatID)
+		}
+	})
+}
+
+// testCopySessionFromContract covers the session-fork copy primitive.
+//
+// Fork is a data copy, not a transformation, so the contract is: everything the
+// source holds arrives in order, control bookkeeping is flattened exactly like
+// the old read-then-write path, and the source is untouched. A backend may
+// implement it with `INSERT … SELECT` (no rows leave the database) — the
+// contract is deliberately phrased over observable rows so both shapes pass.
+func testCopySessionFromContract(t *testing.T, factory StorageFactory) {
+	t.Run("CopySessionFrom", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+
+		srcID := createTestTenant(t, s, uniqueChatID(t))
+		dstID := createTestTenant(t, s, uniqueChatID(t))
+		src := getSessionStore(t, s, srcID)
+		dst := getSessionStore(t, s, dstID)
+
+		// Source: a normal exchange, an empty assistant shell (must be skipped —
+		// it is the one sanitize rule that fires in production), and iteration
+		// history for one turn.
+		msgs := []llm.ChatMessage{
+			{Role: "user", Content: "问题一", TurnID: 1},
+			{Role: "assistant", Content: "回答一", TurnID: 1},
+			{Role: "assistant", Content: "", TurnID: 1}, // empty shell → skipped
+			{Role: "user", Content: "问题二", TurnID: 2},
+		}
+		if _, err := src.AppendMessages(srcID, msgs); err != nil {
+			t.Fatalf("seed source messages: %v", err)
+		}
+		recs := []sqlite.IterationRecord{
+			{TurnID: 1, Iteration: 1, Content: "iter-1", Tokens: 5, Model: "m1"},
+			{TurnID: 2, Iteration: 1, Content: "iter-2", Tokens: 6, Model: "m2"},
+		}
+		if err := src.AppendIterationHistories(srcID, recs); err != nil {
+			t.Fatalf("seed source iterations: %v", err)
+		}
+
+		n, err := s.CopySessionFrom(dstID, srcID)
+		if err != nil {
+			t.Fatalf("CopySessionFrom: %v", err)
+		}
+		if n != 3 {
+			t.Errorf("CopySessionFrom returned %d messages, want 3 (empty assistant shell skipped)", n)
+		}
+
+		got, err := dst.GetAllMessages(dstID)
+		if err != nil {
+			t.Fatalf("GetAllMessages(dst): %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("dst has %d messages, want 3: %+v", len(got), got)
+		}
+		for i, want := range []string{"问题一", "回答一", "问题二"} {
+			if got[i].Content != want {
+				t.Errorf("dst[%d].Content = %q, want %q (order must follow source id)", i, got[i].Content, want)
+			}
+		}
+		// Turn ids are preserved so the forked turns keep their grouping.
+		if got[2].TurnID != 2 {
+			t.Errorf("dst[2].TurnID = %d, want 2", got[2].TurnID)
+		}
+
+		iters, err := dst.GetIterationHistoryByTurn(dstID, 1)
+		if err != nil {
+			t.Fatalf("GetIterationHistoryByTurn(dst): %v", err)
+		}
+		if len(iters) != 1 || iters[0].Content != "iter-1" {
+			t.Errorf("dst turn 1 iterations = %+v, want the copied iter-1", iters)
+		}
+
+		// The source must be untouched (fork must not consume it).
+		srcMsgs, err := src.GetAllMessages(srcID)
+		if err != nil {
+			t.Fatalf("GetAllMessages(src): %v", err)
+		}
+		if len(srcMsgs) != 4 {
+			t.Errorf("source now has %d messages, want 4 (unchanged)", len(srcMsgs))
+		}
+
+		// Copying an empty session is a no-op, not an error.
+		emptyID := createTestTenant(t, s, uniqueChatID(t))
+		if n, err := s.CopySessionFrom(dstID, emptyID); err != nil || n != 0 {
+			t.Errorf("CopySessionFrom(empty) = (%d, %v), want (0, nil)", n, err)
 		}
 	})
 }

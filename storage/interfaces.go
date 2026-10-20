@@ -31,6 +31,13 @@ type Storage interface {
 	// server can run on every backend — it previously required a SQLite file and
 	// was silently disabled on PG.
 	OAuth() OAuthTokenStore
+	// CopySessionFrom copies srcTenantID's conversation history (session_messages
+	// + iteration_history) into dstTenantID, returning the message count. This
+	// exists for session fork, which is a data copy — not an application-level
+	// transformation. A backend that can express it as `INSERT … SELECT` must do
+	// so, so the rows never leave the database; use it instead of read-then-write
+	// whenever the caller does not need the messages in memory.
+	CopySessionFrom(dstTenantID, srcTenantID int64) (int, error)
 	Close() error
 }
 

@@ -247,8 +247,15 @@ func (a *Agent) ForkSessionMessages(srcChannel, srcChatID, dstChannel, dstChatID
 	if err != nil {
 		return fmt.Errorf("open destination session %s:%s: %w", dstChannel, dstChatID, err)
 	}
-	_, err = copyForkMessages(srcSess, dstSess)
-	return err
+	// This path only needs the copy to happen — it discards the messages — so ask
+	// the storage layer to do it server-side instead of reading every row into
+	// memory and writing it straight back. On PG that is two `INSERT … SELECT`
+	// statements and no payload transfer at all. (The SubAgent fork below keeps
+	// the read-in-memory path because it needs the messages as this Run's context.)
+	if _, err := a.multiSession.Store().CopySessionFrom(dstSess.TenantID(), srcSess.TenantID()); err != nil {
+		return fmt.Errorf("copy session %s:%s -> %s:%s: %w", srcChannel, srcChatID, dstChannel, dstChatID, err)
+	}
+	return nil
 }
 
 // forkContextNote returns the system-prompt section explaining the inherited

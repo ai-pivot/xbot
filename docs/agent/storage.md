@@ -76,6 +76,17 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   must use a *dedicated database* per test (see `pg_contract_test.go`), not `SET search_path`.
 - `json.Marshal(nil)` yields `"null"`; the message-tool JSON column must be `[]` so the
   `HasAssistantReplyAfterLastUser` / tool predicates match.
+- **A copy is not a read+write.** When the caller does not need the rows in
+  memory (session fork from the REST API), express the copy as `INSERT … SELECT`
+  and let the database do it — see `Storage.CopySessionFrom`. Reading 2235
+  messages into the process and writing them back doubles the payload for nothing.
+  The one transformation fork used to apply was `SanitizeMessages`; only its
+  "empty assistant shell" rule ever fires in production (209 of 229 events over a
+  week) and that is a plain SQL predicate, while the tool-pair repair is a
+  read-time concern anyway — every turn re-sanitizes before building the LLM
+  context (`agent/engine_run.go`). SQLite cannot do it this way (v71 gives each
+  tenant its own DB file), so its implementation reads and appends; the interface
+  is phrased over observable rows so both shapes satisfy the same contract.
 - **Round trips, not SQL, dominate on a remote PG.** A single `INSERT` costs one
   network round trip (~50ms on a cross-host link), so any loop that writes "one row
   at a time" turns into minutes: forking a 2235-message session used to spend ~4
