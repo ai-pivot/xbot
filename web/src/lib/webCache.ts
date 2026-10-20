@@ -20,14 +20,6 @@ export function sessionCacheKey(channel: string | null | undefined, chatID: stri
  */
 export const MAX_CACHED_SESSIONS = 8
 /**
- * Max `iteration_history` entries retained inside a cached reconnect snapshot.
- * Recovery only reads the LAST entry's iteration (watermark for re-fetch), so
- * a handful is ample; the point is to stop "sessions × heavy history" from
- * multiplying (a long turn can carry hundreds of iterations per snapshot).
- */
-export const MAX_CACHED_ITERATION_HISTORY = 4
-
-/**
  * A `Map<string, V>` whose size never exceeds {@link MAX_CACHED_SESSIONS},
  * ordered by recency. The ceiling and the recency bookkeeping live in the
  * container itself (not in each call site), so no access path — including a
@@ -66,36 +58,29 @@ class BoundedSessionCache<V> extends Map<string, V> {
   }
 }
 
-/**
- * Reduce a structured progress snapshot to the fields SSE reconnect recovery
- * actually reads — `turn_id`, `iteration`, and the iteration-history entries'
- * `iteration` (the last one is the re-fetch watermark in
- * `restoreActiveProgress`). Streaming payload (`content` / `reasoning` /
- * `stream_content` / tools / todos / …) is never read back from this cache, so
- * caching it only bloats memory. `phase` is kept because it is a cheap,
- * commonly-inspected marker.
- */
-function trimProgressSnapshot(progress: ProgressEvent): ProgressEvent {
-  const trimmed: ProgressEvent = {}
-  if (typeof progress.iteration === 'number') trimmed.iteration = progress.iteration
-  if (typeof progress.turn_id === 'number') trimmed.turn_id = progress.turn_id
-  if (typeof progress.phase === 'string') trimmed.phase = progress.phase
-  const history = progress.iteration_history
-  if (Array.isArray(history) && history.length > 0) {
-    trimmed.iteration_history = history.slice(-MAX_CACHED_ITERATION_HISTORY).map((entry) => {
-      const raw = entry && typeof entry === 'object' ? (entry as { iteration?: unknown }).iteration : undefined
-      // Keep a placeholder for a non-conforming entry so the LAST element stays
-      // the last element — the watermark derivation must not shift.
-      return typeof raw === 'number' ? { iteration: raw } : {}
-    })
-  }
-  return trimmed
-}
 
 /** Bounded snapshot cache; every insert is trimmed to the recovery-critical fields. */
 class ProgressSnapshotCache extends BoundedSessionCache<ProgressEvent> {
-  override set(cacheKey: string, value: ProgressEvent): this {
-    return super.set(cacheKey, trimProgressSnapshot(value))
+  // 已停用（用户 2026-10-20：「web 缓存现在全是错的，导致前端状态异常」）。
+  //
+  // 这个缓存把 progress 快照（含 iteration/turn/iteration_history）留在内存里，
+  // SSE 重连后由 restoreActiveProgress 读回来恢复「正在运行」的视图。问题是
+  // 快照是**某个过去时刻**的：turn 已结束、iteration 已推进、或用户在别的
+  // 会话里操作过之后，恢复出来就是过期状态 —— 前端显示「还在跑」「迭代号
+  // 回退」，而没有任何机制能保证它和服务端当前状态一致。
+  //
+  // 停用后重连完全依赖服务端：SSE 重放（ring buffer）+ /api/history 重新拉取，
+  // 慢一点，但不会出现脏状态。
+  override set(_cacheKey: string, _value: ProgressEvent): this {
+    return this
+  }
+
+  override get(_cacheKey: string): ProgressEvent | undefined {
+    return undefined
+  }
+
+  override has(_cacheKey: string): boolean {
+    return false
   }
 }
 

@@ -245,31 +245,24 @@ func TestBuildSystemReminder_SubAgentStatus(t *testing.T) {
 	}
 }
 
-// TestShouldInsertSystemReminder —— 用户 2026-10-20：fake tool pair 改成每 10 轮
-// 插入一次，而不是每轮都插（频繁出现同一组「凭空工具调用」会让模型困惑）。
+// TestShouldInsertSystemReminder —— 只有 iteration % 10 == 0 才插入 fake tool pair。
 func TestShouldInsertSystemReminder(t *testing.T) {
 	cases := []struct {
-		name      string
-		iter      int
-		iterStart int
-		want      bool
+		iter int
+		want bool
 	}{
-		{"首轮必插", 1, 0, true},
-		{"第2轮不插", 2, 0, false},
-		{"第9轮不插", 9, 0, false},
-		{"第10轮插", 10, 0, true},
-		{"第11轮不插", 11, 0, false},
-		{"第19轮不插", 19, 0, false},
-		{"第20轮插", 20, 0, true},
-		{"第30轮插", 30, 0, true},
-		{"resume 后首轮必插", 31, 30, true},
-		{"resume 后第40轮插", 40, 30, true},
-		{"resume 后第32轮不插", 32, 30, false},
+		{1, false}, {2, false}, {9, false},
+		{10, true},
+		{11, false}, {19, false},
+		{20, true},
+		{21, false},
+		{30, true},
+		{40, true},
+		{100, true},
 	}
 	for _, c := range cases {
-		if got := shouldInsertSystemReminder(c.iter, c.iterStart); got != c.want {
-			t.Errorf("%s: shouldInsertSystemReminder(%d, %d) = %v, want %v",
-				c.name, c.iter, c.iterStart, got, c.want)
+		if got := shouldInsertSystemReminder(c.iter); got != c.want {
+			t.Errorf("shouldInsertSystemReminder(%d) = %v, want %v", c.iter, got, c.want)
 		}
 	}
 }

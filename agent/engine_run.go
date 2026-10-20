@@ -720,11 +720,16 @@ func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 }
 
 // llmMessages returns the messages to send to the LLM: s.messages plus the
-// transient system_reminder fake tool pair (if any). The reminder is appended
-// to a fresh copy — it never mutates s.messages, so persistence watermark and
-// the ContextEditor view stay clean.
-func (s *runState) llmMessages() []llm.ChatMessage {
-	if s.systemReminder == "" {
+// transient system_reminder fake tool pair, but ONLY on insertion iterations
+// (every systemReminderInsertEvery-th). The reminder is appended to a fresh
+// copy — it never mutates s.messages, so persistence watermark and the
+// ContextEditor view stay clean.
+//
+// 关键：是否拼接由 iteration 决定，不取决于 s.systemReminder 是否为空。
+// s.systemReminder 是跨迭代保留的内存字段，只要它非空就会每轮被拼进去
+// （模型每轮都看到一个「凭空出现的 tool_call」，正是用户 2026-10-20 报的问题）。
+func (s *runState) llmMessages(iteration int) []llm.ChatMessage {
+	if s.systemReminder == "" || !shouldInsertSystemReminder(iteration) {
 		return s.messages
 	}
 	assistantMsg, toolMsg := newSyntheticToolPair(systemReminderToolName, systemReminderToolName, s.systemReminder)
@@ -737,7 +742,7 @@ func (s *runState) llmMessages() []llm.ChatMessage {
 
 // callLLM invokes the LLM with the current messages, handling per-tenant
 // concurrency semaphore and input-too-long errors with forced compression.
-func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) (*llm.LLMResponse, error) {
+func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context, iteration int) (*llm.LLMResponse, error) {
 	toolDefs := visibleToolDefs(s.cfg.Tools.AsDefinitionsForSession(s.sessionKey, s.cfg.TenantID), s.cfg.PermUsers, s.cfg.Channel)
 	s.messages = s.syncMessages(llm.SanitizeMessages(s.messages))
 
@@ -759,7 +764,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		s.cfg.ResetStreamTiming()
 	}
 
-	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
+	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(iteration), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 
 	s.localLLMCalls++
 	if response != nil {
@@ -829,7 +834,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 	}
 
 	if err != nil && llm.IsInputTooLongError(err) && len(s.messages) > 3 {
-		response, err = s.handleInputTooLong(ctx, retryNotifyCtx, toolDefs)
+		response, err = s.handleInputTooLong(ctx, retryNotifyCtx, toolDefs, iteration)
 	}
 
 	if releaseLLMSem != nil {
@@ -841,7 +846,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 
 // handleInputTooLong forces context compression when input exceeds model limits,
 // then retries the LLM call.
-func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx context.Context, toolDefs []llm.ToolDefinition) (*llm.LLMResponse, error) {
+func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx context.Context, toolDefs []llm.ToolDefinition, iteration int) (*llm.LLMResponse, error) {
 	log.Ctx(ctx).WithError(fmt.Errorf("input too long")).Warn("Input too long for LLM, forcing context compression and retrying")
 	if s.autoNotify {
 		s.progressLines = append(s.progressLines, "> ⚠️ 输入超限，正在强制压缩上下文...")
@@ -940,7 +945,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		s.cfg.ResetStreamTiming()
 	}
 
-	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
+	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(iteration), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 	s.localLLMCalls++
 	if response != nil {
 		if response.Usage.PromptTokens > 0 {
@@ -2344,17 +2349,14 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 // systemReminderInsertEvery 是 transient system_reminder fake tool pair 的插入周期。
 const systemReminderInsertEvery = 10
 
-// shouldInsertSystemReminder 决定本轮是否把 system_reminder 这个 fake tool pair
-// 拼进 LLM 上下文：本 run 首轮必插，之后每 systemReminderInsertEvery 轮插一次。
+// shouldInsertSystemReminder 决定本轮（iteration）是否把 system_reminder 这个
+// fake tool pair 拼进 LLM 上下文：只有 iteration 能被 systemReminderInsertEvery
+// 整除时才拼（10、20、30…），其余轮次完全不出现。
 //
 // 为什么不是每轮插入：fake tool pair 会让对话里凭空多出一组
 // assistant(tool_call) + tool(result) 记录，模型连续看到同一工具反复"被调用"
-// 容易困惑（误以为要反复调用它，或把它当成真实工具）。它是 cwd/todo/subagent
-// 的摘要，10 轮一次的粒度足够，其余轮次完全不出现。
-func shouldInsertSystemReminder(iteration, iterStart int) bool {
-	if iteration == iterStart+1 {
-		return true
-	}
+// 容易困惑（误以为要反复调用它，或把它当成真实工具）。
+func shouldInsertSystemReminder(iteration int) bool {
 	return iteration%systemReminderInsertEvery == 0
 }
 
@@ -2385,7 +2387,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	//   2) reminder 是 prompt 尾部的一段固定结构，内容逐轮抖动会让 KV cache
 	//      前缀失配。reminder 承载的是 cwd/todo/subagent 的摘要，本来就不需要
 	//      逐轮精确 —— 10 轮的粒度足够新鲜，且把重建开销摊薄到 1/10。
-	if len(response.ToolCalls) > 0 && shouldInsertSystemReminder(iteration, s.iterStart) {
+	if shouldInsertSystemReminder(iteration) {
 		var todoItems []TodoProgressItem
 		if s.cfg.TodoManager != nil && s.todoKey() != "" {
 			todoItems = s.cfg.TodoManager.GetTodoItems(s.todoKey())

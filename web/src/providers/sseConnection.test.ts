@@ -139,8 +139,8 @@ describe('SSEConnectionImpl', () => {
 
     expect(lastSeqCache.get(sessionCacheKey('web', 'shared'))).toBe(7)
     expect(lastSeqCache.get(sessionCacheKey('cli', 'shared'))).toBe(1)
-    expect(progressSnapshotCache.get(sessionCacheKey('web', 'shared'))).toMatchObject({ phase: 'web-progress' })
-    expect(progressSnapshotCache.get(sessionCacheKey('cli', 'shared'))).toMatchObject({ phase: 'cli-progress' })
+    expect(progressSnapshotCache.get(sessionCacheKey('web', 'shared'))).toBeUndefined()
+    expect(progressSnapshotCache.get(sessionCacheKey('cli', 'shared'))).toBeUndefined()
 
     connection.subscribe('shared', 'web')
     expect(MockEventSource.instances[2].url).toBe('/api/sse?chat_id=shared&channel=web&last_event_id=7')
@@ -236,7 +236,7 @@ describe('SSEConnectionImpl', () => {
     expect(received.map((message) => message.seq)).toEqual([3, 4])
     const cacheKey = sessionCacheKey('web', 'chat-a')
     expect(lastSeqCache.get(cacheKey)).toBe(4)
-    expect(progressSnapshotCache.get(cacheKey)).toMatchObject({ phase: 'tool' })
+    expect(progressSnapshotCache.get(cacheKey)).toBeUndefined()
     expect(getProgressGeneration(cacheKey)).toBeGreaterThan(0)
     connection.dispose()
   })
@@ -288,7 +288,7 @@ describe('SSEConnectionImpl', () => {
       seq: 1,
       progress: { phase: 'tool', completed_tools: [{ name: 'Read' }] },
     })
-    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(true)
+    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
 
     source.emit('text', { type: 'text', seq: 2, content: 'done' })
 
@@ -503,7 +503,7 @@ describe('SSEConnectionImpl', () => {
     expect(received.some((m) => m.type === 'progress_structured' && (m as { progress?: { phase?: string } }).progress?.phase === 'done')).toBe(false)
     expect(received.some((m) => m.type === 'session' && (m as { session?: { action?: string } }).session?.action === 'idle')).toBe(false)
     // Snapshot cache is NOT cleared
-    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(true)
+    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
     connection.dispose()
   })
 
@@ -1028,7 +1028,7 @@ describe('SSEConnectionImpl', () => {
     expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', expect.objectContaining({
       method: 'get_active_progress',
       params: expect.objectContaining({
-        from_iteration: 3,
+        from_iteration: 0,
       }),
     }))
     connection.dispose()

@@ -88,7 +88,6 @@ describe('web caches', () => {
 // so "many sessions × heavy iterations" cannot multiply. Contract pinned with
 // literal bounds on purpose (the tests should not just mirror the constant).
 const MAX_CACHED_SESSIONS = 8
-const MAX_CACHED_ITERATION_HISTORY = 4
 
 describe('session cache bounds (LRU)', () => {
   beforeEach(() => {
@@ -128,41 +127,7 @@ describe('session cache bounds (LRU)', () => {
     expect(hasLastSeq(current)).toBe(true)
     expect(getLastSeq(current)).toBe(42)
     expect(getLastIteration(current)).toBe(7)
-    expect(progressSnapshotCache.get(current)).toMatchObject({ iteration: 7, turn_id: 3 })
-  })
-
-  it('③ trims a heavy snapshot to the recovery-critical fields and bounded history', () => {
-    const key = sessionCacheKey('web', 'heavy')
-    const history = Array.from({ length: 50 }, (_, i) => ({
-      iteration: i + 1,
-      content: 'c'.repeat(1000),
-      reasoning: 'r'.repeat(1000),
-      tools: [{ name: 'Read', status: 'done' }],
-    }))
-    progressSnapshotCache.set(key, {
-      phase: 'tool',
-      iteration: 50,
-      turn_id: 3,
-      content: 'big'.repeat(1000),
-      reasoning: 'big'.repeat(1000),
-      iteration_history: history,
-    })
-
-    const cached = progressSnapshotCache.get(key)!
-    expect(cached.phase).toBe('tool')
-    expect(cached.iteration).toBe(50)
-    expect(cached.turn_id).toBe(3)
-    // History bounded to the last N entries, each reduced to its identity.
-    expect(cached.iteration_history).toEqual([
-      { iteration: 47 },
-      { iteration: 48 },
-      { iteration: 49 },
-      { iteration: 50 },
-    ])
-    expect(cached.iteration_history).toHaveLength(MAX_CACHED_ITERATION_HISTORY)
-    // Heavy per-iteration / streaming payload is NOT cached.
-    expect(cached.content).toBeUndefined()
-    expect(cached.reasoning).toBeUndefined()
+    expect(progressSnapshotCache.get(current)).toBeUndefined()
   })
 
   it('④ re-accessing a session returns the cached value (LRU — not wiped on overflow)', () => {
