@@ -59,3 +59,15 @@ func uniqueChatID(t *testing.T) string {
 func dummyMsg(role, content string) llm.ChatMessage {
 	return llm.ChatMessage{Role: role, Content: content, TurnID: 1}
 }
+
+// contentOfMessage returns the content of the message with the given ID, or ""
+// when the projection does not contain it (a miss is also a signal: a mask /
+// checkpoint may have folded the row away).
+func contentOfMessage(msgs []llm.ChatMessage, id int64) string {
+	for _, m := range msgs {
+		if m.ID == id {
+			return m.Content
+		}
+	}
+	return ""
+}

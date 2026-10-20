@@ -139,6 +139,25 @@ a second copy is how masks/context edits silently diverge (that is exactly what 
 contract suite caught). `pg_session.go` adds only the record reader (`pgHistoryRecords`),
 the checkpoint lookup (`pgLatestCheckpoint`) and a trivial occurrence lookup.
 
+### LLM-context reads must go through `Replay()`
+
+`GetAllMessages`, `GetHistory` and `GetHistoryBefore` are the projection the agent feeds
+the model; `GetMessagesCount` / `GetUserMessageCount` must report the **active**
+(checkpoint-folded) count. SQLite routes all of them through `Replay()` /
+`countActiveMessages`. The PG store originally queried `session_messages` directly and
+broke exactly here: after a restart the resumed session sent **2,532 rows / 3.4MB**
+(un-masked, pre-compaction) while the compaction checkpoint held **4 messages / 10KB**,
+so the request blew past the model's 1M-token window and the upstream answered its
+generic `400 API 调用参数有误，请检查文档。` on all five retries (2026-10-20, session
+`chat_2A03BDF8F2B8` turn 49). Also note the window direction: `GetHistory` means the
+**newest** `limit` rows (`ORDER BY id ASC LIMIT` returns the oldest — wrong).
+
+Raw reads are legitimate only for the **display** projection
+(`GetHistoryBeforeForDisplay` → `pgSessionStore.rawHistoryBefore`), which must keep the
+pre-compression rows and the original (un-masked) text. Contract coverage:
+`ContextReads_UseReplayProjection`, `GetHistory_ReturnsNewestWindow`,
+`GetHistoryBefore_ReturnsNewestBeforeCursor` in `contract_session_test.go`.
+
 ## Memory providers are backend-agnostic (DI invariant)
 
 > A memory provider depends **only** on `storage.*` interfaces plus pure logic. Adding or

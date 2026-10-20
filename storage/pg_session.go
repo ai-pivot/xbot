@@ -87,17 +87,83 @@ func (s *pgSessionStore) ReplaceToolMessage(tenantID int64, toolName, toolCallID
 	return err
 }
 
+// GetHistory returns the last `limit` LLM-context messages (rows), in
+// chronological order.
 func (s *pgSessionStore) GetHistory(tenantID int64, limit int) ([]llm.ChatMessage, error) {
-	ctx := context.Background()
-	rows, err := s.pool.Query(ctx, s.selectMessageSQL()+` WHERE tenant_id = $1 ORDER BY id ASC LIMIT $2`, tenantID, limit)
+	return s.GetHistoryBefore(tenantID, 0, limit)
+}
+
+// GetHistoryBefore returns up to `limit` LLM-context messages that occur before
+// beforeID (0 = unbounded). The result is chronologically ordered (oldest
+// first) and, when beforeID <= 0, contains the MOST RECENT `limit` messages.
+//
+// The projection is Replay(), not the raw append-only table: compression
+// snapshots replace everything before the checkpoint and observation masks
+// rewrite tool results. Reading raw rows here sent the pre-compaction,
+// un-masked history to the model — a 3.4MB prompt after a restart where the
+// checkpoint held 10KB (2026-10-20: turn 49's request blew past the 1M-token
+// window and the upstream answered the generic 400 "invalid parameter").
+func (s *pgSessionStore) GetHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
+	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanMessages(rows)
+	if limit <= 0 {
+		return nil, nil
+	}
+	msgs := replay.Messages
+	// If beforeID specified, slice to only messages with id < beforeID.
+	if beforeID > 0 {
+		cut := len(msgs)
+		for i, m := range msgs {
+			if m.ID >= beforeID {
+				cut = i
+				break
+			}
+		}
+		msgs = msgs[:cut]
+		if len(msgs) == 0 {
+			return nil, nil
+		}
+	}
+	// Keep the newest `limit` messages (messages are chronological).
+	start := 0
+	if len(msgs) > limit {
+		start = len(msgs) - limit
+	}
+	return append([]llm.ChatMessage(nil), msgs[start:]...), nil
 }
 
-func (s *pgSessionStore) GetHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
+// GetAllMessages returns every LLM-context message for a tenant — the same
+// Replay() projection SQLite's GetAllMessages returns (compression snapshots
+// folded in, masks/context edits applied, display-only rows excluded).
+func (s *pgSessionStore) GetAllMessages(tenantID int64) ([]llm.ChatMessage, error) {
+	replay, err := s.Replay(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return replay.Messages, nil
+}
+
+// GetMessagesCount returns the number of ACTIVE messages (the LLM-context
+// projection), matching SQLite's checkpoint-aware countActiveMessages: a
+// compressed session reports the snapshot size, not the append-only row count.
+func (s *pgSessionStore) GetMessagesCount(tenantID int64) (int, error) {
+	replay, err := s.Replay(tenantID)
+	if err != nil {
+		return 0, err
+	}
+	return len(replay.Messages), nil
+}
+
+// rawHistoryBefore returns append-only rows before beforeID (newest `limit`,
+// chronological order). This is the DISPLAY projection: compression snapshots
+// are not folded in and masks/context edits are not applied, so the UI keeps
+// showing what actually happened (mirrors SQLite's ReplayForDisplay).
+func (s *pgSessionStore) rawHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx, s.selectMessageSQL()+` WHERE tenant_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3`, tenantID, beforeID, limit)
 	if err != nil {
@@ -112,23 +178,6 @@ func (s *pgSessionStore) GetHistoryBefore(tenantID int64, beforeID int64, limit 
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 	return msgs, nil
-}
-
-func (s *pgSessionStore) GetAllMessages(tenantID int64) ([]llm.ChatMessage, error) {
-	ctx := context.Background()
-	rows, err := s.pool.Query(ctx, s.selectMessageSQL()+` WHERE tenant_id = $1 ORDER BY id ASC`, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanMessages(rows)
-}
-
-func (s *pgSessionStore) GetMessagesCount(tenantID int64) (int, error) {
-	ctx := context.Background()
-	var count int
-	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM session_messages WHERE tenant_id = $1`, tenantID).Scan(&count)
-	return count, err
 }
 
 func (s *pgSessionStore) Clear(tenantID int64) error {
@@ -859,7 +908,7 @@ func (s *pgSessionStore) GetHistoryBeforeForDisplay(tenantID int64, beforeID int
 	if total == 0 {
 		return nil, 0, nil
 	}
-	msgs, err := s.GetHistoryBefore(tenantID, beforeID, limit)
+	msgs, err := s.rawHistoryBefore(tenantID, beforeID, limit)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1074,14 +1123,22 @@ func (s *pgSessionStore) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 
 // ── Usage / counts ─────────────────────────────────────────────────────────
 
-// GetUserMessageCount counts conversation turns (user rows, display-only
-// excluded).
+// GetUserMessageCount counts conversation turns in the active LLM context:
+// user rows from the Replay() projection, so a compressed session reports the
+// snapshot's user turns instead of every pre-compression row (same contract as
+// SQLite's countActiveMessages(userOnly=true)).
 func (s *pgSessionStore) GetUserMessageCount(tenantID int64) (int, error) {
-	ctx := context.Background()
-	var count int
-	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM session_messages
-		WHERE tenant_id = $1 AND role = 'user' AND COALESCE(display_only, false) = false`, tenantID).Scan(&count)
-	return count, err
+	replay, err := s.Replay(tenantID)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, m := range replay.Messages {
+		if m.Role == "user" {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // GetLastUserMessageContextTokens returns the context_tokens watermark of the

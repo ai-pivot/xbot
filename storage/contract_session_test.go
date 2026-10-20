@@ -54,6 +54,55 @@ func testSessionStoreContract(t *testing.T, factory StorageFactory) {
 		}
 	})
 
+	t.Run("GetHistory_ReturnsNewestWindow", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		for i := 1; i <= 5; i++ {
+			if err := ss.AddMessage(tenantID, dummyMsg("user", fmt.Sprintf("m%d", i))); err != nil {
+				t.Fatalf("AddMessage(m%d): %v", i, err)
+			}
+		}
+		// limit counts MESSAGES and selects the NEWEST window (SQLite contract:
+		// "returns the last `limit` messages"). The old PG query used
+		// ORDER BY id ASC LIMIT, i.e. the oldest rows — every caller that asks for
+		// "recent context" got the beginning of the conversation instead.
+		msgs, err := ss.GetHistory(tenantID, 2)
+		if err != nil {
+			t.Fatalf("GetHistory: %v", err)
+		}
+		if len(msgs) != 2 {
+			t.Fatalf("GetHistory(2) returned %d messages, want 2: %+v", len(msgs), msgs)
+		}
+		if msgs[0].Content != "m4" || msgs[1].Content != "m5" {
+			t.Errorf("GetHistory(2) = [%q %q], want [m4 m5]", msgs[0].Content, msgs[1].Content)
+		}
+	})
+
+	t.Run("GetHistoryBefore_ReturnsNewestBeforeCursor", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		var ids []int64
+		for i := 1; i <= 5; i++ {
+			id, err := ss.AddMessageWithID(tenantID, dummyMsg("user", fmt.Sprintf("m%d", i)))
+			if err != nil {
+				t.Fatalf("AddMessageWithID(m%d): %v", i, err)
+			}
+			ids = append(ids, id)
+		}
+		// Cursor = m4's row: the window is the two rows immediately before it.
+		msgs, err := ss.GetHistoryBefore(tenantID, ids[3], 2)
+		if err != nil {
+			t.Fatalf("GetHistoryBefore: %v", err)
+		}
+		if len(msgs) != 2 || msgs[0].Content != "m2" || msgs[1].Content != "m3" {
+			t.Fatalf("GetHistoryBefore(m4, 2) = %+v, want [m2 m3]", msgs)
+		}
+	})
+
 	t.Run("AddMessageWithID_ReturnsID", func(t *testing.T) {
 		ss := getSessionStore(t, s, tenantID)
 		if err := ss.Clear(tenantID); err != nil {
@@ -1114,6 +1163,106 @@ func testSessionStoreContract(t *testing.T, factory StorageFactory) {
 		}
 		if got := recordContent(records, msgID); got != "mask-original" {
 			t.Errorf("display content = %q, want the untouched %q", got, "mask-original")
+		}
+	})
+
+	// The LLM-context read surface must be the Replay() projection: compression
+	// checkpoint folding + masks + display_only filtering — exactly what SQLite's
+	// GetAllMessages/GetHistory return. Reading the append-only rows here is how
+	// a production session sent 2,532 rows / 3.4MB to the model after a restart
+	// while the compaction checkpoint held 4 messages / 10KB (2026-10-20: the
+	// request exceeded the 1M-token window and the upstream answered its generic
+	// 400 "invalid parameter" five times).
+	t.Run("ContextReads_UseReplayProjection", func(t *testing.T) {
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		userID, err := ss.AddMessageWithID(tenantID, dummyMsg("user", "turn-1"))
+		if err != nil {
+			t.Fatalf("AddMessageWithID(user): %v", err)
+		}
+		if _, err := ss.AddMessageWithID(tenantID, dummyMsg("assistant", "working")); err != nil {
+			t.Fatalf("AddMessageWithID(assistant): %v", err)
+		}
+		toolOutput := strings.Repeat("x", 4096)
+		toolID, err := ss.AddMessageWithID(tenantID, dummyMsg("tool", toolOutput))
+		if err != nil {
+			t.Fatalf("AddMessageWithID(tool): %v", err)
+		}
+
+		// ── 1. Observation mask: LLM context sees the placeholder, display keeps
+		// the original output. ──
+		if err := ss.AppendMasks(tenantID, []sqlite.MaskMutation{{TargetHistoryID: toolID, Content: "[masked]"}}); err != nil {
+			t.Fatalf("AppendMasks: %v", err)
+		}
+		all, err := ss.GetAllMessages(tenantID)
+		if err != nil {
+			t.Fatalf("GetAllMessages after mask: %v", err)
+		}
+		if len(all) != 3 {
+			t.Fatalf("GetAllMessages after mask returned %d messages, want 3: %+v", len(all), all)
+		}
+		if got := contentOfMessage(all, toolID); got != "[masked]" {
+			t.Errorf("GetAllMessages tool content = %q, want the masked %q", got, "[masked]")
+		}
+		hist, err := ss.GetHistory(tenantID, 10)
+		if err != nil {
+			t.Fatalf("GetHistory after mask: %v", err)
+		}
+		if got := contentOfMessage(hist, toolID); got != "[masked]" {
+			t.Errorf("GetHistory tool content = %q, want the masked %q", got, "[masked]")
+		}
+		display, _, err := ss.GetHistoryBeforeForDisplay(tenantID, 0, 10)
+		if err != nil {
+			t.Fatalf("GetHistoryBeforeForDisplay: %v", err)
+		}
+		if got := contentOfMessage(display, toolID); got != toolOutput {
+			t.Errorf("display tool content length = %d, want the untouched %d-byte output (display must not apply masks)",
+				len(got), len(toolOutput))
+		}
+
+		// ── 2. Compaction checkpoint: everything before the snapshot is folded
+		// into the summary — including the read/count APIs. ──
+		snapshotID, err := ss.AppendContextSnapshot(tenantID, sqlite.HistoryRecordCompress, []llm.ChatMessage{
+			{ID: userID, Role: "user", Content: "[compacted summary]"},
+		})
+		if err != nil {
+			t.Fatalf("AppendContextSnapshot: %v", err)
+		}
+		all, err = ss.GetAllMessages(tenantID)
+		if err != nil {
+			t.Fatalf("GetAllMessages after compress: %v", err)
+		}
+		if len(all) != 1 || all[0].Content != "[compacted summary]" {
+			t.Fatalf("GetAllMessages after compress = %+v, want the 1-message checkpoint snapshot", all)
+		}
+		hist, err = ss.GetHistory(tenantID, 10)
+		if err != nil {
+			t.Fatalf("GetHistory after compress: %v", err)
+		}
+		if len(hist) != 1 || hist[0].Content != "[compacted summary]" {
+			t.Errorf("GetHistory after compress = %+v, want the checkpoint snapshot", hist)
+		}
+		if n, err := ss.GetMessagesCount(tenantID); err != nil || n != 1 {
+			t.Errorf("GetMessagesCount after compress = %d (err %v), want 1 (checkpoint-aware count)", n, err)
+		}
+		if n, err := ss.GetUserMessageCount(tenantID); err != nil || n != 1 {
+			t.Errorf("GetUserMessageCount after compress = %d (err %v), want 1", n, err)
+		}
+		// The checkpoint snapshot is the ONLY active row; pre-compression rows are
+		// no longer part of the LLM context even though the append-only table keeps
+		// them (asserted through GetFullHistory for the display surface).
+		if beforeID := snapshotID; beforeID > 0 {
+			hist, err = ss.GetHistoryBefore(tenantID, beforeID, 10)
+			if err != nil {
+				t.Fatalf("GetHistoryBefore after compress: %v", err)
+			}
+			for _, m := range hist {
+				if m.Content == toolOutput {
+					t.Errorf("GetHistoryBefore returned a pre-compression row (%d bytes) after the checkpoint", len(toolOutput))
+				}
+			}
 		}
 	})
 
