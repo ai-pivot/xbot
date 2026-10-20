@@ -76,17 +76,19 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   must use a *dedicated database* per test (see `pg_contract_test.go`), not `SET search_path`.
 - `json.Marshal(nil)` yields `"null"`; the message-tool JSON column must be `[]` so the
   `HasAssistantReplyAfterLastUser` / tool predicates match.
-- **A copy is not a read+write.** When the caller does not need the rows in
-  memory (session fork from the REST API), express the copy as `INSERT … SELECT`
-  and let the database do it — see `Storage.CopySessionFrom`. Reading 2235
-  messages into the process and writing them back doubles the payload for nothing.
-  The one transformation fork used to apply was `SanitizeMessages`; only its
-  "empty assistant shell" rule ever fires in production (209 of 229 events over a
-  week) and that is a plain SQL predicate, while the tool-pair repair is a
-  read-time concern anyway — every turn re-sanitizes before building the LLM
-  context (`agent/engine_run.go`). SQLite cannot do it this way (v71 gives each
-  tenant its own DB file), so its implementation reads and appends; the interface
-  is phrased over observable rows so both shapes satisfy the same contract.
+- **A session is a log; its conversation is a derived view.** ⛔ Do not "optimise"
+  a session copy into a raw `INSERT … SELECT` over `session_messages`. That table is
+  an append-only log of everything the session did; what the model sees is
+  `Replay()`'s output — collapsed to the latest compression checkpoint (whose
+  summary lives inside the compress record's `record_data` JSON, **not** in any
+  row, so it cannot be rebuilt from rows), with masks/context edits applied and
+  **display-only rows dropped**. A raw copy of 2026-10-20 therefore handed every
+  fork the source session's cron notifications ("A scheduled cron job fired…"),
+  command output, and pre-compression history. `Storage.CopySessionFrom` gets
+  this right: messages are materialised from the replayed view in Go, while
+  `iteration_history` — a genuine pure copy — stays server-side as one
+  `INSERT … SELECT`. Before turning any "just copy the rows" idea into SQL here,
+  ask which of the two you are looking at.
 - **Round trips, not SQL, dominate on a remote PG.** A single `INSERT` costs one
   network round trip (~50ms on a cross-host link), so any loop that writes "one row
   at a time" turns into minutes: forking a 2235-message session used to spend ~4

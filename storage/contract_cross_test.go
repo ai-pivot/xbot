@@ -216,6 +216,35 @@ func testCopySessionFromContract(t *testing.T, factory StorageFactory) {
 			t.Errorf("source now has %d messages, want 4 (unchanged)", len(srcMsgs))
 		}
 
+		// A fork must not inherit the source session's DISPLAY-ONLY rows.
+		// Regression (2026-10-20): an "optimised" raw `INSERT … SELECT` copy
+		// duplicated them, so a forked agent found the source session's cron
+		// notifications ("A scheduled cron job fired…") in its inherited context.
+		// Conversation is the *replayed* view; cron notifications and command
+		// output are not conversation.
+		cronA := llm.ChatMessage{Role: "assistant", TurnID: 3, DisplayOnly: true,
+			ToolCalls: []llm.ToolCall{{ID: "cron_src", Name: "cron_fired"}}}
+		cronT := llm.ChatMessage{Role: "tool", TurnID: 3, DisplayOnly: true,
+			ToolCallID: "cron_src", ToolName: "cron_fired",
+			Content: "A scheduled cron job fired.\n\nMessage: 该喝水了"}
+		if _, err := src.AppendMessages(srcID, []llm.ChatMessage{cronA, cronT}); err != nil {
+			t.Fatalf("seed cron notification: %v", err)
+		}
+		dst2ID := createTestTenant(t, s, uniqueChatID(t))
+		if _, err := s.CopySessionFrom(dst2ID, srcID); err != nil {
+			t.Fatalf("CopySessionFrom (with cron rows): %v", err)
+		}
+		dst2 := getSessionStore(t, s, dst2ID)
+		rawDst2, err := dst2.GetFullHistory(dst2ID)
+		if err != nil {
+			t.Fatalf("GetFullHistory(dst2): %v", err)
+		}
+		for _, rec := range rawDst2 {
+			if rec.Type == sqlite.HistoryRecordMessage && rec.Message.ToolName == "cron_fired" {
+				t.Fatalf("fork copied a display-only cron notification into the destination session — that is the source session's scheduled event, not conversation")
+			}
+		}
+
 		// Copying an empty session is a no-op, not an error.
 		emptyID := createTestTenant(t, s, uniqueChatID(t))
 		if n, err := s.CopySessionFrom(dstID, emptyID); err != nil || n != 0 {

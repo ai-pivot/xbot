@@ -10,7 +10,6 @@ import (
 
 	"xbot/crypto"
 	"xbot/event"
-	"xbot/llm"
 	log "xbot/logger"
 	"xbot/storage/agentmem"
 	"xbot/storage/sqlite"
@@ -697,13 +696,14 @@ func (s *sqliteStorage) Trigger() event.TriggerStore { return s.trigger }
 func (s *sqliteStorage) OAuth() OAuthTokenStore      { return s.oauth }
 func (s *sqliteStorage) Close() error                { return s.closeFn() }
 
-// CopySessionFrom copies a session's history between two SQLite sessions.
+// CopySessionFrom copies a session's conversation into another session.
 //
-// Unlike PG this cannot be one `INSERT … SELECT`: under v71 every tenant has its
-// own database file, so source and destination are different files and the rows
-// have to pass through the process. It stays a plain read+append because both
-// ends are local — there is no round-trip cost to amortize — and it keeps the
-// exact semantics of the previous fork path (sanitized message set).
+// Under v71 every tenant is a separate database file, so nothing can be expressed
+// as one `INSERT … SELECT` across the two — the rows pass through the process
+// either way. It still uses the shared helpers so the semantics are identical to
+// PG: messages come from the *replayed* view (display-only rows such as cron
+// notifications are not conversation and must not be inherited), iteration
+// history is a pure copy.
 func (s *sqliteStorage) CopySessionFrom(dstTenantID, srcTenantID int64) (int, error) {
 	src, err := s.sessionFn(srcTenantID)
 	if err != nil {
@@ -713,33 +713,12 @@ func (s *sqliteStorage) CopySessionFrom(dstTenantID, srcTenantID int64) (int, er
 	if err != nil {
 		return 0, fmt.Errorf("copy session: open destination: %w", err)
 	}
-
-	msgs, err := src.GetAllMessages(srcTenantID)
+	msgs, err := copySessionMessages(src, dst, srcTenantID, dstTenantID)
 	if err != nil {
-		return 0, fmt.Errorf("copy session: read messages: %w", err)
+		return 0, fmt.Errorf("copy session: %w", err)
 	}
-	msgs = llm.SanitizeMessages(msgs)
-	if len(msgs) > 0 {
-		for i := range msgs {
-			msgs[i].ID = 0 // destination re-assigns ids; turn ids are preserved
-		}
-		if _, err := dst.AppendMessages(dstTenantID, msgs); err != nil {
-			return 0, fmt.Errorf("copy session: write messages: %w", err)
-		}
-	}
-
-	recs, err := src.GetAllIterationHistory(srcTenantID)
-	if err != nil {
-		// Iteration detail is a rendering nicety, not context data — the forked
-		// messages are still a valid prefix for the LLM.
-		log.WithError(err).Warn("copy session: read iteration history failed (skipped)")
-		return len(msgs), nil
-	}
-	for i := range recs {
-		recs[i].MessageID = 0
-	}
-	if err := dst.AppendIterationHistories(dstTenantID, recs); err != nil {
-		log.WithError(err).Warn("copy session: write iteration history failed (skipped)")
+	if err := copySessionIterations(src, dst, srcTenantID, dstTenantID); err != nil {
+		log.WithError(err).Warn("copy session: iteration history copy failed (skipped)")
 	}
 	return len(msgs), nil
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"xbot/event"
+	log "xbot/logger"
 )
 
 // pgStorage implements Storage for PostgreSQL.
@@ -57,50 +58,40 @@ func (s *pgStorage) Trigger() event.TriggerStore { return s.trigger }
 func (s *pgStorage) OAuth() OAuthTokenStore      { return s.oauth }
 func (s *pgStorage) Close() error                { s.pool.Close(); return nil }
 
-// CopySessionFrom copies a session's history with two `INSERT … SELECT`
-// statements, in one transaction.
+// CopySessionFrom copies a session's conversation into another session.
 //
-// Fork used to read every row into the process and write it back — 2235 messages
-// plus 811 iteration records meant ~2.6MB across the wire twice, and the rows are
-// already in the database we are writing to. `INSERT … SELECT` does the whole
-// copy server-side: no payload transfer, no per-row round trip.
+// ⛔ The messages are NOT a raw `INSERT … SELECT`: the conversation is a derived
+// view of the append-only log (Replay collapses to the latest compression
+// checkpoint — whose summary lives in `record_data` JSON, not in rows — applies
+// masks, and drops display-only rows). Copying raw rows therefore duplicated the
+// source session's cron notifications into the fork. See copySessionMessages.
 //
-// Two deliberate equivalences with the old read-then-write path:
+// The halves are treated differently because they have different natures:
 //
-//   - Control rows (compression/mask/context_edit bookkeeping) are flattened to
-//     plain `message` rows, exactly as `AppendMessages` did (it always wrote
-//     record_type='message', target_history_id=0, record_data=”).
-//   - The one sanitize rule that actually fires in production is applied in the
-//     SELECT: empty assistant shells (no content, no tool_calls) are skipped.
-//     Over 7 days of logs that was 209 of 229 sanitize events; the tool-pair
-//     repair (Pass 3) never fired, and it is a read-time concern anyway — every
-//     turn re-sanitizes before building the LLM context (agent/engine_run.go).
+//   - messages: materialised from the replayed view in Go, written with one batched
+//     insert (the payload has to cross the process; the row count did not).
+//   - iteration_history: a pure copy — no derivation — so it stays entirely inside
+//     the database as one `INSERT … SELECT` and no rows cross the wire.
+//
+// Control rows (compression/mask bookkeeping) are already folded into the replayed
+// messages, so nothing about them needs copying.
 func (s *pgStorage) CopySessionFrom(dstTenantID, srcTenantID int64) (int, error) {
+	src, err := s.Session(srcTenantID)
+	if err != nil {
+		return 0, fmt.Errorf("copy session: open source: %w", err)
+	}
+	dst, err := s.Session(dstTenantID)
+	if err != nil {
+		return 0, fmt.Errorf("copy session: open destination: %w", err)
+	}
+
+	msgs, err := copySessionMessages(src, dst, srcTenantID, dstTenantID)
+	if err != nil {
+		return 0, fmt.Errorf("copy session: %w", err)
+	}
+
 	ctx := context.Background()
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("copy session: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	tag, err := tx.Exec(ctx, `INSERT INTO session_messages
-		 (tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-		  detail, reasoning_content, reasoning_items, display_only, internal_only,
-		  context_tokens, turn_id, iteration, record_type, target_history_id, record_data)
-		SELECT $1, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-		       detail, reasoning_content, reasoning_items, display_only, internal_only,
-		       0, turn_id, iteration, 'message', 0, ''
-		FROM session_messages
-		WHERE tenant_id = $2
-		  AND NOT (role = 'assistant' AND content = ''
-		           AND (tool_calls IS NULL OR tool_calls IN ('', 'null', '[]')))
-		ORDER BY id`, dstTenantID, srcTenantID)
-	if err != nil {
-		return 0, fmt.Errorf("copy session messages: %w", err)
-	}
-	n := int(tag.RowsAffected())
-
-	if _, err := tx.Exec(ctx, `INSERT INTO iteration_history
+	if _, err := s.pool.Exec(ctx, `INSERT INTO iteration_history
 		 (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens,
 		  ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens,
 		  model, subscription_id)
@@ -108,13 +99,11 @@ func (s *pgStorage) CopySessionFrom(dstTenantID, srcTenantID int64) (int, error)
 		       ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens,
 		       model, subscription_id
 		FROM iteration_history WHERE tenant_id = $2 ORDER BY id`, dstTenantID, srcTenantID); err != nil {
-		return 0, fmt.Errorf("copy session iteration history: %w", err)
+		// Iteration detail is a rendering nicety, not context data.
+		log.WithError(err).Warn("copy session: iteration history copy failed (skipped)")
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("copy session: commit: %w", err)
-	}
-	return n, nil
+	return len(msgs), nil
 }
 
 var _ Storage = (*pgStorage)(nil)
