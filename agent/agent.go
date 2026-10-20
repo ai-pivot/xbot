@@ -4728,6 +4728,11 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 		Seq:       seq,
 		TurnID:    a.getActiveTurnID(progressKey),
 		Iteration: 0,
+		// ⛔ 审计确证（F14）：此 payload 随后被 `updateSnapshotFields` 写回快照 —— 若这里不填
+		//   Todos/Goal，就会把 **nil** 写进权威快照（**反向清掉** todos/goal）。而且发出去的帧
+		//   本身是 `"todos":null`，与「`[]` = 显式清空」的契约不一致。⇒ 必须填权威值。
+		Todos: a.GetTodos(chName, chatID),
+		Goal:  a.GetGoal(chName, chatID),
 	}
 
 	// Builtin commands use the same channel-agnostic fan-out contract as
