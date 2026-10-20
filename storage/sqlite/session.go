@@ -594,6 +594,20 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 	return nil
 }
 
+// AppendIterationHistories writes many iteration records, in order.
+//
+// SQLite is local, so a plain loop is already fast; the method exists so callers
+// that copy a whole session's history (fork) have one code path, and so a
+// remote backend can pipeline instead (see pgSessionStore).
+func (s *SessionService) AppendIterationHistories(tenantID int64, recs []IterationRecord) error {
+	for i, rec := range recs {
+		if err := s.AppendIterationHistory(tenantID, rec.MessageID, rec.TurnID, rec); err != nil {
+			return fmt.Errorf("append iteration_history item %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
 // AppendIterationTool 把一个工具快照（序列化 JSON 对象）追加进 iteration_history
 // 中【已存在】的 (turn_id, iteration) 记录的 tools JSON 数组尾部。
 //

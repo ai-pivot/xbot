@@ -76,6 +76,16 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   must use a *dedicated database* per test (see `pg_contract_test.go`), not `SET search_path`.
 - `json.Marshal(nil)` yields `"null"`; the message-tool JSON column must be `[]` so the
   `HasAssistantReplyAfterLastUser` / tool predicates match.
+- **Round trips, not SQL, dominate on a remote PG.** A single `INSERT` costs one
+  network round trip (~50ms on a cross-host link), so any loop that writes "one row
+  at a time" turns into minutes: forking a 2235-message session used to spend ~4
+  minutes in `AppendMessages` + `AppendIterationHistory` loops. Batch instead —
+  `pgx.Batch` inside one transaction collapses N statements into **one** round trip
+  while preserving per-statement result order (that is how the returned ids stay
+  aligned with the input slice). Bulk paths therefore have batch variants
+  (`AppendMessages`, `AppendIterationHistories`); when adding a new "copy/migrate
+  many rows" path, ask for the batch API rather than looping. Measured on the
+  production server: 3046 rows 255s → 1.3s.
 - **PG `Clear` drops `session_messages` only**, SQLite's also drops `iteration_history`.
   Tests that assert usage aggregates must therefore use baseline deltas or membership
   checks rather than absolute counts.

@@ -59,6 +59,10 @@ type SessionStore interface {
 
 	// Iteration history
 	AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec sqlite.IterationRecord) error
+	// AppendIterationHistories writes many records at once. Fork copies a whole
+	// session's iteration history; a backend where each insert costs a network
+	// round trip must pipeline them (see pgSessionStore).
+	AppendIterationHistories(tenantID int64, recs []sqlite.IterationRecord) error
 	AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error)
 	GetIterationHistoryByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error)
 	GetIterationHistoryByTurns(tenantID int64, turnIDs []uint64) (map[uint64][]sqlite.IterationRecord, error)

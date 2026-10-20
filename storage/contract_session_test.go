@@ -243,6 +243,57 @@ func testSessionStoreContract(t *testing.T, factory StorageFactory) {
 		}
 	})
 
+	t.Run("AppendIterationHistories", func(t *testing.T) {
+		// Fork copies a whole session's iteration history through this batch API.
+		// It must behave exactly like N single appends: same rows, same order,
+		// same field mapping — a remote backend just pipelines the round trips.
+		//
+		// Isolated storage on purpose: these rows carry message_id=0 (fork's
+		// convention — the read side joins on turn_id), and Clear() only deletes
+		// session_messages, so a FK cascade cannot reach them. Sharing the
+		// suite's storage would leak them into later subtests that assert
+		// absolute per-model aggregates (GetTenantUsageStats).
+		s := factory(t)
+		defer s.Close()
+		tenantID := createTestTenant(t, s, uniqueChatID(t))
+		const turn = uint64(9102)
+		ss := getSessionStore(t, s, tenantID)
+
+		recs := []sqlite.IterationRecord{
+			{MessageID: 0, TurnID: turn, Iteration: 1, Content: "batch-1", Reasoning: "r1", Tokens: 11, Model: "m1"},
+			{MessageID: 0, TurnID: turn, Iteration: 2, Content: "batch-2", Tools: `[{"name":"Shell"}]`, Tokens: 22, Model: "m2"},
+			{MessageID: 0, TurnID: turn, Iteration: 3, Content: "batch-3", Tokens: 33, Model: "m3"},
+		}
+		if err := ss.AppendIterationHistories(tenantID, recs); err != nil {
+			t.Fatalf("AppendIterationHistories: %v", err)
+		}
+		iters, err := ss.GetIterationHistoryByTurn(tenantID, turn)
+		if err != nil {
+			t.Fatalf("GetIterationHistoryByTurn: %v", err)
+		}
+		if len(iters) != len(recs) {
+			t.Fatalf("got %d iteration records, want %d", len(iters), len(recs))
+		}
+		for _, want := range recs {
+			got := findIterationByContent(iters, want.Content)
+			if got == nil {
+				t.Fatalf("missing iteration %q in %+v", want.Content, iters)
+			}
+			if got.Iteration != want.Iteration || got.Tokens != want.Tokens || got.Model != want.Model {
+				t.Errorf("iteration %q = {iter:%d tokens:%d model:%q}, want {iter:%d tokens:%d model:%q}",
+					want.Content, got.Iteration, got.Tokens, got.Model, want.Iteration, want.Tokens, want.Model)
+			}
+			if got.Tools != want.Tools {
+				t.Errorf("iteration %q Tools = %q, want %q", want.Content, got.Tools, want.Tools)
+			}
+		}
+
+		// Empty slice is a no-op, not an error.
+		if err := ss.AppendIterationHistories(tenantID, nil); err != nil {
+			t.Fatalf("AppendIterationHistories(nil): %v", err)
+		}
+	})
+
 	t.Run("AppendIterationTool", func(t *testing.T) {
 		const turn = uint64(9002)
 		ss := getSessionStore(t, s, tenantID)

@@ -68,6 +68,13 @@ func (s *TenantSession) AppendIterationHistory(msgID int64, turnID uint64, rec s
 	return s.sessionStore.AppendIterationHistory(s.tenantID, msgID, turnID, rec)
 }
 
+// AppendIterationHistories writes many iteration records in one call. Used when
+// copying a whole session (fork): batching keeps a remote backend from paying one
+// network round trip per record.
+func (s *TenantSession) AppendIterationHistories(recs []sqlite.IterationRecord) error {
+	return s.sessionStore.AppendIterationHistories(s.tenantID, recs)
+}
+
 // AppendIterationTool 把一个工具快照（JSON 对象）追加进【已落盘】的
 // (turnID, iteration) 迭代记录的 tools JSON 数组尾部（见
 // SessionService.AppendIterationTool 的完整契约）。found=false 表示该迭代

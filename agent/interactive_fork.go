@@ -207,12 +207,15 @@ func copyForkMessages(src, dst *session.TenantSession) ([]llm.ChatMessage, error
 	if recs, err := src.GetAllIterationHistory(); err != nil {
 		log.WithError(err).Warn("fork: read source iteration history failed (skipped)")
 	} else {
-		for _, r := range recs {
-			r.MessageID = 0
-			if err := dst.AppendIterationHistory(0, r.TurnID, r); err != nil {
-				log.WithError(err).Warn("fork: copy iteration history record failed (skipped)")
-				break
-			}
+		for i := range recs {
+			recs[i].MessageID = 0
+		}
+		// One batched write. A per-record loop here meant one network round trip
+		// per iteration (an 800-iteration session spent ~40s on the wire alone
+		// against a remote PG) — the whole copy is a single transaction either
+		// way, so there is no reason to serialize the round trips.
+		if err := dst.AppendIterationHistories(recs); err != nil {
+			log.WithError(err).Warn("fork: copy iteration history record failed (skipped)")
 		}
 	}
 	return copied, nil

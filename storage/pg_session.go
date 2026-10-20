@@ -209,16 +209,62 @@ func (s *pgSessionStore) GetMaxIterationForTurn(tenantID int64, turnID uint64) (
 
 // ── Iteration history ──
 
-func (s *pgSessionStore) AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec sqlite.IterationRecord) error {
-	ctx := context.Background()
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO iteration_history
-		 (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+// iterationInsertSQL is the single INSERT shared by the per-row and batch paths —
+// one definition, so a new column cannot be added to one and forgotten in the other.
+const iterationInsertSQL = `INSERT INTO iteration_history
+	 (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`
+
+// queueIterationInsert appends one row to the batch, in the column order above.
+func queueIterationInsert(b *pgx.Batch, tenantID, msgID int64, turnID uint64, rec sqlite.IterationRecord) {
+	b.Queue(iterationInsertSQL,
 		msgID, tenantID, turnID, rec.Iteration, pgText(rec.Content), pgText(rec.Reasoning), pgText(rec.Tools),
 		rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs,
 		rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)
-	return err
+}
+
+func (s *pgSessionStore) AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec sqlite.IterationRecord) error {
+	return s.AppendIterationHistories(tenantID, []sqlite.IterationRecord{
+		{MessageID: msgID, TurnID: turnID, Iteration: rec.Iteration, Content: rec.Content,
+			Reasoning: rec.Reasoning, Tools: rec.Tools, Tokens: rec.Tokens, TTFTMs: rec.TTFTMs,
+			TokensPerSec: rec.TokensPerSec, TotalMs: rec.TotalMs, TPOTMs: rec.TPOTMs,
+			InputTokens: rec.InputTokens, CachedTokens: rec.CachedTokens, Model: rec.Model,
+			SubscriptionID: rec.SubscriptionID},
+	})
+}
+
+// AppendIterationHistories writes many iteration records in one round trip.
+//
+// This exists because forking copies a session's whole iteration history, and one
+// INSERT per record against a remote PG costs a full network round trip (~50ms):
+// an 800-iteration session spent ~2 minutes on the wire alone. Same rows, same
+// transaction, one batch.
+func (s *pgSessionStore) AppendIterationHistories(tenantID int64, recs []sqlite.IterationRecord) error {
+	if len(recs) == 0 {
+		return nil
+	}
+	ctx := context.Background()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	batch := &pgx.Batch{}
+	for _, rec := range recs {
+		queueIterationInsert(batch, tenantID, rec.MessageID, rec.TurnID, rec)
+	}
+	br := tx.SendBatch(ctx, batch)
+	for i := range recs {
+		if _, err := br.Exec(); err != nil {
+			_ = br.Close()
+			return fmt.Errorf("append iteration_history item %d: %w", i, err)
+		}
+	}
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("append iteration_history: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *pgSessionStore) AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error) {
@@ -381,23 +427,53 @@ func (s *pgSessionStore) AppendMessage(tenantID int64, msg llm.ChatMessage) (int
 }
 
 // AppendMessages appends a related message batch in one transaction.
+//
+// The inserts are pipelined with pgx.Batch instead of issued one by one: against
+// a remote PG each round trip costs ~50ms, so a fork of a 2000-message session
+// spent minutes here waiting on the wire rather than on the server. One batch =
+// one round trip, and result order still matches `messages` exactly (pgx returns
+// per-queued-statement results in queue order), so the returned ids are aligned.
 func (s *pgSessionStore) AppendMessages(tenantID int64, messages []llm.ChatMessage) ([]int64, error) {
+	if len(messages) == 0 {
+		return nil, nil
+	}
 	ctx := context.Background()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	ids := make([]int64, 0, len(messages))
-	for i, msg := range messages {
-		var id int64
-		if err := tx.QueryRow(ctx, s.insertMessageSQL()+" RETURNING id", s.messageArgs(tenantID, msg)...).Scan(&id); err != nil {
-			return nil, fmt.Errorf("append message batch item %d: %w", i, err)
-		}
-		ids = append(ids, id)
+
+	batch := &pgx.Batch{}
+	for _, msg := range messages {
+		batch.Queue(s.insertMessageSQL()+" RETURNING id", s.messageArgs(tenantID, msg)...)
+	}
+	ids, err := batchInsertIDs(ctx, tx, batch, len(messages), "append message batch")
+	if err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
+	}
+	return ids, nil
+}
+
+// batchInsertIDs runs a batch of `INSERT … RETURNING id` statements in one round
+// trip and returns the ids in queue order. ctxLabel keeps the per-item error
+// message shape callers already log/assert on ("… batch item N").
+func batchInsertIDs(ctx context.Context, tx pgx.Tx, batch *pgx.Batch, n int, ctxLabel string) ([]int64, error) {
+	br := tx.SendBatch(ctx, batch)
+	ids := make([]int64, 0, n)
+	for i := 0; i < n; i++ {
+		var id int64
+		if err := br.QueryRow().Scan(&id); err != nil {
+			_ = br.Close()
+			return nil, fmt.Errorf("%s item %d: %w", ctxLabel, i, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := br.Close(); err != nil {
+		return nil, fmt.Errorf("%s: %w", ctxLabel, err)
 	}
 	return ids, nil
 }
@@ -423,13 +499,15 @@ func (s *pgSessionStore) AppendMessagesAndAskQuestion(tenantID int64, messages [
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	ids := make([]int64, 0, len(messages))
-	for i, msg := range messages {
-		var id int64
-		if err := tx.QueryRow(ctx, s.insertMessageSQL()+" RETURNING id", s.messageArgs(tenantID, msg)...).Scan(&id); err != nil {
-			return nil, 0, fmt.Errorf("append AskUser message batch item %d: %w", i, err)
+	ids, err := func() ([]int64, error) {
+		batch := &pgx.Batch{}
+		for _, msg := range messages {
+			batch.Queue(s.insertMessageSQL()+" RETURNING id", s.messageArgs(tenantID, msg)...)
 		}
-		ids = append(ids, id)
+		return batchInsertIDs(ctx, tx, batch, len(messages), "append AskUser message batch")
+	}()
+	if err != nil {
+		return nil, 0, err
 	}
 	question := sqlite.AskQuestionRecord{Metadata: metadata, ToolHistoryID: ids[toolIndex]}
 	payload, err := json.Marshal(question)
