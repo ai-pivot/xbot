@@ -1327,36 +1327,6 @@ func (s *pgSessionStore) GetTenantUsageStats(tenantID int64, recentLimit int) (*
 
 // ── SQL helpers ──
 
-func (s *pgSessionStore) selectMessageSQL() string {
-	// COALESCE on the nullable columns: control rows (role='control') and command
-	// rows are inserted WITHOUT tool_call_id / tool_name / tool_arguments /
-	// tool_calls / detail, so those are NULL in PG. scanMessages scans them into
-	// plain strings (same projection as the SQLite reader, which uses
-	// sql.NullString) — without COALESCE every read path that can see a control
-	// row fails with "cannot scan NULL into *string".
-	return `SELECT id, role, content, COALESCE(tool_call_id, ''), COALESCE(tool_name, ''), COALESCE(tool_arguments, ''), COALESCE(tool_calls, ''), COALESCE(detail, ''), reasoning_content, reasoning_items, display_only, internal_only, context_tokens, turn_id, iteration FROM session_messages`
-}
-
-func scanMessages(rows pgx.Rows) ([]llm.ChatMessage, error) {
-	var result []llm.ChatMessage
-	for rows.Next() {
-		var msg llm.ChatMessage
-		var toolCallsStr, reasoningItemsStr string
-		var ctxTokens int
-		if err := rows.Scan(&msg.ID, &msg.Role, &msg.Content, &msg.ToolCallID, &msg.ToolName, &msg.ToolArguments, &toolCallsStr, &msg.Detail, &msg.ReasoningContent, &reasoningItemsStr, &msg.DisplayOnly, &msg.Internal, &ctxTokens, &msg.TurnID, &msg.Iteration); err != nil {
-			return nil, err
-		}
-		if toolCallsStr != "" && toolCallsStr != "null" {
-			json.Unmarshal([]byte(toolCallsStr), &msg.ToolCalls)
-		}
-		if reasoningItemsStr != "" && reasoningItemsStr != "null" {
-			json.Unmarshal([]byte(reasoningItemsStr), &msg.ReasoningItems)
-		}
-		result = append(result, msg)
-	}
-	return result, nil
-}
-
 func scanIterations(rows pgx.Rows) ([]sqlite.IterationRecord, error) {
 	var result []sqlite.IterationRecord
 	for rows.Next() {
