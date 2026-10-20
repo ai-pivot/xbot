@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"sort"
 	"testing"
 
 	"xbot/storage/agentmem"
@@ -193,6 +194,79 @@ func testAgentMemoryStoreContract(t *testing.T, factory StorageFactory) {
 		}
 		if len(scoped) != 1 || scoped[0].Content != "session fact" {
 			t.Errorf("session-scope filter returned %v, want exactly the session fact", contents(scoped))
+		}
+	})
+
+	t.Run("LongTerm_ScopeOmittedMeansNoFilter", func(t *testing.T) {
+		// Pins the isolation contract's sharp edge (2026-10-20). Scope filtering
+		// used to be hardcoded inside the provider's SQL — "global" for the Recall
+		// injection path, "session"+source_session for the session's own block. It
+		// now lives in the caller-supplied Query, and an EMPTY Scope means "no scope
+		// filter". That default is safe for IncludeSuperseded (omitted = active only)
+		// but NOT for Scope: a new call site that forgets to set it silently widens
+		// what the agent can recall to every session's private memory. The test
+		// documents the fact rather than leaving it implicit, so a future change to
+		// the default has to be deliberate.
+		user := uniqueUser(t)
+		for _, m := range []agentmem.LongTermMemory{
+			{UserID: user, Type: "fact", Content: "a global fact",
+				Scope: "global", SearchText: "a global fact"},
+			{UserID: user, Type: "task", Content: "session A private",
+				Scope: "session", SourceSession: "sess-A", SearchText: "session A private"},
+			{UserID: user, Type: "task", Content: "session B private",
+				Scope: "session", SourceSession: "sess-B", SearchText: "session B private"},
+		} {
+			if _, err := mem.AddAgentLongTermMemory(ctx, m); err != nil {
+				t.Fatalf("add %q: %v", m.Content, err)
+			}
+		}
+
+		// 1. Scope omitted → EVERY scope. This is the hazard: it is not isolation.
+		//    If this assertion ever starts failing, the default became filtering and
+		//    the provider call sites that rely on "no filter" must be revisited.
+		all, err := mem.SearchAgentLongTermMemories(ctx, agentmem.Query{
+			UserID: user, Limit: 10, Order: agentmem.OrderRecency,
+		})
+		if err != nil {
+			t.Fatalf("search with no Scope: %v", err)
+		}
+		if got := sortedContents(all); len(got) != 3 {
+			t.Errorf("Scope omitted returned %v, want all 3 rows (default is NO scope filter)", got)
+		}
+
+		// 2. Recall's policy — global facts only, never a session's private state.
+		global, err := mem.SearchAgentLongTermMemories(ctx, agentmem.Query{
+			UserID: user, Scope: "global", Limit: 10, Order: agentmem.OrderRecency,
+		})
+		if err != nil {
+			t.Fatalf("search Scope=global: %v", err)
+		}
+		if got := sortedContents(global); len(got) != 1 || got[0] != "a global fact" {
+			t.Errorf("Scope=global returned %v, want exactly the global fact", got)
+		}
+
+		// 3. This session's own block — sess-A only; sess-B is another session's
+		//    private state and must never appear.
+		mine, err := mem.SearchAgentLongTermMemories(ctx, agentmem.Query{
+			UserID: user, Scope: "session", SourceSession: "sess-A",
+			Limit: 10, Order: agentmem.OrderRecency,
+		})
+		if err != nil {
+			t.Fatalf("search Scope=session: %v", err)
+		}
+		if got := sortedContents(mine); len(got) != 1 || got[0] != "session A private" {
+			t.Errorf("Scope=session,SourceSession=sess-A returned %v, want only session A", got)
+		}
+
+		// 4. SourceSession is caller-supplied too: omitting it spans every session.
+		scopedAll, err := mem.SearchAgentLongTermMemories(ctx, agentmem.Query{
+			UserID: user, Scope: "session", Limit: 10, Order: agentmem.OrderRecency,
+		})
+		if err != nil {
+			t.Fatalf("search Scope=session (no SourceSession): %v", err)
+		}
+		if got := sortedContents(scopedAll); len(got) != 2 {
+			t.Errorf("Scope=session without SourceSession returned %v, want both sessions' rows", got)
 		}
 	})
 
@@ -470,6 +544,14 @@ func seedNoiseCorpus(t *testing.T, mem AgentMemoryStore, user int64, n int) {
 			t.Fatalf("seed noise row %d: %v", i, err)
 		}
 	}
+}
+
+// sortedContents is contents() with a stable order, so assertions over an
+// unsorted search result do not depend on tie-breaking.
+func sortedContents(rows []agentmem.LongTermMemory) []string {
+	out := contents(rows)
+	sort.Strings(out)
+	return out
 }
 
 func contents(rows []agentmem.LongTermMemory) []string {
