@@ -213,13 +213,16 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 | `compression_threshold` | float | `0.9` | 触发压缩的 token 比例 |
 | `context_mode` | string | `""` | 上下文管理模式 |
 | `max_sub_agent_depth` | int | `5` | SubAgent 最大嵌套层数（只校验深度；同角色嵌套是合法用法，不视为循环调用） |
-| `llm_retry_attempts` | int | `5` | LLM 调用失败重试次数 |
+| `llm_retry_attempts` | int | `5` | 总尝试次数（含首次）；0 使用默认 5 次 |
 | `llm_retry_delay` | duration | `"1s"` | 重试初始延迟 |
 | `llm_retry_max_delay` | duration | `"30s"` | 重试最大延迟 |
 | `llm_retry_timeout` | duration | `"120s"` | 单次 LLM 调用超时 |
 | `mcp_inactivity_timeout` | duration | `"30m"` | MCP Server 非活动超时 |
 | `mcp_cleanup_interval` | duration | `"5m"` | MCP 清理间隔 |
 | `session_cache_timeout` | duration | `"24h"` | Session 缓存超时 |
+
+重试次数省略或为 `0` 时使用默认 5 次总尝试（含首次调用），不表示无限重试。初始/最大延迟为零时使用 1s/30s。服务端显式 `--config` 文件与默认配置使用相同的默认值和环境变量覆盖规则。服务商错误码 `unsupported_country_region_territory` 立即返回，其他错误仍按有限次数进行指数退避。
+
 
 ### 沙箱配置
 

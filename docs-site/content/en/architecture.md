@@ -538,7 +538,7 @@ func XbotHome() string {
 
 - **Backoff**: exponential backoff + random jitter + 429 extra backoff (`2^(min(n,4))` s)
 - **perAttemptCtx**: each retry creates a fresh 120s timeout context, does not inherit parent ctx deadline, but propagates cancellation signal
-- **Retryable**: 429 / 5xx / network errors / timeout; non-retryable: context.Canceled / 4xx
+- **Retryable**: errors use bounded retries by default, including ordinary 4xx. Non-retryable: user cancellation, input-too-long (handled by compression), and provider code `unsupported_country_region_territory`.
 - **Input too long**: detects `InputTooLong`, forces compression, bypasses retry framework
 - **Retry notification**: pushes progress message via `RetryNotifyFunc`: `⚠️ LLM request failed (rate limit), retrying 2/5 ...`
 

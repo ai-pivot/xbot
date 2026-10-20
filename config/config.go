@@ -1115,6 +1115,21 @@ func Load() *Config {
 	if cfg == nil {
 		cfg = &Config{}
 	}
+	return loadEffectiveConfig(cfg)
+}
+
+// LoadWithPath loads an explicitly selected config file with the same environment
+// overrides and defaults as Load. A missing or invalid selected file is an error.
+// LoadFromFile remains the raw reader used when editing persisted configuration.
+func LoadWithPath(path string) (*Config, error) {
+	cfg := LoadFromFile(path)
+	if cfg == nil {
+		return nil, fmt.Errorf("load config from %s", path)
+	}
+	return loadEffectiveConfig(cfg), nil
+}
+
+func loadEffectiveConfig(cfg *Config) *Config {
 	applyEnvOverrides(cfg)
 
 	// 填充 CLI 常用的默认值（仅在配置和环境变量都未设置时生效）

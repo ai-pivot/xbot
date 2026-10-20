@@ -885,3 +885,53 @@ func TestRetryLLM_GenerateStreamAndCollect_TTFTIncludesRequestSetup(t *testing.T
 		t.Errorf("TTFTMs = %d, want >= 110 (request-setup window must be included in TTFT)", resp.StreamStats.TTFTMs)
 	}
 }
+
+// A zero application setting means the documented defaults, never retry forever.
+func TestRetryLLMZeroConfigDefaults(t *testing.T) {
+	r := NewRetryLLM(newFailNLLM(0, nil), RetryConfig{})
+	want := DefaultRetryConfig()
+	want.Timeout = 0 // Zero retains the documented no-per-attempt-timeout meaning.
+	if r.config != want {
+		t.Fatalf("zero config = %+v, want %+v", r.config, want)
+	}
+}
+
+func TestRetryLLMZeroAttemptsAreBounded(t *testing.T) {
+	inner := newFailNLLM(7, errors.New("temporary upstream failure"))
+	r := NewRetryLLM(inner, RetryConfig{Delay: time.Millisecond, MaxDelay: time.Millisecond, Timeout: time.Second})
+	_, err := r.Generate(context.Background(), "test", nil, nil, "")
+	if err == nil {
+		t.Fatal("expected failure after the default attempt limit")
+	}
+	if got := inner.calls.Load(); got != int32(DefaultRetryConfig().Attempts) {
+		t.Fatalf("calls = %d, want %d", got, DefaultRetryConfig().Attempts)
+	}
+}
+
+func TestRetryLLMRegionRestrictionStopsAllRequestPaths(t *testing.T) {
+	regionErr := errors.New(`openai chat completion: POST "https://api.openai.com/v1/chat/completions": 403 Forbidden {"code":"unsupported_country_region_territory","message":"Country, region, or territory not supported"}`)
+	if IsRetryableError(regionErr) {
+		t.Error("region restriction must not retry")
+	}
+	for _, path := range []string{"generate", "stream", "stream_collect"} {
+		t.Run(path, func(t *testing.T) {
+			inner := newFailNLLM(10, regionErr)
+			r := NewRetryLLM(inner, RetryConfig{Attempts: 3, Delay: time.Millisecond, MaxDelay: time.Millisecond})
+			var err error
+			switch path {
+			case "generate":
+				_, err = r.Generate(context.Background(), "test", nil, nil, "")
+			case "stream":
+				_, err = r.GenerateStream(context.Background(), "test", nil, nil, "")
+			case "stream_collect":
+				_, err = r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
+			}
+			if err == nil {
+				t.Fatal("expected region error")
+			}
+			if got := inner.calls.Load(); got != 1 {
+				t.Fatalf("calls = %d, want exactly 1", got)
+			}
+		})
+	}
+}

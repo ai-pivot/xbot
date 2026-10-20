@@ -449,6 +449,14 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 	return feishuCh, webCh, nil
 }
 
+// loadServerConfig resolves the server configuration selected by --config.
+func loadServerConfig(configPath string) (*config.Config, error) {
+	if configPath != "" {
+		return config.LoadWithPath(configPath)
+	}
+	return config.Load(), nil
+}
+
 func Run(args []string) error {
 	// Parse --config flag before loading config.
 	// Usage: xbot --config /path/to/config.json
@@ -462,18 +470,19 @@ func Run(args []string) error {
 		}
 	}
 
-	var cfg *config.Config
-	if configPath != "" {
-		cfg = config.LoadFromFile(configPath)
-		if cfg == nil {
-			return fmt.Errorf("load config from %s", configPath)
-		}
-	} else {
-		cfg = config.Load()
+	cfg, err := loadServerConfig(configPath)
+	if err != nil {
+		return err
 	}
 
 	setupLogging(cfg)
 	defer log.Close()
+	log.WithFields(log.Fields{
+		"attempts":  cfg.Agent.LLMRetryAttempts,
+		"delay":     time.Duration(cfg.Agent.LLMRetryDelay),
+		"max_delay": time.Duration(cfg.Agent.LLMRetryMaxDelay),
+		"timeout":   time.Duration(cfg.Agent.LLMRetryTimeout),
+	}).Info("LLM retry policy configured")
 
 	llmClient, err := setupLLM(cfg)
 	if err != nil {

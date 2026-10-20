@@ -535,7 +535,7 @@ func XbotHome() string {
 
 - **退避**: 指数退避 + 随机抖动 + 429 额外退避（`2^(min(n,4))` s）
 - **perAttemptCtx**: 每次重试创建全新 120s 超时上下文，不继承父 ctx deadline，但传播取消信号
-- **可重试**: 429 / 5xx / 网络错误 / 超时；不可重试: context.Canceled / 4xx
+- **可重试**: 默认有限次数重试，包括普通 4xx；用户取消、输入超长（交由压缩处理）及服务商错误码 `unsupported_country_region_territory` 不在原请求上重试。
 - **输入超长**: 检测到 `InputTooLong` 后强制压缩，不走重试框架
 - **重试通知**: 通过 `RetryNotifyFunc` 推送进度消息 `⚠️ LLM 请求失败 (rate limit)，重试中 2/5 ...`
 

@@ -231,13 +231,16 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 | `compression_threshold` | float | `0.9` | Token ratio that triggers compression |
 | `context_mode` | string | `""` | Context management mode |
 | `max_sub_agent_depth` | int | `5` | Max SubAgent nesting levels (depth only — nesting the same role is legal, not a cycle) |
-| `llm_retry_attempts` | int | `5` | LLM call retry count |
+| `llm_retry_attempts` | int | `5` | Total attempts including the initial call; 0 uses 5 |
 | `llm_retry_delay` | duration | `"1s"` | Initial retry delay |
 | `llm_retry_max_delay` | duration | `"30s"` | Max retry delay |
 | `llm_retry_timeout` | duration | `"120s"` | Per-call LLM timeout |
 | `mcp_inactivity_timeout` | duration | `"30m"` | MCP server inactivity timeout |
 | `mcp_cleanup_interval` | duration | `"5m"` | MCP cleanup interval |
 | `session_cache_timeout` | duration | `"24h"` | Session cache timeout |
+
+`0` or an omitted retry count uses 5 total attempts (including the first call), never unlimited retries. Zero initial/max delay uses 1s/30s. An explicit server `--config` file uses the same defaults and environment overrides as the default config. Provider error code `unsupported_country_region_territory` stops immediately; other errors retain bounded exponential backoff.
+
 
 {{< hint type=note >}}
 Duration values are human-readable strings: `"30m"`, `"1h30m"`, `"5s"`.
