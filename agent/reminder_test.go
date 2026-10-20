@@ -245,30 +245,31 @@ func TestBuildSystemReminder_SubAgentStatus(t *testing.T) {
 	}
 }
 
-// TestShouldRefreshSystemReminder —— 用户 2026-10-20：reminder 改成每 10 个
-// iteration 重建一次，不再逐轮。首轮必须建（否则模型看不到 cwd/todo/subagent），
-// 之后只在该周期上重建，中间沿用上一份内容。
-func TestShouldRefreshSystemReminder(t *testing.T) {
+// TestShouldInsertSystemReminder —— 用户 2026-10-20：fake tool pair 改成每 10 轮
+// 插入一次，而不是每轮都插（频繁出现同一组「凭空工具调用」会让模型困惑）。
+func TestShouldInsertSystemReminder(t *testing.T) {
 	cases := []struct {
-		name string
-		iter int
-		cur  string
-		want bool
+		name      string
+		iter      int
+		iterStart int
+		want      bool
 	}{
-		{"首轮空值必建", 1, "", true},
-		{"第2轮沿用", 2, "x", false},
-		{"第9轮沿用", 9, "x", false},
-		{"第10轮重建", 10, "x", true},
-		{"第11轮沿用", 11, "x", false},
-		{"第19轮沿用", 19, "x", false},
-		{"第20轮重建", 20, "x", true},
-		{"第10轮但空值", 10, "", true},
-		{"resume 偏移后第30轮重建", 30, "x", true},
+		{"首轮必插", 1, 0, true},
+		{"第2轮不插", 2, 0, false},
+		{"第9轮不插", 9, 0, false},
+		{"第10轮插", 10, 0, true},
+		{"第11轮不插", 11, 0, false},
+		{"第19轮不插", 19, 0, false},
+		{"第20轮插", 20, 0, true},
+		{"第30轮插", 30, 0, true},
+		{"resume 后首轮必插", 31, 30, true},
+		{"resume 后第40轮插", 40, 30, true},
+		{"resume 后第32轮不插", 32, 30, false},
 	}
 	for _, c := range cases {
-		if got := shouldRefreshSystemReminder(c.iter, c.cur); got != c.want {
-			t.Errorf("%s: shouldRefreshSystemReminder(%d, %q) = %v, want %v",
-				c.name, c.iter, c.cur, got, c.want)
+		if got := shouldInsertSystemReminder(c.iter, c.iterStart); got != c.want {
+			t.Errorf("%s: shouldInsertSystemReminder(%d, %d) = %v, want %v",
+				c.name, c.iter, c.iterStart, got, c.want)
 		}
 	}
 }

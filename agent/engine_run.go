@@ -2341,20 +2341,21 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 	}
 }
 
-// systemReminderRefreshEvery 是 transient system reminder 的重建周期（按 iteration 计）。
-const systemReminderRefreshEvery = 10
+// systemReminderInsertEvery 是 transient system_reminder fake tool pair 的插入周期。
+const systemReminderInsertEvery = 10
 
-// shouldRefreshSystemReminder 决定本轮是否重建 transient system reminder：
-// 首轮必建（current == ""），之后每 systemReminderRefreshEvery 轮刷新一次。
+// shouldInsertSystemReminder 决定本轮是否把 system_reminder 这个 fake tool pair
+// 拼进 LLM 上下文：本 run 首轮必插，之后每 systemReminderInsertEvery 轮插一次。
 //
-// 逐轮重建的代价：每轮都要重新拉 todo/子代理状态并拼字符串，且 reminder 位于
-// prompt 尾部、内容逐轮抖动会让 KV cache 前缀失配。它是 cwd/todo/subagent 的
-// 摘要，10 轮粒度足够新鲜。
-func shouldRefreshSystemReminder(iteration int, current string) bool {
-	if current == "" {
+// 为什么不是每轮插入：fake tool pair 会让对话里凭空多出一组
+// assistant(tool_call) + tool(result) 记录，模型连续看到同一工具反复"被调用"
+// 容易困惑（误以为要反复调用它，或把它当成真实工具）。它是 cwd/todo/subagent
+// 的摘要，10 轮一次的粒度足够，其余轮次完全不出现。
+func shouldInsertSystemReminder(iteration, iterStart int) bool {
+	if iteration == iterStart+1 {
 		return true
 	}
-	return iteration%systemReminderRefreshEvery == 0
+	return iteration%systemReminderInsertEvery == 0
 }
 
 // postToolProcessing handles dynamic context injection, system reminder,
@@ -2384,7 +2385,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	//   2) reminder 是 prompt 尾部的一段固定结构，内容逐轮抖动会让 KV cache
 	//      前缀失配。reminder 承载的是 cwd/todo/subagent 的摘要，本来就不需要
 	//      逐轮精确 —— 10 轮的粒度足够新鲜，且把重建开销摊薄到 1/10。
-	if len(response.ToolCalls) > 0 && shouldRefreshSystemReminder(iteration, s.systemReminder) {
+	if len(response.ToolCalls) > 0 && shouldInsertSystemReminder(iteration, s.iterStart) {
 		var todoItems []TodoProgressItem
 		if s.cfg.TodoManager != nil && s.todoKey() != "" {
 			todoItems = s.cfg.TodoManager.GetTodoItems(s.todoKey())
@@ -2419,6 +2420,11 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		}
 
 		s.systemReminder = BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
+	} else {
+		// 非插入轮：清空，让 llmMessages() 完全不拼这个 fake tool pair。
+		// 连续多轮出现同一组「凭空冒出的工具调用 + 结果」会让模型困惑
+		// （误以为要反复调用它，或把它当成真实存在的工具）。
+		s.systemReminder = ""
 	}
 
 	// --- Incremental session persistence ---
