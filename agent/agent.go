@@ -1763,6 +1763,13 @@ func (a *Agent) emitSessionIdleIfNoActiveRun(chatKey, channel, chatID, senderID 
 		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active run owns this chat")
 		return
 	}
+	// ⛔ 审计确证（be-audit-1 C1）：存在「turn 已 announce、cancel 状态尚未注册」的窗口 ——
+	//   此时 `chatCancelCh` 查不到，但 `activeTurnID` 已经是**新一轮** ⇒ 照发 idle 会把它关掉。
+	//   ⇒ 有活动轮次就不发 idle（真收尾由 `emitSessionIdleIfCurrent` 那条带 runGen 守卫的路径负责）。
+	if a.getActiveTurnID(chatKey) != 0 {
+		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active turn still owns this chat")
+		return
+	}
 	// ⛔ 审计确证（be-audit-1 C1）：这里存在「turn 已 announce、cancel 状态尚未注册」的窗口 ⇒
 	//   一条迟到的 idle 会把**新一轮**关掉。⇒ 与 `emitSessionIdleIfCurrent` 同源：把 idle
 	//   **钉到发起时的那一轮**（`turn_id`），客户端据此丢弃"旧轮迟到的 idle"。
