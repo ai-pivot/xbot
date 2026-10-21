@@ -156,7 +156,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (75);
+INSERT INTO schema_version (version) VALUES (76);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -387,6 +387,32 @@ CREATE TABLE IF NOT EXISTS group_members (
     PRIMARY KEY (group_id, member_addr)
 );
 CREATE INDEX IF NOT EXISTS ix_group_members_addr ON group_members(member_addr, status);
+
+-- v76: interactive SubAgent 注册表（重启后递归重建子代理树）。
+-- 只存重建所需的最小事实；messages 在各子代理自己的 TenantSession 里。
+CREATE TABLE IF NOT EXISTS interactive_agents (
+    agent_key       TEXT PRIMARY KEY,
+    parent_channel  TEXT NOT NULL,
+    parent_chat_id  TEXT NOT NULL,
+    role_name       TEXT NOT NULL,
+    instance        TEXT NOT NULL DEFAULT '',
+    group_id        TEXT NOT NULL DEFAULT '',
+    task            TEXT NOT NULL DEFAULT '',
+    background      INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'idle',
+    turn_id         INTEGER NOT NULL DEFAULT 0,
+    model_name      TEXT NOT NULL DEFAULT '',
+    sub_id          TEXT NOT NULL DEFAULT '',
+    origin_user_id  TEXT NOT NULL DEFAULT '',
+    workspace_root  TEXT NOT NULL DEFAULT '',
+    parent_agent_id TEXT NOT NULL DEFAULT '',
+    last_error      TEXT NOT NULL DEFAULT '',
+    last_reply      TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_ia_parent ON interactive_agents(parent_channel, parent_chat_id);
+CREATE INDEX IF NOT EXISTS ix_ia_status ON interactive_agents(status);
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)

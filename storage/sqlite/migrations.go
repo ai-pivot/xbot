@@ -535,6 +535,67 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v76: interactive SubAgent 注册表。进程重启后 interactiveSubAgents 这个
+	// sync.Map 会清空，导致「重启前的子代理叫不醒」（SendMessage 报 unknown
+	// channel）。这张表持久化每个子代理的可寻址身份与运行状态，主会话进入
+	// turn 时据此递归重建整棵子代理树。
+	if from < 76 {
+		if err := migrateV75ToV76(db); err != nil {
+			return fmt.Errorf("migrate to v76: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV75ToV76 建立 interactive_agents（interactive SubAgent 注册表）。
+//
+// 只存「重建所需的最小事实」：
+//   - 可寻址身份：agent_key（= AgentChannel 名，也是 SendMessage 的地址）、parent_*
+//   - 角色与运行参数：role_name / instance / model_name / task / background
+//   - 运行状态：status（idle|running|interrupted|unloaded）、turn_id
+//   - 重建上下文：origin_user_id / workspace_root / parent_agent_id
+//
+// 不存 messages（已在各子代理自己的 TenantSession 里）、不存 cfg（运行时对象，
+// 恢复时用 role 定义重新构建）。
+func migrateV75ToV76(db *DB) error {
+	conn := db.Conn()
+	if _, err := conn.Exec(`
+		CREATE TABLE IF NOT EXISTS interactive_agents (
+			agent_key       TEXT PRIMARY KEY,
+			parent_channel  TEXT NOT NULL,
+			parent_chat_id  TEXT NOT NULL,
+			role_name       TEXT NOT NULL,
+			instance        TEXT NOT NULL DEFAULT '',
+			group_id        TEXT NOT NULL DEFAULT '',
+			task            TEXT NOT NULL DEFAULT '',
+			background      INTEGER NOT NULL DEFAULT 0,
+			status          TEXT NOT NULL DEFAULT 'idle',
+			turn_id         INTEGER NOT NULL DEFAULT 0,
+			model_name      TEXT NOT NULL DEFAULT '',
+			sub_id          TEXT NOT NULL DEFAULT '',
+			origin_user_id  TEXT NOT NULL DEFAULT '',
+			workspace_root  TEXT NOT NULL DEFAULT '',
+			parent_agent_id TEXT NOT NULL DEFAULT '',
+			last_error      TEXT NOT NULL DEFAULT '',
+			last_reply      TEXT NOT NULL DEFAULT '',
+			created_at      TEXT NOT NULL,
+			updated_at      TEXT NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("create interactive_agents: %w", err)
+	}
+	if _, err := conn.Exec(
+		`CREATE INDEX IF NOT EXISTS ix_ia_parent ON interactive_agents(parent_channel, parent_chat_id)`); err != nil {
+		return fmt.Errorf("create ix_ia_parent: %w", err)
+	}
+	if _, err := conn.Exec(
+		`CREATE INDEX IF NOT EXISTS ix_ia_status ON interactive_agents(status)`); err != nil {
+		return fmt.Errorf("create ix_ia_status: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 76"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v76: interactive_agents (sub-agent registry for restart recovery)")
 	return nil
 }
 

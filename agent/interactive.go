@@ -18,6 +18,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
@@ -1099,6 +1100,9 @@ func (a *Agent) SpawnInteractiveSession(
 		placeholder.messages = []llm.ChatMessage{cfg.Messages[1]}
 	}
 	placeholder.mu.Unlock()
+
+	// 持久化注册表：重启后据此重建这个子代理（幂等 upsert）。
+	a.persistInteractiveAgent(placeholder, sqlite.InteractiveAgentIdle)
 
 	// Interactive SubAgent gets its own TenantSession for message persistence.
 	// Channel="agent", ChatID=key → messages saved to DB like normal sessions.
@@ -2204,6 +2208,9 @@ func (a *Agent) SendToInteractiveSession(
 	go func() {
 		defer operationGate.unlock()
 		startTime := time.Now()
+		// 注册表：先落 running。若进程在本次 Run 期间被杀，重启后的恢复
+		// 逻辑会据此把它标成 interrupted 并 resume 同一个 turn。
+		a.persistInteractiveAgent(ia, sqlite.InteractiveAgentRunning)
 		defer func() {
 			if r := recover(); r != nil {
 				clipanic.Report("agent.interactive.SendAsync", fmt.Sprintf("%s:%s", roleName, instance), r)
@@ -2255,6 +2262,10 @@ func (a *Agent) SendToInteractiveSession(
 		wasInterrupted := ia.interrupted
 		ia.interrupted = false
 		ia.mu.Unlock()
+
+		// 注册表：正常结束 → idle。若进程在此之后被杀，重启时不会再误触发 resume；
+		// 反之（进程在 running 期间被杀）状态会停在 running，恢复时按 interrupted 处理。
+		a.markPersistedAgentStatus(ia, sqlite.InteractiveAgentIdle, 0)
 
 		if wasCancelled {
 			if wasInterrupted {
@@ -2790,6 +2801,11 @@ func (a *Agent) UnloadInteractiveSession(
 	// Cancel any running bg goroutine to prevent leaks
 	if ia.cancelCurrent != nil {
 		ia.cancelCurrent()
+	}
+	// 注册表：本 agent 及其所有后代标记 unloaded（重启后不再恢复）。
+	if err := a.interactiveAgentSvc().MarkUnloadedCascade("agent:" + roleName + "/" + instance); err != nil {
+		log.WithError(err).WithField("role", roleName).WithField("instance", instance).
+			Warn("Failed to mark interactive agents unloaded in the registry")
 	}
 	// Close the waitable task so a pending task_wait unblocks immediately
 	// instead of blocking until its timeout (the parent triggered the unload).

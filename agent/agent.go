@@ -3802,6 +3802,11 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	userCtx := a.ResolveUserContext(msg.Channel, msg.ChatID, msg.SenderID, msg.Metadata)
 	ctx = WithUserContext(ctx, userCtx)
 
+	// 重启恢复（2026-10-21）：把本会话在重启前存在的整棵子代理树重建回内存，
+	// 让 SendMessage/SubAgent send 重新可寻址。幂等（已在内存的跳过）、深度受限、
+	// 单个失败不影响本次消息处理。
+	a.restoreInteractiveTree(ctx, msg.Channel, msg.ChatID, 0)
+
 	preview := msg.Content
 	if r := []rune(preview); len(r) > 80 {
 		preview = string(r[:80]) + "..."
