@@ -1770,6 +1770,12 @@ func (a *Agent) emitSessionIdleIfNoActiveRun(chatKey, channel, chatID, senderID 
 		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active turn still owns this chat")
 		return
 	}
+	// ⛔ 审计确证（state-gate-8-1）：AskUser 取消 / `cleanupStaleCancelState` 两条出口**不复位**
+	//   `activeTurnID` ⇒ 回合外的帧（`emitTodosProgress`/`emitGoalProgress`/`ClearGoal`/
+	//   `/compress` done）继续挂**已终止旧轮**的 turn id，`phase=done` 帧甚至会把已 committed 的
+	//   旧轮再收一次（有"复活旧轮"的窗口）。⇒ 走到这里就说明"没有活动轮次"，顺手清掉 id
+	//   （与 `clearActiveTurn` 同一个事实，只在确认无 run 之后做，绝不会误伤在跑的新轮）。
+	a.clearActiveTurn(chatKey)
 	// ⛔ 审计确证（be-audit-1 C1）：这里存在「turn 已 announce、cancel 状态尚未注册」的窗口 ⇒
 	//   一条迟到的 idle 会把**新一轮**关掉。⇒ 与 `emitSessionIdleIfCurrent` 同源：把 idle
 	//   **钉到发起时的那一轮**（`turn_id`），客户端据此丢弃"旧轮迟到的 idle"。
