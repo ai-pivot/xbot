@@ -227,6 +227,10 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	}
 	snapshot := v.(*protocol.ProgressEvent)
 	result := *snapshot
+	// ⛔ 审计确证（be-state-1 §3）：快照里的 `Todos` 只是**某一刻的副本**（刷新点仅 3 处），
+	//   而 `TodoManager` 才是真源（内存 + 文件持久化）。旧实现直接返回快照 ⇒ 重连/切会话时
+	//   可能下发**旧 todo 列表**（面板显示滞后）。⇒ 以管理器为准刷新；管理器为空且快照非空时
+	//   保留快照（重启后未水合的窗口，绝不能据此清空）。
 	// ⛔ 审计确证（state-gate-6 C2「busy 棘轮」）：快照的删除发生在回合收尾，而读取可能
 	//   **抓在删除前、送达在删除后**（send-ack-sync / 回前台 / gap 重载）⇒ 一张**已结束**的
 	//   快照会被当成 active 返回 ⇒ 客户端把已结束的 turn 复活成 live，`hasLiveTurn` 恒 true
@@ -250,6 +254,14 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	// This is the pull-model replacement for stream event push — the client reads
 	// live streaming content via tick pull instead of receiving push events.
 	a.mergeStreamState(key, &result)
+
+	// ⛔ 审计确证（be-state-1 §3）：快照里的 `Todos` 只是**某一刻的副本**（刷新点仅 3 处），
+	//   而 `TodoManager` 才是真源（内存 + 文件持久化）。旧实现直接返回快照 ⇒ 重连/切会话时
+	//   可能下发**旧 todo 列表**（面板滞后）。⇒ 以管理器为准刷新；管理器为空且快照非空时
+	//   保留快照（重启后未水合的窗口绝不能据此清空）。
+	if fresh := a.GetTodos(ch, chatID); len(fresh) > 0 || len(result.Todos) == 0 {
+		result.Todos = fresh
+	}
 
 	// Always inject the latest goal state (goal may have been set/cleared/completed
 	// via RPC since the snapshot was last refreshed by refreshStructuredTodos).
