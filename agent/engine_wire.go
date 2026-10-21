@@ -2019,9 +2019,17 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 		})
 	}
 	payload.SubAgents = resolveSubAgents(event)
-	payload.Todos = make([]protocol.TodoItem, len(s.Todos))
-	for i, td := range s.Todos {
-		payload.Todos[i] = protocol.TodoItem{Text: td.Text, Status: td.Status}
+	// ⛔ 2026-10-21（state-gate-12-6 确证-1）：`make(len(nil))` 得到**非 nil 空切片**，而
+	//   `todos` 无 `omitempty` ⇒ 结构化帧恒带 `"todos": []`，把三态（nil=未携带 / []=显式清空）
+	//   折叠回两态 ⇒ todoKey 错位窗口里会静默抹掉客户端合法持有的清单。
+	//   ⇒ nil 必须保持 nil（线上出 `null`，客户端读作"未携带"）。
+	if s.Todos == nil {
+		payload.Todos = nil
+	} else {
+		payload.Todos = make([]protocol.TodoItem, len(s.Todos))
+		for i, td := range s.Todos {
+			payload.Todos[i] = protocol.TodoItem{Text: td.Text, Status: td.Status}
+		}
 	}
 	payload.Goal = s.Goal
 	if s.TokenUsage != nil {

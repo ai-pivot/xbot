@@ -377,6 +377,11 @@ func (s *runState) refreshStructuredTodos() {
 		return
 	}
 	items := s.cfg.TodoManager.GetTodoItems(s.todoKey())
+	// 三态（state-gate-12-6）：无记录 ⇒ 保持 nil（"未携带"），不得折成 `[]`（"显式清空"）。
+	if items == nil {
+		s.structuredProgress.Todos = nil
+		return
+	}
 	todos := make([]TodoProgressItem, len(items))
 	for i, td := range items {
 		todos[i] = TodoProgressItem{
