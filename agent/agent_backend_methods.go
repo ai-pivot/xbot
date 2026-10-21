@@ -218,7 +218,9 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 			if goal := a.goalManager.GoalInfo(key); goal != nil {
 				return &protocol.ProgressEvent{
 					Phase: "done",
-					Todos: []protocol.TodoItem{},
+					// ⛔ 三态（state-gate-11-6 确证-2）：无 todo 记录 ⇒ **nil**（未携带）。
+					//   旧实现硬写 `[]`（= 显式清空）⇒ 会把客户端更权威的本地列表抹掉。
+					Todos: nil,
 					Goal:  goal,
 				}
 			}

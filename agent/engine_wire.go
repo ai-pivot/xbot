@@ -38,6 +38,12 @@ func (a *todoManagerAdapter) GetTodoSummary(sessionKey string) string {
 
 func (a *todoManagerAdapter) GetTodoItems(sessionKey string) []TodoProgressItem {
 	items := a.mgr.GetTodos(sessionKey)
+	// ⛔ 三态（state-gate-11-6 确证）：`nil`（无记录 = **未携带**）必须保持 nil，
+	//   不能 `make(len)` 折成非 nil 空切片 —— 否则结构化帧恒带 `todos: []`，
+	//   前端会把它读成"服务端显式清空"，抹掉本地更新的列表（编辑后闪回/面板偶发清空）。
+	if items == nil {
+		return nil
+	}
 	result := make([]TodoProgressItem, len(items))
 	for i, item := range items {
 		result[i] = TodoProgressItem{Text: item.Text, Status: item.Status}

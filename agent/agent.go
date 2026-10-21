@@ -1574,6 +1574,15 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		return
 	}
 	if a.resolvePendingAskUser(msg.Channel, msg.ChatID, "cancelled") {
+		// ⛔ 审计确证（state-gate-11-4 确证-2）：本分支此前**无条件**清 activeTurn 并发 idle，
+		//   而 `setActiveTurn` 早于 `registerActiveCancelState` ⇒ 存在"新一轮已认领 activeTurn、
+		//   而这条取消还指向被暂停的旧轮"的窗口 ⇒ 会把**新轮**标 idle 并清掉它的 activeTurnID
+		//   （`GetActiveProgress` 随即把在飞快照降级 done、清空 stream/tools ⇒ live turn 消失）。
+		//   ⇒ 先用 pending 快照里记录的**被暂停轮**做身份比对，只有"还是那一轮"才允许收尾。
+		pausedTurn := uint64(0)
+		if _, pe := a.loadPendingAskUserEntry(msg.Channel, msg.ChatID); pe != nil && pe.pending != nil {
+			pausedTurn = pe.pending.TurnID
+		}
 		// Persist ask_answer to invalidate the pending ask_question record.
 		// Without this, Replay() finds an unanswered ask_question on reload
 		// and restores the AskUser prompt — the user sees it again after
@@ -1613,6 +1622,13 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		//   （客户端用 turn_id 丢弃旧轮迟到的 idle，见 `reduce.ts` 的 idle 归属规则）。
 		//   ⚠️ 不走 `emitSessionIdleIfNoActiveRun`：它的守卫前提（无活动轮次）与这里相反。
 		cancelledTurn := a.getActiveTurnID(cancelKey)
+		// 身份比对：若当前 activeTurnID 已属于**另一轮**（新一轮已认领），这条取消是旧的 ⇒
+		// 只清 pending + 写 ask_answer，**不动** activeTurnID、不发 idle（否则清掉新轮）。
+		if pausedTurn != 0 && cancelledTurn != 0 && pausedTurn != cancelledTurn {
+			a.sendPendingAskUserCancelAck(msg)
+			log.WithField("cancel_key", cancelKey).Info("AskUser cancel ignored: a newer turn already owns the chat")
+			return
+		}
 		a.clearActiveTurn(cancelKey)
 		a.emitSessionState(protocol.SessionEvent{
 			Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
@@ -1763,7 +1779,21 @@ func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, last
 		ss.busy.Store(false)
 	}
 	if i := strings.Index(chatKey, ":"); i > 0 {
-		a.emitSessionIdleIfNoActiveRun(chatKey, chatKey[:i], chatKey[i+1:], lastSenderID)
+		// ⛔ 审计确证（state-gate-11-1 确证-1 / 11-4）：旧实现直接调
+		//   `emitSessionIdleIfNoActiveRun`，而它的首行守卫是「有活动轮次 ⇒ 不发 idle」
+		//   —— 而本函数的触发前提（teardown 没执行 ⇒ 注册残留）恰好意味着
+		//   `activeTurnID` 仍指向那个**已经死掉**的轮次 ⇒ 这条"自愈 idle"在它唯一要救的
+		//   场景里**恒被自己挡下**（唯一目的 100% 失效）⇒ 前端永久卡 busy / 工具 pill 永久转圈。
+		//   ⇒ 自愈路径必须显式表达"这一轮注定结束"：先清活动轮次，再发**带该轮 id** 的 idle。
+		if deadTurn := a.getActiveTurnID(chatKey); deadTurn != 0 {
+			a.clearActiveTurn(chatKey)
+			a.emitSessionState(protocol.SessionEvent{
+				Channel: chatKey[:i], ChatID: chatKey[i+1:], Action: "idle",
+				SenderID: lastSenderID, TurnID: deadTurn,
+			})
+		} else {
+			a.emitSessionIdleIfNoActiveRun(chatKey, chatKey[:i], chatKey[i+1:], lastSenderID)
+		}
 	}
 }
 
