@@ -637,11 +637,12 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 		})
 	}
 	// ⛔ D1：字段级更新（只覆盖 Goal/Todos），不整对象替换（否则抹掉在飞 turn 的快照）。
+	// ⛔ 审计确证（state-final-1 确证-5）：`ClearGoal` 是**与 todo 无关**的操作，却把
+	//   `GetTodos()` 也写回快照 —— 若此刻 manager 内存态未水合，这一帧的 `todos: []`
+	//   会因一次"删目标"操作把 todo 面板清空。⇒ 只写 goal 字段。
 	clearGoal := payload.Goal
-	clearTodos := payload.Todos
 	a.updateSnapshotFields(progressKey, func(p *protocol.ProgressEvent) {
 		p.Goal = clearGoal
-		p.Todos = clearTodos
 	})
 }
 
