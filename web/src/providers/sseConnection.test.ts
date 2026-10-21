@@ -236,8 +236,9 @@ describe('SSEConnectionImpl', () => {
     expect(received.map((message) => message.seq)).toEqual([3, 4])
     const cacheKey = sessionCacheKey('web', 'chat-a')
     expect(lastSeqCache.get(cacheKey)).toBe(4)
+    // 快照与 generation 缓存已停用（2026-10-21 彻底去掉 session 缓存）
     expect(progressSnapshotCache.get(cacheKey)).toBeUndefined()
-    expect(getProgressGeneration(cacheKey)).toBeGreaterThan(0)
+    expect(getProgressGeneration(cacheKey)).toBe(0)
     connection.dispose()
   })
 
