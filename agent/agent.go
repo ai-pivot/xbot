@@ -1763,8 +1763,12 @@ func (a *Agent) emitSessionIdleIfNoActiveRun(chatKey, channel, chatID, senderID 
 		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active run owns this chat")
 		return
 	}
+	// ⛔ 审计确证（be-audit-1 C1）：这里存在「turn 已 announce、cancel 状态尚未注册」的窗口 ⇒
+	//   一条迟到的 idle 会把**新一轮**关掉。⇒ 与 `emitSessionIdleIfCurrent` 同源：把 idle
+	//   **钉到发起时的那一轮**（`turn_id`），客户端据此丢弃"旧轮迟到的 idle"。
 	a.emitSessionState(protocol.SessionEvent{
 		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
+		TurnID: a.getActiveTurnID(chatKey),
 	})
 }
 
