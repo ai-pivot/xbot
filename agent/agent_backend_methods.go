@@ -632,7 +632,18 @@ func (a *Agent) GetGoal(ch, chatID string) *protocol.GoalInfo {
 	if a.goalManager == nil {
 		return nil
 	}
-	return a.goalManager.GoalInfo(ch + ":" + chatID)
+	key := ch + ":" + chatID
+	if g := a.goalManager.GoalInfo(key); g != nil {
+		return g
+	}
+	// ⛔ 结构性：`nil` 只能表达"这个通道/会话没有 goal 系统"，**不能**同时表达"用户已清除"——
+	//   否则客户端无法区分「无目标」与「没查到」，只能选择"null 一律不动" ⇒ **远端清除永不收敛**
+	//   （别的客户端清了目标，这边重连/回前台后横幅还在）。⇒ 与 `GetActiveProgress` 同源：
+	//   回填**墓碑**（`{objective:"", status:"cleared"}`），让"已清除"成为线上可表达的状态。
+	if t := a.goalManager.Tombstone(key); t != nil {
+		return t
+	}
+	return nil
 }
 
 // SetGoal sets a goal for the given channel:chatID session.
