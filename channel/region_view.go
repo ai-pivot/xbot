@@ -209,6 +209,15 @@ func RegionWindow(recs []sqlite.IterationRecord, k int) ([]sqlite.IterationRecor
 //     （没有任何字段被省略）。
 //
 // foldTools=false（CLI/RPC 路径）时等价于抽取前的现状装配，ToolsFolded 恒 false。
+// PillInlineMax 是"工具多到需要折叠"的阈值（对齐 web `PILL_INLINE_MAX = 8`）。
+const PillInlineMax = 8
+
+// FoldToolsForRecord 回答"这条迭代在**区域视图**里是否该折叠"：
+// 只有工具数 > PillInlineMax 才折叠（1 枚工具也抹详情会让每次看详情都要再拉一次）。
+func FoldToolsForRecord(rec sqlite.IterationRecord) bool {
+	return len(parseRegionTools(rec)) > PillInlineMax
+}
+
 func MapIterationRecord(rec sqlite.IterationRecord, foldTools bool) HistoryIteration {
 	snaps := parseRegionTools(rec)
 	var tools []protocol.ToolProgress
@@ -218,7 +227,10 @@ func MapIterationRecord(rec sqlite.IterationRecord, foldTools bool) HistoryItera
 		//   旧实现 `foldTools && t.UIMode == ""` 对**1 枚工具**也抹掉 summary/args/detail/
 		//   tool_hints 并打 `tools_folded=true`（真机录制实测 71/79 条 folded）⇒ 客户端每一组
 		//   都只能看"摘要"，详情一律要再请求。对齐 web：**只有超过阈值才折叠**。
-		doFold := foldTools && len(snaps) > 8
+		// 阈值（>8 才折叠，对齐 web `PILL_INLINE_MAX`）由**区域视图的调用方**决定
+		// （`FoldToolsForRecord`）：`MapIterationRecord(rec, true)` 自己**总是**按请求折叠 ——
+		// 这样 live 快照窗口（按体积瘦身）与 REST 区域（按用户可见的 pill 数折叠）各自可判。
+		doFold := foldTools
 		tools = make([]protocol.ToolProgress, len(snaps))
 		for i, t := range snaps {
 			label := t.Label

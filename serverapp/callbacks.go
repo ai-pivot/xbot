@@ -2377,7 +2377,7 @@ func legacySyntheticPairRepair(svc *sqlite.SessionService, tenantID int64, turnI
 //
 // 区域原子：切分按**区域覆盖的迭代个数之和**取下标（与 channel.RegionWindow 同一
 // 手法），任何输入下都严格落在区域边界上 —— 绝不从折叠工具组中间切开。
-// 段内迭代为**轻字段形态**（MapIterationRecord(rec, true)，ToolsFolded 标记），
+// 段内迭代为**轻字段形态**（MapIterationRecord(rec, channel.FoldToolsForRecord(rec))，ToolsFolded 标记），
 // 详情由 /api/iteration_detail 按需补齐。
 //
 // regionLimit <= 0 ⇒ DefaultHistoryRegionRequest；> MaxHistoryRegionRequest ⇒ 钳到上限。
@@ -2407,7 +2407,7 @@ func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]pro
 func foldHistoryIterations(recs []sqlite.IterationRecord) []protocol.HistoryIteration {
 	out := make([]protocol.HistoryIteration, 0, len(recs))
 	for _, rec := range recs {
-		out = append(out, channel.MapIterationRecord(rec, true))
+		out = append(out, channel.MapIterationRecord(rec, channel.FoldToolsForRecord(rec)))
 	}
 	return out
 }

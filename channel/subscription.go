@@ -766,7 +766,7 @@ func relocateIncompleteTurnUsers(history []HistoryMessage) []HistoryMessage {
 }
 
 // windowTurnIterations 折叠视图（D2 区域窗口 + D3 工具轻字段化）的装配：
-// 取该 turn 尾部 HistoryRegionWindow 个区域，窗口内每条经 MapIterationRecord(rec, true)
+// 取该 turn 尾部 HistoryRegionWindow 个区域，窗口内每条经 MapIterationRecord(rec, FoldToolsForRecord(rec))
 // 轻字段化（ToolsFolded 标记，GenUI 工具豁免）。返回 (窗口迭代, 更早未下发区域数)。
 //
 // 区域原子性由 RegionWindow 保证：窗口 = 连续迭代号区间 [a..N]，起点必是某个
@@ -776,7 +776,7 @@ func windowTurnIterations(recs []sqlite.IterationRecord) ([]HistoryIteration, in
 	window, regionsBefore := RegionWindow(recs, HistoryRegionWindow)
 	iters := make([]HistoryIteration, 0, len(window))
 	for _, rec := range window {
-		iters = append(iters, MapIterationRecord(rec, true))
+		iters = append(iters, MapIterationRecord(rec, FoldToolsForRecord(rec)))
 	}
 	return iters, regionsBefore
 }
