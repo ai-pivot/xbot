@@ -4853,7 +4853,11 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 	if a.channelRange != nil {
 		a.channelRange(func(_ string, ch channel.Channel) bool {
 			if sender, ok := ch.(channel.ProgressSender); ok {
-				sender.SendProgress(chatID, payload)
+				// ⛔ 审计确证（be-state-1 §2，唯一确定的 fan-out 别名单点）：本处是**唯一**不 clone
+				//   的发送点（其余 5 处都 `cloneProgressEvent`），而 CLI channel 的 `SendProgress`
+				//   会**就地改写** payload（`payload.StreamContent = …`、`IterationHistory = merge…`）
+				//   ⇒ 同一指针随后还会被塞进 Web hub 的 `WSMessage.Progress` ⇒ 数据竞争 + 跨渠道污染。
+				sender.SendProgress(chatID, cloneProgressEvent(payload))
 			}
 			return true
 		})
