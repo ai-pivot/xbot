@@ -501,6 +501,10 @@ type SessionEvent struct {
 	Channel         string `json:"channel"`
 	ChatID          string `json:"chat_id"`
 	Action          string `json:"action"`
+	// TurnID 把 busy/idle **钉到具体的一轮**（结构性：让"这条 idle 结束的是哪一轮"可表达）。
+	// 0/缺省 = 未指定（旧发射点，客户端按"当前轮"处理）。客户端规则：`idle` 且
+	// `turn_id != 当前 activeTurn` ⇒ 这是**旧轮**的迟到 idle，不得把新一轮降成 idle。
+	TurnID          uint64 `json:"turn_id,omitempty"`
 	Label           string `json:"label,omitempty"`
 	Role            string `json:"role,omitempty"`
 	Instance        string `json:"instance,omitempty"`

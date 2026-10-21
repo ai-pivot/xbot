@@ -1691,6 +1691,9 @@ func (a *Agent) emitSessionIdleIfCurrent(chatKey, channel, chatID, senderID stri
 	}
 	a.emitSessionState(protocol.SessionEvent{
 		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
+		// 结构性：把 idle 钉到**它结束的那一轮** —— 客户端据此丢弃"旧轮迟到 idle"
+		// （没有它，客户端只能靠 `sessionRunning` 猜，或者无条件降级 ⇒ 卡 busy）。
+		TurnID: a.getActiveTurnID(chatKey),
 	})
 }
 
