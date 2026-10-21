@@ -92,10 +92,10 @@ type TurnSnapshot struct {
 
 // SessionStateSession carries the turn-independent session fields.
 type SessionStateSession struct {
-	Running bool                `json:"running"`
-	Todos   []TodoItem          `json:"todos"`
-	Goal    *GoalInfo           `json:"goal"`
-	Queue   []QueueItemPayload  `json:"queue"`
+	Running bool               `json:"running"`
+	Todos   []TodoItem         `json:"todos"`
+	Goal    *GoalInfo          `json:"goal"`
+	Queue   []QueueItemPayload `json:"queue"`
 }
 
 // SessionStateSnapshot is the /api/session-state response body's `state` part.
@@ -104,8 +104,8 @@ type SessionStateSnapshot struct {
 	Epoch string `json:"epoch"`
 	// Seq is the per-chat frame watermark this snapshot was taken at. Frames
 	// with seq <= this value are already reflected here (P6 / C-12).
-	Seq   uint64             `json:"seq"`
-	Turns []SessionStateTurn `json:"turns"`
-	Live  *SessionStateLive  `json:"live"`
+	Seq   uint64              `json:"seq"`
+	Turns []SessionStateTurn  `json:"turns"`
+	Live  *SessionStateLive   `json:"live"`
 	Sess  SessionStateSession `json:"session"`
 }

@@ -38,10 +38,10 @@ type toolIdentity struct {
 }
 
 type toolIDScope struct {
-	turnID uint64
-	iter   int
+	turnID  uint64
+	iter    int
 	chatOrd uint64
-	ids    map[int]string
+	ids     map[int]string
 }
 
 func newToolIdentity() *toolIdentity {
@@ -82,12 +82,4 @@ func (t *toolIdentity) ID(chatKey string, turnID uint64, iteration, index int) s
 	id := fmt.Sprintf("call-%d-%d-%d-%d", ord, turnID, iteration, index)
 	sc.ids[index] = id
 	return id
-}
-
-// reset drops all state for a chat (turn ended / session reset).
-func (t *toolIdentity) reset(chatKey string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	delete(t.scopes, chatKey)
-	delete(t.chatOrdFor, chatKey)
 }

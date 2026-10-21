@@ -460,8 +460,8 @@ type WebChannel struct {
 	// the same chat (STATE-MODEL C-1). Key: bare chat id (channel prefix
 	// stripped) — a chat mounted on both `web\0X` and `agent\0X` shares one
 	// numbering instead of two independently advancing counters.
-	chatSeqs   map[string]*chatSeqCounter
-	chatSeqMu  sync.Mutex
+	chatSeqs  map[string]*chatSeqCounter
+	chatSeqMu sync.Mutex
 
 	// Per-user current session (multi-chatroom + cross-channel support).
 	// Key: senderID, Value: SessionSelector (channel + chatID).

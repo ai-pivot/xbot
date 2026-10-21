@@ -28,8 +28,8 @@ import (
 // session-state snapshot carries. A 1,600-iteration turn must never produce a
 // multi-megabyte snapshot (STATE-MODEL §12 W5).
 const (
-	stateTurnWindow    = 8
-	stateIterWindow    = 200
+	stateTurnWindow = 8
+	stateIterWindow = 200
 )
 
 // stateSession returns the TenantSession for a chat, or nil when unavailable.

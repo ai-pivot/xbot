@@ -73,16 +73,6 @@ func (t *turnFrameTracker) iterationDone(chatKey string, turnID uint64, iteratio
 	return true
 }
 
-// lastDoneIteration reports the highest iteration already published for a turn.
-func (t *turnFrameTracker) lastDoneIteration(chatKey string, turnID uint64) int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if st, ok := t.turns[chatKey]; ok && st.turnID == turnID {
-		return st.lastDone
-	}
-	return 0
-}
-
 // final accepts a `final` for a turn. It returns false when one was already
 // sent (C-7: exactly one per turn — never a second one, never zero).
 func (t *turnFrameTracker) final(chatKey string, turnID uint64) bool {
@@ -94,21 +84,6 @@ func (t *turnFrameTracker) final(chatKey string, turnID uint64) bool {
 	}
 	st.finalSent = true
 	return true
-}
-
-// finalSent reports whether a turn's `final` was already published.
-func (t *turnFrameTracker) finalSent(chatKey string, turnID uint64) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	st, ok := t.turns[chatKey]
-	return ok && st.turnID == turnID && st.finalSent
-}
-
-// forget drops all bookkeeping for a chat (session reset / turn fully closed).
-func (t *turnFrameTracker) forget(chatKey string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	delete(t.turns, chatKey)
 }
 
 // ---------------------------------------------------------------------------

@@ -266,9 +266,3 @@ func parseUintQuery(r *http.Request, key string) (uint64, bool) {
 	}
 	return n, true
 }
-
-// jsonString is a tiny helper used by tests to keep assertions readable.
-func jsonString(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
-}

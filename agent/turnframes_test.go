@@ -109,9 +109,9 @@ func TestDoneExactlyOnce_NormalCancelAndCtxCancel(t *testing.T) {
 		Tools: []protocol.ToolProgress{{CallID: "call-7-3-0", Name: "Shell", Status: "done", Iteration: iteration}},
 	}
 
-	a.emitIterationDone("web", "chat-1", block)      // normal path
-	a.emitIterationDone("web", "chat-1", block)      // cancel path (duplicate)
-	a.emitIterationDone("web", "chat-1", block)      // ctx-cancel path (duplicate)
+	a.emitIterationDone("web", "chat-1", block) // normal path
+	a.emitIterationDone("web", "chat-1", block) // cancel path (duplicate)
+	a.emitIterationDone("web", "chat-1", block) // ctx-cancel path (duplicate)
 
 	done, final := ch.frameCounts()
 	if done != 1 {

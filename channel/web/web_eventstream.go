@@ -111,11 +111,6 @@ func (es *eventStream) lastSeq() uint64 {
 	return es.last
 }
 
-// chatSeq returns the chat-wide counter (what a session snapshot stamps).
-func (es *eventStream) chatSeq() uint64 {
-	return es.seq.get()
-}
-
 // push appends a seq-stamped event to the ring buffer. Consecutive stateless
 // snapshots share one slot. Stream fields are cumulative but arrive in
 // independent messages, so replacing a stream snapshot must merge those fields.

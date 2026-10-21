@@ -475,6 +475,24 @@ func Run(args []string) error {
 	setupLogging(cfg)
 	defer log.Close()
 
+	// 同一份配置（同一个 XBOT_HOME）只允许一个 serve 进程。
+	//
+	// 2026-10-21 主库损坏事故：/tmp/xbot-court 下误启动的 serve 没有设置
+	// XBOT_HOME，于是落到 HOME=/home/smith，与 supervisord 管理的生产进程
+	// 共用 /home/smith/.xbot/xbot.db，但两边 schema 版本不同（v75 / v76）。
+	// 先退出的进程在 Close 时 checkpoint 并 unlink 了 -wal，另一方正在写的
+	// 事务随即读到结构损坏的页 —— `database disk image is malformed (11)`。
+	//
+	// 锁在这里而不是 sqlite.Open()：CLI、测试、seed 脚本都可能合法地打开
+	// 同一个库，真正危险的是「两个 serve 争一份配置」。
+	serverLock, lockErr := AcquireServerLock(config.XbotHome())
+	if lockErr != nil {
+		log.WithError(lockErr).Error("Refusing to start a second xbot server for this home")
+		return lockErr
+	}
+	defer serverLock.Release()
+	log.WithField("lock", serverLock.Path()).Info("Acquired server lock for xbot home")
+
 	llmClient, err := setupLLM(cfg)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to create LLM client")

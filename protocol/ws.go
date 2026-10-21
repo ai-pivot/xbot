@@ -111,7 +111,7 @@ type WSMessage struct {
 	// (P1 / C-3: every frame carries (epoch, seq, chat_id)). It changes on
 	// restart, which lets clients detect "seq restarted from zero" without
 	// guessing (C-13). Stamped by WebChannel.stampAndBuffer for every SSE frame.
-	Epoch string `json:"epoch,omitempty"`
+	Epoch           string             `json:"epoch,omitempty"`
 	Content         string             `json:"content,omitempty"`
 	OriginalContent string             `json:"original_content,omitempty"`
 	TS              int64              `json:"ts,omitempty"`
