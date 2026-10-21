@@ -3632,6 +3632,9 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					if !isWaitingUser {
 						// ⛔ 只有"仍是当前轮"才发 idle：迟到的旧轮收尾不得把新一轮误标 idle
 						a.emitSessionIdleIfCurrent(cancelKey, msg.Channel, msg.ChatID, msg.SenderID, runGen)
+						// ⛔ F15：回合收尾清掉 turn 归属 ⇒ 之后的「回合外」事件（todos/goal/命令）
+						//   不再携带上一个已完成 turn 的 id。
+						a.clearActiveTurn(cancelKey)
 						key := qualifyChatID(msg.Channel, msg.ChatID)
 						a.lastProgressSnapshot.Delete(key)
 						a.iterationHistories.Delete(key)
@@ -4601,6 +4604,20 @@ func (a *Agent) getActiveTurnID(sessionKey string) uint64 {
 		return state.(*bgSessionState).activeTurnID.Load()
 	}
 	return 0
+}
+
+// clearActiveTurn 清掉"当前 turn"标记 —— 回合收尾必须调用。
+//
+// ⛔ 审计确证（F15）：`activeTurnID` 此前**只有写入、永不复位**（全仓唯一写点是 turn 开始），
+// 而「回合外」的 progress 事件（编辑 todo / 设置 goal / `/compress` / `/new`）都通过
+// `getActiveTurnID` 取 turn 归属 ⇒ 这些帧会带上**上一个已完成 turn** 的 id
+// （`phase=done` 帧因此把"结束"应用到已提交的那个 turn）。回合外事件不应携带 turn 归属。
+func (a *Agent) clearActiveTurn(sessionKey string) {
+	if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+		if ss, ok2 := state.(*bgSessionState); ok2 && ss != nil {
+			ss.setActiveTurn(0)
+		}
+	}
 }
 
 // getActiveIteration returns the iteration number of the currently-processing
