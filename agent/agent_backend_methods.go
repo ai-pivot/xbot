@@ -649,7 +649,9 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 		Seq:       seq,
 		TurnID:    a.getActiveTurnID(progressKey),
 		Iteration: 0,
-		Todos:     a.GetTodos(ch, chatID),
+		// ⛔ 审计确证（be-state-1 §3）：`ClearGoal` 与 todo 无关，此前却把 `GetTodos()` 塞进帧里
+		//   —— 若该键从未写过 todos，返回 `[]` ⇒ 客户端按「`[]`=显式清空」**清空 todo 面板**
+		//   （快照侧已挡，帧侧漏）。⇒ 不携带 todos（缺失 = 客户端保持旧值）。
 		Goal:      &protocol.GoalInfo{Objective: "", Status: protocol.GoalStatusCleared}, // explicit cleared marker (objective:"" survives GoalInfo's non-omitempty json tag) — Goal: nil is invisible to the frontend (ProgressEvent.Goal omitempty drops the field entirely, indistinguishable from "not carried"), which broke the clear chain (xbotgh CR: "用户删除目标后 GoalBanner 不消失")
 	}
 	if a.channelRange != nil {
