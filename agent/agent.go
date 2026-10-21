@@ -1605,7 +1605,19 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 			state.(*bgSessionState).busy.Store(false)
 		}
 		tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
-		a.emitSessionIdleIfNoActiveRun(cancelKey, msg.Channel, msg.ChatID, msg.SenderID)
+		// ⛔ 审计确证（state-gate-9-1）：WaitingUser 暂停期间 `activeTurnID` 仍指向该轮 ⇒
+		//   `emitSessionIdleIfNoActiveRun` 的守卫（有活动轮次不发 idle）**恒挡下**这条 idle
+		//   ⇒ 前端 `activeTurn` 永不清（busyFallback = activeTurn !== null）⇒ 用户取消 ask
+		//   后输入框停在「停止/思考中」，而侧栏 running 已是 false —— 两个源相反。
+		//   ⇒ 结构：这个分支的语义就是"该轮被取消"，先把活动轮次清掉，再发**带该轮 id** 的 idle
+		//   （客户端用 turn_id 丢弃旧轮迟到的 idle，见 `reduce.ts` 的 idle 归属规则）。
+		//   ⚠️ 不走 `emitSessionIdleIfNoActiveRun`：它的守卫前提（无活动轮次）与这里相反。
+		cancelledTurn := a.getActiveTurnID(cancelKey)
+		a.clearActiveTurn(cancelKey)
+		a.emitSessionState(protocol.SessionEvent{
+			Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+			SenderID: msg.SenderID, TurnID: cancelledTurn,
+		})
 		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
 		return
@@ -1770,18 +1782,14 @@ func (a *Agent) emitSessionIdleIfNoActiveRun(chatKey, channel, chatID, senderID 
 		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active turn still owns this chat")
 		return
 	}
-	// ⛔ 审计确证（state-gate-8-1）：AskUser 取消 / `cleanupStaleCancelState` 两条出口**不复位**
-	//   `activeTurnID` ⇒ 回合外的帧（`emitTodosProgress`/`emitGoalProgress`/`ClearGoal`/
-	//   `/compress` done）继续挂**已终止旧轮**的 turn id，`phase=done` 帧甚至会把已 committed 的
-	//   旧轮再收一次（有"复活旧轮"的窗口）。⇒ 走到这里就说明"没有活动轮次"，顺手清掉 id
-	//   （与 `clearActiveTurn` 同一个事实，只在确认无 run 之后做，绝不会误伤在跑的新轮）。
-	a.clearActiveTurn(chatKey)
-	// ⛔ 审计确证（be-audit-1 C1）：这里存在「turn 已 announce、cancel 状态尚未注册」的窗口 ⇒
-	//   一条迟到的 idle 会把**新一轮**关掉。⇒ 与 `emitSessionIdleIfCurrent` 同源：把 idle
-	//   **钉到发起时的那一轮**（`turn_id`），客户端据此丢弃"旧轮迟到的 idle"。
+	// ⛔ 审计确证（state-gate-9-1 / 9-8）：本函数到达这里时 `activeTurnID` **必然为 0**
+	//   （上面的守卫已经返回），所以旧代码的 `clearActiveTurn` 与 `TurnID: getActiveTurnID()` 都是
+	//   **空操作/恒 0** —— 注释说"把 idle 钉到发起时的那一轮"，实际钉的是 0（客户端的
+	//   "旧轮迟到的 idle 丢弃"判据因此拿不到身份）。⇒ 删掉这两句死代码，语义回到诚实的
+	//   "会话级 idle（无轮次归属）"；带轮次身份的 idle 由 `emitSessionIdleIfCurrent`
+	//   （runGen 守卫）与该轮终止的显式出口（AskUser 取消分支）负责发射。
 	a.emitSessionState(protocol.SessionEvent{
 		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
-		TurnID: a.getActiveTurnID(chatKey),
 	})
 }
 

@@ -259,7 +259,12 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	//   而 `TodoManager` 才是真源（内存 + 文件持久化）。旧实现直接返回快照 ⇒ 重连/切会话时
 	//   可能下发**旧 todo 列表**（面板滞后）。⇒ 以管理器为准刷新；管理器为空且快照非空时
 	//   保留快照（重启后未水合的窗口绝不能据此清空）。
-	if fresh := a.GetTodos(ch, chatID); len(fresh) > 0 || len(result.Todos) == 0 {
+	// ⛔ 审计确证（state-gate-9-5）：旧判据 `len(fresh) > 0 || len(result.Todos) == 0` 把
+	//   **「用户已清空」**（管理器有记录但为空）当成「未水合」⇒ 回吐快照里的旧列表
+	//   （todo_write([]) 后切会话/回前台，清空的列表又冒出来）。
+	//   ⇒ 判据改成 **Hydrated**（管理器是否已有该会话的记录，空列表也算有）：
+	//   已水合 ⇒ 一律以管理器为准（包括空）；未水合且快照也空 ⇒ 记录「无 todo」。
+	if fresh := a.GetTodos(ch, chatID); len(fresh) > 0 || a.TodosHydrated(ch, chatID) || len(result.Todos) == 0 {
 		result.Todos = fresh
 	}
 
@@ -536,6 +541,18 @@ func foldProgressIteration(el protocol.ProgressEvent, rec sqlite.IterationRecord
 	}
 	out.ToolsFolded = true
 	return out
+}
+
+// TodosHydrated 报告 TodoManager 是否**已有**该会话的记录（可能是空列表 = 用户已清空）。
+//
+// ⛔ 判据的存在理由（state-gate-9-5 确证）：`len(GetTodos())==0` 有**两种**含义 ——
+// ① 未水合（管理器里没记录，值是未知的）；② 用户确实清空了（记录存在但为空）。
+// 把二者混为一谈会导致"清空的 todo 又冒回来"。`HasTodos` 语义正是"记录存在"。
+func (a *Agent) TodosHydrated(ch, chatID string) bool {
+	if a.todoManager == nil {
+		return false
+	}
+	return a.todoManager.HasTodos(ch + ":" + chatID)
 }
 
 // GetTodos returns the TODO items for the given channel:chatID session.
