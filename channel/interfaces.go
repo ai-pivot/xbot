@@ -22,6 +22,23 @@ type ProgressSender interface {
 	SendStreamContent(chatID, content, reasoning string)
 }
 
+// TurnFrameSender is implemented by channels that can transport the
+// turn-level frames (`done` / `final`, STATE-MODEL §3.3). It is an OPTIONAL
+// capability: the agent type-asserts, so channels that do not implement it
+// (CLI, IM bridges) keep working unchanged — the legacy progress stream still
+// carries everything they consume.
+//
+// Additive by design (dual-write): the `done`/`final` frames are sent ALONGSIDE
+// the legacy progress_structured fields, never instead of them.
+type TurnFrameSender interface {
+	// SendIterationDone delivers one complete iteration block. Exactly one per
+	// started iteration (contract C-6), including cancelled iterations.
+	SendIterationDone(chatID string, block *protocol.IterationBlock)
+	// SendTurnFinal closes a turn. Exactly one per turn (C-7), including empty
+	// and cancelled turns.
+	SendTurnFinal(chatID string, final *protocol.TurnFinalFrame)
+}
+
 // UserMessageInjector is implemented by channels that support injecting
 // user messages from background sources (cron, bg task notifications).
 // Used by agent's injectCLIUserMessage for type assertion.

@@ -3,7 +3,6 @@ package web
 import (
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"xbot/protocol"
 )
@@ -67,33 +66,54 @@ func parseSessionRouteKey(routeKey string) (channel, chatID string, ok bool) {
 }
 
 type eventStream struct {
-	seq     atomic.Uint64
+	// seq is the chat's SINGLE frame counter (shared across every route of the
+	// same chat — see web_seq.go). The ring buffer below is per route.
+	seq     *chatSeqCounter
 	mu      sync.Mutex
 	buf     []protocol.WSMessage // ring buffer of seq-stamped events
 	head    int
 	tail    int
 	count   int
 	barrier *protocol.WSMessage
+	// last is this ROUTE's ring high-water mark (highest seq ever pushed here).
+	// The sequence counter itself is per CHAT (es.seq); a route's ring may hold
+	// a sparse subset of it when the same chat is mounted on several routes, so
+	// the two values are deliberately distinct.
+	last uint64
 	// evictedThrough is the highest sequence removed because the bounded ring
 	// was full. A resume cursor below this boundary requires an authoritative
 	// history resync.
 	evictedThrough uint64
 }
 
-func newEventStream() *eventStream {
+func newEventStream(seq *chatSeqCounter) *eventStream {
+	if seq == nil {
+		seq = newChatSeqCounter()
+	}
 	return &eventStream{
+		seq: seq,
 		buf: make([]protocol.WSMessage, eventStreamSize),
 	}
 }
 
-// nextSeq atomically increments and returns the new seq.
+// nextSeq atomically increments and returns the new seq (per chat).
 func (es *eventStream) nextSeq() uint64 {
-	return es.seq.Add(1)
+	return es.seq.next()
 }
 
-// lastSeq returns the current seq (0 if no events yet).
+// lastSeq returns this ROUTE's ring high-water mark (0 if no events yet).
+// It is NOT the chat counter: with one counter shared by several routes, a
+// route only sees the frames addressed to it (the rest are numbered but never
+// pushed here). Replay cursors are route-scoped, so this is the value they mean.
 func (es *eventStream) lastSeq() uint64 {
-	return es.seq.Load()
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	return es.last
+}
+
+// chatSeq returns the chat-wide counter (what a session snapshot stamps).
+func (es *eventStream) chatSeq() uint64 {
+	return es.seq.get()
 }
 
 // push appends a seq-stamped event to the ring buffer. Consecutive stateless
@@ -109,6 +129,12 @@ func (es *eventStream) push(msg protocol.WSMessage) {
 		es.tail = 0
 		es.count = 0
 		es.evictedThrough = 0
+		// The barrier IS the newest event of this route: it resets the replay
+		// window, so the route's high-water becomes the barrier's seq (a resume
+		// cursor below it must be answered with a resync, never silently dropped).
+		if msg.Seq > es.last {
+			es.last = msg.Seq
+		}
 		return
 	}
 	if !isStatefulSSEEvent(msg) {
@@ -136,6 +162,9 @@ func (es *eventStream) push(msg protocol.WSMessage) {
 	es.buf[es.tail] = msg
 	es.tail = (es.tail + 1) % eventStreamSize
 	es.count++
+	if msg.Seq > es.last {
+		es.last = msg.Seq
+	}
 }
 
 // removeAt removes a logical ring offset while preserving sequence order.
@@ -257,6 +286,8 @@ func (es *eventStream) replayAfter(fromSeq uint64) ([]protocol.WSMessage, uint64
 }
 
 // getEventStream returns (or creates) the eventStream for a chatID.
+// The eventStream ring is per route; the seq counter it stamps with is per
+// CHAT (web_seq.go), so every route of the same chat shares one numbering.
 func (wc *WebChannel) getEventStream(chatID string) *eventStream {
 	if !strings.ContainsRune(chatID, '\x00') {
 		chatID = sessionRouteKey("web", chatID)
@@ -268,10 +299,20 @@ func (wc *WebChannel) getEventStream(chatID string) *eventStream {
 	}
 	es, ok := wc.evtBuf[chatID]
 	if !ok {
-		es = newEventStream()
+		es = newEventStream(wc.chatSeqFor(chatIDForSeq(chatID)))
 		wc.evtBuf[chatID] = es
 	}
 	return es
+}
+
+// chatIDForSeq maps a route key (`channel\x00chatID`) to the chat identity used
+// for sequencing. Contract C-1: one counter per CHAT, not per route — a chat
+// mounted on both `web\x00X` and `agent\x00X` must share a single sequence.
+func chatIDForSeq(routeKey string) string {
+	if _, chatID, ok := parseSessionRouteKey(routeKey); ok {
+		return chatID
+	}
+	return routeKey
 }
 
 // clearReplayStream drops buffered events while preserving the route's

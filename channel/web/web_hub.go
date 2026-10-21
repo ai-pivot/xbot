@@ -687,7 +687,13 @@ func isSSEEventType(msgType string) bool {
 		// 早前漏了这一项，导致广播只走 WebSocket，SSE（EventSource）客户端
 		// 完全收不到 —— 单端测试靠乐观更新看不出来，双端 e2e 立刻暴露。
 		protocol.MsgTypeStructuredMessage,
-		protocol.MsgTypeQueueState:
+		protocol.MsgTypeQueueState,
+		// done / final are sequenced + buffered + replayable like progress_structured:
+		// they are incremental frame types of the same ordered frame stream
+		// (STATE-MODEL §3.3), so a reconnect must be able to replay them and the
+		// client dedupes by seq exactly like every other frame.
+		protocol.MsgTypeDone,
+		protocol.MsgTypeFinal:
 		return true
 	default:
 		return false

@@ -412,6 +412,17 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetActiveProgressFolded(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
 	}
+	// 状态机权威读取（STATE-MODEL §2.4/§3.5）：按对象拉权威，替代帧重放。
+	// 三个端点共用同一批只读访问器；属主校验在 web 层（resolveAPISession）。
+	callbacks.IterationBlock = func(channel, chatID string, turnID uint64, iteration int) (*protocol.IterationBlock, error) {
+		return ag.IterationBlock(channel, chatID, turnID, iteration)
+	}
+	callbacks.TurnSnapshot = func(channel, chatID string, turnID uint64) (*protocol.TurnSnapshot, error) {
+		return ag.TurnSnapshot(channel, chatID, turnID)
+	}
+	callbacks.SessionState = func(channel, chatID string) (*protocol.SessionStateSnapshot, error) {
+		return ag.SessionState(channel, chatID)
+	}
 	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetPendingAskUser(channel, chatID)
 	}

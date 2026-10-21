@@ -187,8 +187,10 @@ func TestRESTChatCRUDPassesChannelToCallbacks(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
 	cliStream := wc.getEventStream(sessionRouteKey("cli", "shared"))
 	webStream := wc.getEventStream(sessionRouteKey("web", "shared"))
-	cliStream.nextSeq()
-	webStream.nextSeq()
+	// Seed one replayable frame per route (seq assignment + ring push are one
+	// transaction in production — see stampAndBuffer).
+	wc.hub.sendToSession("cli", "shared", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "cli event"})
+	wc.hub.sendToSession("web", "shared", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "web event"})
 	requestKey := inboundRequestKey{senderID: "web-1", channel: "cli", chatID: "shared", requestID: "request-1"}
 	wc.inboundRequests[requestKey] = &inboundRequestState{}
 	if _, err := db.Exec(
@@ -239,8 +241,13 @@ func TestRESTChatCRUDPassesChannelToCallbacks(t *testing.T) {
 	if fresh := wc.getEventStream(sessionRouteKey("cli", "shared")); fresh == cliStream || fresh.lastSeq() != 0 {
 		t.Fatalf("deleted CLI replay stream was retained: same=%v seq=%d", fresh == cliStream, fresh.lastSeq())
 	}
-	if wc.getEventStream(sessionRouteKey("web", "shared")) != webStream || webStream.lastSeq() != 1 {
-		t.Fatal("deleting CLI session changed same-ID Web replay state")
+	if wc.getEventStream(sessionRouteKey("web", "shared")) != webStream {
+		t.Fatal("deleting CLI session replaced the same-ID Web replay stream")
+	}
+	// 序号是 per-chat 共享的（C-1），所以这里断言"Web 自己的回放环还在"（内容仍在、
+	// 没被 CLI 的删除连带清空），而不是钉一个只对 per-route 计数成立的数字。
+	if events, _ := webStream.replayAfter(0); len(events) != 1 || events[0].RouteChannel != "web" {
+		t.Fatalf("deleting CLI session changed same-ID Web replay state: %+v", events)
 	}
 	if _, ok := wc.inboundRequests[requestKey]; ok {
 		t.Fatal("deleted CLI request-dedup state was retained")

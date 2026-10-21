@@ -103,6 +103,18 @@ type WebCallbacks struct {
 	// GetActiveProgress returns the latest progress snapshot for an active turn.
 	// Used by Web history API to restore progress state on page refresh.
 	GetActiveProgress func(channel, chatID string) *protocol.ProgressEvent
+	// ─── Authoritative state reads (STATE-MODEL §14, endpoints /api/iteration,
+	// /api/turn, /api/session-state). All are read-only and never mutate state.
+	// IterationBlock returns one iteration's authoritative block.
+	// (nil, nil) = the iteration does not exist ("absent", the only legal
+	// answer for a skipped iteration number).
+	IterationBlock func(channel, chatID string, turnID uint64, iteration int) (*protocol.IterationBlock, error)
+	// TurnSnapshot returns a turn's committed blocks + closing record.
+	// (nil, nil) = the turn does not exist.
+	TurnSnapshot func(channel, chatID string, turnID uint64) (*protocol.TurnSnapshot, error)
+	// SessionState returns the full session snapshot (turns + live + session
+	// fields). The web layer stamps epoch/seq around it (two-phase read).
+	SessionState func(channel, chatID string) (*protocol.SessionStateSnapshot, error)
 	// ─── Shared artifacts (generic, plugin-facing) ───────────────────────
 	// Shareable content produced by plugins. The host is deliberately
 	// content-agnostic: ContentType is named by the producing plugin and
@@ -443,6 +455,13 @@ type WebChannel struct {
 	// Event stream buffer — per chatID monotonic seq + ring buffer for replay
 	evtBuf   map[string]*eventStream
 	evtBufMu sync.Mutex
+
+	// chatSeqs holds the SINGLE per-chat frame counter shared by every route of
+	// the same chat (STATE-MODEL C-1). Key: bare chat id (channel prefix
+	// stripped) — a chat mounted on both `web\0X` and `agent\0X` shares one
+	// numbering instead of two independently advancing counters.
+	chatSeqs   map[string]*chatSeqCounter
+	chatSeqMu  sync.Mutex
 
 	// Per-user current session (multi-chatroom + cross-channel support).
 	// Key: senderID, Value: SessionSelector (channel + chatID).
@@ -955,6 +974,13 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/settings", wc.authenticatedPOST(wc.handleSettingsPOST))
 	mux.HandleFunc("/api/llm-config", wc.authenticatedPOST(wc.handleLLMConfigPOST))
 	mux.HandleFunc("/api/session/status", wc.authenticatedPOST(wc.handleSessionStatus))
+	// 状态机权威读取（STATE-MODEL §2.4/§3.5）：按对象取权威，替代帧重放。
+	//   /api/iteration  —— 单迭代权威块（pullIter）
+	//   /api/turn       —— 单回合权威块 + 收尾（pullTurn）
+	//   /api/session-state —— 整会话快照 + (epoch, seq)（snapshot）
+	mux.HandleFunc("/api/iteration", wc.authMiddleware(wc.handleStateIteration))
+	mux.HandleFunc("/api/turn", wc.authMiddleware(wc.handleStateTurn))
+	mux.HandleFunc("/api/session-state", wc.authMiddleware(wc.handleSessionState))
 
 	mux.HandleFunc("/api/runners/list", wc.authenticatedPOST(wc.handleRunnersListPOST))
 	mux.HandleFunc("/api/runners/create", wc.authenticatedPOST(wc.handleRunnersCreatePOST))
@@ -1181,8 +1207,9 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 	return msgID, nil
 }
 
-// stampAndBuffer assigns a monotonic seq to the message and appends it to the
-// per-chatID event stream buffer. Returns the stamped message (ready to send).
+// stampAndBuffer assigns the chat's monotonic seq (per CHAT, shared by every
+// route — C-1) plus the process epoch (C-3), and appends the message to the
+// route's replay ring. Returns the stamped message (ready to send).
 func (wc *WebChannel) stampAndBuffer(chatID string, msg protocol.WSMessage) protocol.WSMessage {
 	if channelName, routeChatID, ok := parseSessionRouteKey(chatID); ok {
 		msg.RouteChannel = channelName
@@ -1190,6 +1217,12 @@ func (wc *WebChannel) stampAndBuffer(chatID string, msg protocol.WSMessage) prot
 	}
 	es := wc.getEventStream(chatID)
 	msg.Seq = es.nextSeq()
+	msg.Epoch = serverEpoch
+	// The chat_id must be present on every frame (P1): the route key already
+	// carries it; keep the business chat id on the envelope too.
+	if msg.ChatID == "" {
+		msg.ChatID = chatIDForSeq(chatID)
+	}
 	es.push(msg)
 	return msg
 }

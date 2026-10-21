@@ -66,6 +66,12 @@ type ToolProgress struct {
 	// tool card with server-side execution state (e.g. the promote-to-background
 	// RPC targets the exact foreground shell by session + call id).
 	CallID string `json:"call_id,omitempty"`
+	// ProviderCallID is the id the model provider used for this tool call. It
+	// is a FIELD, never an identity: CallID is assigned by the server before the
+	// tool first appears anywhere (P2/P3′) and never changes — so the generating
+	// entry (index-keyed, provider id not yet complete) and the executing entry
+	// share one identity. Additive: old clients ignore it.
+	ProviderCallID string `json:"provider_call_id,omitempty"`
 }
 
 // UISurface is the wire form of tools.UISurface (mirror to break the
@@ -149,6 +155,13 @@ type ProgressEvent struct {
 	// GenUIContent carries streaming HTML from display_html tool arguments.
 	// Stream-only field like StreamContent — must NOT enter structured snapshots.
 	GenUIContent string `json:"genui_content,omitempty"`
+	// Tools is the NORMALIZED single tool array (P3): the current iteration's
+	// complete tool set, each entry carrying call_id + iteration + status.
+	// Only tools of the iteration in Iteration are included — the server
+	// filters, so clients no longer need to filter stale entries themselves.
+	// Additive: ActiveTools/CompletedTools/StreamingTools are still sent
+	// (dual-write) so existing web/mobile clients keep working unchanged.
+	Tools []ToolProgress `json:"tools,omitempty"`
 	// StreamingTools carries tool names detected during LLM streaming,
 	// before arguments finish generating. Each entry has Status="generating".	// This is a stream-only field (like StreamContent) — it must NOT enter
 	// snapshotIterationChange or any structured snapshot path.

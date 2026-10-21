@@ -555,7 +555,19 @@ type Agent struct {
 	// （用户症状：迭代不再更新 / 内容回退）。改为 per-session 持久计数器，
 	// 首次以 UnixMilli 播种（跨进程重启也单调），此后只增不减。
 	// key: "channel:chatID" -> *atomic.Uint64
+	// progressSeq sync.Map
 	progressSeq sync.Map
+
+	// toolIDs assigns the STABLE server-side call id of every tool call before
+	// it first appears in any frame (STATE-MODEL P2 / P3′ / C-8). Tool identity
+	// is never the provider's id (which arrives late / in fragments) — that one
+	// travels as protocol.ToolProgress.ProviderCallID.
+	toolIDs *toolIdentity
+
+	// turnFrames enforces "exactly one done per iteration, exactly one final per
+	// turn" (STATE-MODEL C-6 / C-7). Every exit path reports through it; duplicate
+	// reports are dropped instead of double-sent.
+	turnFrames *turnFrameTracker
 
 	// interactiveSubAgents stores interactive SubAgent sessions
 	// key: "channel:chatID/roleName" -> *interactiveAgent
@@ -2264,6 +2276,8 @@ func New(cfg Config) (*Agent, error) {
 		maxConcurrency:         cfg.MaxConcurrency,
 		deltaPush:              cfg.DeltaPush,
 		iterationLoopDetection: cfg.IterationLoopDetection,
+		toolIDs:                newToolIdentity(),
+		turnFrames:             newTurnFrameTracker(),
 
 		skills:             skillStore,
 		agents:             agentStore,

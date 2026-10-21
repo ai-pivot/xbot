@@ -300,6 +300,18 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
+	// Turn-level wire identity (STATE-MODEL P2/P3′ + C-6): the tool call id is
+	// assigned BEFORE the tool first appears in any frame (so the generating
+	// entry and the executing entry share one identity), and every finished
+	// iteration reports its complete block as a `done` frame through the tracker
+	// that guarantees "exactly one per iteration".
+	cfg.ToolCallID = func(iteration, index int, providerID string) string {
+		return a.toolCallID(sessionKey, cfg.TurnID, iteration, index)
+	}
+	cfg.OnIterationDone = func(block protocol.IterationBlock) {
+		a.emitIterationDone(channel, chatID, block)
+	}
+
 	// 可观测性：把 session / user / turn 标识传给 Run，使每次 LLM HTTP 请求
 	// 携带 X-Session-Id / X-User-Id / X-Turn-Id（X-Request-Id 在 generateResponse
 	// 每次调用生成），对标 Codex / Claude Code，便于在 LLM 提供商侧按会话追踪
@@ -2005,6 +2017,11 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 			CallID: t.CallID,
 		})
 	}
+	// Normalized single tool array (STATE-MODEL P3): ONLY the current
+	// iteration's tools, each with a stable call_id + iteration + status.
+	// The legacy three arrays below stay untouched (dual-write) so existing
+	// web/mobile clients keep working.
+	payload.Tools = normalizeIterationTools(s.ActiveTools, s.CompletedTools, s.Iteration, false)
 	payload.SubAgents = resolveSubAgents(event)
 	payload.Todos = make([]protocol.TodoItem, len(s.Todos))
 	for i, td := range s.Todos {
@@ -2420,6 +2437,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		noteFirstChunk()
 		toolProgs := make([]protocol.ToolProgress, 0, len(toolCalls))
 		var genuiContent string
+		iter := a.getActiveIteration(progressKey)
 		for _, tc := range toolCalls {
 			if tc.Name != "" {
 				// Look up UI metadata once per tool name — populates both the
@@ -2441,7 +2459,14 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 					// the frontend cannot filter it from the current iteration's live
 					// rendering (user report: "过去的 generating 状态错误的在最新
 					// 迭代上渲染，直到最新迭代真正的 tool 出现").
-					Iteration: a.getActiveIteration(progressKey),
+					Iteration: iter,
+					// P2/P3′: identity is assigned BEFORE the tool first appears in
+					// any frame and never changes — a generating entry therefore has
+					// a real call_id even though the provider's id arrives in
+					// fragments (or not at all). The provider id travels as a FIELD
+					// (provider_call_id) and is never used as identity.
+					CallID:         a.toolCallID(progressKey, turnID, iter, tc.Index),
+					ProviderCallID: tc.ID,
 				}
 				if ui != nil {
 					tp.UIMode = ui.Mode

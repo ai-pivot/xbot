@@ -441,6 +441,29 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 // when a Run is cancelled, then returns a minimal OutboundMessage so the
 // channel knows processing ended.
 func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
+	// Cancel path completeness (STATE-MODEL C-6 / C-7).
+	//
+	// Cancellation can land mid-iteration, BEFORE snapshotCompletedIteration
+	// ran, so the in-flight iteration would otherwise have no `done` and the
+	// turn would never be closed — the client then keeps rendering a live block
+	// that never commits (contract violation visible to the user as "the
+	// iteration disappeared"). Reconstruct the block from the live progress
+	// snapshot (interrupted tools → failed) and close the turn. Both emissions
+	// are idempotent: the tracker drops a duplicate already sent by the
+	// snapshot path.
+	progressKey := qualifyChatID(msg.Channel, msg.ChatID)
+	cancelTurnID := turnIDFromMetadata(msg.Metadata)
+	if cancelTurnID == 0 {
+		cancelTurnID = a.getActiveTurnID(progressKey)
+	}
+	if block := a.cancelledIterationBlock(progressKey, cancelTurnID); block != nil {
+		a.emitIterationDone(msg.Channel, msg.ChatID, *block)
+	}
+	a.emitTurnFinal(msg.Channel, msg.ChatID, protocol.TurnFinalFrame{
+		TurnID:    cancelTurnID,
+		Cancelled: true,
+	})
+
 	// Persist pending notifications for this session into the interrupted turn.
 	// Ctrl+C should not start a fresh bg-notification turn, but completed work
 	// should remain visible to the next model call as tool observations.
@@ -614,6 +637,21 @@ func (a *Agent) storePendingAskUserOutbound(msg bus.InboundMessage, outbound *ch
 func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession, replyPolicy string) (*channel.OutboundMsg, error) {
 	finalContent := out.Content
 	waitingUser := out.WaitingUser
+
+	// Turn closing frame (STATE-MODEL C-7): exactly ONE `final` per turn,
+	// including EMPTY turns. Emitted before the empty-content early returns —
+	// a turn that produced nothing must still be closed, otherwise the client
+	// has no legal way to stop treating it as running.
+	if !waitingUser {
+		doneTurnID := turnIDFromMetadata(msg.Metadata)
+		if doneTurnID == 0 {
+			doneTurnID = a.getActiveTurnID(qualifyChatID(msg.Channel, msg.ChatID))
+		}
+		a.emitTurnFinal(msg.Channel, msg.ChatID, protocol.TurnFinalFrame{
+			TurnID:  doneTurnID,
+			Content: out.Content,
+		})
+	}
 
 	// If a tool is waiting for user response, send WaitingUser outbound
 	if waitingUser {

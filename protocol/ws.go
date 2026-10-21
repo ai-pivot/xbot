@@ -34,6 +34,13 @@ const (
 	MsgTypeBgTaskOutput    = "bg_task_output"
 	MsgTypeQueueState      = "queue_state"
 	MsgTypeGroupMessage    = "group.message"
+	// MsgTypeDone carries one COMPLETE iteration block (IterationBlock) — one
+	// frame per started iteration, including cancelled/interrupted iterations.
+	// Additive: the legacy progress_structured fields are still sent.
+	MsgTypeDone = "done"
+	// MsgTypeFinal closes a turn (TurnFinalFrame) — exactly one frame per turn,
+	// including empty and cancelled turns.
+	MsgTypeFinal = "final"
 	// MsgTypeStructuredMessage carries a structured message (ask_user/answer/
 	// report/decision/...) to the session. Clients dedupe by Structured.MessageID.
 	MsgTypeStructuredMessage = "structured_message"
@@ -97,9 +104,14 @@ type AskUserResponse struct {
 // WSMessage is the unified server→client WebSocket message envelope.
 // Replaces the former wsMessage (channel/web.go) and wsIncomingMessage (agent/transport_remote.go).
 type WSMessage struct {
-	Type            string             `json:"type"`
-	ID              string             `json:"id,omitempty"`
-	Seq             uint64             `json:"seq,omitempty"`
+	Type string `json:"type"`
+	ID   string `json:"id,omitempty"`
+	Seq  uint64 `json:"seq,omitempty"`
+	// Epoch identifies the server process instance that stamped this frame
+	// (P1 / C-3: every frame carries (epoch, seq, chat_id)). It changes on
+	// restart, which lets clients detect "seq restarted from zero" without
+	// guessing (C-13). Stamped by WebChannel.stampAndBuffer for every SSE frame.
+	Epoch string `json:"epoch,omitempty"`
 	Content         string             `json:"content,omitempty"`
 	OriginalContent string             `json:"original_content,omitempty"`
 	TS              int64              `json:"ts,omitempty"`
@@ -123,6 +135,12 @@ type WSMessage struct {
 	TUIControl      *TUIControlPayload `json:"tui_control,omitempty"`
 	Session         *SessionEvent      `json:"session,omitempty"`
 	QueueState      *QueueStatePayload `json:"queue_state,omitempty"`
+	// Done carries the `done` frame payload (Type == MsgTypeDone): the complete
+	// block of one iteration. Additive frame type — legacy progress fields stay.
+	Done *IterationBlock `json:"done,omitempty"`
+	// Final carries the `final` frame payload (Type == MsgTypeFinal): the turn
+	// closing record. Exactly one per turn.
+	Final *TurnFinalFrame `json:"final,omitempty"`
 	// AskUserResolved (MsgTypeAskUserResolved): the prompt that stopped being
 	// pending. Channel/ChatID identify the session, RequestID is the client's
 	// idempotency key, Reason is "answered" | "cancelled" | "rewound" |
