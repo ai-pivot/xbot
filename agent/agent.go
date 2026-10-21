@@ -3910,6 +3910,13 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			if out != nil {
 				out.Metadata = markCommandReply(out.Metadata)
 			}
+			// 命令是 turn-less 的（这里直接 return，从不进入 Run 循环），而 goal 的
+			// 「干到完为止」续跑只存在于 Run 内部（PreTurnEnd 钩子 → maybeContinueTurn）。
+			// 有 active goal 时执行任何命令（/compress、/settings…）都会把会话留在
+			// idle，用户看到「活儿干到一半就停了」——2026-10-21 用户亲报「压缩后会话
+			// 没自动继续」。把控制权交还给 Run：注入一个 resume turn（与 /continue
+			// 同一机制，空 user 消息，DB 已有锚点）。
+			a.resumeRunAfterCommand(msg.Channel, msg.ChatID, msg.SenderID)
 			return out, nil
 		}
 	}
