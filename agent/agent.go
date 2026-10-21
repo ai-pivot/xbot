@@ -3688,6 +3688,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 						Channel: msg.Channel,
 						ChatID:  msg.ChatID,
 						Content: content,
+						// 兜底也要带回合身份（否则客户端无法把这条错误收尾到本轮）
+						TurnID: a.outboundTurnID(msg.Channel, msg.ChatID, msg.Metadata, 0),
 					}
 				}
 				// Synthetic notification pairs are acknowledged only after their DB
@@ -4874,6 +4876,38 @@ func (a *Agent) persistCommandRow(channel, chatID, role, content string) {
 	}
 }
 
+// outboundTurnID resolves the TurnID of a **turn-scoped** outbound message.
+// ONE implementation for every path that puts a turn-scoped message on the
+// wire — `sendMessage` and the callers that build `channel.OutboundMsg`
+// themselves (cancel ack, final-reply/error fallbacks). Precedence:
+//
+//	① explicit > 0   — the caller already knows the turn (cancel ack's
+//	                   cancelTurnID, card response's turn): authoritative even
+//	                   after the turn ended and activeTurnID was cleared.
+//	② meta["turn_id"] — RunConfig.TurnID, stamped by the normal reply path.
+//	③ getActiveTurnID — callers without either (tool-initiated send mid-turn).
+//	④ command_reply=true ⇒ **always 0**: commands are dispatched without a turn
+//	   (no turn_started / turn_id), so falling back to getActiveTurnID would
+//	   stamp the command output with whatever turn happens to be running — the
+//	   frontend then commits it as that turn's final reply, which the real reply
+//	   overwrites ⇒ command output silently vanishes ("!pwd 没有输出").
+func (a *Agent) outboundTurnID(chName, chatID string, meta map[string]string, explicit uint64) uint64 {
+	if explicit > 0 {
+		return explicit
+	}
+	if meta != nil {
+		if meta["command_reply"] == "true" {
+			return 0
+		}
+		if tidStr := meta["turn_id"]; tidStr != "" {
+			if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
+				return tid
+			}
+		}
+	}
+	return a.getActiveTurnID(qualifyChatID(chName, chatID))
+}
+
 // 通过 directSend 直连或 bus.Outbound 广播。
 func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[string]string) error {
 	key := qualifyChatID(chName, chatID)
@@ -4896,26 +4930,10 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 	}
 
 	// Stamp the TurnID so the frontend can associate this reply with the correct
-	// user message. Prefer the caller-supplied turn_id (authoritative, parsed
-	// from RunConfig.TurnID in handleRunOutput); fall back to getActiveTurnID
-	// for callers that don't pass one (e.g. tool-initiated sends mid-turn).
-	if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
-		if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
-			msg.TurnID = tid
-		}
-	}
-	if msg.TurnID == 0 {
-		// ⚠️ 命令回复（`!cmd` bang / slash 命令）**没有 turn** —— 后端命令分发按设计
-		// 不分配 turn（无 turn_started/turn_id），绝不能回落到 getActiveTurnID：
-		// 否则当该会话里正有 turn 在跑时（例如用户等 agent 输出时插了条 `!pwd`），
-		// 命令输出会被打上那个 turn 的 id，前端 M4 状态机把它当作该 turn 的最终
-		// 回复提交 → 随后被该 turn 的真回复覆盖 → **命令输出静默消失**
-		// （用户报告："!pwd 没有输出"；探针实证：turn 进行中发 !echo 的 text 事件
-		// 带上了 "turn_id":1）。命令回复由 sendCommandReply 打上 command_reply 标记。
-		if msg.Metadata["command_reply"] != "true" {
-			msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
-		}
-	}
+	// user message. The rule lives in ONE place (`outboundTurnID`) so every
+	// turn-scoped outbound path — sendMessage **and** the paths that build a
+	// `channel.OutboundMsg` themselves (cancel ack / fallbacks) — cannot drift.
+	msg.TurnID = a.outboundTurnID(chName, chatID, msg.Metadata, 0)
 
 	isFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
 
