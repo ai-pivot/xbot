@@ -435,6 +435,12 @@ func (s *runState) syncMessages(newMessages []llm.ChatMessage) []llm.ChatMessage
 
 // notifyProgress sends progress notification to the configured callback.
 func (s *runState) notifyProgress(extra string) {
+	// ⛔ 审计确证（be-state-1 §3）：todos 刷新必须在 `autoNotify` 早退**之前** ——
+	//   Web/CLI 的 `autoNotify=false`（engine_wire.go:439-441）⇒ 旧顺序让事后构建的结构化帧
+	//   永远带**旧 todos**（`todo_write` 之后要等下一个迭代边界才更新，长迭代里看起来"完全不更新"）。
+	s.progressMu.Lock()
+	s.refreshStructuredTodos()
+	s.progressMu.Unlock()
 	if !s.autoNotify {
 		return
 	}
@@ -451,7 +457,6 @@ func (s *runState) notifyProgress(extra string) {
 	// execOneTool/updateToolResult* writes race against the locked clone below.
 	// The todo refresh + seq bump + lines copy share ONE critical section.
 	s.progressMu.Lock()
-	s.refreshStructuredTodos()
 	// Increment seq and assign to structuredProgress (unified entry point).
 	if s.structuredProgress != nil && s.cfg.ProgressSeq != nil {
 		s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
