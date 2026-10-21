@@ -556,14 +556,21 @@ func (a *Agent) TodosHydrated(ch, chatID string) bool {
 }
 
 // GetTodos returns the TODO items for the given channel:chatID session.
+//
+// **形状契约（三态，与 `tools.TodoManager.GetTodos` 同源）**：
+//   · 记录存在（含空 = 用户已清空） ⇒ 非 nil（空为 `[]protocol.TodoItem{}`）；
+//   · 记录不存在（未水合/从未写过）   ⇒ **nil**（= "没携带"，前端不得据此清空）。
+// ⛔ 2026-10-21（state-gate-10-6）：旧实现把 `len(items)==0` 折成 `[]`，等于把"无记录"
+//   说成"显式清空"，销毁了下层的三态契约 ⇒ turn_started / `/compress` / 设目标等帧
+//   会显式清空本地面板，随后结构化帧再填回（清单闪空、勾选状态被抹）。
 func (a *Agent) GetTodos(ch, chatID string) []protocol.TodoItem {
 	key := ch + ":" + chatID
 	if a.todoManager == nil {
-		return []protocol.TodoItem{}
+		return nil
 	}
 	items := a.todoManager.GetTodos(key)
-	if len(items) == 0 {
-		return []protocol.TodoItem{}
+	if items == nil {
+		return nil // 无记录 ⇒ nil（与"记录为空"区分开）
 	}
 	result := make([]protocol.TodoItem, len(items))
 	for i, t := range items {
