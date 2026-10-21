@@ -25,35 +25,25 @@ export const MAX_CACHED_SESSIONS = 8
  * container itself (not in each call site), so no access path — including a
  * direct `.set()` — can grow it unbounded.
  */
+/**
+ * 已停用：web 前端 session 缓存全部改为 no-op（用户 2026-10-21「彻底去掉」）。
+ *
+ * 这个基类原本为 lastSeq / lastIteration / lastTurnID / progressGeneration 提供
+ * 按 session 的 LRU 缓存。保留它会带来两类问题：
+ *   1. 缓存跨会话 / 跨 turn 残留 → 界面状态与真实状态不一致；
+ *   2. 刷新即清空 → 同一个操作在「不刷新」与「刷新后」表现不同。
+ * 现在所有子类都不存任何东西，读取一律返回空，调用方自然回退到服务端数据。
+ */
 class BoundedSessionCache<V> extends Map<string, V> {
-  /** Move an existing key to the most-recently-used end (Map = insertion order). */
-  private touch(key: string): void {
-    if (!super.has(key)) return
-    const value = super.get(key) as V
-    super.delete(key)
-    super.set(key, value)
+  override get(_key: string): V | undefined {
+    return undefined
   }
 
-  override get(key: string): V | undefined {
-    const value = super.get(key)
-    if (value !== undefined) this.touch(key)
-    return value
+  override has(_key: string): boolean {
+    return false
   }
 
-  override has(key: string): boolean {
-    const present = super.has(key)
-    if (present) this.touch(key)
-    return present
-  }
-
-  override set(key: string, value: V): this {
-    if (super.has(key)) super.delete(key)
-    super.set(key, value)
-    while (super.size > MAX_CACHED_SESSIONS) {
-      const oldest = super.keys().next().value
-      if (oldest === undefined) break
-      super.delete(oldest)
-    }
+  override set(_key: string, _value: V): this {
     return this
   }
 }
@@ -85,7 +75,14 @@ class ProgressSnapshotCache extends BoundedSessionCache<ProgressEvent> {
 }
 
 /** Last SSE sequence processed for each channel-qualified session. */
-export const lastSeqCache = new BoundedSessionCache<number>()
+/**
+ * SSE 协议游标（**不是** UI 缓存，必须保留）：重连时靠它跳过已经处理过的事件。
+ *
+ * 与其它缓存不同，它不参与「界面状态」——删掉会导致每个重连周期重复处理
+ * ring buffer 里的事件。仍然是按会话 keyed 的普通 Map，但由 `resetLastSeq`
+ * 在会话切换 / 序号回滚时清空。
+ */
+export const lastSeqCache = new Map<string, number>()
 /** Last progress_structured iteration seen for each channel-qualified session.
  *  Used to detect "gap crosses an iteration boundary" — if a seq gap spans a
  *  change in iteration id, an iteration's completion delta may have been lost
@@ -119,43 +116,18 @@ interface StoredSessionTree {
 }
 
 export function loadSessionTreeCache(): StoredSessionTree | null {
+  // 已停用（用户 2026-10-21「彻底去掉」）：不再从 localStorage 恢复会话树。
+  // 顺手清掉历史版本写下的残留，避免旧数据继续影响首屏。
   try {
-    const raw = localStorage.getItem(SESSION_TREE_CACHE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<StoredSessionTree>
-    if (parsed.version !== 1 || !Array.isArray(parsed.sessions) || !Array.isArray(parsed.subAgents)) {
-      return null
-    }
-    // Strip volatile live state: the cache exists for first-paint structure
-    // (labels, ordering, unread), NOT for running/busy state. Restoring a cached
-    // `running: true` makes idle sessions show busy after a page reload until
-    // the first session-tree refresh completes — and if that refresh fails
-    // (network error), the stale busy persists with nothing to correct it
-    // (user report: "明明 idle 却显示 busy"). The refresh restores live state
-    // from the server (running / waiting_input).
-    const stripVolatile = (nodes: SessionInfo[]): SessionInfo[] =>
-      nodes.map((n) => {
-        const children = n.children?.length ? stripVolatile(n.children) : n.children
-        const volatile = n.running === true || n.status === 'running' || n.status === 'pending' || n.status === 'waiting_input'
-        return volatile ? { ...n, running: false, status: 'idle', children } : { ...n, children }
-      })
-    return {
-      version: 1,
-      sessions: stripVolatile(parsed.sessions),
-      subAgents: stripVolatile(parsed.subAgents),
-    }
+    localStorage.removeItem(SESSION_TREE_CACHE_KEY)
   } catch {
-    return null
+    /* storage 不可用时忽略 */
   }
+  return null
 }
 
-export function saveSessionTreeCache(sessions: SessionInfo[], subAgents: SessionInfo[]): void {
-  const value: StoredSessionTree = { version: 1, sessions, subAgents }
-  try {
-    localStorage.setItem(SESSION_TREE_CACHE_KEY, JSON.stringify(value))
-  } catch {
-    // Storage may be unavailable or full; the in-memory state remains authoritative.
-  }
+export function saveSessionTreeCache(_sessions: SessionInfo[], _subAgents: SessionInfo[]): void {
+  // 已停用：不再写入 localStorage（会话树每次从服务端拉取）。
 }
 
 export function getLastSeq(cacheKey: string): number {
