@@ -466,6 +466,10 @@ func TestResolveRemoteMainBranch_PicksNewestMultiRemote(t *testing.T) {
 	workDir := t.TempDir()
 	run(workDir, "git", "clone", upstreamDir, ".")
 	_ = os.RemoveAll(filepath.Join(workDir, ".git", "hooks"))
+	// ⛔ 不依赖本机 `init.defaultBranch`：git ≥ 2.28 在未配置时可能默认 `main`，
+	//   那样 `git push origin master` 会报 `src refspec master does not match any`
+	//   （实测本机即如此 ⇒ 本用例长期假红）。显式把 HEAD 指到 master 再提交。
+	run(workDir, "git", "symbolic-ref", "HEAD", "refs/heads/master")
 	run(workDir, "git", "commit", "--allow-empty", "-m", "init")
 	run(workDir, "git", "push", "origin", "master")
 	// Set HEAD so symbolic-ref works
