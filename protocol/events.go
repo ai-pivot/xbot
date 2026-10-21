@@ -126,8 +126,12 @@ type ProgressEvent struct {
 	ChatID         string            `json:"chat_id,omitempty"`
 	Seq            uint64            `json:"seq,omitempty"`
 	Phase          string            `json:"phase,omitempty"`
-	ActiveTools    []ToolProgress    `json:"active_tools,omitempty"`
-	CompletedTools []ToolProgress    `json:"completed_tools,omitempty"`
+	// ⛔ 审计确证（state-gate-8-1）：`omitempty` 会把**空 slice** 也省掉 ⇒ 之前"恒发非 nil
+	//   （空即 `[]`）"的修法**完全无效**（`make([]T,0,n)` + `omitempty` = 键消失）。
+	//   这两条是"当前有没有工具"的唯一表达 ⇒ 必须能表达"显式空"（否则客户端只能沿用上一帧，
+	//   同一迭代内 promote/取消后 pill 不收口）。
+	ActiveTools    []ToolProgress    `json:"active_tools"`
+	CompletedTools []ToolProgress    `json:"completed_tools"`
 	SubAgents      []SubAgentInfo    `json:"sub_agents,omitempty"`
 	Todos          []TodoItem        `json:"todos"`
 	Goal           *GoalInfo         `json:"goal,omitempty"`
