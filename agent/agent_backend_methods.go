@@ -231,6 +231,12 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	// via RPC since the snapshot was last refreshed by refreshStructuredTodos).
 	if a.goalManager != nil {
 		result.Goal = a.goalManager.GoalInfo(key)
+		if result.Goal == nil {
+			// ⛔ F16：`Goal` 是 `omitempty`，而"用户已删除目标"与"从来没设过"在快照里
+			//   无法区分 ⇒ 清除只由一次性事件承载，事件丢失后横幅永远清不掉。
+			//   这里回填**墓碑**（`{objective:"", status:"cleared"}`），客户端三态据此清除。
+			result.Goal = a.goalManager.Tombstone(key)
+		}
 	}
 
 	// Agent sessions: correct Phase from authoritative running state.

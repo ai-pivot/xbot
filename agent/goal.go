@@ -41,13 +41,21 @@ type GoalManager struct {
 	mu     sync.RWMutex
 	goals  map[string]*Goal // key: sessionKey ("channel:chatID")
 	loaded map[string]bool  // tracks which sessions have been loaded from file (avoids repeated file reads)
+	// cleared 是"用户已删除目标"的**墓碑**（仅内存）。
+	//
+	// ⛔ 审计确证（F16）：`Clear` 只是删表项，`GoalInfo` 返回 nil，而 `Goal` 在协议里是
+	// `omitempty` ⇒ 权威快照里"没有 goal"**无法表达"已被清除"**。客户端三态语义是
+	// 「字段缺失 = 不动 / null = 显式清除」⇒ 清除只存在于一次性事件：事件丢失（断线/切会话/
+	// 冷启动）后，另一台设备（或本机重载）的横幅**永远清不掉**。墓碑让快照也能表达"已清除"。
+	cleared map[string]bool
 }
 
 // NewGoalManager creates a new GoalManager.
 func NewGoalManager() *GoalManager {
 	return &GoalManager{
-		goals:  make(map[string]*Goal),
-		loaded: make(map[string]bool),
+		goals:   make(map[string]*Goal),
+		loaded:  make(map[string]bool),
+		cleared: make(map[string]bool),
 	}
 }
 
@@ -113,6 +121,7 @@ func (gm *GoalManager) LoadFromFile(sessionKey string) error {
 // Set creates or replaces the goal for the given session.
 func (gm *GoalManager) Set(sessionKey, objective string) {
 	gm.mu.Lock()
+	delete(gm.cleared, sessionKey)   // 重新设目标 ⇒ 墓碑作废
 	gm.goals[sessionKey] = &Goal{
 		Objective: objective,
 		Status:    GoalActive,
@@ -216,10 +225,25 @@ func (gm *GoalManager) GoalInfo(sessionKey string) *protocol.GoalInfo {
 	}
 }
 
+// Tombstone 返回"用户已清除目标"的显式标记；没有墓碑时返回 nil。
+//
+// ⛔ F16：快照（`GetActiveProgress`）用它把"已清除"表达成
+// `{objective:"", status:"cleared"}`，客户端据此清空横幅（而不是把"缺失"当"不动"）。
+func (gm *GoalManager) Tombstone(sessionKey string) *protocol.GoalInfo {
+	gm.mu.RLock()
+	ok := gm.cleared[sessionKey]
+	gm.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return &protocol.GoalInfo{Objective: "", Status: protocol.GoalStatusCleared}
+}
+
 // Clear removes the goal for the given session.
 func (gm *GoalManager) Clear(sessionKey string) {
 	gm.mu.Lock()
 	delete(gm.goals, sessionKey)
+	gm.cleared[sessionKey] = true   // F16：留下墓碑，让权威快照也能表达"已清除"
 	gm.mu.Unlock()
 	_ = gm.SaveToFile(sessionKey) // deletes file
 }
