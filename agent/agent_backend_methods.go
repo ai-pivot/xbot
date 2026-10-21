@@ -227,6 +227,24 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	}
 	snapshot := v.(*protocol.ProgressEvent)
 	result := *snapshot
+	// ⛔ 审计确证（state-gate-6 C2「busy 棘轮」）：快照的删除发生在回合收尾，而读取可能
+	//   **抓在删除前、送达在删除后**（send-ack-sync / 回前台 / gap 重载）⇒ 一张**已结束**的
+	//   快照会被当成 active 返回 ⇒ 客户端把已结束的 turn 复活成 live，`hasLiveTurn` 恒 true
+	//   ⇒ busy 永远关不掉（看门狗认为"有 live"不动、探针的权威 idle 也被闸门挡）。
+	//   ⇒ 一条服务端规则：快照的 turn **必须仍是当前 turn** 才可作为 active 返回；
+	//   否则降级为 `done`（保留 todos/goal/iteration_history 供客户端水合，但不声明"在跑"）。
+	// ⚠️ 只在**存在会话运行态**时判定（没有运行态 = 从没跑过/已彻底清理，快照可能是测试
+	//   或冷启动水合数据，不能据此降级）。
+	_, hasRunState := a.bgSessionStates.Load(key)
+	if cur := a.getActiveTurnID(key); hasRunState && snapshot.TurnID != 0 && cur != snapshot.TurnID {
+		result.Phase = "done"
+		result.ActiveTools = nil
+		result.StreamingTools = nil
+		result.StreamContent = ""
+		result.StreamDelta = ""
+		result.ReasoningStreamContent = ""
+		result.ReasoningStreamDelta = ""
+	}
 
 	// Merge live stream state (updated by stream callbacks between structured events).
 	// This is the pull-model replacement for stream event push — the client reads
