@@ -203,6 +203,12 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 			// Also include goal so the frontend can display it on idle sessions.
 			if a.goalManager != nil {
 				snap.Goal = a.goalManager.GoalInfo(key)
+				if snap.Goal == nil {
+					// ⛔ 审计确证（C5）：无快照分支此前**不注入墓碑**（有快照分支却注入）⇒
+					//   "已清除的目标"在回合结束后又变成"未携带" ⇒ 客户端保留旧值 ⇒
+					//   删掉的目标横幅一直显示。两支必须同语义。
+					snap.Goal = a.goalManager.Tombstone(key)
+				}
 			}
 			return snap
 		}

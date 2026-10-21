@@ -4807,7 +4807,19 @@ func (a *Agent) emitGoalProgress(chName, chatID string) {
 		})
 	}
 	// Update snapshot so GetActiveProgress also returns the goal.
-	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
+	// ⛔ 审计确证（state-final-10 C4）：这里此前**整对象替换**权威快照 —— 与 todos/clear_goal
+	//   已修的两处不同源。后果：①在飞时设目标 ⇒ 快照退化成 `phase:"" / iteration:0`
+	//   （丢 active_tools/iteration_history/流式内容）；②**空闲时**设目标会凭空造出一个
+	//   `phase:""` 的空快照 ⇒ 客户端探针把空 phase 当"有在飞"、本地却 idle ⇒ 每次回前台都
+	//   白拉一次全量 history。⇒ 与 todos 同款：字段级更新，无快照不写。
+	goalVal2 := payload.Goal
+	todosVal2 := payload.Todos
+	a.updateSnapshotFields(progressKey, func(p *protocol.ProgressEvent) {
+		p.Goal = goalVal2
+		if todosVal2 != nil {
+			p.Todos = todosVal2
+		}
+	})
 }
 
 // emitBuiltinProgressDone sends a PhaseDone progress event and cleans up the snapshot.
