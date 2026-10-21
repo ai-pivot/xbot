@@ -499,7 +499,12 @@ func (a *Agent) buildMainRunConfig(
 		if a.channelFinder != nil {
 			// ⛔ per-session 持久 seq（不是 per-Run 局部变量）：resume 后新 run 的
 			//    seq 必须继续高于客户端水位，否则事件会被误判"重放"丢弃。
-			progressSeq := a.progressSeqFor(cfg.SessionKey)
+			// ⛔ 审计确证（state-gate-8-5 C1）：结构化帧此前用 `cfg.SessionKey` 取计数器，而
+			//   轻帧（`emitTodosProgress`/`ClearGoal`/`emitGoalProgress`）用
+			//   `qualifyChatID(ch, chatID)` ⇒ 同一 chat 的 `Seq` 由**两个独立计数器**盖戳 ⇒
+			//   客户端的水位判断（轻帧水位、`lastSeq` 陈旧判定）会失效（误丢新帧 / 误收旧帧）。
+			//   ⇒ 统一到 `qualifyChatID`（与所有会话级发射点同一个键 = 同一个计数器）。
+			progressSeq := a.progressSeqFor(qualifyChatID(channel, chatID))
 			cfg.ProgressSeq = progressSeq
 			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc, cfg.ResetStreamTiming = a.buildStreamCallbacks(chatID, channel, progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
 		}
