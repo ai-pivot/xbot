@@ -387,7 +387,11 @@ func (s *runState) refreshStructuredTodos() {
 	s.structuredProgress.Todos = todos
 	// Also inject goal state so the frontend can display/modify the active goal.
 	if s.cfg.GoalManager != nil {
-		s.structuredProgress.Goal = s.cfg.GoalManager.GoalInfo(s.todoKey())   // D4: 与 todos 同键（跨渠道浏览时 sessionKey 会被改成 physical channel ⇒ goal 恒空）
+		s.structuredProgress.Goal = s.cfg.GoalManager.GoalInfo(s.todoKey())
+	if s.structuredProgress.Goal == nil {
+		// ⛔ be-state-1：无 goal 时写 nil ⇒ 结构化帧没有 goal 键 ⇒ 客户端学不到"已清除"。
+		s.structuredProgress.Goal = s.cfg.GoalManager.Tombstone(s.todoKey())
+	}   // D4: 与 todos 同键（跨渠道浏览时 sessionKey 会被改成 physical channel ⇒ goal 恒空）
 	}
 }
 

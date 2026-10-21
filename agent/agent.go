@@ -4699,6 +4699,11 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	var turnGoal *protocol.GoalInfo
 	if a.goalManager != nil {
 		turnGoal = a.goalManager.GoalInfo(progressKey)
+		if turnGoal == nil {
+			// ⛔ 审计确证（be-state-1 §1）：清除后 `GoalInfo` 为 nil 且 `Goal` 是 omitempty
+			//   ⇒ 该帧**没有 goal 键**，客户端无法从这条帧得知"已清除"（墓碑此前只在 pull 注入）。
+			turnGoal = a.goalManager.Tombstone(progressKey)
+		}
 	}
 	payload := &protocol.ProgressEvent{
 		ChatID:     progressKey,
