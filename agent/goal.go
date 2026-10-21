@@ -21,6 +21,9 @@ type GoalStatus string
 const (
 	GoalActive    GoalStatus = "active"
 	GoalCompleted GoalStatus = "completed"
+	// GoalCleared 是**墓碑**状态：只用于持久化"用户已清除"，重启后据此恢复内存墓碑
+	// （否则 `Goal` 的 `omitempty` 会把"已清除"退化成"未携带"⇒ 已删目标的横幅重新出现）。
+	GoalCleared GoalStatus = "cleared"
 )
 
 // Goal represents a persistent objective for a session.
@@ -77,7 +80,19 @@ func (gm *GoalManager) SaveToFile(sessionKey string) error {
 	g, ok := gm.goals[sessionKey]
 	gm.mu.RUnlock()
 	if !ok || g == nil {
-		// No goal — remove file if it exists
+		// ⛔ 审计确证（state-gate-8-10）：清除时此前**删文件** ⇒ 重启后内存墓碑丢失 ⇒
+		//   "已清除"退化成"未携带" ⇒ 已删目标的横幅重新出现。⇒ 有墓碑时**落盘墓碑**。
+		gm.mu.RLock()
+		cleared := gm.cleared[sessionKey]
+		gm.mu.RUnlock()
+		if cleared {
+			tomb := Goal{Objective: "", Status: GoalCleared, CreatedAt: time.Now()}
+			if data, err := json.Marshal(tomb); err == nil {
+				dir := goalDir()
+				_ = os.MkdirAll(dir, 0o755)
+				return os.WriteFile(goalFilePath(sessionKey), data, 0o644)
+			}
+		}
 		_ = os.Remove(goalFilePath(sessionKey))
 		return nil
 	}
@@ -179,7 +194,15 @@ func (gm *GoalManager) loadFromFileLocked(sessionKey string) {
 		return // file doesn't exist or error — leave map empty
 	}
 	var g Goal
-	if json.Unmarshal(data, &g) != nil || g.Objective == "" {
+	if json.Unmarshal(data, &g) != nil {
+		return
+	}
+	// 墓碑：只恢复"已清除"这个事实，不建 goal（`Objective` 为空是墓碑的常态）。
+	if g.Status == GoalCleared {
+		gm.cleared[sessionKey] = true
+		return
+	}
+	if g.Objective == "" {
 		return
 	}
 	gm.goals[sessionKey] = &g
