@@ -2385,7 +2385,11 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		// 当前 goal（如有 active goal 则注入）
 		var goalInfo *protocol.GoalInfo
 		if s.cfg.GoalManager != nil {
-			goalInfo = s.cfg.GoalManager.GoalInfo(s.sessionKey)
+			// ⛔ 审计确证（be-state-1 §3）：goal 的 key 有**三个来源**（`ch:chatID` / `todoKey()`
+			//   = RootSessionKey / `s.sessionKey`）。跨渠道浏览时 `sessionKey` 会被改成
+			//   physical channel（engine_wire.go:336-344）⇒ 系统提醒里读不到 goal（模型重复问目标）。
+			//   ⇒ 与结构化快照同源，统一用 `s.todoKey()`。
+			goalInfo = s.cfg.GoalManager.GoalInfo(s.todoKey())
 		}
 
 		// Get current CWD for system reminder
