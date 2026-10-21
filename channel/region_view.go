@@ -214,6 +214,11 @@ func MapIterationRecord(rec sqlite.IterationRecord, foldTools bool) HistoryItera
 	var tools []protocol.ToolProgress
 	folded := false
 	if len(snaps) > 0 {
+		// ⛔ 2026-10-21（用户：折叠只在"很多工具"时触发，web `PILL_INLINE_MAX = 8`）：
+		//   旧实现 `foldTools && t.UIMode == ""` 对**1 枚工具**也抹掉 summary/args/detail/
+		//   tool_hints 并打 `tools_folded=true`（真机录制实测 71/79 条 folded）⇒ 客户端每一组
+		//   都只能看"摘要"，详情一律要再请求。对齐 web：**只有超过阈值才折叠**。
+		doFold := foldTools && len(snaps) > 8
 		tools = make([]protocol.ToolProgress, len(snaps))
 		for i, t := range snaps {
 			label := t.Label
@@ -234,7 +239,7 @@ func MapIterationRecord(rec sqlite.IterationRecord, foldTools bool) HistoryItera
 				UILibs:    t.UILibs,
 				UISurface: t.UISurface,
 			}
-			if foldTools && t.UIMode == "" {
+			if doFold && t.UIMode == "" {
 				// 折叠：省略详情大字段（ToolHints 也在其中 —— 全字段已映射进 tp，
 				// 这里显式置空把「折叠轻字段语义」固化在此处；detail 端点
 				// foldTools=false 全量取回）。
