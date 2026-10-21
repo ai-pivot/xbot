@@ -1984,6 +1984,11 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 		HistoryCompacted: s.HistoryCompacted, CWD: s.CWD,
 		TurnID: s.TurnID,
 	}
+	// ⛔ 审计确证（be-state-1 §1）：这两个字段 `omitempty`，nil 时**键消失** ⇒ "没有工具"
+	//   与"未携带"无法区分；同一迭代内工具被清空（promote/取消）时客户端只能等迭代推进。
+	//   ⇒ 恒发**非 nil**（空即 `[]` = 显式"无工具"），与 `todos` 的契约一致。
+	payload.ActiveTools = make([]protocol.ToolProgress, 0, len(s.ActiveTools))
+	payload.CompletedTools = make([]protocol.ToolProgress, 0, len(s.CompletedTools))
 	for _, t := range s.ActiveTools {
 		payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
 			Name: t.Name, Label: t.Label, Status: string(t.Status),
