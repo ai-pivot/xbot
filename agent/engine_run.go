@@ -140,6 +140,14 @@ type runState struct {
 	iterationSnapshots []IterationSnapshot
 	progressFinalizer  func()
 	compressWarning    string
+	// toolCallID returns the STABLE server-assigned identity of the tool at
+	// (iteration, index), matching the id the streaming phase already published
+	// (STATE-MODEL P2/P3′). nil = fall back to the provider id.
+	toolCallID func(iteration, index int, providerID string) string
+	// runCtx is the Run's context. Kept so iteration snapshots can tell a
+	// cancelled iteration from a normal one (interrupted tools become `failed`
+	// in the committed block — contract C-6).
+	runCtx context.Context
 
 	// Iteration-loop detection: records the content+tool_calls "signature" of
 	// the previous iteration. When two consecutive iterations produce the
@@ -216,6 +224,7 @@ func newRunState(cfg RunConfig) *runState {
 		persistence:              NewPersistenceBridgeWithTurnID(cfg.Session, len(messages), cfg.TurnID),
 		tokenTracker:             NewTokenTracker(cfg.LastPromptTokens, cfg.LastCompletionTokens),
 		loopDetectionEnabled:     cfg.IterationLoopDetection,
+		toolCallID:               cfg.ToolCallID,
 	}
 	if cfg.ContextEditor != nil {
 		cfg.ContextEditor.BindSession(cfg.Session)

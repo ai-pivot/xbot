@@ -304,15 +304,22 @@ func TestSSEIsolatesChannelsWithTheSameChatID(t *testing.T) {
 	wc.hub.sendToSession("cli", "web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "foreign cli"})
 	wc.hub.sendToSession("web", "web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "web event"})
 
-	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 1)
+	// 同一 chatID 挂在两条 route 上：**帧不串台**（隔离本意不变），但序号来自
+	// **同一个 per-chat 计数器**（STATE-MODEL C-1：同一 chat 无论几条 route 都共用一个
+	// 计数器，不许回退/重号）。此前每条 route 各自从 1 开始编号 ⇒ 客户端拿到重号会把
+	// 新状态当迟到帧丢弃。
+	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 2)
 	if msg.Content != "web event" {
 		t.Fatalf("cross-channel SSE event leaked: %#v", msg)
 	}
 	if got := wc.getEventStream(sessionRouteKey("cli", "web-1")).lastSeq(); got != 1 {
 		t.Fatalf("CLI stream seq = %d, want 1", got)
 	}
-	if got := wc.getEventStream(sessionRouteKey("web", "web-1")).lastSeq(); got != 1 {
-		t.Fatalf("Web stream seq = %d, want 1", got)
+	if got := wc.getEventStream(sessionRouteKey("web", "web-1")).lastSeq(); got != 2 {
+		t.Fatalf("Web stream seq = %d, want 2 (shared per-chat counter)", got)
+	}
+	if got := wc.chatSeqFor("web-1").get(); got != 2 {
+		t.Fatalf("per-chat counter = %d, want 2", got)
 	}
 }
 

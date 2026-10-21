@@ -412,6 +412,17 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetActiveProgressFolded(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
 	}
+	// 状态机权威读取（STATE-MODEL §2.4/§3.5）：按对象拉权威，替代帧重放。
+	// 三个端点共用同一批只读访问器；属主校验在 web 层（resolveAPISession）。
+	callbacks.IterationBlock = func(channel, chatID string, turnID uint64, iteration int) (*protocol.IterationBlock, error) {
+		return ag.IterationBlock(channel, chatID, turnID, iteration)
+	}
+	callbacks.TurnSnapshot = func(channel, chatID string, turnID uint64) (*protocol.TurnSnapshot, error) {
+		return ag.TurnSnapshot(channel, chatID, turnID)
+	}
+	callbacks.SessionState = func(channel, chatID string) (*protocol.SessionStateSnapshot, error) {
+		return ag.SessionState(channel, chatID)
+	}
 	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetPendingAskUser(channel, chatID)
 	}
@@ -2366,7 +2377,7 @@ func legacySyntheticPairRepair(svc *sqlite.SessionService, tenantID int64, turnI
 //
 // 区域原子：切分按**区域覆盖的迭代个数之和**取下标（与 channel.RegionWindow 同一
 // 手法），任何输入下都严格落在区域边界上 —— 绝不从折叠工具组中间切开。
-// 段内迭代为**轻字段形态**（MapIterationRecord(rec, true)，ToolsFolded 标记），
+// 段内迭代为**轻字段形态**（MapIterationRecord(rec, channel.FoldToolsForRecord(rec))，ToolsFolded 标记），
 // 详情由 /api/iteration_detail 按需补齐。
 //
 // regionLimit <= 0 ⇒ DefaultHistoryRegionRequest；> MaxHistoryRegionRequest ⇒ 钳到上限。
@@ -2396,7 +2407,7 @@ func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]pro
 func foldHistoryIterations(recs []sqlite.IterationRecord) []protocol.HistoryIteration {
 	out := make([]protocol.HistoryIteration, 0, len(recs))
 	for _, rec := range recs {
-		out = append(out, channel.MapIterationRecord(rec, true))
+		out = append(out, channel.MapIterationRecord(rec, channel.FoldToolsForRecord(rec)))
 	}
 	return out
 }

@@ -127,6 +127,10 @@ type ToolProgress struct {
 	// protocol.ToolProgress (wire) so the frontend can correlate a running
 	// tool card with server-side execution state (promote-to-background RPC).
 	CallID string
+	// ProviderCallID is the model provider's own tool_call id. It is a FIELD,
+	// never an identity: the server-assigned CallID exists before the tool first
+	// appears in any frame and never changes (STATE-MODEL P2/P3′).
+	ProviderCallID string
 }
 
 // ToolStatus 工具执行状态。

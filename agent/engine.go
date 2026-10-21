@@ -337,6 +337,20 @@ type RunConfig struct {
 	// structured event), and keeps rendering the previous iteration's content.
 	OnIterationChange func(iteration int)
 
+	// ToolCallID assigns the STABLE server-side identity of a tool call before
+	// it first appears in any frame (STATE-MODEL P2/P3′, contract C-8):
+	// (iteration, tool index) → opaque id. Identity must never be the provider
+	// id (it arrives late / in fragments); the provider id is carried as
+	// ToolProgress.ProviderCallID instead. nil = leave CallID empty (tests,
+	// internal one-shot runs that never publish frames).
+	ToolCallID func(iteration, index int, providerID string) string
+
+	// OnIterationDone is called with the COMPLETE block of every finished
+	// iteration (before the run continues), exactly once per iteration. The
+	// agent uses it to publish the `done` frame (STATE-MODEL §3.3 / C-6).
+	// nil = do not publish turn-level frames.
+	OnIterationDone func(block protocol.IterationBlock)
+
 	// ResetStreamTiming resets the live stream stats timing baseline
 	// (requestStartAt / firstChunkAt / samples) right before EACH LLM request
 	// is sent (callLLM: primary call + post-compression retry). The live TTFT
@@ -531,6 +545,13 @@ type IterationToolSnapshot struct {
 	// metadata, or plugin hints) so the web frontend can render a fancy diff
 	// for committed iterations too, not just live progress.
 	ToolHints string `json:"tool_hints,omitempty"`
+	// CallID is the SERVER-assigned stable tool identity (STATE-MODEL P2/P3′),
+	// identical to the id the live progress carried. Persisted so a committed
+	// iteration and its live pill share one key (clients key tool rows by it).
+	CallID string `json:"call_id,omitempty"`
+	// ProviderCallID is the model provider's own tool_call id (a FIELD, never
+	// an identity) — kept for diagnostics and for provider-side correlation.
+	ProviderCallID string `json:"provider_call_id,omitempty"`
 }
 
 // readArgsHasOffsetOrLimit checks whether a Read tool call's JSON arguments contain
@@ -604,6 +625,7 @@ func generateResponse(ctx context.Context, client llm.LLM, model string, message
 //   - SubAgent: ToolExecutor=simpleExecutor, ProgressNotifier=nil, ContextManager=independent_phase1, ...
 func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	s := newRunState(cfg)
+	s.runCtx = ctx
 	// Mark the run as done on EVERY return path — background-subagent progress
 	// callbacks outlive the Run and check this flag to stop broadcasting into
 	// the main session's progress stream after the turn ended (see execOneTool).

@@ -555,7 +555,19 @@ type Agent struct {
 	// （用户症状：迭代不再更新 / 内容回退）。改为 per-session 持久计数器，
 	// 首次以 UnixMilli 播种（跨进程重启也单调），此后只增不减。
 	// key: "channel:chatID" -> *atomic.Uint64
+	// progressSeq sync.Map
 	progressSeq sync.Map
+
+	// toolIDs assigns the STABLE server-side call id of every tool call before
+	// it first appears in any frame (STATE-MODEL P2 / P3′ / C-8). Tool identity
+	// is never the provider's id (which arrives late / in fragments) — that one
+	// travels as protocol.ToolProgress.ProviderCallID.
+	toolIDs *toolIdentity
+
+	// turnFrames enforces "exactly one done per iteration, exactly one final per
+	// turn" (STATE-MODEL C-6 / C-7). Every exit path reports through it; duplicate
+	// reports are dropped instead of double-sent.
+	turnFrames *turnFrameTracker
 
 	// interactiveSubAgents stores interactive SubAgent sessions
 	// key: "channel:chatID/roleName" -> *interactiveAgent
@@ -2264,6 +2276,8 @@ func New(cfg Config) (*Agent, error) {
 		maxConcurrency:         cfg.MaxConcurrency,
 		deltaPush:              cfg.DeltaPush,
 		iterationLoopDetection: cfg.IterationLoopDetection,
+		toolIDs:                newToolIdentity(),
+		turnFrames:             newTurnFrameTracker(),
 
 		skills:             skillStore,
 		agents:             agentStore,
@@ -3896,6 +3910,13 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			if out != nil {
 				out.Metadata = markCommandReply(out.Metadata)
 			}
+			// 命令是 turn-less 的（这里直接 return，从不进入 Run 循环），而 goal 的
+			// 「干到完为止」续跑只存在于 Run 内部（PreTurnEnd 钩子 → maybeContinueTurn）。
+			// 有 active goal 时执行任何命令（/compress、/settings…）都会把会话留在
+			// idle，用户看到「活儿干到一半就停了」——2026-10-21 用户亲报「压缩后会话
+			// 没自动继续」。把控制权交还给 Run：注入一个 resume turn（与 /continue
+			// 同一机制，空 user 消息，DB 已有锚点）。
+			a.resumeRunAfterCommand(msg.Channel, msg.ChatID, msg.SenderID)
 			return out, nil
 		}
 	}

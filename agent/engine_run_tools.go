@@ -51,15 +51,35 @@ func (s *runState) initToolProgress(response *llm.LLMResponse, iteration int) *t
 		// earlier in this iteration (e.g. first batch of WebSearch done, second batch started).
 		// Clearing them causes completed tools to flicker/disappear in the CLI progress panel.
 		for j, tc := range response.ToolCalls {
+			// Stable identity (P2/P3′): the id assigned while the arguments were
+			// still generating is reused here, so the pill keeps ONE identity
+			// across generating → pending → running → done. Only when nothing was
+			// published during generation (non-streaming call) do we fall back to
+			// the provider's id.
+			callID := tc.ID
+			if s.toolCallID != nil {
+				if id := s.toolCallID(iteration, j, tc.ID); id != "" {
+					callID = id
+					if tc.ID != "" && id != tc.ID {
+						// Promote-to-background looks the running shell up by the
+						// call_id the UI shows. The shell registry is keyed by the
+						// provider id, so register the alias — otherwise promotion
+						// of a tool that started without a provider id would miss.
+						tools.RegisterCallAlias(id, tc.ID)
+					}
+				}
+			}
 			s.structuredProgress.ActiveTools[j] = ToolProgress{
 				Name:      tc.Name,
 				Label:     formatToolProgress(tc.Name, tc.Arguments),
 				Status:    ToolPending,
 				Iteration: iteration,
 				Args:      tc.Arguments,
-				// CallID: stable per-call identity — the web promote-to-background
-				// RPC targets the exact running tool card by (session, call_id).
-				CallID: tc.ID,
+				// CallID: stable server-assigned identity — the web promote-to-
+				// background RPC targets the exact running tool card by
+				// (session, call_id), and clients key tool rows by it.
+				CallID:         callID,
+				ProviderCallID: tc.ID,
 			}
 		}
 	}
@@ -517,17 +537,19 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 		}
 		for j, t := range s.structuredProgress.CompletedTools {
 			snap.Tools[j] = IterationToolSnapshot{
-				Name:      t.Name,
-				Label:     t.Label,
-				Status:    string(t.Status),
-				ElapsedMS: t.Elapsed.Milliseconds(),
-				Summary:   t.Summary,
-				Args:      t.Args,
-				Detail:    t.Detail,
-				UIMode:    t.UIMode,
-				UILibs:    t.UILibs,
-				UISurface: t.UISurface,
-				ToolHints: t.ToolHints,
+				Name:           t.Name,
+				Label:          t.Label,
+				Status:         string(t.Status),
+				ElapsedMS:      t.Elapsed.Milliseconds(),
+				Summary:        t.Summary,
+				Args:           t.Args,
+				Detail:         t.Detail,
+				UIMode:         t.UIMode,
+				UILibs:         t.UILibs,
+				UISurface:      t.UISurface,
+				ToolHints:      t.ToolHints,
+				CallID:         t.CallID,
+				ProviderCallID: t.ProviderCallID,
 			}
 		}
 		s.iterationSnapshots = append(s.iterationSnapshots, snap)
@@ -541,6 +563,15 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 		// No dependency on IncrementalPersist or message_id — the record is
 		// linked by turn_id (queried by turn_id on read).
 		s.writeIterationHistory(iteration, snap)
+
+		// Publish the iteration's `done` frame (STATE-MODEL §3.3 / C-6): ONE
+		// complete block per started iteration. The agent-side tracker drops
+		// duplicates, so this path may report unconditionally even when the
+		// cancel path already filled the block in.
+		if s.cfg.OnIterationDone != nil {
+			cancelled := s.runCtx != nil && s.runCtx.Err() != nil
+			s.cfg.OnIterationDone(iterationBlockFromSnapshot(s.cfg.TurnID, snap, cancelled))
+		}
 	}
 	if s.autoNotify && s.batchProgressByIteration {
 		s.notifyProgress("")
