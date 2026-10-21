@@ -198,9 +198,60 @@ func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, 
 			return nil, fmt.Errorf("enable foreign keys: %w", err)
 		}
 	}
+	enablePersistWAL(conn)
 	db := &DB{conn: conn, path: path}
 	db.logWALState("open")
 	return db, nil
+}
+
+// enablePersistWAL 对本进程连接池里的**每一个物理连接**打开
+// SQLITE_FCNTL_PERSIST_WAL，让连接关闭时不再 unlink 掉 -wal 文件。
+//
+// 2026-10-21 事故（硬证据）：serve 进程持有 xbot.db-wal 的 fd 期间，另一个短命
+// 进程（python 脚本 / xbot-cli 一次性命令）打开了同一主库并正常关闭。SQLite 的
+// 语义是「最后一个连接关闭时 checkpoint + unlink -wal」——那个短命进程看不到
+// serve 的连接（它的 -shm 视角里 nRef==0），于是它删了 WAL。结果是 serve 之后
+// 一直往**已删除的 inode** 追加（实测 4.3MB 且持续增长），任何新连接（网页、
+// CLI、脚本）都读不到 serve 写的这批数据；而两边的 checkpoint 又在争抢同一批
+// 数据库页 → 复现 2026-10-21 17:17 的「database disk image is malformed」。
+//
+// PERSIST_WAL 把 unlink 这一步整个去掉：WAL 留在磁盘上，serve 与新进程始终共享
+// 同一个 -shm/-wal，不再产生孤儿 inode。
+//
+// 注：这是 per-connection 的 file control（不是 pragma，DSN 传不进去），所以必须
+// 对池里的每个物理连接各设一次；连接池随后的复用会让设置一直有效（主库
+// MaxIdleConns(4)+MaxConnLifetime(0) 常驻，不会回收重建）。
+func enablePersistWAL(conn *sql.DB) {
+	if conn == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 先并发占满池子拿到**不同的**物理连接，逐一设置，最后统一归还。
+	held := make([]*sql.Conn, 0, 4)
+	for i := 0; i < 4; i++ {
+		c, err := conn.Conn(ctx)
+		if err != nil {
+			break
+		}
+		held = append(held, c)
+	}
+	for _, c := range held {
+		_ = c.Raw(func(driverConn any) error {
+			fc, ok := driverConn.(interface {
+				FileControlPersistWAL(dbName string, mode int) (int, error)
+			})
+			if !ok {
+				return nil
+			}
+			_, err := fc.FileControlPersistWAL("main", 1)
+			return err
+		})
+	}
+	for _, c := range held {
+		_ = c.Close()
+	}
 }
 
 // initSessionSchema 创建会话库 schema（幂等：CREATE TABLE IF NOT EXISTS）。

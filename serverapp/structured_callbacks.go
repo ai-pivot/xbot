@@ -11,6 +11,7 @@ import (
 	"xbot/channel/web"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
+	"xbot/tools"
 )
 
 // structured_callbacks.go — 结构化消息 WebCallbacks 的真实实现。
@@ -275,6 +276,18 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		}
 		return out, more, next, nil
 	}
+
+	// ── 把同一份落地实现注入给工具层 ─────────────────────────────────────
+	// SendMessage(kind = report/ask_user/answer/decision) 走的就是这个 appendFn：
+	// agent 在自己会话里说"批了"→ 工具层调它 → 落到目标（部门）会话 + CAS。
+	// 共用闭包而不是另写一份，是为了让"web 点按钮"和"自然语言批红"永远同一语义。
+	tools.SetStructuredAppend(func(senderID, channel, chatID string, in protocol.StructuredMessageInput) (int64, bool, error) {
+		msg, dup, err := appendFn(senderID, web.SessionSelector{Channel: channel, ChatID: chatID}, in)
+		if err != nil || msg == nil {
+			return 0, dup, err
+		}
+		return msg.MessageID, dup, nil
+	})
 	return
 }
 
