@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"xbot/agent"
@@ -39,11 +40,34 @@ func structuredPriority(kind string) int {
 // structuredDeliverable 判断该 kind 是否需要进入 agent run 循环。
 func structuredDeliverable(kind string) bool {
 	switch kind {
-	case "answer", "decision", "command", "text":
+	case "answer", "decision", "command", "text", "report":
+		// report 也必须唤醒目标会话：用户要求"工作收尾 / 需要批准时立刻上报"，
+		// 不能只躺在收件箱里等下一次朝会（2026-10-22）。
 		return true
 	default:
 		return false
 	}
+}
+
+// reportDeliverCooldown 是同一目标会话的 report 唤醒冷却时间：部门连发多条
+// report 时只拉起首辅一次（落库不受影响，一条都不会丢）。
+const reportDeliverCooldown = 60 * time.Second
+
+var (
+	reportDeliverMu   sync.Mutex
+	reportDeliverSeen = map[string]time.Time{}
+)
+
+// shouldDeliverReport 判断是否该为这条 report 唤醒目标会话。
+func shouldDeliverReport(chatID string) bool {
+	reportDeliverMu.Lock()
+	defer reportDeliverMu.Unlock()
+	now := time.Now()
+	if t, ok := reportDeliverSeen[chatID]; ok && now.Sub(t) < reportDeliverCooldown {
+		return false
+	}
+	reportDeliverSeen[chatID] = now
+	return true
 }
 
 // structuredContent 生成人读文本（LLM 上下文/UI 缺省内容）。
@@ -78,7 +102,11 @@ func structuredContent(kind string, payload map[string]any, explicit string) str
 		}
 	case "decision":
 		verdict, _ := payload["verdict"].(string)
-		comments, _ := payload["comments"].(string)
+		// 兼容两种拼写：工具描述与 CHARTER 用 "comment"，历史实现读 "comments"。
+		comments, _ := payload["comment"].(string)
+		if comments == "" {
+			comments, _ = payload["comments"].(string)
+		}
 		label := map[string]string{"approve": "准", "reject": "驳", "modify": "改"}[verdict]
 		if label == "" {
 			label = verdict
@@ -205,7 +233,11 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		if err != nil {
 			return nil, false, err
 		}
-		if created && structuredDeliverable(input.Kind) {
+		deliver := created && structuredDeliverable(input.Kind)
+		if deliver && input.Kind == "report" && !shouldDeliverReport(sel.ChatID) {
+			deliver = false // 冷却窗口内只落库，不重复唤醒
+		}
+		if deliver {
 			ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
 				ID:            fmt.Sprintf("structured:%d", id),
 				Channel:       sel.Channel,
