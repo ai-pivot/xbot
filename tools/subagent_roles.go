@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	log "xbot/logger"
 )
@@ -15,6 +16,11 @@ type SubAgentRole struct {
 	SystemPrompt string
 	AllowedTools []string
 	Model        string // 可选：指定使用的 LLM 模型或模型等级（vanguard/balance/swift）。为空时继承主 Agent 模型。
+
+	// Rules 是该角色启动时必须注入 system prompt 的规则文件（相对 $XBOT_HOME 或绝对路径）。
+	// 声明式注入：只有写了 rules 的 role 才加载 —— 不占用项目 AGENTS.md，
+	// 也不写全局上下文，因此不会污染其它项目的子代理（2026-10-22 用户要求）。
+	Rules []string
 
 	Capabilities SubAgentCapabilities
 }
@@ -56,12 +62,20 @@ var agentsDir string
 
 // InitAgentRoles sets the global agents directory (called once at startup).
 // Actual loading happens on-demand in each GetSubAgentRole call.
+// xbotHomeDir 是 agents 目录的父目录（$XBOT_HOME），供 role rules 相对路径解析。
+var xbotHomeDir string
+
+// roleRulesHome 返回规则文件相对路径的基准目录。
+func roleRulesHome() string { return xbotHomeDir }
+
 func InitAgentRoles(dir string) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		log.WithField("dir", dir).Info("Agents directory not found, no predefined roles")
 		return nil
 	}
 	agentsDir = dir
+	// XBOT_HOME = agents 目录的父目录，用于解析 role frontmatter 里 rules 的相对路径。
+	xbotHomeDir = filepath.Dir(dir)
 	// 验证目录可读
 	roles, err := LoadAgentRoles(dir)
 	if err != nil {

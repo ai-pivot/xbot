@@ -16,7 +16,7 @@ capabilities:
   memory: true
   send_message: true`
 
-	name, desc, _, tools, caps, err := parseFrontmatter(fm)
+	name, desc, _, tools, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,7 +47,7 @@ description: "Simple agent"
 tools:
   - Shell`
 
-	_, _, _, _, caps, err := parseFrontmatter(fm)
+	_, _, _, _, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,7 +68,7 @@ capabilities:
   send_message: true
   spawn_agent: true`
 
-	_, _, _, _, caps, err := parseFrontmatter(fm)
+	_, _, _, _, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -128,7 +128,7 @@ capabilities:
   memory: true
   spawn_agent: true`
 
-	name, desc, _, _, caps, err := parseFrontmatter(fm)
+	name, desc, _, _, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestParseFrontmatter_MixedName(t *testing.T) {
 	fm := `name: 工部-dev_01
 description: "Mixed CJK and ASCII name"`
 
-	name, _, _, _, _, err := parseFrontmatter(fm)
+	name, _, _, _, _, _, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +159,7 @@ description: "Mixed CJK and ASCII name"`
 func TestParseFrontmatter_InvalidNameWithSpaces(t *testing.T) {
 	fm := `name: 中书 省`
 
-	_, _, _, _, _, err := parseFrontmatter(fm)
+	_, _, _, _, _, _, err := parseFrontmatter(fm)
 	if err == nil {
 		t.Fatal("expected error for name with spaces, got nil")
 		return
@@ -177,7 +177,7 @@ tools:
 ---
 System prompt here.`
 
-	name, desc, model, tools, caps, err := parseFrontmatter(fm)
+	name, desc, model, tools, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -206,7 +206,7 @@ tools:
 ---
 System prompt.`
 
-	name, _, model, _, _, err := parseFrontmatter(fm)
+	name, _, model, _, _, _, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
