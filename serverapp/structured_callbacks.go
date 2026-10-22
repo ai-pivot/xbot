@@ -50,7 +50,7 @@ func structuredDeliverable(kind string) bool {
 }
 
 // reportDeliverCooldown 是同一目标会话的 report 唤醒冷却时间：部门连发多条
-// report 时只拉起首辅一次（落库不受影响，一条都不会丢）。
+// report 时不必每条都拉起一个新 turn（落库不受影响，一条都不会丢）。
 const reportDeliverCooldown = 60 * time.Second
 
 var (
@@ -58,16 +58,71 @@ var (
 	reportDeliverSeen = map[string]time.Time{}
 )
 
-// shouldDeliverReport 判断是否该为这条 report 唤醒目标会话。
-func shouldDeliverReport(chatID string) bool {
-	reportDeliverMu.Lock()
-	defer reportDeliverMu.Unlock()
-	now := time.Now()
-	if t, ok := reportDeliverSeen[chatID]; ok && now.Sub(t) < reportDeliverCooldown {
+// reportDeliverKey 用 (channel, chatID) 分桶 —— 只用 chatID 会让 web 与 cli 的
+// 同名会话互相压制。
+func reportDeliverKey(channel, chatID string) string { return channel + "/" + chatID }
+
+// payloadBypassesReportCooldown 判断这条 report 是否必须绕过冷却。
+// CHARTER §6：needs_approval / urgent 必须「立刻」处理，不能被普通奏折压掉。
+func payloadBypassesReportCooldown(payload map[string]any) bool {
+	if payload == nil {
 		return false
 	}
-	reportDeliverSeen[chatID] = now
-	return true
+	for _, k := range []string{"needs_approval", "urgent"} {
+		switch v := payload[k].(type) {
+		case bool:
+			if v {
+				return true
+			}
+		case string:
+			if strings.EqualFold(strings.TrimSpace(v), "true") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// reportDeliverDelay 返回本条 report 需要延迟多久再唤醒；0 表示立刻唤醒。
+//
+// 语义是**延迟**而不是丢弃。2026-10-22 review 发现：原实现冷却期内只把
+// deliver 置 false 就返回，而全仓没有任何补投者（ListInbox 只服务 Web 角标），
+// 于是被压掉的 report 永远不会自己醒来；而真实拓扑是 6 个部门上报同一个
+// 物理 chatID（CHARTER §2 的 agent:court.sili/main），最坏情况只唤醒第一条。
+// 现在改由调用方 time.AfterFunc 在窗口结束时补投**原消息**。
+func reportDeliverDelay(channel, chatID string, payload map[string]any) time.Duration {
+	key := reportDeliverKey(channel, chatID)
+	now := time.Now()
+
+	reportDeliverMu.Lock()
+	defer reportDeliverMu.Unlock()
+
+	// 顺手淘汰过期条目：key 含 instance（自由字符串，如 oneshot-<role>-<纳秒>），
+	// 不清理会单调增长。
+	for k, t := range reportDeliverSeen {
+		if now.Sub(t) >= reportDeliverCooldown {
+			delete(reportDeliverSeen, k)
+		}
+	}
+
+	if payloadBypassesReportCooldown(payload) {
+		reportDeliverSeen[key] = now
+		return 0 // 紧急奏折永不延迟
+	}
+	if t, ok := reportDeliverSeen[key]; ok {
+		if elapsed := now.Sub(t); elapsed < reportDeliverCooldown {
+			return reportDeliverCooldown - elapsed
+		}
+	}
+	reportDeliverSeen[key] = now
+	return 0
+}
+
+// resetReportDeliverSeen 仅供测试：包级 map 跨测试会互相污染。
+func resetReportDeliverSeen() {
+	reportDeliverMu.Lock()
+	reportDeliverSeen = map[string]time.Time{}
+	reportDeliverMu.Unlock()
 }
 
 // structuredContent 生成人读文本（LLM 上下文/UI 缺省内容）。
@@ -234,21 +289,27 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			return nil, false, err
 		}
 		deliver := created && structuredDeliverable(input.Kind)
-		if deliver && input.Kind == "report" && !shouldDeliverReport(sel.ChatID) {
-			deliver = false // 冷却窗口内只落库，不重复唤醒
+		item := &agent.StructuredQueueItem{
+			ID:            fmt.Sprintf("structured:%d", id),
+			Channel:       sel.Channel,
+			ChatID:        sel.ChatID,
+			SenderID:      senderID,
+			SenderName:    senderName,
+			Content:       row.Content,
+			Kind:          input.Kind,
+			CorrelationID: input.CorrelationID,
+			Priority:      structuredPriority(input.Kind),
+		}
+		if deliver && input.Kind == "report" {
+			if delay := reportDeliverDelay(sel.Channel, sel.ChatID, input.Payload); delay > 0 {
+				// 冷却窗口内：延迟补投原消息（不是丢弃）。urgent/needs_approval
+				// 的 delay 恒为 0，走下面的立即投递分支。
+				time.AfterFunc(delay, func() { ag.DeliverStructuredMessage(item) })
+				deliver = false
+			}
 		}
 		if deliver {
-			ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
-				ID:            fmt.Sprintf("structured:%d", id),
-				Channel:       sel.Channel,
-				ChatID:        sel.ChatID,
-				SenderID:      senderID,
-				SenderName:    senderName,
-				Content:       row.Content,
-				Kind:          input.Kind,
-				CorrelationID: input.CorrelationID,
-				Priority:      structuredPriority(input.Kind),
-			})
+			ag.DeliverStructuredMessage(item)
 		}
 		return toProtocolStructured(*row), !created, nil
 	}
