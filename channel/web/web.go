@@ -1013,10 +1013,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/session-tree", wc.authenticatedPOST(wc.handleSessionTreePOST))
 
 	// Agent 通信指挥室（群组可视化）：真实 REST + group.message 事件。
-	mux.HandleFunc("/api/groups", wc.authMiddleware(wc.handleGroups))
-	mux.HandleFunc("/api/groups/create", wc.authenticatedPOST(wc.handleGroupCreate))
-	mux.HandleFunc("/api/groups/{id}/members", wc.authMiddleware(wc.handleGroupMembers))
-	mux.HandleFunc("/api/groups/{id}/messages", wc.authMiddleware(wc.handleGroupMessages))
+	wc.registerGroupRoutes(mux)
 
 	// Channel discovery — the surviving piece of the removed account-identity
 	// endpoints. The frontend ActivityBar uses the discovered channel list to

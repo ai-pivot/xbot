@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,5 +98,33 @@ func TestHandleGroupMessages_SeedShapedData(t *testing.T) {
 	}
 	if len(first.To) != 1 || first.To[0] != "agent:hubu/main" {
 		t.Fatalf("to = %+v", first.To)
+	}
+}
+
+// TestGroupRoutes_PostGroupsCreates 回归 2026-10-22「接口有问题」：
+// 文档（group-visualization.md §3.4）与前端 api.ts 都约定 `POST /api/groups` 建群，
+// 但路由当初只注册了 `/api/groups/create` —— 按契约调用会掉进只允许 GET 的
+// handleGroups，返回 405，面板/脚本无法建群。
+//
+// 判据：未登录时 POST /api/groups 必须是 401（进到建群处理器的鉴权），
+// 而**不是** 405（掉进 GET 处理器）；GET 仍归列表处理器。
+func TestGroupRoutes_PostGroupsCreates(t *testing.T) {
+	wc := &WebChannel{sessions: map[string]sessionInfo{}}
+	mux := http.NewServeMux()
+	wc.registerGroupRoutes(mux)
+
+	post := httptest.NewRecorder()
+	mux.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/api/groups", strings.NewReader(`{"name":"朝廷"}`)))
+	if post.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("POST /api/groups 仍被路由到只允许 GET 的 handleGroups（405）")
+	}
+	if post.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /api/groups status = %d, body = %s", post.Code, post.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	mux.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/groups", nil))
+	if get.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/groups status = %d, body = %s", get.Code, get.Body.String())
 	}
 }

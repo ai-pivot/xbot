@@ -7,8 +7,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchGroups, fetchMembers, fetchMessages, subscribeGroupMessages } from './api'
 import {
-  DEMO_CHAT_ID, DEMO_GROUP_ID, buildDemoMessages, demoGroup, demoMembers, deriveLanes,
+  DEMO_GROUP_ID, buildDemoMessages, demoGroup, demoMembers, deriveLanes,
 } from './seed'
+import { emptyReasonFor, statusLabel, statusTitle, type CourtConn } from './connection'
 import { OrgTree } from './OrgTree'
 import { PlaybackBar } from './PlaybackBar'
 import { SankeyView } from './SankeyView'
@@ -33,9 +34,13 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
   const [members, setMembers] = useState<GroupMember[]>(demo ? demoMembers : [])
   const [messages, setMessages] = useState<GroupMessage[]>(demo ? buildDemoMessages() : [])
   const [source, setSource] = useState<'api' | 'seed'>(demo ? 'seed' : 'api')
+  // 连接状态与数据空态分离：只有请求失败才是 offline（见 ./connection.ts）。
+  const [conn, setConn] = useState<CourtConn>(demo ? 'online' : 'loading')
   const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(!demo)
-  const [streamChat, setStreamChat] = useState(DEMO_CHAT_ID)
+  const [emptyReason, setEmptyReason] = useState<string | null>(null)
+  // 空串 = 还没有解析出真实会话视角；此时**不要**订阅 SSE（旧实现用演示会话
+  // 的 court-demo 去订阅，每次都 404）。
+  const [streamChat, setStreamChat] = useState('')
   const [view, setView] = useState<'timeline' | 'sankey'>('timeline')
   const [windowMs, setWindowMs] = useState(24 * 60 * 60e3)
   const [selected, setSelected] = useState<GroupMessage | null>(null)
@@ -51,44 +56,52 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
   const playRef = useRef({ playing: false, speed: 10, min: 0, max: 0 })
 
   const load = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true)
+    setConn('loading')
     setError(null)
+    setEmptyReason(null)
     try {
       const list = await fetchGroups(signal)
-      if (list.length === 0) throw new Error('当前账号还没有可见群组')
+      if (list.length === 0) {
+        // 空 ≠ 断：服务端 200 且确实没有可见群组 —— 这在线、只是没数据。
+        setGroups([])
+        setActiveGroup('')
+        setMembers([])
+        setMessages([])
+        setStreamChat('')
+        setSource('api')
+        setEmptyReason(emptyReasonFor(0, 0))
+        setConn('online')
+        return
+      }
       const g = list[0]
       const ms = await fetchMembers(g.id, signal)
-      let page = await fetchMessages(g.id, { limit: 200 }, signal)
-      if (page.items.length === 0) {
-        // 当前会话视角为空 → 尝试演示会话视角（seed 脚本写入的 web/court-demo）。
-        try {
-          page = await fetchMessages(g.id, { limit: 200, channel: 'web', chatID: DEMO_CHAT_ID }, signal)
-        } catch { /* 显式视角无权限/不存在：保持空，走 seed 兜底 */ }
-      }
-      if (page.items.length === 0) throw new Error('该群在当前会话视角没有消息')
+      const page = await fetchMessages(g.id, { limit: 200 }, signal)
       setGroups(list)
       setActiveGroup(g.id)
       setMembers(ms)
       setMessages(page.items)
-      if (page.chat_id) setStreamChat(page.chat_id)
+      // 只有拿到真实会话视角才订阅 SSE；不再回退到演示会话（/court-demo 才是演示）。
+      setStreamChat(page.chat_id ?? '')
       setSource('api')
+      setEmptyReason(emptyReasonFor(list.length, page.items.length))
+      setConn('online')
     } catch (e) {
       if (signal?.aborted) return
+      // 只有请求/解析真的失败才判「离线」。
       setError(e instanceof Error ? e.message : String(e))
-      // 不留演示数据：失败就是失败，展示空状态 + 错误信息。
       setGroups([])
       setActiveGroup('')
       setMembers([])
       setMessages([])
+      setStreamChat('')
       setSource('api')
-    } finally {
-      if (!signal?.aborted) setLoading(false)
+      setConn('offline')
     }
   }, [])
 
   useEffect(() => {
     if (demo) {
-      setLoading(false)
+      setConn('online')
       return
     }
     const ac = new AbortController()
@@ -98,7 +111,7 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
 
   // group.message 实时追加（SSE；断线由浏览器自动重连，REST 数据仍可浏览）。
   useEffect(() => {
-    if (source !== 'api') return
+    if (source !== 'api' || streamChat === '') return
     return subscribeGroupMessages(streamChat, (m) => {
       setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]))
     })
@@ -211,13 +224,15 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
           {/* 连接状态只用一个点 + 文案；失败原因放 title（hover 可见），
               不再用整行横幅（用户 2026-10-20：别用横幅、别提演示数据）。 */}
           <span
-            title={error ?? (source === 'api' ? '已连接服务端' : '未连接')}
+            data-testid="court-conn-badge"
+            data-conn={conn}
+            title={statusTitle({ conn, error, emptyReason }, demo)}
             className="rounded-full px-2 py-0.5 text-[9px]"
             style={{
-              background: error ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.12)',
-              color: error ? '#f87171' : '#22c55e',
+              background: conn === 'offline' ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.12)',
+              color: conn === 'offline' ? '#f87171' : '#22c55e',
             }}>
-            {loading ? '加载中…' : error ? '离线' : demo ? '预览' : '已连接'}
+            {statusLabel({ conn }, demo)}
           </span>
         </div>
 
@@ -258,6 +273,16 @@ export function CourtConsole({ demo = false }: { demo?: boolean }) {
         </div>
       </header>
 
+      {/* 在线但无数据时的说明：这是空态，不是故障（避免「空白一片」被误读成 bug）。 */}
+      {conn === 'online' && emptyReason && !demo ? (
+        <div data-testid="court-empty-reason"
+          className="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-[10px]"
+          style={{ borderColor: 'rgba(148,163,184,0.1)', color: 'rgba(148,163,184,0.75)',
+            background: 'rgba(56,189,248,0.04)' }}>
+          <span className="size-1.5 rounded-full" style={{ background: '#38bdf8' }} />
+          已连接服务端，但没有可展示的通信数据：{emptyReason}
+        </div>
+      ) : null}
 
       <div className="flex min-h-0 flex-1">
         <OrgTree lanes={lanes} laneFilter={laneFilter} onLaneFilter={setLaneFilter} counts={counts} laneHeight={laneHeight} />

@@ -220,6 +220,27 @@ func (wc *WebChannel) PublishGroupMessage(groupID string, msg *protocol.GroupMes
 	})
 }
 
+// registerGroupRoutes 注册通信视图的全部 REST 路由。
+//
+// 约定（docs/design/group-visualization.md §3.4 与本文件顶部注释）：
+//
+//	GET  /api/groups                  → 群列表
+//	POST /api/groups                  → 建群
+//	GET  /api/groups/{id}/members     → 成员
+//	GET  /api/groups/{id}/messages    → 群消息（当前会话视角）
+//
+// 2026-10-22 修复：此前只注册了 `/api/groups/create`，按文档/前端契约调用
+// `POST /api/groups` 会掉进只允许 GET 的 handleGroups → 405，面板与脚本都建不了群。
+// Go 1.22+ method pattern 让 POST 落到建群处理器，同时保留 authenticatedPOST 的
+// postOnly + 鉴权包装（不绕过方法校验与鉴权）。
+func (wc *WebChannel) registerGroupRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/groups", wc.authMiddleware(wc.handleGroups))
+	mux.HandleFunc("POST /api/groups", wc.authenticatedPOST(wc.handleGroupCreate))
+	mux.HandleFunc("/api/groups/create", wc.authenticatedPOST(wc.handleGroupCreate))
+	mux.HandleFunc("/api/groups/{id}/members", wc.authMiddleware(wc.handleGroupMembers))
+	mux.HandleFunc("/api/groups/{id}/messages", wc.authMiddleware(wc.handleGroupMessages))
+}
+
 func groupErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, sqlite.ErrGroupNotFound):
