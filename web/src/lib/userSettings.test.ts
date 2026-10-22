@@ -21,6 +21,7 @@ vi.mock('@/lib/api', () => {
 import {
   syncSettingToServer,
   syncAndMigrateSettings,
+  fetchServerSettings,
   SETTINGS_SYNCED_EVENT,
   __SETTING_MAP,
 } from './userSettings'
@@ -174,5 +175,47 @@ describe('userSettings', () => {
     const events = dispatchSpy.mock.calls.map((c: unknown[]) => c[0] as Event)
     const syncEvent = events.find((e: Event) => e instanceof CustomEvent && e.type === SETTINGS_SYNCED_EVENT)
     expect(syncEvent).toBeUndefined()
+  })
+
+  // ── Boot round-trip budgets ───────────────────────────────────────────────
+
+  it('shares one in-flight GET between concurrent boot callers', async () => {
+    let resolveRead: (v: unknown) => void = () => {}
+    postAPIMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRead = resolve }),
+    )
+
+    const a = syncAndMigrateSettings()
+    const b = syncAndMigrateSettings()
+    // AuthProvider's login check also calls the same shared getter.
+    const c = fetchServerSettings()
+
+    expect(postAPIMock).toHaveBeenCalledTimes(1)
+    resolveRead({ settings: { 'web:ui:md-theme': 'nord' } })
+    await Promise.all([a, b, c])
+
+    expect(postAPIMock).toHaveBeenCalledTimes(1)
+    expect(store.get('xbot-md-theme')).toBe('nord')
+  })
+
+  it('does not POST values the server already holds', async () => {
+    postAPIMock.mockResolvedValueOnce({
+      settings: { 'web:ui:md-theme': 'dracula', 'web:ui:accent': '#aabbcc' },
+    })
+    await syncAndMigrateSettings()
+
+    // Mount effects write localStorage and ask for a sync — the server already
+    // has exactly these values, so no request may be issued.
+    syncSettingToServer('xbot-md-theme', 'dracula')
+    syncSettingToServer('xbot-accent', '#aabbcc')
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(postAPIMock).toHaveBeenCalledTimes(1) // the initial GET only
+
+    // A genuinely new value still syncs.
+    postAPIMock.mockResolvedValueOnce({})
+    syncSettingToServer('xbot-md-theme', 'nord')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(postAPIMock).toHaveBeenCalledTimes(2)
   })
 })

@@ -2294,6 +2294,52 @@ describe('normalizeSessionTree', () => {
     expect(switchCalls.some((u) => u.includes('new-chat'))).toBe(true)
   })
 
+  it('activateSession dedupes the boot double-activation into one /switch + one tree fetch', async () => {
+    const switchCalls: string[] = []
+    let treeCalls = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        treeCalls++
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              { chat_id: 'chat-1', channel: 'web', label: 'one',
+                last_active: '2026-07-08T00:00:00Z', is_current: true },
+            ],
+          }),
+        } as Response
+      }
+      if (url.startsWith('/api/chats/') && url.includes('/switch')) {
+        switchCalls.push(url)
+        return {
+          ok: true,
+          json: async () => ({ ok: true, chat_id: 'chat-1', channel: 'web' }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    wsMocks.rpc.mockResolvedValue({})
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    const treeCallsAfterMount = treeCalls
+
+    // Boot restores the dockview layout and then reports the active panel —
+    // both activations land for the same session.
+    act(() => {
+      result.current.activateSession('chat-1', 'web')
+      result.current.activateSession('chat-1', 'web')
+    })
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+
+    expect(switchCalls).toHaveLength(1)
+    expect(treeCalls - treeCallsAfterMount).toBe(1)
+  })
+
   it('createSession defaults the new session model to the current active session model', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

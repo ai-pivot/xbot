@@ -56,6 +56,9 @@ const TRANSIENT_SUBAGENT_TTL_MS = 10 * 60 * 1000
 const EXECUTING_TRUST_WINDOW_MS = 15_000
 /** Sidebar session-tree page size (backend pagination). */
 const SESSION_TREE_PAGE_SIZE = 60
+/** Window in which a repeated `activateSession` for the same session is a
+ * no-op (boot: layout restore + first onDidActivePanelChange fire together). */
+const ACTIVATE_DEDUPE_MS = 1500
 
 /** WSMessage shape we care about here (avoids importing the full envelope). */
 interface AskUserEnvelope {
@@ -1014,6 +1017,11 @@ export function useSessionStoreImpl(): SessionStore {
    * page — the "无限加载 + 重复内容" sidebar bug on mobile. */
   const loadingMoreRef = useRef(false)
   const switchSeqRef = useRef(0)
+  /** Last session activated through `activateSession` (boot layout restore
+   * fires it twice for the same tab: dockview panel restore + the first
+   * onDidActivePanelChange). Each activation POSTs /switch and refetches the
+   * session tree, so a short dedupe window removes 2 requests from boot. */
+  const lastActivatedRef = useRef<{ key: string; at: number } | null>(null)
   const subAgentRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const transientSubAgentsRef = useRef(new Map<string, TransientSubAgent>())
   // SSE intents per session key ("channel:chatID"): the LAST session event
@@ -1616,6 +1624,15 @@ export function useSessionStoreImpl(): SessionStore {
       sessionsRef.current = nextSessions
       saveSessionTreeCache(nextSessions, flattenTreeAgents(nextSessions))
       setSessions(nextSessions)
+      // Boot restores the layout and then reports the active panel — both call
+      // this for the same session within a few ms. Only the first one needs the
+      // backend switch + tree refetch (each is a full round trip, and the tree
+      // refetch also restarts the 15s status reconciliation).
+      const key = sessionKey(selector)
+      const now = Date.now()
+      const prev = lastActivatedRef.current
+      lastActivatedRef.current = { key, at: now }
+      if (prev && prev.key === key && now - prev.at < ACTIVATE_DEDUPE_MS) return
       // Fire-and-forget backend switch (updates last_active_at).
       void postAPI(`/api/chats/${encodeURIComponent(id)}/switch`, { channel: useChannel }).catch(() => {})
       // Refresh session list to get fresh running status — without this, the

@@ -238,22 +238,44 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 	if h.Cfg != nil {
 		defaultMaxContext = h.Cfg.Agent.MaxContextTokens
 	}
-	if h.Ag != nil && h.Ag.LLMFactory() != nil {
-		usage.SubscriptionID, usage.SubscriptionName, usage.Model, usage.MaxContextTokens =
-			h.Ag.LLMFactory().ResolveContextConfig(senderID, chatID, channelName, defaultMaxContext)
-	} else {
+	// This function is on the boot / session-switch hot path (/api/session/status).
+	// Every store read below is one WAN round trip on the PostgreSQL backend
+	// (~50ms measured), and the reads are completely independent — resolving
+	// subscription/model config never needs the tenant id, and the two token
+	// reads touch different tables. Kept sequential this used to cost up to 7
+	// round trips per status call; running each *group* concurrently collapses
+	// it to 2. Each goroutine only writes its own result variables, read after
+	// wg.Wait() — no shared mutable state.
+	resolveContextConfig := func() {
+		if h.Ag != nil && h.Ag.LLMFactory() != nil {
+			usage.SubscriptionID, usage.SubscriptionName, usage.Model, usage.MaxContextTokens =
+				h.Ag.LLMFactory().ResolveContextConfig(senderID, chatID, channelName, defaultMaxContext)
+			return
+		}
 		usage.MaxContextTokens = defaultMaxContext
 	}
 
 	if h.Ag == nil || h.Ag.MultiSession() == nil {
+		resolveContextConfig()
 		return usage, nil
 	}
+
 	// 后端无关：tenant 解析走 TenantStore，会话 token 走 SessionStore
 	// （SQLite 会话库 / PG 共享连接）—— 不再依赖主库 *sqlite.DB，因此 PG 后端同样可用。
-	tenantStore := h.Ag.MultiSession().Store().Tenant()
-	tenantID, err := tenantStore.GetTenantIDByChannelChatID(channelName, chatID)
-	if err != nil {
-		return usage, err
+	var (
+		wg        sync.WaitGroup
+		tenantID  int64
+		tenantErr error
+	)
+	wg.Add(2)
+	go func() { defer wg.Done(); resolveContextConfig() }()
+	go func() {
+		defer wg.Done()
+		tenantID, tenantErr = h.Ag.MultiSession().Store().Tenant().GetTenantIDByChannelChatID(channelName, chatID)
+	}()
+	wg.Wait()
+	if tenantErr != nil {
+		return usage, tenantErr
 	}
 	if tenantID == 0 {
 		return usage, nil
@@ -263,13 +285,28 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 	if err != nil {
 		return usage, err
 	}
-	promptTokens, err := sessionSvc.GetLastUserMessageContextTokens(tenantID)
-	if err != nil {
-		return usage, err
+	var (
+		promptTokens          int64
+		statePromptTokens     int64
+		stateCompletionTokens int64
+		promptErr             error
+		stateErr              error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		promptTokens, promptErr = sessionSvc.GetLastUserMessageContextTokens(tenantID)
+	}()
+	go func() {
+		defer wg.Done()
+		statePromptTokens, stateCompletionTokens, stateErr = h.Ag.MultiSession().Store().Memory().GetTokenState(ctx, tenantID)
+	}()
+	wg.Wait()
+	if promptErr != nil {
+		return usage, promptErr
 	}
-	statePromptTokens, stateCompletionTokens, err := h.Ag.MultiSession().Store().Memory().GetTokenState(ctx, tenantID)
-	if err != nil {
-		return usage, err
+	if stateErr != nil {
+		return usage, stateErr
 	}
 	if promptTokens > 0 {
 		usage.PromptTokens = promptTokens

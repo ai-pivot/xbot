@@ -443,3 +443,26 @@ openAutoFocus**。守护：`ModelSelector.test.tsx`（触屏 → activeElement �
 - Native keydown subscriptions reattach only when enabled/UI mode changes. `useEffectEvent` reads committed bindings, callbacks, target sessions and pending dialog state, so old callbacks cannot act on a stale session. Listener cleanup/mobile and duplicate pending guards remain covered.
 - `useSessionShortcuts` shares a cached raw snapshot across rows. Local writes update it before notification; server sync and active storage-key events/clear refresh once; leaving the last subscription clears it and starting a fresh subscription checks storage again. No schema/config migration or preference rewriting. The legacy `openInTab` mapping and disabled values remain supported for saved preview preferences.
 - `settings-mobile-all-tabs.spec.ts` must assert `problems` is empty. `collectSettingsOverflow` measures visible text and controls against the viewport and clipping parents, allowing accessible scrolling, sr-only descriptions, intentional ellipsis and entirely offscreen translated drawers. A deliberately oversized visible control must fail the detector fixture. Parent scrollWidth alone is insufficient: a closed translated LLM drawer legitimately enlarges the parent's scrollable region.
+
+## ⛔ WebUI 启动往返预算（2026-10-22 用户「webui 卡顿」排查定稿）
+
+现象：用户截图里 `/api/settings` / `rpc` / `switch` / `status` 每个请求 1–1.6s，启动总耗时 7s+。
+
+实测（同一份远程 PG 后端 + 本机隔离实例 + Playwright）：
+
+- **PostgreSQL 单条 SQL 往返 50ms**（新建连接 ~300ms）⇒ 每个 handler 的**串行查询条数**就是它的延迟下限：`/api/settings` 2 条、`/api/session-tree` 2 条、`/api/session/status` **7 条**（`get_context_usage` = ResolveContextConfig + tenant 解析 + 两个 token 读，全部串行）。
+- 首屏发 **14 个 API 请求**（4× `/api/settings`、8× `/api/rpc`），且 `AuthGuard` 在第一个 `/api/settings` 返回前把整个应用挡在 spinner 后 ⇒ 后面所有请求都要等它。
+- 首屏 JS ~10MB：`index` 4.0MB + **`vendor-monaco` 4.0MB 被 `index.html` 的 modulepreload 拉取**（首屏根本不用 Monaco）。`vite.config.ts` 的 `build.modulePreload.resolveDependencies` 过滤在 **Vite 8（rolldown）下不生效** —— 重新构建验证，产物依旧 preload monaco/tiptap。Playwright 节流（100ms RTT / 10Mbps、禁缓存）复现 **DCL 8.4s / 传输 9.97MB**。
+
+已修（`perf/webui-boot-roundtrips`）：
+
+1. `serverapp/rpc_table.go` 的 `contextUsage` 并行化：LLM 配置解析 ∥ tenant 解析，随后两个 token 读并行 ⇒ 7 → 2 个往返（每个 goroutine 只写自己的结果变量，`wg.Wait()` 后读）。
+2. `web/src/lib/userSettings.ts` 的 `fetchServerSettings()` 是**单一 in-flight GET**：`AuthProvider` 的登录检查与 `syncAndMigrateSettings` 共用同一次请求。
+3. `serverValues` 快照：值等于服务端已有值 ⇒ `syncSettingToServer` **不发请求**。此前每次启动 theme/accent 的挂载 effect 会把刚下载的值回写，白送 2 个 POST。
+4. `AuthProvider` **乐观认证**：`xbot-auth-ok` 标记存在时立即渲染 shell（`loading=false`），后台校验；**只有 401 才清标记 + 登出**（网络错误不得踢人）。登录成功写标记，退出清除。
+5. `UpdateReminder` 的 `check_update` 推迟到 `requestIdleCallback`（timeout 2s；无该 API 时 100ms 兜底）——它打 GitHub，且与启动请求抢连接。
+6. `activateSession` 1.5s 去重：启动时 dockview 布局恢复 + 首个 `onDidActivePanelChange` 会对同一会话各发一次 `/switch` + `session-tree`。
+
+守护：`web/src/lib/userSettings.test.ts`（共享 in-flight / 等值不回写）、`web/src/hooks/useSessionStore.test.ts`（activateSession 去重）、`web/src/components/UpdateReminder.test.tsx`。
+
+⚠️ 维护这份预算：**新增启动期请求前先问能否合并**；handler 内相互独立的 DB 读能并行就并行（串行 = 白付一整段 WAN 延迟，本机看不出来，公网入口 + 远程 PG 上会被放大 10 倍）。

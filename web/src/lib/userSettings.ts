@@ -54,6 +54,45 @@ const REVERSE_MAP: Record<string, string> = Object.fromEntries(
 /** Custom event dispatched after server→localStorage sync */
 export const SETTINGS_SYNCED_EVENT = 'xbot:settings-synced'
 
+const SETTINGS_ENDPOINT = '/api/settings'
+
+/**
+ * Last values READ from the server (canonical server key → value).
+ *
+ * Two jobs:
+ *  1. Skip no-op write-backs — `syncSettingToServer` is called from mount
+ *     effects (theme, accent, layout…), so without this every page load POSTed
+ *     the values it had just downloaded back to the server (measured: 2 extra
+ *     POST /api/settings per boot).
+ *  2. Keep the client from re-sending a value the server already has.
+ */
+const serverValues = new Map<string, string>()
+
+/**
+ * Shared in-flight GET /api/settings.
+ *
+ * AuthProvider (login check) and `syncAndMigrateSettings` both need the same
+ * payload on the same tick. They used to issue two separate round trips; on a
+ * high-latency link (public tunnel + remote PostgreSQL) each round trip is
+ * hundreds of ms, and the auth check gates the whole app. One shared request
+ * removes one full round trip from the boot critical path.
+ *
+ * Only *in-flight* calls are coalesced (the promise is cleared on settle) so
+ * later callers always see fresh data.
+ */
+let settingsInFlight: Promise<Record<string, string>> | null = null
+
+export function fetchServerSettings(): Promise<Record<string, string>> {
+  if (settingsInFlight) return settingsInFlight
+  const p = postAPI<{ settings: Record<string, string> }>(SETTINGS_ENDPOINT)
+    .then((data) => data.settings ?? {})
+    .finally(() => {
+      if (settingsInFlight === p) settingsInFlight = null
+    })
+  settingsInFlight = p
+  return p
+}
+
 // ── Server → localStorage (on app load) ──────────────────────────────────────
 
 /**
@@ -69,8 +108,7 @@ export const SETTINGS_SYNCED_EVENT = 'xbot:settings-synced'
 export async function syncAndMigrateSettings(): Promise<void> {
   let serverSettings: Record<string, string>
   try {
-    const data = await postAPI<{ settings: Record<string, string> }>('/api/settings')
-    serverSettings = data.settings ?? {}
+    serverSettings = await fetchServerSettings()
   } catch (err) {
     if (err instanceof APIError && err.status === 401) return // not logged in
     console.warn('[userSettings] syncAndMigrateSettings failed:', err)
@@ -81,6 +119,12 @@ export async function syncAndMigrateSettings(): Promise<void> {
   const syncedSettings = Object.entries(serverSettings).filter(
     ([k]) => k in REVERSE_MAP,
   )
+
+  // Remember what the server already holds *before* dispatching the sync event:
+  // components re-read localStorage and call syncSettingToServer from their
+  // mount effects; matching values must not be written back.
+  serverValues.clear()
+  for (const [serverKey, value] of syncedSettings) serverValues.set(serverKey, value)
 
   if (syncedSettings.length > 0) {
     // Server has synced settings → write to localStorage (server authoritative)
@@ -132,6 +176,11 @@ const pendingSettings: Record<string, string> = {}
 export function syncSettingToServer(lsKey: string, value: string): void {
   const serverKey = SETTING_MAP[lsKey]
   if (!serverKey) return // not a synced setting
+  // The value is already on the server (just read during the boot sync, or a
+  // repeated write) — POSTing it back is a wasted round trip. Prefs are read
+  // from localStorage on mount and written back from the same effects, so
+  // without this guard every page load re-uploaded the synced values.
+  if (serverValues.get(serverKey) === value) return
   pendingSettings[serverKey] = value
   if (syncTimer) clearTimeout(syncTimer)
   syncTimer = setTimeout(async () => {
@@ -139,7 +188,8 @@ export function syncSettingToServer(lsKey: string, value: string): void {
     const batch = { ...pendingSettings }
     for (const k of Object.keys(pendingSettings)) delete pendingSettings[k]
     try {
-      await postAPI('/api/settings', { settings: batch })
+      await postAPI(SETTINGS_ENDPOINT, { settings: batch })
+      for (const [k, v] of Object.entries(batch)) serverValues.set(k, v)
     } catch { /* silent — next write will retry */ }
   }, SYNC_DEBOUNCE_MS)
 }

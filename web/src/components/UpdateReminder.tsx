@@ -56,10 +56,20 @@ export function UpdateReminder({ onOpenSettings }: { onOpenSettings: () => void 
         // A failed check must not disturb chat. Retry at the next interval.
       }
     }
-    void check()
+    // Defer the first check to an idle slot: it reaches GitHub, is not needed
+    // for first paint, and on a high-latency link it competes with the boot
+    // requests for the same connection. The timeout bounds the wait so the
+    // reminder still appears on a busy page (and in jsdom, which has no
+    // requestIdleCallback, the fallback fires shortly after mount).
+    const requestIdle = typeof window.requestIdleCallback === 'function'
+      ? (cb: () => void) => window.requestIdleCallback(cb, { timeout: 2000 })
+      : (cb: () => void) => window.setTimeout(cb, 100)
+    const idleId = requestIdle(() => void check())
     const timer = window.setInterval(() => void check(), CHECK_INTERVAL_MS)
     return () => {
       controller.abort()
+      if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(idleId as number)
+      else window.clearTimeout(idleId as number)
       window.clearInterval(timer)
     }
   }, [connected])

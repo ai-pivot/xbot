@@ -21,7 +21,8 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { postAPI } from '@/lib/api'
+import { APIError, postAPI } from '@/lib/api'
+import { fetchServerSettings } from '@/lib/userSettings'
 import { clearWebCaches } from '@/lib/webCache'
 
 /** Current authenticated user. `username` is empty on cold reload (no /me). */
@@ -43,6 +44,29 @@ export interface AuthContextValue {
 }
 
 const USERNAME_KEY = 'xbot-auth-username'
+/** Set after a successful auth check/login; lets the app render optimistically
+ *  on reload instead of blocking every request behind `POST /api/settings`. */
+const AUTH_MARKER_KEY = 'xbot-auth-ok'
+
+function hasAuthMarker(): boolean {
+  try {
+    return localStorage.getItem(AUTH_MARKER_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeAuthMarker(): void {
+  try {
+    localStorage.setItem(AUTH_MARKER_KEY, '1')
+  } catch { /* storage unavailable — fall back to the blocking check */ }
+}
+
+function clearAuthMarker(): void {
+  try {
+    localStorage.removeItem(AUTH_MARKER_KEY)
+  } catch { /* ignore */ }
+}
 
 export const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
@@ -55,12 +79,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // --- Init: check auth status + fetch auth config ---
   useEffect(() => {
     let cancelled = false
+
+    // Optimistic auth: a previous successful check means the session cookie is
+    // (very likely) still valid. Rendering the shell immediately lets the app's
+    // own requests start in parallel with the verification instead of queueing
+    // behind it — on a high-latency link the auth check alone cost seconds and
+    // it used to gate the entire boot. A 401 below still tears the UI down.
+    if (hasAuthMarker()) {
+      setUser({ username: localStorage.getItem(USERNAME_KEY) ?? '' })
+      setLoading(false)
+    }
+
     void (async () => {
       try {
         // Fetch auth config (public, no cookie needed) + settings (checks auth) in parallel.
+        // The settings GET is shared with UserSettingsProvider (single round trip).
         const [configRes, settingsRes] = await Promise.allSettled([
           postAPI<{ invite_only?: boolean; bootstrap?: boolean }>('/api/auth/config'),
-          postAPI('/api/settings'),
+          fetchServerSettings(),
         ])
 
         if (cancelled) return
@@ -73,8 +109,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         // Auth status: 200 → logged in, 401 → not logged in
         if (settingsRes.status === 'fulfilled') {
+          writeAuthMarker()
           const username = localStorage.getItem(USERNAME_KEY) ?? ''
           setUser({ username })
+        } else if (settingsRes.reason instanceof APIError && settingsRes.reason.status === 401) {
+          // Only an explicit 401 means "logged out". Network errors must not
+          // discard an optimistic session (that would bounce the user to /login
+          // on a flaky link).
+          clearAuthMarker()
+          setUser(null)
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -89,6 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await postAPI('/api/auth/login', { username, password })
       clearWebCaches()
       localStorage.setItem(USERNAME_KEY, username)
+      writeAuthMarker()
       setUser({ username })
       return true
     } catch {
@@ -113,6 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await postAPI('/api/auth/logout')
     } finally {
       clearWebCaches()
+      clearAuthMarker()
       localStorage.removeItem(USERNAME_KEY)
       setUser(null)
     }
