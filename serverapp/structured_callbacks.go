@@ -282,7 +282,13 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 	// agent 在自己会话里说"批了"→ 工具层调它 → 落到目标（部门）会话 + CAS。
 	// 共用闭包而不是另写一份，是为了让"web 点按钮"和"自然语言批红"永远同一语义。
 	tools.SetStructuredAppend(func(senderID, channel, chatID string, in protocol.StructuredMessageInput) (int64, bool, error) {
-		msg, dup, err := appendFn(senderID, web.SessionSelector{Channel: channel, ChatID: chatID}, in)
+		// 逻辑地址（agent:role/instance）→ 物理会话 key（web_web-4/role:instance）。
+		// 不做这一步就会把批红写进一个新建的空壳会话：2026-10-22 实测事故。
+		realChatID, rerr := ag.ResolveStructuredTarget(channel, chatID)
+		if rerr != nil {
+			return 0, false, rerr
+		}
+		msg, dup, err := appendFn(senderID, web.SessionSelector{Channel: channel, ChatID: realChatID}, in)
 		if err != nil || msg == nil {
 			return 0, dup, err
 		}

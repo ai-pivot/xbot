@@ -995,8 +995,18 @@ func (a *Agent) SpawnInteractiveSession(
 		}
 	}
 	// Track parent session for cascade cleanup
-	if parentKey, ok := ctx.Value(bgParentKey{}).(string); ok {
+	if parentKey, ok := ctx.Value(bgParentKey{}).(string); ok && parentKey != "" {
 		placeholder.parentKey = parentKey
+	} else {
+		// 顶层会话（用户/首辅会话）直接 spawn 子代理时，ctx 里没有 bgParentKey ——
+		// 此时父就是发起这次 spawn 的会话本身。以前这里什么都不填，于是注册表里
+		// parent_channel/parent_chat_id 留空，restoreInteractiveTree(父) 永远查不到
+		// 这条记录 ⇒ 进程重启后子代理全部丢失（2026-10-21 实测：入库行是
+		// ('agent:tester/court-probe-1','','',...)）。origin* 已在本函数开头解析，
+		// 与 interactiveKey 用的是同一对值，语义一致。
+		if originChannel != "" && originChatID != "" {
+			placeholder.parentKey = originChannel + ":" + originChatID
+		}
 	}
 	if _, loaded := a.interactiveSubAgents.LoadOrStore(key, placeholder); loaded {
 		return &channelpkg.OutboundMsg{
