@@ -970,9 +970,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	}
 
 	// ─── Unified push (system notifications) ───
-	// Callbacks stay nil when no provider is enabled, so the HTTP handlers
-	// answer 503 instead of pretending push works.
-	if pushSvc != nil && !pushSvc.Registry.Empty() {
+	// Callbacks are wired whenever the push service exists (even if currently
+	// disabled), so the Web UI can enable providers at runtime without a
+	// restart. The service itself no-ops / returns "not enabled" while off.
+	if pushSvc != nil {
 		callbacks.PushNotify = func(ev web.PushEvent) {
 			pushSvc.Notify(push.Event{
 				Kind:         push.Kind(ev.Kind),
@@ -995,6 +996,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	// client can hide the toggle instead of seeing an error.
 	if pushSvc != nil {
 		callbacks.PushConfig = pushSvc.PushConfig
+		callbacks.PushSettings = pushSvc.SettingsView
+		callbacks.PushSaveSettings = pushSvc.SaveSettingsJSON
 	}
 
 	return callbacks

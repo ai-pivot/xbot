@@ -90,6 +90,65 @@ export function getPushConfig(): Promise<PushConfig> {
   return postAPI<PushConfig>(`/api/push/config?ts=${Date.now()}`)
 }
 
+export interface PushFCMConfig {
+  enable: boolean
+  project_id: string
+  credentials_file: string
+  mode: string
+}
+
+export interface PushWebPushConfig {
+  enable: boolean
+  vapid_public: string
+  vapid_private?: string
+  subject: string
+  endpoint_allowlist: string[]
+}
+
+export interface PushAPNsConfig {
+  enable: boolean
+  key_file: string
+  key_id: string
+  team_id: string
+  topic: string
+  env: string
+}
+
+export interface PushFeishuConfig {
+  enable: boolean
+}
+
+export interface PushSettings {
+  enable: boolean
+  include_preview: boolean
+  fcm?: PushFCMConfig
+  webpush?: PushWebPushConfig
+  apns?: PushAPNsConfig
+  feishu?: PushFeishuConfig
+  has_vapid_private?: boolean
+}
+
+/** Persisted push configuration (VAPID private key masked by the server). */
+export async function getPushSettings(): Promise<PushSettings> {
+  const response = await fetch('/api/push/settings', {
+    headers: { Accept: 'application/json' },
+  })
+  const envelope = await readEnvelope<PushSettings>(response)
+  if (!response.ok || !envelope.ok) {
+    throw new APIError(
+      envelope.error?.message || `request failed with status ${response.status}`,
+      envelope.error?.code || 'invalid_response',
+      response.status,
+    )
+  }
+  return (envelope.data || { enable: false, include_preview: false }) as PushSettings
+}
+
+/** Save settings; the server persists them and hot-swaps the push layer. */
+export function savePushSettings(settings: PushSettings): Promise<unknown> {
+  return postAPI('/api/push/settings', settings)
+}
+
 /** Register this browser's PushSubscription as a webpush target. */
 export function registerWebPush(
   sub: WebPushSubscription,

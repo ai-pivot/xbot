@@ -525,6 +525,13 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v75: 推送层运行配置（单行加密 JSON blob）。
+	if from < 75 {
+		if err := migrateV74ToV75(db); err != nil {
+			return fmt.Errorf("migrate to v75: %w", err)
+		}
+	}
+
 	// 迁移链只负责「版本差异」带来的变更；新加入 schema 的表（不伴随版本号变化）
 	// 由 ensureAdditiveTables 补齐，这样老库和刚迁移完的库走的是同一条收尾路径。
 	return db.ensureAdditiveTables()
@@ -3647,5 +3654,25 @@ func migrateV73ToV74(db *DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v74 (added push_targets)")
+	return nil
+}
+
+// migrateV74ToV75 adds push_settings — the runtime push configuration is a
+// single encrypted JSON blob; config.json's push block is only the initial seed.
+func migrateV74ToV75(db *DB) error {
+	migration := `
+	CREATE TABLE IF NOT EXISTS push_settings (
+	id         INTEGER PRIMARY KEY CHECK (id = 1),
+	config     TEXT NOT NULL,
+	updated_at INTEGER NOT NULL DEFAULT 0
+	);
+	`
+	if _, err := db.Conn().Exec(migration); err != nil {
+		return fmt.Errorf("migrate v74->v75: %w", err)
+	}
+	if _, err := db.Conn().Exec("UPDATE schema_version SET version = 75"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v75 (added push_settings)")
 	return nil
 }

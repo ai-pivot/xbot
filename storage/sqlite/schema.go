@@ -138,7 +138,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (74);
+INSERT INTO schema_version (version) VALUES (75);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -388,6 +388,14 @@ CREATE TABLE IF NOT EXISTS push_targets (
     UNIQUE(provider, address)
 );
 CREATE INDEX IF NOT EXISTS idx_push_targets_sender ON push_targets(sender_id);
+
+-- 推送层的运行配置（单个 JSON blob，crypto.Encrypt 加密后落库）。
+-- config.json 的 push 段只作为首次启动的种子，之后以这里为准。
+CREATE TABLE IF NOT EXISTS push_settings (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    config     TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)

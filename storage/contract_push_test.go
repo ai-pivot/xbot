@@ -135,4 +135,30 @@ func testPushStoreContract(t *testing.T, factory StorageFactory) {
 			t.Fatalf("after DeletePushTargetByID, got %d targets, want 0", len(list))
 		}
 	})
+
+	t.Run("SettingsRoundTrip", func(t *testing.T) {
+		s := factory(t)
+		defer s.Close()
+		ps := s.Config()
+
+		// Fresh DB: no settings row yet (the push service seeds it from config).
+		if raw, err := ps.GetPushSettings(); err != nil || raw != "" {
+			t.Fatalf("fresh GetPushSettings = %q, %v; want empty, nil", raw, err)
+		}
+		first := `{"enable":true,"fcm":{"enable":true,"project_id":"p"}}`
+		if err := ps.SavePushSettings(first); err != nil {
+			t.Fatalf("SavePushSettings: %v", err)
+		}
+		if got, err := ps.GetPushSettings(); err != nil || got != first {
+			t.Fatalf("GetPushSettings = %q, %v; want %q", got, err, first)
+		}
+		// Upsert, not duplicate row.
+		second := `{"enable":false}`
+		if err := ps.SavePushSettings(second); err != nil {
+			t.Fatalf("SavePushSettings(update): %v", err)
+		}
+		if got, err := ps.GetPushSettings(); err != nil || got != second {
+			t.Fatalf("GetPushSettings after update = %q, %v; want %q", got, err, second)
+		}
+	})
 }

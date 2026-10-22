@@ -10,6 +10,7 @@ import {
   type WebPushSubscription,
 } from '@/lib/api'
 import { SettingsSection } from './SettingsSection'
+import { SettingsPushConfig } from './SettingsPushConfig'
 
 /** VAPID public keys are base64url; PushManager wants raw bytes. */
 function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
@@ -145,6 +146,7 @@ export function SettingsNotifications() {
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
         </div>
       </SettingsSection>
+      <SettingsPushConfig />
     </div>
   )
 }

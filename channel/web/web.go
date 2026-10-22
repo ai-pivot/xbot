@@ -286,6 +286,11 @@ type WebCallbacks struct {
 	// PushConfig returns the public push configuration for the web client
 	// (currently the VAPID public key). Enabled=false means WebPush is off.
 	PushConfig func() map[string]any
+	// PushSettings returns the persisted push settings (VAPID private masked).
+	PushSettings func() map[string]any
+	// PushSaveSettings validates/persists the settings and hot-swaps the push
+	// layer; raw is the JSON body from the UI.
+	PushSaveSettings func(raw json.RawMessage) error
 }
 
 // PushEvent is a transport-independent notification request. The push package
@@ -965,6 +970,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/push/presence", wc.authenticatedPOST(wc.handlePushPresence))
 	mux.HandleFunc("/api/push/test", wc.authenticatedPOST(wc.handlePushTest))
 	mux.HandleFunc("/api/push/config", wc.authenticatedPOST(wc.handlePushConfig))
+	mux.HandleFunc("/api/push/settings", wc.authMiddleware(wc.handlePushSettings))
 	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。
 	mux.HandleFunc("/api/plugin-files/upload", wc.authMiddleware(postOnly(wc.handlePluginFileUpload)))
 	mux.HandleFunc("/api/plugin-files/", wc.authMiddleware(wc.handlePluginFiles))

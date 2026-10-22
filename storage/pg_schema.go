@@ -235,6 +235,11 @@ func initPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			UNIQUE(provider, address)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_push_targets_sender ON push_targets(sender_id)`,
+		`CREATE TABLE IF NOT EXISTS push_settings (
+			id BIGINT PRIMARY KEY CHECK (id = 1),
+			config TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
 
 		// ── User settings ──
 		`CREATE TABLE IF NOT EXISTS user_settings (

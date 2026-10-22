@@ -72,3 +72,38 @@ func TestPushTestResponseShape(t *testing.T) {
 		t.Fatalf("sent = %#v, want 2 (%s)", data["sent"], rec.Body.String())
 	}
 }
+
+func TestPushSettingsResponseShape(t *testing.T) {
+	wc := &WebChannel{callbacks: WebCallbacks{
+		PushSettings: func() map[string]any {
+			return map[string]any{
+				"enable":          true,
+				"include_preview": false,
+				"webpush":         map[string]any{"enable": true},
+			}
+		},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/push/settings", nil)
+	req = req.WithContext(contextWithSenderID(req.Context(), "web-1"))
+	rec := httptest.NewRecorder()
+
+	wc.handlePushSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	data, _ := raw["data"].(map[string]any)
+	if data == nil {
+		t.Fatalf("data is not an object: %s", rec.Body.String())
+	}
+	if _, nested := data["data"]; nested {
+		t.Fatalf("response is double-wrapped (data.data): %s", rec.Body.String())
+	}
+	if data["enable"] != true {
+		t.Fatalf("enable = %#v, want true", data["enable"])
+	}
+}

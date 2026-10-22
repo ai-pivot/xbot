@@ -589,6 +589,31 @@ func (s *sqliteConfigStore) TouchPushTargets(ids []int64, at time.Time) error {
 	return nil
 }
 
+// ─── Push settings (push_settings) ───
+
+func (s *sqliteConfigStore) GetPushSettings() (string, error) {
+	var raw string
+	err := s.db.Conn().QueryRow(`SELECT config FROM push_settings WHERE id = 1`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get push settings: %w", err)
+	}
+	return raw, nil
+}
+
+func (s *sqliteConfigStore) SavePushSettings(blob string) error {
+	_, err := s.db.Conn().Exec(`
+INSERT INTO push_settings (id, config, updated_at) VALUES (1, ?, ?)
+ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = excluded.updated_at`,
+		blob, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("save push settings: %w", err)
+	}
+	return nil
+}
+
 // ─── Web UI authentication (web_users) ───
 //
 // Backend-specific SQL lives here (not in channel/web): the web channel only

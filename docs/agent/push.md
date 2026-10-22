@@ -54,41 +54,36 @@ FCM / WebPush / APNs / Feishu Provider
   **transient 错误**指数退避重试 3 次；**auth 错误**由 provider 刷新凭据后重试一次。
 - 队列满/限流/去重都只计数 + 日志，**绝不阻塞 agent**。
 
-## 配置
+## 配置（Storage 为准）
+
+推送配置**保存在数据库**（`push_settings`，单个加密 JSON blob）；`config.json` 的
+`push` 段只在**首次启动**时作为种子写入数据库，之后以数据库为准。Web 设置 →
+**通知 → 推送配置（服务端）** 可以直接修改并保存，服务端会**热切换** runtime（不重启）。
 
 ```json
+// config.json 的 push 段仅首次启动生效（种子）
 {
   "push": {
     "enable": true,
     "include_preview": true,
-    "fcm": {
-      "enable": true,
-      "project_id": "xbot-android-push",
-      "credentials_file": "~/.xbot/fcm-service-account.json",
-      "mode": "data"
-    },
-    "webpush": {
-      "enable": false,
-      "vapid_public": "...",
-      "vapid_private": "...",
-      "subject": "mailto:you@example.com",
-      "endpoint_allowlist": ["fcm.googleapis.com", "push.services.mozilla.com"]
-    },
-    "apns": { "enable": false },
-    "feishu": { "enable": false }
+    "fcm": { "enable": true, "project_id": "...", "credentials_file": "/home/you/.xbot/fcm-service-account.json", "mode": "data" },
+    "webpush": { "enable": true, "vapid_public": "...", "vapid_private": "...", "subject": "mailto:...", "endpoint_allowlist": ["fcm.googleapis.com"] }
   }
 }
 ```
 
-- `push.enable` 是总开关；某个 provider 配错只会在启动日志里告警并禁用该 provider，
-  不会阻塞 server 启动。
-- **秘密只从文件/环境变量读**：FCM service account、APNs `.p8`、VAPID private。
-  不打印、不落库、不进仓库。
-- `webpush.endpoint_allowlist` 是 **SSRF 闸门**（endpoint 由浏览器提供）；为空时
-  WebPush provider 直接拒绝初始化。
-- FCM `mode`：
-  - `data`（默认）：服务端只发 data，app 自己弹通知（渠道/深链/前台抑制可控）；
-  - `notification`：系统直接展示（OEM 更稳），app 无法定制/抑制。
+- **读取**：`GET /api/push/settings`（VAPID private 返回空串 + `has_vapid_private`）；
+  **保存**：`POST /api/push/settings`（完整配置；private 留空 = 保持原值），
+  校验通过后加密落库并重建 registry/notifier。
+- **落库加密**：`crypto.Encrypt`（AES-256-GCM，`XBOT_ENCRYPTION_KEY`；未设置时
+  passthrough 并告警，与 LLM API key 同策略）。
+- **秘密仍在文件里**：FCM service account / APNs `.p8` 的实际内容留在磁盘，
+  数据库只存**路径**；VAPID private 是唯一进库的秘密。
+- `push.enable` 是总开关；关闭时保留配置但不发送。
+- `webpush.endpoint_allowlist` 是 **SSRF 闸门**；WebPush 启用时必填。
+- FCM `mode`：`data`（app 自己弹通知）/ `notification`（系统展示）；保存后立即生效。
+- 数据库 v75 新增 `push_settings`；`push_targets`（订阅目标）本来就是高频数据，
+  一直在 Storage。
 
 ## HTTP API（都在 web channel 的 auth 之后）
 

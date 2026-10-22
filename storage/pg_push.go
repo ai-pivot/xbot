@@ -3,8 +3,11 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ─── Push targets (push_targets) — PostgreSQL backend ───
@@ -100,6 +103,31 @@ func (s *pgConfigStore) TouchPushTargets(ids []int64, at time.Time) error {
 		`UPDATE push_targets SET last_seen_at = $1 WHERE id = ANY($2::bigint[])`, at, ids)
 	if err != nil {
 		return fmt.Errorf("touch push targets: %w", err)
+	}
+	return nil
+}
+
+// ─── Push settings (push_settings) ───
+
+func (s *pgConfigStore) GetPushSettings() (string, error) {
+	var raw string
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT config FROM push_settings WHERE id = 1`).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get push settings: %w", err)
+	}
+	return raw, nil
+}
+
+func (s *pgConfigStore) SavePushSettings(blob string) error {
+	_, err := s.pool.Exec(context.Background(), `
+INSERT INTO push_settings (id, config, updated_at) VALUES (1, $1, now())
+ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, blob)
+	if err != nil {
+		return fmt.Errorf("save push settings: %w", err)
 	}
 	return nil
 }

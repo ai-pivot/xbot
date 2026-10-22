@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -179,6 +180,45 @@ func (wc *WebChannel) handlePushConfig(w http.ResponseWriter, r *http.Request) {
 		cfg = wc.callbacks.PushConfig()
 	}
 	writeJSON(w, http.StatusOK, cfg)
+}
+
+// handlePushSettings reads/saves the persisted push configuration. GET is
+// sanitized (VAPID private key masked); POST validates, persists, and hot-swaps
+// the push layer without a server restart.
+func (wc *WebChannel) handlePushSettings(w http.ResponseWriter, r *http.Request) {
+	if senderIDFromContext(r.Context()) == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if wc.callbacks.PushSettings == nil {
+			jsonErrorResponse(w, http.StatusServiceUnavailable, "push is not enabled")
+			return
+		}
+		writeJSON(w, http.StatusOK, wc.callbacks.PushSettings())
+	case http.MethodPost:
+		if wc.callbacks.PushSaveSettings == nil {
+			jsonErrorResponse(w, http.StatusServiceUnavailable, "push is not enabled")
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			jsonErrorResponse(w, http.StatusBadRequest, "read request body failed")
+			return
+		}
+		if len(body) == 0 {
+			jsonErrorResponse(w, http.StatusBadRequest, "empty request body")
+			return
+		}
+		if err := wc.callbacks.PushSaveSettings(json.RawMessage(body)); err != nil {
+			jsonErrorResponse(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{})
+	default:
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 // notifyPush forwards one semantic event; the callback is non-blocking.

@@ -495,6 +495,12 @@ type PushStore interface {
 	ListPushTargetsBySender(senderID string) ([]PushTarget, error)
 	// TouchPushTargets updates last_seen_at for delivered targets (best effort).
 	TouchPushTargets(ids []int64, at time.Time) error
+
+	// Push settings are a single encrypted JSON blob (crypto.Encrypt at rest).
+	// GetPushSettings returns "" when the table has no row yet (bootstrap from
+	// config.push is then used and saved by the push service).
+	GetPushSettings() (string, error)
+	SavePushSettings(configBlob string) error
 }
 
 // OAuthToken is one stored OAuth credential, in backend-neutral form.
