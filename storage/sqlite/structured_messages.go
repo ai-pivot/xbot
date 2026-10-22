@@ -234,11 +234,14 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 
 		// 2. 目标必须存在且仍然开着。
 		var answered, cancelledCol int
-		var targetKind, targetSender string
+		var targetKind, targetSender, targetChat string
+		// chat_id 也要取出来：id 只在会话库内自增、跨会话不唯一，只按
+		// (tenant_id,id) 会让 A 会话的批红关掉 B 会话的同号 report
+		// （decision 写进 A，B 的收件箱却被静默收敛）—— P0 批红错位的一半根因。
 		qerr := store.QueryRow(`
-			SELECT COALESCE(answered, 0), COALESCE(cancelled, 0), COALESCE(kind, ''), COALESCE(sender_id, '')
+			SELECT COALESCE(answered, 0), COALESCE(cancelled, 0), COALESCE(kind, ''), COALESCE(sender_id, ''), COALESCE(chat_id, '')
 			  FROM session_messages WHERE tenant_id = ? AND id = ?`,
-			tenantID, targetID).Scan(&answered, &cancelledCol, &targetKind, &targetSender)
+			tenantID, targetID).Scan(&answered, &cancelledCol, &targetKind, &targetSender, &targetChat)
 		if errors.Is(qerr, sql.ErrNoRows) {
 			return ErrStructuredNotFound
 		}
@@ -247,6 +250,11 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 		}
 		if targetKind != StructuredKindReport && targetKind != StructuredKindAskUser {
 			return fmt.Errorf("%w (target %d has kind=%q)", ErrDecisionTargetNotDecidable, targetID, targetKind)
+		}
+		// 跨会话保护：两侧都有 chat_id 时必须一致。历史行（2026-10-22 之前写入、
+		// chat_id 为空）放行以保持兼容，否则会误杀既有批红数据。
+		if targetChat != "" && m.ChatID != "" && targetChat != m.ChatID {
+			return ErrStructuredNotFound
 		}
 		// 自批禁止：CHARTER §3「部门不能批自己的 report」。
 		// 2026-10-22 兵部审计可复现：部门 A 发 report 拿到 id 后自己发 decision，
@@ -266,9 +274,9 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 		// 3. CAS：只有未批红未取消才推进（并发批红只有一次成功）。
 		res, uerr := store.Exec(`
 			UPDATE session_messages SET answered = 1
-			 WHERE tenant_id = ? AND id = ? AND answered = 0 AND cancelled = 0
-			   AND kind IN (?, ?)`,
-			tenantID, targetID, StructuredKindReport, StructuredKindAskUser)
+			 WHERE tenant_id = ? AND id = ? AND (chat_id = ? OR chat_id = '')
+			   AND answered = 0 AND cancelled = 0 AND kind IN (?, ?)`,
+			tenantID, targetID, m.ChatID, StructuredKindReport, StructuredKindAskUser)
 		if uerr != nil {
 			return fmt.Errorf("mark decision target answered: %w", uerr)
 		}
