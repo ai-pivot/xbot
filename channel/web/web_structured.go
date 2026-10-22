@@ -288,6 +288,8 @@ func writeStructuredError(w http.ResponseWriter, err error) {
 		jsonErrorResponse(w, http.StatusConflict, "already answered")
 	case errors.Is(err, sqlite.ErrAskUserCancelled):
 		jsonErrorResponse(w, http.StatusConflict, "cancelled")
+	case errors.Is(err, sqlite.ErrDecisionTargetNotDecidable):
+		jsonErrorResponse(w, http.StatusConflict, "target is not a decidable report/ask_user")
 	case strings.Contains(strings.ToLower(err.Error()), "access denied"):
 		jsonErrorResponse(w, http.StatusForbidden, "access denied")
 	case strings.Contains(strings.ToLower(err.Error()), "invalid"):

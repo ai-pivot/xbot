@@ -55,10 +55,14 @@ var StructuredMessageKinds = map[string]bool{
 // answer 闭环的目标是 ask_user 行，decision 闭环的目标是 report 行，
 // 两者共用同一套 CAS（AnswerAskUser / AppendDecision）。
 var (
-	ErrStructuredNotFound  = errors.New("structured message not found")
-	ErrAskUserAnswered     = errors.New("target already answered")
-	ErrAskUserCancelled    = errors.New("target already cancelled")
-	ErrIdempotencyConflict = errors.New("idempotency key conflict")
+	ErrStructuredNotFound = errors.New("structured message not found")
+	ErrAskUserAnswered    = errors.New("target already answered")
+	ErrAskUserCancelled   = errors.New("target already cancelled")
+	// ErrDecisionTargetNotDecidable：批红目标不是可批对象。
+	// 2026-10-22 实测漏洞：reply_to 指向一条 assistant 空行（kind=""）也能"批红成功"，
+	// 因为 CAS 只校验 answered/cancelled，从不校验 kind。批红必须落在 report/ask_user 上。
+	ErrDecisionTargetNotDecidable = errors.New("decision target is not a report or ask_user")
+	ErrIdempotencyConflict        = errors.New("idempotency key conflict")
 )
 
 // StructuredMessage 是一条结构化消息行的完整形态。
@@ -228,15 +232,19 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 
 		// 2. 目标必须存在且仍然开着。
 		var answered, cancelledCol int
+		var targetKind string
 		qerr := store.QueryRow(`
-			SELECT COALESCE(answered, 0), COALESCE(cancelled, 0)
+			SELECT COALESCE(answered, 0), COALESCE(cancelled, 0), COALESCE(kind, '')
 			  FROM session_messages WHERE tenant_id = ? AND id = ?`,
-			tenantID, targetID).Scan(&answered, &cancelledCol)
+			tenantID, targetID).Scan(&answered, &cancelledCol, &targetKind)
 		if errors.Is(qerr, sql.ErrNoRows) {
 			return ErrStructuredNotFound
 		}
 		if qerr != nil {
 			return fmt.Errorf("lookup decision target: %w", qerr)
+		}
+		if targetKind != StructuredKindReport && targetKind != StructuredKindAskUser {
+			return fmt.Errorf("%w (target %d has kind=%q)", ErrDecisionTargetNotDecidable, targetID, targetKind)
 		}
 		if cancelledCol != 0 {
 			return ErrAskUserCancelled
@@ -248,8 +256,9 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 		// 3. CAS：只有未批红未取消才推进（并发批红只有一次成功）。
 		res, uerr := store.Exec(`
 			UPDATE session_messages SET answered = 1
-			 WHERE tenant_id = ? AND id = ? AND answered = 0 AND cancelled = 0`,
-			tenantID, targetID)
+			 WHERE tenant_id = ? AND id = ? AND answered = 0 AND cancelled = 0
+			   AND kind IN (?, ?)`,
+			tenantID, targetID, StructuredKindReport, StructuredKindAskUser)
 		if uerr != nil {
 			return fmt.Errorf("mark decision target answered: %w", uerr)
 		}
