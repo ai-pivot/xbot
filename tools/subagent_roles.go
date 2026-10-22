@@ -69,19 +69,33 @@ var xbotHomeDir string
 func roleRulesHome() string { return xbotHomeDir }
 
 func InitAgentRoles(dir string) error {
+	// XBOT_HOME = agents 目录的父目录，用于解析 role frontmatter 里 rules 的相对路径。
+	//
+	// 必须在存在性检查**之前**无条件赋值：agents 目录不存在的部署（以及用户私有
+	// agents 目录里声明了 rules 的场景）若 xbotHomeDir 为空，所有相对 rules 都会被
+	// "XBOT_HOME unknown" 静默拒绝 —— 表现为部门起得来但不带规矩。
+	if dir != "" { // 空路径的 filepath.Dir 是 "."，会把 cwd 当成 XBOT_HOME
+		xbotHomeDir = filepath.Dir(dir)
+	}
+
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		log.WithField("dir", dir).Info("Agents directory not found, no predefined roles")
 		return nil
 	}
 	agentsDir = dir
-	// XBOT_HOME = agents 目录的父目录，用于解析 role frontmatter 里 rules 的相对路径。
-	xbotHomeDir = filepath.Dir(dir)
-	// 验证目录可读
+	// 验证目录可读。加载器对"单个子目录里的坏定义"只告警跳过（不拖垮其它目录），
+	// 所以这里清零计数后读一次，把散落的告警汇总成一条 —— 否则少 role 只表现为
+	// 运行期的 unknown role，没人能从中看出是"某个 frontmatter 写坏了"。
+	skippedRoleDefs.Store(0)
 	roles, err := LoadAgentRoles(dir)
 	if err != nil {
 		return fmt.Errorf("validate agent roles in %s: %w", dir, err)
 	}
 	log.WithField("count", len(roles)).Info("Agent roles directory configured")
+	if n := skippedRoleDefs.Load(); n > 0 {
+		log.WithFields(log.Fields{"dir": dir, "skipped": n, "loaded": len(roles)}).
+			Warn("Skipped some agent role definitions (see preceding warnings) — those roles are unavailable")
+	}
 	return nil
 }
 

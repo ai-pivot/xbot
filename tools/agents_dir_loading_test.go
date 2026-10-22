@@ -134,7 +134,9 @@ func TestAllSpawnCallSitesInjectRoleRules(t *testing.T) {
 				continue
 			}
 			checked++
-			if !strings.Contains(line, "appendRoleRules") {
+			// appendRoleRules 是工具层薄包装；RoleSystemPrompt 是它的导出版（同一个实现）。
+			// 两者都算"注入了 rules"，但其它写法（裸传 role.SystemPrompt）必须红。
+			if !strings.Contains(line, "appendRoleRules") && !strings.Contains(line, "RoleSystemPrompt") {
 				t.Errorf("%s:%d spawn/send 调用点未注入 role rules（绕过路径）: %s",
 					f, i+1, strings.TrimSpace(line))
 			}
@@ -201,5 +203,47 @@ body`)
 	}
 	if _, ok := got["gongbu"]; ok {
 		t.Fatal("namespaced role must not also appear unprefixed")
+	}
+}
+
+// TestLoadAgentRoles_SkipsHiddenDirs —— 隐藏目录（`.git` 等）不得成为命名空间。
+//
+// agents 目录本身通常是个 git 仓库（$XBOT_HOME/agents/.git 真实存在）。递归进去今天
+// 可能碰巧没有 *.md，但只要有人放一个带 frontmatter 的 md（.git/xxx.md、docs/README.md），
+// 就会凭空多出一个 role（`.git.evil`）—— 那种 role 能被 spawn，绕过命名空间意图。
+func TestLoadAgentRoles_SkipsHiddenDirs(t *testing.T) {
+	root := t.TempDir()
+	writeMD(t, filepath.Join(root, "flat.md"), "---\nname: flat\ndescription: d\n---\nbody")
+	writeMD(t, filepath.Join(root, "court", "gongbu.md"), "---\nname: gongbu\ndescription: d\n---\nbody")
+	// 顶层隐藏目录（模拟 .git）
+	writeMD(t, filepath.Join(root, ".git", "objects", "ab", "cdef.md"), "---\nname: evil\ndescription: d\n---\nbody")
+	// 命名空间内部的隐藏子目录
+	writeMD(t, filepath.Join(root, "court", ".cache", "sneaky.md"), "---\nname: sneaky\ndescription: d\n---\nbody")
+
+	for _, tc := range []struct {
+		name string
+		load func() ([]SubAgentRole, error)
+	}{
+		{"local", func() ([]SubAgentRole, error) { return LoadAgentRoles(root) }},
+		{"sandbox", func() ([]SubAgentRole, error) {
+			return LoadAgentRolesSandbox(context.Background(), root, &NoneSandbox{}, "u")
+		}},
+	} {
+		roles, err := tc.load()
+		if err != nil {
+			t.Fatalf("%s: load: %v", tc.name, err)
+		}
+		got := map[string]bool{}
+		for _, r := range roles {
+			got[r.Name] = true
+		}
+		if !got["flat"] || !got["court.gongbu"] {
+			t.Fatalf("%s: 正常 role 丢失: %v", tc.name, got)
+		}
+		for _, bad := range []string{"evil", ".git.evil", "sneaky", "court..cache.sneaky"} {
+			if got[bad] {
+				t.Fatalf("%s: 隐藏目录被当成命名空间，产生了 role %q: %v", tc.name, bad, got)
+			}
+		}
 	}
 }

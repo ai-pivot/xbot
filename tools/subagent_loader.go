@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"unicode"
 
 	log "xbot/logger"
@@ -23,6 +24,23 @@ import (
 // 子目录用 "." 连接成名字空间。**刻意不用 "/"**：interactiveKey 形如
 // `<channel>:<chatID>/<role>:<instance>`，role 里若含 "/" 会让
 // parseInteractiveKeyTail 的 LastIndex("/") 解析错误。
+// skippedRoleDefs 统计"被跳过的 role 定义文件/子目录"数（解析失败、目录不可读）。
+//
+// 只做**计数**不做二次扫描：加载热路径（GetSubAgentRole 每次调用都重新加载，
+// 支持热更新）上多扫一遍代价不可接受。InitAgentRoles 在启动时清零后读一次，
+// 打一条汇总 warn —— 否则"少了一个 role"只表现为调用方的 unknown role。
+var skippedRoleDefs atomic.Int64
+
+// isHiddenAgentDir 判断目录项是否应被当成"隐藏/内部目录"跳过。
+//
+// agents 目录本身通常就是个 git 仓库（$XBOT_HOME/agents/.git 真实存在）：
+// 递归进去虽然今天没有 *.md 所以不产生假 role，但只要有人在里面放一个带
+// frontmatter 的 .md（docs/README.md、.git/xxx.md），就会凭空多出一个 role。
+// 与其靠"里面碰巧没有 md"这种运气，不如显式跳过 . 开头的目录。
+func isHiddenAgentDir(name string) bool {
+	return strings.HasPrefix(name, ".")
+}
+
 func LoadAgentRoles(dir string) ([]SubAgentRole, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -33,9 +51,13 @@ func LoadAgentRoles(dir string) ([]SubAgentRole, error) {
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
+			if isHiddenAgentDir(entry.Name()) {
+				continue // .git 等内部目录不参与命名空间（见 isHiddenAgentDir）
+			}
 			// 子目录 = 命名空间。单个子目录解析失败不影响其它目录（告警跳过）。
 			sub, err := loadAgentRolesNamespaced(path, entry.Name())
 			if err != nil {
+				skippedRoleDefs.Add(1)
 				log.WithFields(log.Fields{"dir": path, "error": err.Error()}).
 					Warn("Failed to load namespaced agent roles, skipping directory")
 				continue
@@ -65,8 +87,12 @@ func loadAgentRolesNamespaced(dir, prefix string) ([]SubAgentRole, error) {
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
+			if isHiddenAgentDir(entry.Name()) {
+				continue // 同顶层：隐藏目录不是命名空间
+			}
 			sub, err := loadAgentRolesNamespaced(path, prefix+"."+entry.Name())
 			if err != nil {
+				skippedRoleDefs.Add(1)
 				log.WithFields(log.Fields{"dir": path, "error": err.Error()}).
 					Warn("Failed to load namespaced agent roles, skipping directory")
 				continue
@@ -79,6 +105,7 @@ func loadAgentRolesNamespaced(dir, prefix string) ([]SubAgentRole, error) {
 		}
 		role, err := ParseAgentFile(path)
 		if err != nil {
+			skippedRoleDefs.Add(1)
 			log.WithFields(log.Fields{"file": path, "error": err.Error()}).
 				Warn("Failed to parse agent file, skipping")
 			continue
@@ -111,6 +138,9 @@ func loadAgentRolesSandboxDir(ctx context.Context, dir, prefix string, sb Sandbo
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name)
 		if entry.IsDir {
+			if isHiddenAgentDir(entry.Name) {
+				continue // 与本地版一致：隐藏目录不是命名空间
+			}
 			// 单个子目录失败不拖垮其它目录（与本地版 LoadAgentRoles 一致）。
 			sub, err := loadAgentRolesSandboxDir(ctx, path, prefix+entry.Name+".", sb, userID)
 			if err != nil {

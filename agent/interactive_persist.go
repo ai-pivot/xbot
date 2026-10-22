@@ -164,6 +164,9 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec sqlite.InteractiveAgent
 	}
 
 	// 2) 重建 RunConfig：复用 spawn 的构造路径，保证工具集/提示词/模型与首次一致。
+	//
+	// 提示词必须带 role rules（如 court/CHARTER.md）：这里只传 role.SystemPrompt 的话，
+	// 重启后恢复出来的部门会静默丢掉自己声明的规则（2026-10-22 review 发现的绕过路径）。
 	parentMsg := bus.InboundMessage{
 		Channel:  rec.ParentChannel,
 		ChatID:   rec.ParentChatID,
@@ -172,7 +175,7 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec sqlite.InteractiveAgent
 	}
 	parentCtx := a.buildParentToolContext(ctx, rec.ParentChannel, rec.ParentChatID, rec.OriginUserID, parentMsg)
 	cfg, err := a.buildSubAgentRunConfig(
-		ctx, parentCtx, rec.Task, role.SystemPrompt, role.AllowedTools, role.Capabilities,
+		ctx, parentCtx, rec.Task, tools.RoleSystemPrompt(role), role.AllowedTools, role.Capabilities,
 		role.Name, true, rec.Instance, rec.ModelName)
 	if err != nil {
 		return err

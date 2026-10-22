@@ -718,7 +718,14 @@ func (a *Agent) buildSubAgentRunConfig(
 	cwd, workDir, isWorktreeIsolated := resolveSubAgentCWD(parentCtx, workDir)
 	cwdPart := "\n- 当前目录：" + cwd
 
-	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）
+	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）。
+	//
+	// 兜底注入 role rules（roles frontmatter 的 `rules:`，如 court/CHARTER.md）：
+	// 这是子代理 system prompt 的**唯一汇聚点**，而 spawn 入口有三类（SubAgent 工具 /
+	// CreateChat 的 agent 与 group 两种 / 重启恢复）。任何入口漏注入都只会表现为
+	// "部门静默不带规矩"，不会编译失败也不会红测试 —— 所以在这里按 roleName 再补一次。
+	// 幂等语义见 tools.RolePromptForName（只在调用方没注入过时才补）。
+	systemPrompt = tools.RolePromptForName(roleName, systemPrompt)
 	rolePrompt := strings.TrimSpace(systemPrompt)
 	if rolePrompt == "" {
 		rolePrompt = "You are a helpful assistant. Complete the given task using the available tools."
