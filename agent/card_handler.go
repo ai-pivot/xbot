@@ -70,11 +70,13 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 
 	if err := a.sendMessage(msg.Channel, msg.ChatID, finalContent); err != nil {
 		log.Ctx(ctx).WithError(err).Error("Failed to send card response via sendMessage")
+		// 同一条规则：turn 域出站消息必须带回合身份（见 outboundTurnID）。
 		return &channel.OutboundMsg{
 			Channel:  msg.Channel,
 			ChatID:   msg.ChatID,
 			Content:  finalContent,
 			Metadata: msg.Metadata,
+			TurnID:   a.outboundTurnID(msg.Channel, msg.ChatID, msg.Metadata, 0),
 		}, nil
 	}
 	return nil, nil
