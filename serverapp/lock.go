@@ -21,7 +21,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // serverLock 是当前 serve 进程持有的 home 级独占锁。
@@ -47,7 +46,7 @@ func AcquireServerLock(home string) (*serverLock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open server lock %s: %w", p, err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockFileExclusive(f); err != nil {
 		// 把现有持锁者读出来，报错信息要能直接定位是哪个进程占着。
 		buf := make([]byte, 64)
 		n, _ := f.ReadAt(buf, 0)
@@ -74,7 +73,7 @@ func (l *serverLock) Release() {
 	if l == nil || l.f == nil {
 		return
 	}
-	_ = syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
+	_ = unlockFile(l.f)
 	_ = l.f.Close()
 	l.f = nil
 }

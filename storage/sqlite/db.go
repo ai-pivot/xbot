@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	log "xbot/logger"
@@ -122,7 +121,7 @@ func acquireDBLock(path string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database lock file %s: %w", lockPath, err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := flockExclusive(f); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("database %s is already in use by another xbot process (flock %s: %w) "+
 			"— refusing to open it: two processes sharing one WAL database can corrupt it",
@@ -152,7 +151,7 @@ func releaseDBLock(path string) {
 		return
 	}
 	delete(dbLocks.m, path)
-	_ = syscall.Flock(int(e.f.Fd()), syscall.LOCK_UN)
+	_ = funlock(e.f)
 	_ = e.f.Close()
 }
 
