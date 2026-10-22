@@ -304,6 +304,15 @@ type AgentConfig struct {
 	MCPCleanupInterval   Duration `json:"mcp_cleanup_interval"`
 	SessionCacheTimeout  Duration `json:"session_cache_timeout"`
 
+	// InteractiveSessionTTL 是 interactive SubAgent（SubAgent 工具 spawn 的
+	// 子代理）会话的空闲存活时间：超过它没有收到 send 就被 TTL 清理，连带
+	// 销毁其会话库。默认 30m（与历史硬编码一致）。
+	//
+	// 之所以要可配：硬编码 30m 让"长时间挂着的子代理"（court 部门代理、需要
+	// 人工隔很久回话的会话）每次都要重建上下文；也让复现/压测无法把 TTL
+	// 压到秒级（>0，0 = 用默认值；环境变量 INTERACTIVE_SESSION_TTL）。
+	InteractiveSessionTTL Duration `json:"interactive_session_ttl,omitempty"`
+
 	ContextMode string `json:"context_mode"`
 	// EnableAutoCompress 为 nil 表示 JSON 未写该字段，Load 后与未设置 AGENT_ENABLE_AUTO_COMPRESS 一致，默认启用压缩。
 	EnableAutoCompress   *bool          `json:"enable_auto_compress,omitempty"`
@@ -1026,6 +1035,7 @@ func applyEnvOverrides(cfg *Config) {
 	setDurationEnv("MCP_INACTIVITY_TIMEOUT", &cfg.Agent.MCPInactivityTimeout)
 	setDurationEnv("MCP_CLEANUP_INTERVAL", &cfg.Agent.MCPCleanupInterval)
 	setDurationEnv("SESSION_CACHE_TIMEOUT", &cfg.Agent.SessionCacheTimeout)
+	setDurationEnv("INTERACTIVE_SESSION_TTL", &cfg.Agent.InteractiveSessionTTL)
 	setStringEnv("AGENT_CONTEXT_MODE", &cfg.Agent.ContextMode)
 	// AGENT_ENABLE_AUTO_COMPRESS: *bool — keep inline
 	if v := os.Getenv("AGENT_ENABLE_AUTO_COMPRESS"); v != "" {
@@ -1180,6 +1190,11 @@ func loadEffectiveConfig(cfg *Config) *Config {
 	}
 	if cfg.Agent.SessionCacheTimeout == 0 {
 		cfg.Agent.SessionCacheTimeout = 24 * Hour
+	}
+	if cfg.Agent.InteractiveSessionTTL == 0 {
+		// 与 agent.defaultInteractiveSessionTTL 保持一致（30m）：配置缺省时
+		// 行为必须与硬编码时代逐字节相同。
+		cfg.Agent.InteractiveSessionTTL = 30 * Minute
 	}
 	if cfg.Agent.LLMRetryAttempts == 0 {
 		cfg.Agent.LLMRetryAttempts = 5

@@ -67,6 +67,13 @@ func (m *MultiTenantSession) sessionDB(tenantID int64) (*sqlite.DB, error) {
 		entry.lastAccess = time.Now()
 		return entry.db, nil
 	}
+	// 墓碑检查（必须在 open **之前**，且与 DestroySession 的标记顺序互斥）：
+	// 已销毁租户的库文件已经被 checkpoint+close+unlink，若这里再 open，
+	// SQLite 会**新建一个空库**并把它交还给一个"以为会话还活着"的调用方 ——
+	// 那正是 2026-10-22 05:26 "close 之后又 where=open" 的现场。
+	if m.isTenantDestroyed(tenantID) {
+		return nil, fmt.Errorf("open session db (tenant %d): %w", tenantID, errSessionDestroyed)
+	}
 
 	// 解析注册表：channel/chatID（派生路径用）+ db_path/migrated。
 	channel, chatID, err := m.tenantSvc.GetTenantInfo(tenantID)
@@ -329,6 +336,10 @@ func (m *MultiTenantSession) sweepIdleSessionDBs() {
 // 先 closeSessionDB（checkpoint + close + 出池），再删文件 + -wal/-shm。
 // db_path 从注册表读取 —— 调用方必须在删除 tenants 行**之前**调用本函数。
 func (m *MultiTenantSession) deleteSessionDBFile(tenantID int64) {
+	// 先立墓碑，再动资源：从这一刻起 sessionDB() 拒绝为这个租户重新开库
+	// （与下面的 close+unlink 顺序配合，杜绝 use-after-close 的重新打开）。
+	m.markTenantDestroyed(tenantID)
+
 	m.sessionDBMu.Lock()
 	entry, pooled := m.sessionDBs[tenantID]
 	if pooled {

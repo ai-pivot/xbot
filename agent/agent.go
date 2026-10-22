@@ -472,6 +472,11 @@ type Agent struct {
 	// SubAgent 深度控制
 	maxSubAgentDepth int
 
+	// interactiveSessionTTLValue 是 interactive SubAgent 会话的空闲 TTL
+	// （agent.interactive_session_ttl）。0 = 用 defaultInteractiveSessionTTL。
+	// 读路径统一走 (*Agent).interactiveSessionTTL()。
+	interactiveSessionTTLValue time.Duration
+
 	// Cron service and scheduler
 	cronSvc storage.CronStore
 	cronSch *cron.Scheduler
@@ -1907,6 +1912,11 @@ type Config struct {
 	MCPCleanupInterval   time.Duration // MCP 清理扫描间隔
 	SessionCacheTimeout  time.Duration // 会话缓存超时
 
+	// InteractiveSessionTTL 是 interactive SubAgent 会话的空闲 TTL
+	// （config: agent.interactive_session_ttl，默认 defaultInteractiveSessionTTL=30m）。
+	// 0 = 用默认值 —— 保持与硬编码时代完全一致的行为。
+	InteractiveSessionTTL time.Duration
+
 	// 上下文管理模式
 	// 优先级：ContextMode > EnableAutoCompress 旧字段
 	// 默认 ""，由 resolveContextMode 决定
@@ -2266,6 +2276,9 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.SessionCacheTimeout == 0 {
 		cfg.SessionCacheTimeout = 24 * time.Hour
 	}
+	if cfg.InteractiveSessionTTL <= 0 {
+		cfg.InteractiveSessionTTL = defaultInteractiveSessionTTL
+	}
 	if cfg.MaxContextTokens == 0 {
 		cfg.MaxContextTokens = 100000 // 默认 100k token
 	}
@@ -2316,6 +2329,8 @@ func New(cfg Config) (*Agent, error) {
 		directWorkspace:  cfg.DirectWorkspace,
 		globalSkillDirs:  resolveGlobalSkillsDirs(cfg.SkillsDir),
 		maxSubAgentDepth: cfg.MaxSubAgentDepth,
+		// interactive SubAgent 空闲 TTL（agent.interactive_session_ttl）。
+		interactiveSessionTTLValue: cfg.InteractiveSessionTTL,
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 		agentsDir: filepath.Join(cfg.WorkDir, ".xbot", "agents"),
 		xbotHome:  cfg.XbotHome,

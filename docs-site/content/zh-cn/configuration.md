@@ -197,7 +197,8 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
     "llm_retry_timeout": "120s",
     "mcp_inactivity_timeout": "30m",
     "mcp_cleanup_interval": "5m",
-    "session_cache_timeout": "24h"
+    "session_cache_timeout": "24h",
+    "interactive_session_ttl": "30m"
   }
 }
 ```
@@ -220,6 +221,7 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 | `mcp_inactivity_timeout` | duration | `"30m"` | MCP Server 非活动超时 |
 | `mcp_cleanup_interval` | duration | `"5m"` | MCP 清理间隔 |
 | `session_cache_timeout` | duration | `"24h"` | Session 缓存超时 |
+| `interactive_session_ttl` | duration | `"30m"` | 子代理（interactive SubAgent）会话空闲存活时间；超时即销毁会话及其会话库。环境变量 `INTERACTIVE_SESSION_TTL`。设为 `0`/省略 = 默认 30m |
 
 重试次数省略或为 `0` 时使用默认 5 次总尝试（含首次调用），不表示无限重试。初始/最大延迟为零时使用 1s/30s。服务端显式 `--config` 文件与默认配置使用相同的默认值和环境变量覆盖规则。服务商错误码 `unsupported_country_region_territory` 立即返回，其他错误仍按有限次数进行指数退避。
 

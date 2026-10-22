@@ -76,7 +76,7 @@ func TestDestroyInteractiveSessionEmitsOncePerKey(t *testing.T) {
 }
 
 // TestCleanupExpiredSessionsEmitsRemovedSubagentStopped verifies the TTL-eviction
-// path: an idle session past interactiveSessionTTL is destroyed AND emits
+// path: an idle session past defaultInteractiveSessionTTL is destroyed AND emits
 // subagent_stopped(removed) — previously the eviction was silent, leaving the
 // sidebar row until the next tree refresh. Running sessions must never be
 // reaped.
@@ -89,14 +89,14 @@ func TestCleanupExpiredSessionsEmitsRemovedSubagentStopped(t *testing.T) {
 	a.interactiveSubAgents.Store(key, &interactiveAgent{
 		roleName: "explore",
 		instance: "mem-1",
-		lastUsed: time.Now().Add(-2 * interactiveSessionTTL),
+		lastUsed: time.Now().Add(-2 * defaultInteractiveSessionTTL),
 		running:  false,
 	})
 	runningKey := "web:chat-1/build:keep"
 	a.interactiveSubAgents.Store(runningKey, &interactiveAgent{
 		roleName: "build",
 		instance: "keep",
-		lastUsed: time.Now().Add(-2 * interactiveSessionTTL),
+		lastUsed: time.Now().Add(-2 * defaultInteractiveSessionTTL),
 		running:  true, // running sessions are never reaped (parent may block on Run)
 	})
 

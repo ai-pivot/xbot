@@ -639,8 +639,25 @@ func (s *runState) notifyThinking(iteration int) {
 	}
 }
 
-// assertSystemMessages checks that messages have exactly one system message.
-// Returns a RunOutput error if the assertion fails, nil otherwise.
+// assertSystemMessages enforces the "exactly one system message" invariant and,
+// when it can be satisfied, REPAIRS the message list instead of failing the turn.
+//
+// 2026-10-22 P0（"Error: assert: LLM messages must have exactly one system
+// message; got 0" —— 子代理会话因此整条不可用，只能 unload 重建）：
+// 旧实现是纯断言：system 条数 != 1 直接把 Run 判死，用户拿到的只有一句
+//
+//	"内部错误：system 消息数量异常" + 一条 assert 错误串
+//
+// —— 既没说是哪个会话、为什么缺，也没告诉用户怎么办。
+//
+// 现在分三档：
+//  1. 恰好 1 条 → 通过。
+//  2. >1 条 → 保留第一条，丢掉其余（与 middleware.Assemble 的安全降级同策略：
+//     历史里混进 system 只可能是上游 bug，不该让整个 turn 失败）。
+//  3. 0 条 → 无法凭空造出正确的 system prompt（session 从不持久化 system），
+//     给出**点名会话 + 说明最可能原因 + 给出处置动作**的可读错误。
+//
+// Returns a RunOutput error if the invariant cannot be satisfied, nil otherwise.
 func (s *runState) assertSystemMessages(ctx context.Context) *RunOutput {
 	var systemCount int
 	for _, m := range s.messages {
@@ -648,16 +665,60 @@ func (s *runState) assertSystemMessages(ctx context.Context) *RunOutput {
 			systemCount++
 		}
 	}
-	if systemCount != 1 {
-		log.Ctx(ctx).WithField("system_count", systemCount).Error("assert: LLM messages must have exactly one system message")
-		return s.buildOutput(&channel.OutboundMsg{
-			Channel: s.cfg.Channel,
-			ChatID:  s.cfg.ChatID,
-			Content: "内部错误：system 消息数量异常",
-			Error:   fmt.Errorf("assert: LLM messages must have exactly one system message; got %d", systemCount),
-		})
+	if systemCount == 1 {
+		return nil
 	}
-	return nil
+
+	if systemCount > 1 {
+		filtered := make([]llm.ChatMessage, 0, len(s.messages))
+		kept := false
+		for _, m := range s.messages {
+			if m.Role == "system" {
+				if kept {
+					continue
+				}
+				kept = true
+			}
+			filtered = append(filtered, m)
+		}
+		s.messages = filtered
+		log.Ctx(ctx).WithFields(log.Fields{
+			"system_count": systemCount,
+			"agent":        s.cfg.AgentID,
+			"chat_id":      s.cfg.ChatID,
+			"channel":      s.cfg.Channel,
+		}).Warn("Run: more than one system message in the message list — kept the first, dropped the rest")
+		return nil
+	}
+
+	// systemCount == 0
+	roles := make([]string, 0, len(s.messages))
+	for i, m := range s.messages {
+		if i >= 5 {
+			roles = append(roles, "...")
+			break
+		}
+		roles = append(roles, m.Role)
+	}
+	log.Ctx(ctx).WithFields(log.Fields{
+		"system_count": 0,
+		"agent":        s.cfg.AgentID,
+		"chat_id":      s.cfg.ChatID,
+		"channel":      s.cfg.Channel,
+		"messages":     len(s.messages),
+		"first_roles":  strings.Join(roles, ","),
+	}).Error("assert: LLM messages must have exactly one system message")
+	return s.buildOutput(&channel.OutboundMsg{
+		Channel: s.cfg.Channel,
+		ChatID:  s.cfg.ChatID,
+		Content: fmt.Sprintf("内部错误：会话 %s 的系统提示词（system message）丢失，本次调用已中止。"+
+			"常见原因：恢复出来的子代理会话没有重建 system prompt。处置：unload 该子代理后重新 spawn（或重启该会话）。",
+			s.cfg.ChatID),
+		Error: fmt.Errorf("system message missing: LLM messages must have exactly one system message, got 0 "+
+			"(agent=%q channel=%q chat=%q messages=%d roles=[%s]) — the session lost its system prompt; "+
+			"if this is a sub-agent, unload and re-spawn it",
+			s.cfg.AgentID, s.cfg.Channel, s.cfg.ChatID, len(s.messages), strings.Join(roles, ",")),
+	})
 }
 
 // updateTokenUsage syncs the current tokenTracker state into

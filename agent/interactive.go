@@ -66,6 +66,18 @@ type interactiveAgent struct {
 	subID            string              // subscription ID for TUI status bar display
 	bgTask           *tools.SubAgentTask // waitable background task (registered on background spawn) — closed on ALL completion paths
 
+	// destroyed 是**会话墓碑**：destroyInteractiveSession 在动任何资源（关库、
+	// 删文件、删租户行）之前用 CAS 置位，之后所有取用路径都必须先看它。
+	//
+	// 为什么必须存在（2026-10-22 05:26 生产 panic，exit status 2）：
+	// TTL 清理销毁会话库的同时，并发路径（消息投递 / restore / 后台通知）还能
+	// 通过 stale 引用拿到这个会话，然后对着**已经 close 掉的库**继续跑 turn、
+	// 甚至把刚删掉的库文件重新 open 出来（日志签名：close 之后紧跟
+	// "WAL state ... where=open"）。原子墓碑 + 全路径检查把这条竞态窗口关死：
+	//   - 赢下 CAS 的调用者独占销毁权（幂等，绝不二次 close / 二次 DeleteTenant）；
+	//   - 读路径看到墓碑就返回明确错误（"session was destroyed"），不再往下用库。
+	destroyed atomic.Bool
+
 	// userCtx 是会话的**用户身份快照**（spawn 时从父 ctx 捕获）。交互式会话的
 	// Run ctx 从 agentCtx 派生（跨请求存活），不携带 UserContext —— 嵌套 spawn
 	//（SubAgent 工具）因此拿到 nil 接收者而 panic（生产 cli-panic.log 50/50，
@@ -153,8 +165,68 @@ func (ia *interactiveAgent) compressRatio() float64 {
 	return ia.cfg.ContextManagerConfig.CompressionThreshold
 }
 
-// interactiveSessionTTL 是 interactive SubAgent 会话的生存时间。
-const interactiveSessionTTL = 30 * time.Minute
+// ensureSystemPromptLocked 保证会话拼装链的第一条是**一条合法的 system 消息**。
+// 必须在持有 ia.mu 时调用。
+//
+// 为什么需要它（2026-10-22 P0：连续两次 spawn lead 会话后报
+// "assert: LLM messages must have exactly one system message; got 0"，会话直接
+// 不可用，只能 unload 重建）：
+// SendToInteractiveSession 用 `[ia.systemPrompt] + ia.messages + [user]` 拼装，
+// 而 ia.systemPrompt 的唯一来源是「spawn 时从 cfg.Messages[0] 拷一份」。任何
+// 不经过 spawn 的构造路径（重启恢复、将来新增的 fork/迁移路径）只要漏拷它，
+// 零值 ChatMessage（Role=""）就会被当成普通消息塞到最前面 ⇒ 整条链 0 条 system
+// ⇒ engine 断言把整个会话判死。
+//
+// 这里在**每次拼装前**做兜底修复：能从 cfg 里找回 system 消息就修好（并留 WARN），
+// 找不回则给出可读错误 —— 绝不让一条零值消息流进 LLM 请求。
+func (ia *interactiveAgent) ensureSystemPromptLocked() error {
+	if ia.systemPrompt.Role == "system" {
+		return nil
+	}
+	var recovered llm.ChatMessage
+	if ia.cfg != nil {
+		if len(ia.cfg.Messages) > 0 && ia.cfg.Messages[0].Role == "system" {
+			recovered = ia.cfg.Messages[0]
+		} else {
+			for _, m := range ia.cfg.Messages {
+				if m.Role == "system" {
+					recovered = m
+					break
+				}
+			}
+		}
+	}
+	if recovered.Role != "system" {
+		return fmt.Errorf("interactive session role=%q instance=%q has no system prompt: "+
+			"neither the session snapshot nor its RunConfig carries a system message. "+
+			`The session is unusable — unload it (action="unload") and spawn a new one`,
+			ia.roleName, ia.instance)
+	}
+	log.WithFields(log.Fields{
+		"role":      ia.roleName,
+		"instance":  ia.instance,
+		"lost_role": ia.systemPrompt.Role,
+	}).Warn("interactive session lost its system prompt — recovered it from the RunConfig (history was assembled without one)")
+	ia.systemPrompt = recovered
+	return nil
+}
+
+// defaultInteractiveSessionTTL 是 interactive SubAgent 会话的**默认**空闲生存时间。
+//
+// 2026-10-22 之前这是硬编码 const interactiveSessionTTL —— 用户无法调整，也没法
+// 把 TTL 压到秒级做复现/压测。现在它只是默认值，实际值来自
+// config agent.interactive_session_ttl（env INTERACTIVE_SESSION_TTL），
+// 缺省时与历史行为完全一致（30m）。
+const defaultInteractiveSessionTTL = 30 * time.Minute
+
+// interactiveSessionTTL 返回本 Agent 生效的 interactive session 空闲 TTL。
+// 未配置（<=0）时回落到 defaultInteractiveSessionTTL。
+func (a *Agent) interactiveSessionTTL() time.Duration {
+	if a != nil && a.interactiveSessionTTLValue > 0 {
+		return a.interactiveSessionTTLValue
+	}
+	return defaultInteractiveSessionTTL
+}
 
 // cleanupExpiredSessions 清理所有过期的 interactive SubAgent 会话。
 // sync.Map 本身并发安全，调用方不需要持有任何额外的锁。
@@ -162,10 +234,15 @@ const interactiveSessionTTL = 30 * time.Minute
 // 否则父 agent 的 SubAgent 工具调用会永远阻塞（Run() 是同步阻塞的）。
 func (a *Agent) cleanupExpiredSessions() {
 	now := time.Now()
+	ttl := a.interactiveSessionTTL()
 	a.interactiveSubAgents.Range(func(k, v any) bool {
 		ia, ok := v.(*interactiveAgent)
 		if !ok || ia == nil {
 			a.interactiveSubAgents.Delete(k)
+			return true
+		}
+		// 已在销毁路径上（墓碑已置位）：不要重复销毁，也不要读它的状态。
+		if ia.isDestroyed() {
 			return true
 		}
 		// 读取 lastUsed 和 running 需要加锁，避免与 Run()/SendToInteractiveSession 的写入竞争
@@ -180,7 +257,7 @@ func (a *Agent) cleanupExpiredSessions() {
 			return true
 		}
 
-		if now.Sub(lastUsed) > interactiveSessionTTL {
+		if now.Sub(lastUsed) > ttl {
 			key, ok := k.(string)
 			if !ok {
 				return true
@@ -190,7 +267,10 @@ func (a *Agent) cleanupExpiredSessions() {
 				"role":      ia.roleName,
 				"idle_time": now.Sub(lastUsed).String(),
 			}).Info("Cleaning up expired interactive session")
-			a.destroyInteractiveSession(key)
+			// 只销毁**我们观察到的那一代**：Range 快照与真正销毁之间，
+			// 同一 key 可能已经被 unload+spawn 换成新会话，销毁新会话会连带
+			// 关掉它正在用的库。
+			a.destroyInteractiveSessionIfCurrent(key, ia)
 		}
 		return true
 	})
@@ -555,46 +635,124 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 // interactiveSubAgents entry, progress snapshot/iteration history, tenant session (DB),
 // offload data, and mask data on disk.
 // This ensures the next SubAgent with the same role/instance starts with a clean slate.
+// isDestroyed reports whether this session has entered the destroy path.
+// Every access path MUST consult it before touching the session's resources.
+func (ia *interactiveAgent) isDestroyed() bool {
+	return ia != nil && ia.destroyed.Load()
+}
+
+// markDestroyed claims exclusive ownership of destroying this session.
+// Returns false when another goroutine already claimed it (→ caller must no-op:
+// destroy is idempotent, a second close/DeleteTenant must never happen).
+func (ia *interactiveAgent) markDestroyed() bool {
+	return ia != nil && ia.destroyed.CompareAndSwap(false, true)
+}
+
+// destroyedSessionError builds the single user-visible error for "you are talking
+// to a session that was destroyed while you were talking to it".
+func destroyedSessionError(key, roleName, instance string) error {
+	return fmt.Errorf("interactive session %q (role=%q instance=%q) was destroyed (TTL expired / unloaded / cancelled) — "+
+		"the message was NOT delivered; spawn a new sub-agent to continue", key, roleName, instance)
+}
+
 func (a *Agent) destroyInteractiveSession(key string) {
-	// Emit subagent_stopped(removed) BEFORE deleting the registry entry — the
-	// sidebar learns the row is destroyed (DB tenant cascade-deleted) instead of
-	// lingering as a stale running/idle row until the next tree refresh
-	// (user report: "subagent 被卸载了却还显示"). destroyInteractiveSession is
-	// the single funnel for ALL removal paths (TTL eviction in
-	// cleanupExpiredSessions, unload, cancel, panic recovery, spawn-failure
-	// cleanup, cascade child cleanup), so emitting here guarantees coverage;
-	// natural-completion paths that KEEP the session emit their own
+	// ---- 0) 墓碑：先夺权，再动资源（幂等 + 关死 use-after-close 窗口）----
+	val, registered := a.interactiveSubAgents.Load(key)
+	var ia *interactiveAgent
+	if registered {
+		ia, _ = val.(*interactiveAgent)
+	}
+	if registered && ia == nil {
+		// 损坏条目（非 *interactiveAgent）：直接摘除，没有资源可销毁。
+		a.interactiveSubAgents.Delete(key)
+		return
+	}
+	if ia != nil && !ia.markDestroyed() {
+		// 另一个 goroutine 已经在销毁同一个会话 —— 本次调用是重复的。
+		// 绝不重复 close 库 / 重复 DeleteTenant（2026-10-22：二次 close 会把
+		// 并发重建的库一起关掉，正是 use-after-close panic 的制造者）。
+		log.WithFields(log.Fields{"key": key}).Debug("destroyInteractiveSession: already being destroyed (idempotent no-op)")
+		return
+	}
+	if !registered {
+		// 未注册 = 该 key 上没有任何会话（已被并发销毁，或从未存在）：
+		// 幂等 no-op。**绝不能**在这里盲目 DestroySession —— 同一 key 可能已经
+		// 被新的 spawn 重新占住（新租户/新库），第二次销毁会把**活着的**新会话
+		// 连库一起关掉，正是 use-after-close panic 的制造者。
+		log.WithFields(log.Fields{"key": key}).Debug("destroyInteractiveSession: no session registered (idempotent no-op)")
+		return
+	}
+
+	// 立即摘除注册项：从这一刻起，新的 send/inspect/interrupt/list 全部 miss，
+	// 不再有新的使用者拿到这个会话；后面的资源清理对它们不可见。
+	a.interactiveSubAgents.Delete(key)
+
+	// Emit subagent_stopped(removed) — the sidebar learns the row is destroyed
+	// (DB tenant cascade-deleted) instead of lingering as a stale running/idle
+	// row until the next tree refresh (user report: "subagent 被卸载了却还显示").
+	// destroyInteractiveSession is the single funnel for ALL removal paths (TTL
+	// eviction in cleanupExpiredSessions, unload, cancel, panic recovery,
+	// spawn-failure cleanup, cascade child cleanup), so emitting here guarantees
+	// coverage; natural-completion paths that KEEP the session emit their own
 	// non-removed subagent_stopped and never reach this function.
-	a.emitRemovedSubAgentEvent(key)
+	a.emitRemovedSubAgentEventFor(key, ia)
 
 	// Close the waitable task (done channel) if this session had one — covers
 	// ALL destroy paths (panic, unload, shutdown, cleanup) so task_wait never
 	// blocks until timeout on a destroyed session. Idempotent.
-	if val, ok := a.interactiveSubAgents.Load(key); ok {
-		if ia, ok := val.(*interactiveAgent); ok && ia != nil {
-			ia.mu.Lock()
-			// TOCTOU fix (xbotgh cr): Load() once into a local — a second Load()
-			// between the nil check and the method call can return nil if another
-			// goroutine swapped the manager (SetBgTaskManager(nil)) in between.
-			if ia.bgTask != nil {
-				if bgMgr := a.bgTaskMgr.Load(); bgMgr != nil {
-					bgMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "session destroyed")
-				}
-			}
-			ia.mu.Unlock()
+	ia.mu.Lock()
+	// TOCTOU fix (xbotgh cr): Load() once into a local — a second Load()
+	// between the nil check and the method call can return nil if another
+	// goroutine swapped the manager (SetBgTaskManager(nil)) in between.
+	if ia.bgTask != nil {
+		if bgMgr := a.bgTaskMgr.Load(); bgMgr != nil {
+			bgMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "session destroyed")
 		}
 	}
+	groupID := ia.groupID
+	roleName, instance := ia.roleName, ia.instance
+	ia.mu.Unlock()
 	// Auto-cleanup group membership: remove this agent from its group,
 	// delete the group if no members remain.
-	if val, ok := a.interactiveSubAgents.Load(key); ok {
-		if ia, ok := val.(*interactiveAgent); ok && ia != nil && ia.groupID != "" {
-			memberAddr := "agent:" + ia.roleName + "/" + ia.instance
-			tools.RemoveMember(ia.groupID, memberAddr)
+	if groupID != "" {
+		tools.RemoveMember(groupID, "agent:"+roleName+"/"+instance)
+	}
+	// 唤醒所有在 Run 里等症状的 send：它们的消息永远不会被投递了。
+	ia.mu.Lock()
+	stalePending := ia.pendingMessages
+	ia.pendingMessages = nil
+	ia.mu.Unlock()
+	for _, pm := range stalePending {
+		select {
+		case pm.replyCh <- destroyedSessionError(key, roleName, instance):
+		default:
 		}
 	}
 
-	a.interactiveSubAgents.Delete(key)
+	a.destroyInteractiveSessionResources(key)
+}
 
+// destroyInteractiveSessionResources 释放会话的外部资源（progress 快照、
+// offload 数据、租户会话库）。调用者必须已经赢得墓碑 CAS。
+// destroyInteractiveSessionIfCurrent 仅当 key 上登记的仍是 expected 这一代会话时
+// 才执行销毁（TTL 清理用：Range 快照 → 并发 unload/spawn 换代的保护）。
+func (a *Agent) destroyInteractiveSessionIfCurrent(key string, expected *interactiveAgent) {
+	if expected == nil {
+		return
+	}
+	cur, ok := a.interactiveSubAgents.Load(key)
+	if !ok {
+		return
+	}
+	if ia, _ := cur.(*interactiveAgent); ia != expected {
+		log.WithFields(log.Fields{"key": key}).
+			Debug("skipping destroy: session generation changed since it was observed (a new session owns this key now)")
+		return
+	}
+	a.destroyInteractiveSession(key)
+}
+
+func (a *Agent) destroyInteractiveSessionResources(key string) {
 	// Clean up progress snapshot and iteration history
 	agentProgressKey := "agent:" + key
 	a.lastProgressSnapshot.Delete(agentProgressKey)
@@ -623,15 +781,16 @@ func (a *Agent) destroyInteractiveSession(key string) {
 // the parent (channel, chatID) from the registry key itself, so it works on
 // EVERY removal path (TTL eviction, unload, cancel, panic, spawn-failure
 // cleanup, cascade child cleanup) without per-call-site plumbing.
-func (a *Agent) emitRemovedSubAgentEvent(key string) {
+// emitRemovedSubAgentEventFor 发 subagent_stopped(Removed=true)。
+// destroyInteractiveSession 会**先摘除注册项**再发事件（防止新的使用者拿到正在
+// 销毁的会话），因此它必须直接把 ia 传进来读 role/instance。
+func (a *Agent) emitRemovedSubAgentEventFor(key string, ia *interactiveAgent) {
 	var role, instance string
-	if val, ok := a.interactiveSubAgents.Load(key); ok {
-		if ia, ok := val.(*interactiveAgent); ok && ia != nil {
-			ia.mu.Lock()
-			role = ia.roleName
-			instance = ia.instance
-			ia.mu.Unlock()
-		}
+	if ia != nil {
+		ia.mu.Lock()
+		role = ia.roleName
+		instance = ia.instance
+		ia.mu.Unlock()
 	}
 	if role == "" {
 		// Entry already gone (double destroy / spawn placeholder never
@@ -765,6 +924,9 @@ func (a *Agent) matchInteractiveSessionsInTree(parentKey, roleName, instance str
 		ia.mu.Lock()
 		role, inst, pk := ia.roleName, ia.instance, ia.parentKey
 		ia.mu.Unlock()
+		if ia.isDestroyed() {
+			return true // 正在销毁：不再作为可寻址目标对外暴露
+		}
 		if parentKey != "" && pk != parentKey && !isDescendantSessionKey(pk, parentKey) {
 			return true
 		}
@@ -821,6 +983,9 @@ func (a *Agent) matchInteractiveSessions(roleName, instance string) []string {
 		ia.mu.Lock()
 		role, inst := ia.roleName, ia.instance
 		ia.mu.Unlock()
+		if ia.isDestroyed() {
+			return true
+		}
 		if roleName != "" && role != roleName {
 			return true
 		}
@@ -852,6 +1017,9 @@ func (a *Agent) syncInteractiveSessionAfterRewind(key string) {
 	ia, ok := value.(*interactiveAgent)
 	if !ok || ia == nil {
 		return
+	}
+	if ia.isDestroyed() {
+		return // 会话已进入销毁路径：不再与已关的库同步
 	}
 
 	var persisted []llm.ChatMessage
@@ -1008,10 +1176,20 @@ func (a *Agent) SpawnInteractiveSession(
 			placeholder.parentKey = originChannel + ":" + originChatID
 		}
 	}
-	if _, loaded := a.interactiveSubAgents.LoadOrStore(key, placeholder); loaded {
-		return &channelpkg.OutboundMsg{
-			Content: fmt.Sprintf("interactive session for role %q already exists, use action=\"send\" to continue or action=\"unload\" to end it", roleName),
-		}, nil
+	if existing, loaded := a.interactiveSubAgents.LoadOrStore(key, placeholder); loaded {
+		// 墓碑上的会话（正在销毁）不算"已存在"：把它摘掉后重试一次，
+		// 让 spawn 在"TTL 刚清理完 / unload 刚触发"的窗口里也能成功。
+		if ia, _ := existing.(*interactiveAgent); ia != nil && ia.isDestroyed() {
+			a.interactiveSubAgents.CompareAndDelete(key, existing)
+			if _, loadedAgain := a.interactiveSubAgents.LoadOrStore(key, placeholder); !loadedAgain {
+				loaded = false
+			}
+		}
+		if loaded {
+			return &channelpkg.OutboundMsg{
+				Content: fmt.Sprintf("interactive session for role %q already exists, use action=\"send\" to continue or action=\"unload\" to end it", roleName),
+			}, nil
+		}
 	}
 
 	// Emit subagent_started event for instant sidebar push.
@@ -1534,6 +1712,18 @@ func (a *Agent) SpawnInteractiveSession(
 			placeholder.mu.Lock()
 			defer placeholder.mu.Unlock()
 
+			// 会话在本次 Run 期间被销毁（TTL / unload / 级联取消）：占位符所在的
+			// 注册项和会话库都已消失，结果无处可写 —— 打明确错误后直接返回，
+			// 绝不对已 close 的库 AppendMessage（use-after-close）。
+			if placeholder.isDestroyed() {
+				placeholder.running = false
+				placeholder.cancelCurrent = nil
+				placeholder.lastError = destroyedSessionError(key, roleName, instance).Error()
+				log.WithFields(log.Fields{"key": key, "role": roleName, "instance": instance}).
+					Warn("bg spawn Run finished after its session was destroyed — result dropped")
+				return
+			}
+
 			placeholder.running = false
 			placeholder.cancelCurrent = nil
 			placeholder.lastReply = out.Content
@@ -1692,6 +1882,15 @@ func (a *Agent) SpawnInteractiveSession(
 	placeholder.cancelCurrent = nil
 	placeholder.mu.Unlock()
 
+	// 会话在 Run 期间被销毁：不再做后续写回（库已 close），改为明确错误返回。
+	if placeholder.isDestroyed() {
+		destroyedErr := destroyedSessionError(key, roleName, instance)
+		log.WithFields(log.Fields{"key": key, "role": roleName, "instance": instance}).
+			Warn("fg spawn Run finished after its session was destroyed — result dropped")
+		a.cancelChildSessions(key)
+		return &channelpkg.OutboundMsg{Content: destroyedErr.Error(), Error: destroyedErr}, nil
+	}
+
 	// Cascade: cancel and remove all child sessions spawned by this Run,
 	// ensuring no SubAgent outlives its creator even on natural completion.
 	a.cancelChildSessions(key)
@@ -1813,6 +2012,9 @@ func (a *Agent) ContinueInteractiveSession(ctx context.Context, fullKey, content
 	if !ok || ia == nil {
 		return fmt.Errorf("corrupted interactive session %q", fullKey)
 	}
+	if ia.isDestroyed() {
+		return destroyedSessionError(fullKey, ia.roleName, ia.instance)
+	}
 
 	ia.mu.Lock()
 	roleName := ia.roleName
@@ -1902,9 +2104,23 @@ func (a *Agent) SendToInteractiveSession(
 			Error:   err,
 		}, nil
 	}
+	// 墓碑检查 ①：Load 到的是正在/已经被销毁的会话（TTL 清理、unload、级联取消）。
+	// 绝不往下用它的库 —— 那正是 "close 之后又 open/写入" 的入口。
+	if ia.isDestroyed() {
+		err := destroyedSessionError(key, ia.roleName, ia.instance)
+		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
+	}
 
 	// --- 阶段 1：锁内准备配置（读取 ia 数据）---
 	ia.mu.Lock()
+
+	// 墓碑检查 ②：Load 与取锁之间销毁可能已经开始（锁内再判一次，避免把
+	// 一条注定失败的 turn 排进队列）。
+	if ia.isDestroyed() {
+		ia.mu.Unlock()
+		err := destroyedSessionError(key, ia.roleName, ia.instance)
+		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
+	}
 
 	// Guard: when a Run is in progress, queue the message for async injection
 	// instead of rejecting it. The SubAgent's DrainBgNotifications callback
@@ -1975,6 +2191,14 @@ func (a *Agent) SendToInteractiveSession(
 		}, nil
 	}
 
+	// 拼装链的第一条必须是合法 system 消息（见 ensureSystemPromptLocked）。
+	// 放在"新 turn"分支里：任何真正要跑 Run 的 send 都必然经过，持锁修复对
+	// 并发 send 只做一次；正在跑时排队投递（上面已返回）不受影响。
+	if spErr := ia.ensureSystemPromptLocked(); spErr != nil {
+		ia.mu.Unlock()
+		return &channelpkg.OutboundMsg{Content: spErr.Error(), Error: spErr}, nil
+	}
+
 	ia.lastUsed = time.Now()
 
 	cfg := *ia.cfg // 浅拷贝 RunConfig 模板（已有正确的 LLMClient + Model + ThinkingMode）
@@ -2014,6 +2238,14 @@ func (a *Agent) SendToInteractiveSession(
 			operationGate.unlock()
 		}
 	}()
+
+	// 墓碑检查 ③：等 operation gate 的这段时间里会话可能被销毁（销毁不持 gate）。
+	// 此时 cfg.Session 指向的库可能已经 close 并删文件 —— 必须立刻退出，
+	// 绝不在死库上 AppendMessage / 跑 turn。
+	if ia.isDestroyed() {
+		err := destroyedSessionError(key, roleName, instance)
+		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
+	}
 
 	// A rewind may have completed while this send waited for the operation gate.
 	// Rebuild from the DB-authoritative active replay before appending the turn.
@@ -2274,7 +2506,22 @@ func (a *Agent) SendToInteractiveSession(
 		ia.cancelCurrent = nil
 		wasInterrupted := ia.interrupted
 		ia.interrupted = false
+		// 本次 Run 期间会话被销毁（TTL 清理 / unload / 级联取消）：结果无处可写，
+		// 必须让父 agent 与用户都看到明确原因，而不是一条"看起来成功"的回复。
+		destroyedDuringRun := ia.isDestroyed()
 		ia.mu.Unlock()
+		if destroyedDuringRun {
+			destroyedErr := destroyedSessionError(key, roleName, instance)
+			if out.Error == nil {
+				out.Error = destroyedErr
+			}
+			out.Content = ""
+			ia.mu.Lock()
+			ia.lastError = destroyedErr.Error()
+			ia.mu.Unlock()
+			log.WithFields(log.Fields{"key": key, "role": roleName, "instance": instance}).
+				Warn("Run finished after its session was destroyed — result dropped (session DB is gone)")
+		}
 
 		// 注册表：正常结束 → idle。若进程在此之后被杀，重启时不会再误触发 resume；
 		// 反之（进程在 running 期间被杀）状态会停在 running，恢复时按 interrupted 处理。
@@ -2399,6 +2646,21 @@ func (a *Agent) SendToInteractiveSession(
 		// --- Write back results ---
 		ia.mu.Lock()
 		defer ia.mu.Unlock()
+		// 会话在本次 Run 期间被销毁（TTL / unload / 级联取消）：不再往它身上写
+		// 任何东西（库已 close、文件已删），并把结果改写成明确的 "session destroyed"
+		// 错误 —— 而不是一条含糊的 sqlite 报错或静默丢失。
+		if ia.isDestroyed() {
+			ia.running = false
+			ia.cancelCurrent = nil
+			destroyedErr := destroyedSessionError(key, roleName, instance)
+			if out.Error == nil {
+				out.Error = destroyedErr
+			}
+			ia.lastError = destroyedErr.Error()
+			log.WithFields(log.Fields{"key": key, "role": roleName, "instance": instance}).
+				Warn("Run finished after its session was destroyed — skipping write-back")
+			return
+		}
 		var persistedAssistant *llm.ChatMessage
 		if out.Error == nil && cfg.Session != nil && out.Content != "" {
 			assistantMsg := llm.NewAssistantMessage(out.Content)
@@ -2536,6 +2798,9 @@ func (a *Agent) InterruptInteractiveSession(
 	if !ok || ia == nil {
 		return fmt.Errorf("corrupted interactive session for role %q", roleName)
 	}
+	if ia.isDestroyed() {
+		return destroyedSessionError(key, roleName, instance)
+	}
 
 	ia.mu.Lock()
 	defer ia.mu.Unlock()
@@ -2585,6 +2850,9 @@ func (a *Agent) InspectInteractiveSession(
 	ia, ok := val.(*interactiveAgent)
 	if !ok || ia == nil {
 		return "", fmt.Errorf("corrupted interactive session for role %q", roleName)
+	}
+	if ia.isDestroyed() {
+		return "", destroyedSessionError(key, roleName, instance)
 	}
 
 	ia.mu.Lock()
@@ -2920,7 +3188,7 @@ func (a *Agent) GetActiveInteractiveRoles(channel, chatID string) []string {
 		}
 		if strings.HasPrefix(key, prefix) {
 			role := strings.TrimPrefix(key, prefix)
-			if ia, ok := v.(*interactiveAgent); ok && ia != nil {
+			if ia, ok := v.(*interactiveAgent); ok && ia != nil && !ia.isDestroyed() {
 				roles = append(roles, role)
 			}
 		}
@@ -3005,6 +3273,9 @@ func (a *Agent) ListInteractiveSessions(channel, chatID string) []InteractiveSes
 		ia, ok := value.(*interactiveAgent)
 		if !ok || ia == nil {
 			return true
+		}
+		if ia.isDestroyed() {
+			return true // 正在销毁：不再出现在列表里
 		}
 		ia.mu.Lock()
 		parentChannel, parentChatID := parseInteractiveKeyParent(keyStr)

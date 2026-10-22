@@ -17,6 +17,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -149,12 +150,17 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 func (a *Agent) restoreOneAgent(ctx context.Context, rec sqlite.InteractiveAgentRecord) error {
 	mapKey := interactiveKey(rec.ParentChannel, rec.ParentChatID, rec.RoleName, rec.Instance)
 	if existing, ok := a.interactiveSubAgents.Load(mapKey); ok {
-		// 已在内存：如果记录说它 running，但内存里其实是 idle（上一个进程遗留），
-		// 改标记并 resume。
-		if ia, ok := existing.(*interactiveAgent); ok && ia != nil {
-			a.resumeIfPreviouslyRunning(rec, ia)
+		// 正在销毁的那一代不挡恢复（墓碑会话没有可用资源）：摘掉后重建。
+		if ia, ok := existing.(*interactiveAgent); ok && ia != nil && ia.isDestroyed() {
+			a.interactiveSubAgents.CompareAndDelete(mapKey, existing)
+		} else {
+			// 已在内存：如果记录说它 running，但内存里其实是 idle（上一个进程遗留），
+			// 改标记并 resume。
+			if ia, ok := existing.(*interactiveAgent); ok && ia != nil {
+				a.resumeIfPreviouslyRunning(rec, ia)
+			}
+			return nil
 		}
-		return nil
 	}
 
 	// 1) 重新解析 role 定义（以磁盘上的定义为准；文件被删则明确失败）。
@@ -181,24 +187,47 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec sqlite.InteractiveAgent
 		return err
 	}
 
+	// systemPrompt 必须从**重建的 cfg** 里取回。
+	//
+	// ⛔ 2026-10-22 P0（"Error: assert: LLM messages must have exactly one system
+	// message; got 0"）：旧实现漏了这一行 —— 恢复出来的 interactiveAgent
+	// systemPrompt 是零值（Role=""），而 SendToInteractiveSession 的拼装是
+	//   newMessages = [ia.systemPrompt] + ia.messages + [user]
+	// ⇒ 零值消息被当成普通消息插在最前面，整条链**一条 system 都没有** ⇒
+	// engine 的断言直接判 session 不可用（只能 unload 重建）。
+	// 恢复路径必须与 spawn 路径同构：systemPrompt = cfg.Messages[0]。
+	if len(cfg.Messages) == 0 || cfg.Messages[0].Role != "system" {
+		return fmt.Errorf("restore sub-agent %q: rebuilt config carries no system prompt (messages=%d) — refusing to resurrect a promptless session",
+			rec.AgentKey, len(cfg.Messages))
+	}
+
 	ia := &interactiveAgent{
-		roleName:   rec.RoleName,
-		instance:   rec.Instance,
-		groupID:    rec.GroupID,
-		task:       rec.Task,
-		background: rec.Background,
-		cfg:        &cfg,
-		userCtx:    UserContextFromContext(ctx),
-		parentKey:  rec.ParentChannel + ":" + rec.ParentChatID,
-		lastUsed:   time.Now(),
-		lastError:  rec.LastError,
-		lastReply:  rec.LastReply,
+		roleName:     rec.RoleName,
+		instance:     rec.Instance,
+		groupID:      rec.GroupID,
+		task:         rec.Task,
+		background:   rec.Background,
+		cfg:          &cfg,
+		systemPrompt: cfg.Messages[0], // 见上：拼装链的第一条，缺了就 got 0
+		userCtx:      UserContextFromContext(ctx),
+		parentKey:    rec.ParentChannel + ":" + rec.ParentChatID,
+		lastUsed:     time.Now(),
+		lastError:    rec.LastError,
+		lastReply:    rec.LastReply,
 	}
 
 	// 3) 恢复历史消息（TenantSession，channel="agent"）。
-	if ts, tsErr := a.multiSession.GetOrCreateSession("agent", rec.RoleName+"/"+rec.Instance); tsErr == nil {
+	//
+	// 会话 key 必须与 spawn 时的完全一致（interactiveKey → mapKey，形如
+	// "web:chat/role:instance"）。旧实现传 ("agent", "<role>/<instance>") ——
+	// 那是**另一个库**（恒为空），恢复出来的子代理看起来"历史全丢"，随后第一条
+	// send 只剩 [system, user]，把用户的连续对话拆成孤立轮次。
+	if ts, tsErr := a.multiSession.GetOrCreateSession("agent", mapKey); tsErr == nil {
 		if msgs, mErr := ts.GetMessages(); mErr == nil {
 			ia.messages = msgs
+		} else {
+			log.WithError(mErr).WithField("agent_key", rec.AgentKey).
+				Warn("Restore: failed to load sub-agent history (session kept, history empty)")
 		}
 	} else {
 		log.WithError(tsErr).WithField("agent_key", rec.AgentKey).
