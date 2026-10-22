@@ -2,8 +2,8 @@ package memory
 
 import (
 	"context"
-	"database/sql"
 	"sync"
+	"xbot/storage"
 
 	"xbot/llm"
 )
@@ -188,7 +188,12 @@ type ProviderDeps struct {
 	// 0 = unknown (fallback to tenant-scoped in provider).
 	UserID  int64
 	BaseDir string
-	DB      *sql.DB
+	// AgentMemory is the DB-backed storage seam for the official xbot provider.
+	// It is a SEMANTIC interface (tokenized query in, ordered results out) — never
+	// a driver, DSN or dialect knob. Providers must not reach storage any other
+	// way: dialect-specific SQL in a provider makes it unrunnable on some backend,
+	// which is why DB-backed memory is implemented in the storage layer.
+	AgentMemory storage.AgentMemoryStore
 	// LettaDeps is provider-specific deps for letta (nil for non-letta).
 	// Type: *letta.Deps — stored as any to avoid import cycle.
 	LettaDeps any

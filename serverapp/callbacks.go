@@ -25,11 +25,31 @@ import (
 	"xbot/config"
 	log "xbot/logger"
 	"xbot/session"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
 // newGroupUUID 生成群组 id 的随机部分（grp_<12 hex>）。
+// groupMessageStore 是本分支新增的「群组消息信封」能力（主库 v74 / 会话库 v5）。
+//
+// master #444 把会话存储抽象成 storage.SessionStore，但该接口没有群组消息方法
+// （PG 后端未实现该特性 ⇒ **未覆盖项**）。这里按能力取用，拿不到就明确报错，
+// 绝不静默降级 —— 静默降级会让群发写进不存在的表，消息凭空蒸发。
+type groupMessageStore interface {
+	AppendGroupMessage(tenantID int64, msg llm.ChatMessage, env sqlite.GroupMessageEnvelope) (int64, error)
+	ListGroupMessages(tenantID int64, groupID string, beforeID int64, limit int) ([]sqlite.GroupMessageRow, bool, int64, error)
+}
+
+// groupMessagesOf 取出群组消息能力；后端不支持时返回可读错误。
+func groupMessagesOf(sess *session.TenantSession) (groupMessageStore, error) {
+	gm, ok := sess.SessionService().(groupMessageStore)
+	if !ok {
+		return nil, fmt.Errorf("group messages are not supported by this storage backend")
+	}
+	return gm, nil
+}
+
 func newGroupUUID() string { return uuid.NewString() }
 
 // runnerCallbacks builds the shared Runner callback closures.
@@ -183,9 +203,22 @@ func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 }
 
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
-func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) web.WebCallbacks {
+func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
 	llmc := llmCallbacks(ag)
+
+	// Backend-agnostic storage handle — chat CRUD, cron and session discovery
+	// go through it, so the same callbacks serve SQLite and PG.
+	store := ag.MultiSession().Store()
+
+	// Raw SQLite connection for the complex, SQLite-only session-browsing
+	// queries (listTenantsByChannel / listCLIChatSessions / listDistinctChannels).
+	// nil on PG — those cross-channel browse callbacks then report no sessions.
+	// The web-channel primary path (its own chat list) uses store.Tenant() above.
+	var webSQL *sql.DB
+	if ms := ag.MultiSession(); ms != nil && ms.DB() != nil {
+		webSQL = ms.DB().Conn()
+	}
 
 	callbacks := web.WebCallbacks{
 		// Runner callbacks
@@ -235,9 +268,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 
 	// Wire shared artifacts (generic, plugin-facing share capability). The host
 	// stays content-agnostic: it stores content_type + an opaque payload and
-	// never branches on what a plugin shares.
-	if webDB := ag.MultiSession().DB(); webDB != nil {
-		shareSvc := sqlite.NewShareService(webDB)
+	// never branches on what a plugin shares. Routed through the storage layer
+	// so the same wiring serves SQLite and PG.
+	if store != nil {
+		shareStore := store.Config()
 		callbacks.ShareCreate = func(createdBy int, pluginID, contentType, payload, title, expiresAt string) (*protocol.SharedArtifact, error) {
 			a := &sqlite.SharedArtifact{
 				PluginID:    pluginID,
@@ -247,23 +281,23 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				CreatedBy:   int64(createdBy),
 				ExpiresAt:   expiresAt,
 			}
-			if err := shareSvc.Create(a); err != nil {
+			if err := shareStore.CreateSharedArtifact(a); err != nil {
 				return nil, err
 			}
 			return shareToProtocol(a), nil
 		}
 		callbacks.ShareGet = func(token string) (*protocol.SharedArtifact, error) {
-			a, err := shareSvc.Get(token)
+			a, err := shareStore.GetSharedArtifact(token)
 			if err != nil {
 				return nil, err
 			}
 			return shareToProtocol(a), nil
 		}
 		callbacks.ShareRevoke = func(createdBy int, token string) error {
-			return shareSvc.Revoke(token, int64(createdBy))
+			return shareStore.RevokeSharedArtifact(token, int64(createdBy))
 		}
 		callbacks.ShareList = func(createdBy int) ([]protocol.SharedArtifact, error) {
-			items, err := shareSvc.ListByCreator(int64(createdBy))
+			items, err := shareStore.ListSharedArtifactsByCreator(int64(createdBy))
 			if err != nil {
 				return nil, err
 			}
@@ -325,7 +359,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			if err != nil {
 				return nil, 0, false, err
 			}
-			rows, hasMore, next, err := sess.SessionService().ListGroupMessages(sess.TenantID(), groupID, cursor, limit)
+			gm, gerr := groupMessagesOf(sess)
+			if gerr != nil {
+				return nil, 0, false, gerr
+			}
+			rows, hasMore, next, err := gm.ListGroupMessages(sess.TenantID(), groupID, cursor, limit)
 			if err != nil {
 				return nil, 0, false, err
 			}
@@ -385,7 +423,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				To: input.To, Payload: input.Payload,
 				SenderType: input.SenderType, SenderID: input.SenderID, SenderName: input.SenderName,
 			}
-			id, err := sess.SessionService().AppendGroupMessage(sess.TenantID(), llm.ChatMessage{
+			gm, gerr := groupMessagesOf(sess)
+			if gerr != nil {
+				return nil, gerr
+			}
+			id, err := gm.AppendGroupMessage(sess.TenantID(), llm.ChatMessage{
 				Role: role, Content: input.Content, SenderType: input.SenderType,
 				SenderID: input.SenderID, SenderName: input.SenderName, Timestamp: now,
 			}, env)
@@ -554,13 +596,18 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if tenantID <= 0 {
 			return nil, 0, nil
 		}
-		recs, err := sess.SessionService().GetIterationHistoryBeforeRange(tenantID, turnID, beforeIter)
+		// 后端无关：会话数据一律经 SessionStore（SQLite 会话库 / PG 共享连接）。
+		svc, err := ag.MultiSession().SessionServiceFor(tenantID)
+		if err != nil {
+			return nil, 0, err
+		}
+		recs, err := svc.GetIterationHistoryBeforeRange(tenantID, turnID, beforeIter)
 		if err != nil {
 			return nil, 0, err
 		}
 		// 旧数据修复（2026-09-30 事故）：注入型工具对合并回段内迭代记录 —— 与
 		// 主历史快照（View 路径）同一锚定/去重实现，段边界与 pill 渲染两侧一致。
-		recs, err = legacySyntheticPairRepair(sess.SessionService(), tenantID, turnID, recs)
+		recs, err = legacySyntheticPairRepair(svc, tenantID, turnID, recs)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -582,14 +629,19 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if tenantID <= 0 {
 			return protocol.HistoryIteration{}, false, nil
 		}
-		rec, found, err := sess.SessionService().GetIterationHistoryByNumber(tenantID, turnID, iteration)
+		// 后端无关：会话数据一律经 SessionStore（SQLite 会话库 / PG 共享连接）。
+		svc, err := ag.MultiSession().SessionServiceFor(tenantID)
+		if err != nil {
+			return protocol.HistoryIteration{}, false, err
+		}
+		rec, found, err := svc.GetIterationHistoryByNumber(tenantID, turnID, iteration)
 		if err != nil || !found {
 			return protocol.HistoryIteration{}, false, err
 		}
 		// 旧数据修复（2026-09-30 事故）：锚定到该迭代的注入型工具对补进详情
 		//（新数据由 Fix A 持久化，去重短路）。foldTools=false ⇒ 完整字段（这是
 		//「完整覆盖轻字段」的唯一来源）。
-		recs, err := legacySyntheticPairRepair(sess.SessionService(), tenantID, turnID, []sqlite.IterationRecord{rec})
+		recs, err := legacySyntheticPairRepair(svc, tenantID, turnID, []sqlite.IterationRecord{rec})
 		if err != nil {
 			return protocol.HistoryIteration{}, false, err
 		}
@@ -618,13 +670,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 	}
 	callbacks.CronRemove = func(channel, chatID, jobID string) (bool, error) {
-		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+		if ag.MultiSession() == nil || ag.MultiSession().Store() == nil {
 			return false, nil
 		}
 		if jobID == "" {
 			return false, nil
 		}
-		cronSvc := sqlite.NewCronService(ag.MultiSession().DB())
+		cronSvc := ag.MultiSession().Store().Cron()
 		// Session-scoped ownership check (same policy as the cron tool's
 		// removeJob): only jobs belonging to THIS session may be removed, so a
 		// stale panel can never delete another session's schedule. Unknown /
@@ -649,13 +701,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return true, nil
 	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
-		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+		if ag.MultiSession() == nil || ag.MultiSession().Store() == nil {
 			return []any{}, nil
 		}
 		// Session-scoped (user request 2026-08-31: "web task面板里的定时任务没做会话隔离"):
 		// filter by the requested session — same policy as BackgroundTasks above.
 		// The task panel shows only the active session's cron jobs, not a cross-session dump.
-		jobs, err := sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByChannelChatID(sel.Channel, sel.ChatID)
+		jobs, err := ag.MultiSession().Store().Cron().ListJobsByChannelChatID(sel.Channel, sel.ChatID)
 		if err != nil {
 			return nil, fmt.Errorf("list cron jobs: %w", err)
 		}
@@ -694,8 +746,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return result, nil
 	}
 	callbacks.SessionSubscription = func(senderID string, sel web.SessionSelector) (map[string]string, error) {
-		if ag.MultiSession() != nil && ag.MultiSession().DB() != nil {
-			subID, model, _ := sqlite.NewTenantService(ag.MultiSession().DB()).GetTenantSubscription(sel.Channel, sel.ChatID)
+		if ag.MultiSession() != nil && ag.MultiSession().Store() != nil {
+			subID, model, _ := ag.MultiSession().Store().Tenant().GetTenantSubscription(sel.Channel, sel.ChatID)
 			if subID != "" {
 				return map[string]string{"subscription_id": subID, "model": model}, nil
 			}
@@ -739,13 +791,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	}
 	// Wire Chat CRUD
 	callbacks.ChatList = func(senderID, currentChatID, channel string) ([]web.UserChatWithPreview, error) {
-		if webDB == nil {
-			return nil, nil
-		}
-		// For web channel: use ChatService.ListUserChats (includes user-created chatrooms).
+		// For web channel: use TenantStore.ListUserChats (includes user-created chatrooms).
 		if channel == "" || channel == "web" {
-			cs := sqlite.NewChatService(webDB)
-			chats, _, err := cs.ListUserChats("web", senderID, currentChatID, 0, -1)
+			chats, _, err := store.Tenant().ListUserChats("web", senderID, currentChatID, 0, -1)
 			if err != nil {
 				return nil, err
 			}
@@ -763,22 +811,47 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			}
 			return result, nil
 		}
+		if channel == "web" {
+			// Use store for web channel (PG-compatible)
+			sqliteChats, _, err := store.Tenant().ListUserChats("web", senderID, currentChatID, 0, 9999)
+			if err != nil {
+				return nil, err
+			}
+			chats := make([]web.UserChatWithPreview, len(sqliteChats))
+			for i, c := range sqliteChats {
+				chats[i] = web.UserChatWithPreview{
+					ChatID:     c.ChatID,
+					Channel:    "web",
+					Label:      c.Label,
+					LastActive: c.LastActive.Format(time.RFC3339),
+					Preview:    c.Preview,
+					IsCurrent:  c.IsCurrent,
+					CreatedAt:  c.CreatedAt.Format(time.RFC3339),
+					SortOrder:  c.SortOrder,
+				}
+			}
+			applyWebRunningStatuses(ag, chats)
+			return chats, err
+		}
+		if webSQL == nil {
+			return nil, nil
+		}
 		// For non-web channels (admin only): list all tenants in that channel.
 		if channel == "cli" {
-			rows, err := listCLIChatSessions(webDB.Conn(), currentChatID)
+			rows, err := listCLIChatSessions(webSQL, currentChatID)
 			applyWebRunningStatuses(ag, rows)
 			return rows, err
 		}
-		rows, err := listTenantsByChannel(webDB.Conn(), channel, currentChatID)
+		rows, err := listTenantsByChannel(webSQL, channel, currentChatID)
 		applyWebRunningStatuses(ag, rows)
 		return rows, err
 	}
 	callbacks.SubAgentList = func(senderID string, admin bool) ([]web.UserChatWithPreview, error) {
-		if webDB == nil {
+		if webSQL == nil {
 			return nil, nil
 		}
 		// v63 single-operator: always use the full unfiltered view.
-		rows, err := listTenantsByChannel(webDB.Conn(), "agent", "")
+		rows, err := listTenantsByChannel(webSQL, "agent", "")
 		if err != nil {
 			return nil, err
 		}
@@ -799,9 +872,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return rows, nil
 	}
 	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool, offset, limit int) (web.SessionTreeResult, error) {
-		if webDB == nil {
-			return web.SessionTreeResult{}, nil
-		}
 		var mains []web.UserChatWithPreview
 
 		var hasMore bool
@@ -810,7 +880,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// v63 single-operator: always use the full cross-channel view.
 		// (The non-admin per-sender pagination path was removed — there is
 		// no non-admin user in single-operator mode.)
-		channels, err := listDistinctChannels(webDB.Conn())
+		channels, err := store.Tenant().ListDistinctChannels()
 		if err != nil {
 			return web.SessionTreeResult{}, err
 		}
@@ -819,11 +889,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				continue
 			}
 			if ch == "cli" {
+				if webSQL == nil {
+					continue
+				}
 				cliCurrent := ""
 				if current.Channel == "cli" {
 					cliCurrent = current.ChatID
 				}
-				cliChats, err := listCLIChatSessions(webDB.Conn(), cliCurrent)
+				cliChats, err := listCLIChatSessions(webSQL, cliCurrent)
 				if err != nil {
 					return web.SessionTreeResult{}, err
 				}
@@ -835,7 +908,30 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			if current.Channel == ch {
 				chCurrent = current.ChatID
 			}
-			tenants, err := listTenantsByChannel(webDB.Conn(), ch, chCurrent)
+			var tenants []web.UserChatWithPreview
+			if webSQL != nil {
+				tenants, err = listTenantsByChannel(webSQL, ch, chCurrent)
+			} else {
+				// PG path: use TenantStore
+				allTenants, tErr := store.Tenant().ListTenants()
+				if tErr != nil {
+					log.WithError(tErr).WithField("channel", ch).Warn("Failed to list tenants")
+					continue
+				}
+				for _, t := range allTenants {
+					if t.Channel != ch {
+						continue
+					}
+					tenants = append(tenants, web.UserChatWithPreview{
+						ChatID:     t.ChatID,
+						Channel:    t.Channel,
+						Label:      t.Label,
+						LastActive: t.LastActiveAt.Format(time.RFC3339),
+						Preview:    "",
+						IsCurrent:  t.ChatID == chCurrent,
+					})
+				}
+			}
 			if err != nil {
 				log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
 				continue
@@ -871,11 +967,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return result, nil
 	}
 	callbacks.ChatCreate = func(senderID, label string, subscriptionID, model string) (string, error) {
-		if webDB == nil {
-			return "", fmt.Errorf("database not available")
-		}
-		cs := sqlite.NewChatService(webDB)
-		chatID, err := cs.CreateChat("web", senderID, label)
+		tenantStore := store.Tenant()
+		chatID, err := tenantStore.CreateChat("web", senderID, label)
 		if err != nil {
 			return "", err
 		}
@@ -910,9 +1003,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return chatID, nil
 	}
 	callbacks.ChatDelete = func(senderID, channel, chatID string) error {
-		if webDB == nil {
-			return fmt.Errorf("database not available")
-		}
+		tenantStore := store.Tenant()
 		removedLocal := false
 		if channel == "cli" {
 			var err error
@@ -921,8 +1012,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				return fmt.Errorf("remove CLI session metadata: %w", err)
 			}
 		}
-		cs := sqlite.NewChatService(webDB)
-		if err := cs.DeleteChat(channel, senderID, chatID); err != nil {
+		if err := tenantStore.DeleteChat(channel, senderID, chatID); err != nil {
 			if !removedLocal || !errors.Is(err, sqlite.ErrChatNotFound) {
 				return err
 			}
@@ -934,30 +1024,20 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return nil
 	}
 	callbacks.ChatRename = func(senderID, channel, chatID, label string) error {
-		if webDB == nil {
-			return fmt.Errorf("database not available")
-		}
+		tenantStore := store.Tenant()
 		if channel == "cli" {
 			if _, err := cli.RenameStoredSessionByChatID(chatID, label); err != nil {
 				return fmt.Errorf("rename CLI session metadata: %w", err)
 			}
 		}
-		cs := sqlite.NewChatService(webDB)
-		return cs.RenameChat(channel, senderID, chatID, label)
+		return tenantStore.RenameChat(channel, senderID, chatID, label)
 	}
 	callbacks.ChatReorder = func(senderID, channel string, orders map[string]int) error {
-		if webDB == nil {
-			return fmt.Errorf("database not available")
-		}
-		cs := sqlite.NewChatService(webDB)
-		return cs.UpdateChatSortOrders(channel, senderID, orders)
+		return store.Tenant().UpdateChatSortOrders(channel, senderID, orders)
 	}
 	callbacks.ChatFork = func(senderID, sourceChannel, sourceChatID, label string) (string, error) {
-		if webDB == nil {
-			return "", fmt.Errorf("database not available")
-		}
-		cs := sqlite.NewChatService(webDB)
-		newChatID, err := cs.CreateChat("web", senderID, label)
+		tenantStore := store.Tenant()
+		newChatID, err := tenantStore.CreateChat("web", senderID, label)
 		if err != nil {
 			return "", fmt.Errorf("create fork session: %w", err)
 		}
@@ -971,7 +1051,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// get a "successful fork" that's actually empty.
 		if err := ag.ForkSessionMessages(sourceChannel, sourceChatID, "web", newChatID); err != nil {
 			log.WithError(err).Error("ChatFork: message copy failed — rolling back")
-			_ = cs.DeleteChat("web", senderID, newChatID)
+			_ = tenantStore.DeleteChat("web", senderID, newChatID)
 			return "", fmt.Errorf("fork failed: %w", err)
 		}
 		return newChatID, nil
@@ -991,15 +1071,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if channel == "cli" {
 			return cli.StoredSessionExists(chatID)
 		}
-		db := ag.MultiSession().DB()
-		if db == nil {
+		if store == nil {
 			return false
 		}
-		if id, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(channel, chatID); err == nil && id != 0 {
+		if id, err := store.Tenant().GetTenantIDByChannelChatID(channel, chatID); err == nil && id != 0 {
 			return true
 		}
 		if channel == "web" {
-			if sender, err := sqlite.NewChatService(db).GetSenderForChat(channel, chatID); err == nil && sender != "" {
+			if sender, err := store.Tenant().GetSenderForChat(channel, chatID); err == nil && sender != "" {
 				return true
 			}
 		}
@@ -2352,7 +2431,7 @@ const (
 //
 // 错误冒泡（绝不静默降级）：修复查询失败让端点显式失败，而不是返回与主
 // 快照不一致的未修复段。
-func legacySyntheticPairRepair(svc *sqlite.SessionService, tenantID int64, turnID uint64, recs []sqlite.IterationRecord) ([]sqlite.IterationRecord, error) {
+func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID uint64, recs []sqlite.IterationRecord) ([]sqlite.IterationRecord, error) {
 	rows, err := svc.GetSyntheticPairRowsByTurn(tenantID, turnID)
 	if err != nil {
 		return nil, err

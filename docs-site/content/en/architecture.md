@@ -360,6 +360,11 @@ Layer 4: ContextEdit → precise delete/truncate/replace
 
 Single SQLite file, WAL mode, `MaxOpenConns=1` (SQLite single-writer model), `BusyTimeout=5000ms`. Schema Version 21.
 
+The storage layer is backend-agnostic: every read/write goes through the
+`storage.Storage` interfaces (`Session`/`Tenant`/`Memory`/`Config`), so a
+PostgreSQL backend (`storage.type = "pg"`, `storage/pg_*.go`) serves the same
+data model without any change to agent behaviour. SQLite remains the default.
+
 | Table | Purpose |
 |-------|---------|
 | `tenants` | Tenants (channel+chatID → tenantID) |
@@ -538,7 +543,7 @@ func XbotHome() string {
 
 - **Backoff**: exponential backoff + random jitter + 429 extra backoff (`2^(min(n,4))` s)
 - **perAttemptCtx**: each retry creates a fresh 120s timeout context, does not inherit parent ctx deadline, but propagates cancellation signal
-- **Retryable**: 429 / 5xx / network errors / timeout; non-retryable: context.Canceled / 4xx
+- **Retryable**: errors use bounded retries by default, including ordinary 4xx. Non-retryable: user cancellation, input-too-long (handled by compression), and provider code `unsupported_country_region_territory`.
 - **Input too long**: detects `InputTooLong`, forces compression, bypasses retry framework
 - **Retry notification**: pushes progress message via `RetryNotifyFunc`: `⚠️ LLM request failed (rate limit), retrying 2/5 ...`
 

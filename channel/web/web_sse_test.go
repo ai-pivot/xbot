@@ -2425,7 +2425,7 @@ func TestSSEExplicitChannelOverridesStaleCurrentSession(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
-	if _, err := db.Exec(
+	if _, err := db.Conn().Exec(
 		"INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)",
 		"cli", "/repo:Agent-main", time.Now().Format(time.RFC3339),
 	); err != nil {
@@ -2582,7 +2582,7 @@ func TestSSEAllowsAdminToExistingForeignWebSession(t *testing.T) {
 	server := startTestServer(t, wc)
 	adminCookie := loginTestAdmin(t, server.URL)
 	_ = loginTestWebUser(t, server.URL, "member")
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id) VALUES (?, ?)", "web", "web-2"); err != nil {
+	if _, err := db.Conn().Exec("INSERT INTO tenants (channel, chat_id) VALUES (?, ?)", "web", "web-2"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2888,7 +2888,7 @@ func TestSSEPacketDropHTTPReconnect(t *testing.T) {
 	wc, _ := newTestWebChannel(t, db)
 	chatID := "web-reconnect"
 	// Create a tenant row so the SSE access check passes for admin.
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id) VALUES ('web', ?)", chatID); err != nil {
+	if _, err := db.Conn().Exec("INSERT INTO tenants (channel, chat_id) VALUES ('web', ?)", chatID); err != nil {
 		t.Fatal(err)
 	}
 

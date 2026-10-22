@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	log "xbot/logger"
+	"xbot/storage"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -70,7 +70,10 @@ func GenerateStrongPassword(length int) (string, error) {
 
 // CreateWebUser creates a new web user with auto-generated strong password.
 // Returns (username, plaintextPassword, error).
-func CreateWebUser(db *sql.DB, username string) (string, string, error) {
+//
+// Password generation + bcrypt hashing stay here (business policy); only the
+// storage operation goes through the backend-agnostic WebAuthStore.
+func CreateWebUser(store storage.WebAuthStore, username string) (string, string, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || len(username) > 64 {
 		return "", "", fmt.Errorf("invalid username (must be 1-64 chars)")
@@ -93,18 +96,14 @@ func CreateWebUser(db *sql.DB, username string) (string, string, error) {
 	}
 
 	// Insert user
-	result, err := db.Exec(
-		"INSERT INTO web_users (username, password) VALUES (?, ?)",
-		username, string(hash),
-	)
+	id, err := store.CreateWebUser(username, string(hash))
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if isUniqueViolation(err) {
 			return "", "", fmt.Errorf("username %q already exists", username)
 		}
 		return "", "", fmt.Errorf("failed to create user: %w", err)
 	}
 
-	id, _ := result.LastInsertId()
 	log.WithFields(log.Fields{
 		"user_id":  id,
 		"username": username,
@@ -113,47 +112,30 @@ func CreateWebUser(db *sql.DB, username string) (string, string, error) {
 	return username, password, nil
 }
 
-// WebUserInfo represents a web user record for listing.
-type WebUserInfo struct {
-	ID        int    `json:"id"`
-	Username  string `json:"username"`
-	CreatedAt string `json:"created_at"`
-}
-
 // ListWebUsers returns all web users sorted by ID.
-func ListWebUsers(db *sql.DB) ([]WebUserInfo, error) {
-	rows, err := db.Query("SELECT id, username, created_at FROM web_users ORDER BY id")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var users []WebUserInfo
-	for rows.Next() {
-		var u WebUserInfo
-		if err := rows.Scan(&u.ID, &u.Username, &u.CreatedAt); err != nil {
-			log.WithError(err).Warn("web_users row scan failed")
-			continue
-		}
-		users = append(users, u)
-	}
-	if users == nil {
-		users = []WebUserInfo{}
-	}
-	return users, nil
+func ListWebUsers(store storage.WebAuthStore) ([]storage.WebUserInfo, error) {
+	return store.ListWebUsers()
 }
 
 // DeleteWebUser deletes a web user by username. Returns error if user not found.
-func DeleteWebUser(db *sql.DB, username string) error {
-	result, err := db.Exec("DELETE FROM web_users WHERE username = ?", username)
-	if err != nil {
+func DeleteWebUser(store storage.WebAuthStore, username string) error {
+	if err := store.DeleteWebUser(username); err != nil {
 		return err
-	}
-	n, _ := result.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("user %q not found", username)
 	}
 	log.WithField("username", username).Info("Web user deleted by admin")
 	return nil
+}
+
+// isUniqueViolation reports whether err is a UNIQUE conflict from either
+// backend. SQLite says "UNIQUE constraint failed: web_users.username"; PG says
+// "duplicate key value violates unique constraint ...".
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "duplicate key value")
 }
 
 // ---------------------------------------------------------------------------
@@ -179,9 +161,9 @@ type authResponse struct {
 // webUsersEmpty reports whether the web_users table has no rows (first-user
 // bootstrap check). Errors are treated as "not empty" (fail-closed — a
 // bootstrap path that misfires on DB errors would hand out registrations).
-func webUsersEmpty(db *sql.DB) (bool, error) {
-	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM web_users").Scan(&n); err != nil {
+func webUsersEmpty(store storage.WebAuthStore) (bool, error) {
+	n, err := store.CountWebUsers()
+	if err != nil {
 		return false, err
 	}
 	return n == 0, nil
@@ -201,7 +183,7 @@ func (wc *WebChannel) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// remains the escape hatch for a locked-out deployment.
 	bootstrap := false
 	if wc.config.InviteOnly {
-		empty, err := webUsersEmpty(wc.db)
+		empty, err := webUsersEmpty(wc.webAuth())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
 			return
@@ -234,54 +216,26 @@ func (wc *WebChannel) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Insert user. The bootstrap path (invite-only + empty table) runs the
-	// emptiness re-check and the INSERT in ONE transaction — two concurrent
-	// first registrations race for the same empty-table window; the loser
-	// gets a clean invite-only rejection instead of a second account.
+	// Insert user. The bootstrap path (invite-only + empty table) re-checks
+	// emptiness right before the insert; the UNIQUE constraint is the backstop
+	// for whatever slips through the (tiny) check→insert race window.
 	var id int64
 	if bootstrap {
-		tx, txErr := wc.db.Begin()
-		if txErr != nil {
-			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
-			return
-		}
-		defer tx.Rollback()
-		var n int
-		if qErr := tx.QueryRow("SELECT COUNT(*) FROM web_users").Scan(&n); qErr != nil || n > 0 {
+		if n, err := wc.webAuth().CountWebUsers(); err != nil || n > 0 {
 			// Lost the race (another first-account landed first) — normal
 			// invite-only rules apply now.
 			writeJSON(w, http.StatusForbidden, authResponse{OK: false, Message: "registration is invite-only, please contact admin"})
 			return
 		}
-		result, insErr := tx.Exec("INSERT INTO web_users (username, password) VALUES (?, ?)", req.Username, string(hash))
-		if insErr != nil {
-			if strings.Contains(insErr.Error(), "UNIQUE constraint failed") {
-				writeJSON(w, http.StatusConflict, authResponse{OK: false, Message: "username already exists"})
-				return
-			}
-			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
+	}
+	id, err = wc.webAuth().CreateWebUser(req.Username, string(hash))
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeJSON(w, http.StatusConflict, authResponse{OK: false, Message: "username already exists"})
 			return
 		}
-		id, _ = result.LastInsertId()
-		if cErr := tx.Commit(); cErr != nil {
-			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
-			return
-		}
-	} else {
-		// Open registration — the UNIQUE constraint catches duplicates.
-		result, err := wc.db.Exec(
-			"INSERT INTO web_users (username, password) VALUES (?, ?)",
-			req.Username, string(hash),
-		)
-		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-				writeJSON(w, http.StatusConflict, authResponse{OK: false, Message: "username already exists"})
-				return
-			}
-			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
-			return
-		}
-		id, _ = result.LastInsertId()
+		writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
+		return
 	}
 
 	writeJSON(w, http.StatusOK, authResponse{OK: true, UserID: int(id)})
@@ -301,12 +255,7 @@ func (wc *WebChannel) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Look up user
-	var id int
-	var hash string
-	err := wc.db.QueryRow(
-		"SELECT id, password FROM web_users WHERE username = ?",
-		strings.TrimSpace(req.Username),
-	).Scan(&id, &hash)
+	id, hash, err := wc.webAuth().GetWebUserForLogin(strings.TrimSpace(req.Username))
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, authResponse{OK: false, Message: "invalid credentials"})
 		return
@@ -322,7 +271,7 @@ func (wc *WebChannel) handleLogin(w http.ResponseWriter, r *http.Request) {
 	token := strings.ReplaceAll(uuid.New().String(), "-", "")
 	wc.sessionsMu.Lock()
 	wc.sessions[token] = sessionInfo{
-		userID:   id,
+		userID:   int(id),
 		username: strings.TrimSpace(req.Username),
 		expires:  time.Now().Add(webSessionMaxAge),
 	}
@@ -339,7 +288,7 @@ func (wc *WebChannel) handleLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int(webSessionMaxAge.Seconds()),
 	})
 
-	writeJSON(w, http.StatusOK, authResponse{OK: true, UserID: id})
+	writeJSON(w, http.StatusOK, authResponse{OK: true, UserID: int(id)})
 }
 
 // handleLogout handles POST /api/auth/logout
@@ -487,7 +436,7 @@ func (wc *WebChannel) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 	// mode; after the account exists, registration closes again).
 	bootstrap := false
 	if wc.config.InviteOnly {
-		if empty, err := webUsersEmpty(wc.db); err == nil {
+		if empty, err := webUsersEmpty(wc.webAuth()); err == nil {
 			bootstrap = empty
 		}
 	}

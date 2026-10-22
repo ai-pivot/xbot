@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"xbot/llm"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -124,8 +125,8 @@ func TestModelSwitchResetsSessionDBTokenBaseline(t *testing.T) {
 	mt, sess := newAgentHistorySession(t)
 
 	factory := NewLLMFactory(nil, "")
-	factory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(mt.DB()))
-	factory.SetTenantSvc(sqlite.NewTenantService(mt.DB()))
+	factory.SetSubscriptionSvc(storage.NewSQLiteConfigStore(mt.DB()))
+	factory.SetTenantSvc(storage.NewSQLiteTenantStore(mt.DB()))
 	// 与 initServices 相同接线：resetter → ResetSessionContextTokens（清会话库基线）。
 	factory.SetSessionTokenResetter(mt.ResetSessionContextTokens)
 

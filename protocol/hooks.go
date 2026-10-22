@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"xbot/internal/textutil"
 )
 
 type FileSnapshot struct {
@@ -161,9 +163,9 @@ func TruncateApprovalText(s string, max int) string {
 		return s
 	}
 	if max <= 3 {
-		return s[:max]
+		return textutil.TruncateBytes(s, max)
 	}
-	return s[:max-3] + "..."
+	return textutil.TruncateBytesWithSuffix(s, max, "...")
 }
 
 // PopulateApprovalDetails extracts human-readable details for the approval dialog.

@@ -18,6 +18,7 @@ import (
 	"xbot/memory"
 	"xbot/memory/flat"
 	"xbot/memory/letta"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/storage/vectordb"
 	"xbot/tools"
@@ -60,9 +61,13 @@ func WithMemoryProvider(provider string) MultiTenantOption {
 }
 
 // WithPersonaIsolation enables per-tenant persona isolation (no fallback to tenantID=0).
+// The flag is applied through the backend-agnostic memory store, so it works on every
+// storage backend.
 func WithPersonaIsolation(enabled bool) MultiTenantOption {
 	return func(m *MultiTenantSession) {
-		m.coreSvc.SetPersonaIsolation(enabled)
+		if m.store != nil {
+			m.store.Memory().SetPersonaIsolation(enabled)
+		}
 	}
 }
 
@@ -100,15 +105,28 @@ func WithToolIndexService(svc *vectordb.ToolIndexService) MultiTenantOption {
 	}
 }
 
+// WithDataDir 设置与存储后端无关的数据目录（chromem 归档库 / 工具索引落在此处）。
+// 默认 config.XbotHome()。它存在的意义是：这些路径**绝不能**从 dbPath 推导 ——
+// PG 后端下 dbPath 存的是 DSN，不是文件路径。
+func WithDataDir(dir string) MultiTenantOption {
+	return func(m *MultiTenantSession) {
+		m.dataDir = dir
+	}
+}
+
 // MultiTenantSession manages multiple tenant sessions with SQLite backing
 type MultiTenantSession struct {
+	// store is the backend-agnostic storage layer (SQLite adapter or PG). All
+	// tenant/memory/config/session access funnels through it. The concrete
+	// *sqlite.* fields below are SQLite-internal (letta deps, session DB pool,
+	// legacy migration) and are nil on the PG path.
+	store                storage.Storage
 	db                   *sqlite.DB
 	tenantSvc            *sqlite.TenantService
 	sessionSvc           *sqlite.SessionService
 	memorySvc            *sqlite.MemoryService
 	userProfileSvc       *sqlite.UserProfileService
 	tokenUsageSvc        *sqlite.UserTokenUsageService
-	coreSvc              *sqlite.CoreMemoryService
 	archivalSvc          *vectordb.ArchivalService
 	toolIndexSvc         *vectordb.ToolIndexService
 	recallTimeRangeFn    vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
@@ -117,6 +135,7 @@ type MultiTenantSession struct {
 	mu                   sync.RWMutex
 	tenantCache          map[string]*TenantSession // key: "channel:chat_id"
 	dbPath               string
+	dataDir              string          // backend-independent data dir (chromem stores); default config.XbotHome()
 	mcpConfigPath        string          // MCP 配置文件路径
 	mcpInactivityTimeout time.Duration   // MCP 不活跃超时配置
 	mcpCleanupInterval   time.Duration   // MCP 清理扫描间隔
@@ -155,13 +174,13 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	m := &MultiTenantSession{
-		db:                    db,
-		tenantSvc:             sqlite.NewTenantService(db),
-		sessionSvc:            sqlite.NewSessionService(db),
-		memorySvc:             sqlite.NewMemoryService(db),
-		userProfileSvc:        sqlite.NewUserProfileService(db),
-		tokenUsageSvc:         sqlite.NewUserTokenUsageService(db),
-		coreSvc:               sqlite.NewCoreMemoryService(db),
+		db:             db,
+		tenantSvc:      sqlite.NewTenantService(db),
+		sessionSvc:     sqlite.NewSessionService(db),
+		memorySvc:      sqlite.NewMemoryService(db),
+		userProfileSvc: sqlite.NewUserProfileService(db),
+		tokenUsageSvc:  sqlite.NewUserTokenUsageService(db),
+
 		memoryProvider:        "flat",
 		tenantCache:           make(map[string]*TenantSession),
 		toolIndexFingerprints: make(map[int64]string),
@@ -182,31 +201,66 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		sessionDBDir: filepath.Dir(dbPath),
 	}
 
+	// 存储后端抽象（SQLite）：tenant/memory/config/session 访问经此收口，与 PG
+	// 路径（NewMultiTenantPG）共用同一 storage.Storage 契约。必须在应用选项之前
+	// 设置 —— WithPersonaIsolation 等选项经 m.store 生效。
+	m.store = storage.NewSQLiteStorage(db, m.sessionDBAsSessionStore, db.Close)
+
 	// 应用配置选项
 	for _, opt := range opts {
 		opt(m)
 	}
 
-	// Build shared embedding limit options (used by both archival and tool index)
-	var embOpts []vectordb.EmbeddingLimitOption
-	if m.embeddingConfig != nil {
-		if m.embeddingConfig.MaxTokens > 0 {
-			embOpts = append(embOpts, vectordb.WithMaxTokens(m.embeddingConfig.MaxTokens))
-		}
-		if m.embeddingConfig.TokenModel != "" {
-			embOpts = append(embOpts, vectordb.WithTokenModel(m.embeddingConfig.TokenModel))
-		}
-		if m.embeddingConfig.LLMClient != nil && m.embeddingConfig.LLMModel != "" {
-			compressor := vectordb.LLMContentCompressor(m.embeddingConfig.LLMClient, m.embeddingConfig.LLMModel)
-			embOpts = append(embOpts, vectordb.WithCompressor(compressor))
-		}
+	// Memory-provider support services (chromem archival + tool index, and the
+	// recall time-range function) are built through the SAME method as the PG
+	// constructor — see initMemoryServices. Their directories come from an
+	// explicit data dir, never from dbPath.
+	m.initMemoryServices()
+
+	return m, nil
+}
+
+// initMemoryServices builds the services the memory providers need: the chromem
+// archival store, the tool index, and the recall time-range function.
+//
+// It is called by BOTH constructors, so this creation logic no longer lives on
+// the SQLite-only path. Paths come from dataDir (an explicit, backend-independent
+// data directory; defaults to config.XbotHome()) and must NEVER be derived from
+// dbPath — on the PG path dbPath holds a DSN, not a file path.
+func (m *MultiTenantSession) initMemoryServices() {
+	if m.dataDir == "" {
+		m.dataDir = config.XbotHome()
 	}
 
-	// Letta 模式：自动创建 chromem-go 归档服务（如果未通过 WithArchivalService 注入）
-	if m.memoryProvider == "letta" && m.archivalSvc == nil && m.embeddingConfig != nil {
-		archivalDir := filepath.Join(filepath.Dir(dbPath), "archival")
-		embFunc := vectordb.NewEmbeddingFunc(m.embeddingConfig.BaseURL, m.embeddingConfig.APIKey, m.embeddingConfig.Model, m.embeddingConfig.Provider, m.embeddingConfig.MaxTokens)
+	// Providers that need no vector store or recall helper (flat/none) stop here.
+	if m.memoryProvider != "letta" {
+		return
+	}
 
+	// Recall reads through the storage interface, so it works on every backend and
+	// needs NO embedding config (it used to be set unconditionally in letta mode).
+	m.recallTimeRangeFn = m.storeRecallTimeRange()
+
+	if m.embeddingConfig == nil {
+		return
+	}
+
+	// Shared embedding limit options (used by both archival and tool index).
+	var embOpts []vectordb.EmbeddingLimitOption
+	if m.embeddingConfig.MaxTokens > 0 {
+		embOpts = append(embOpts, vectordb.WithMaxTokens(m.embeddingConfig.MaxTokens))
+	}
+	if m.embeddingConfig.TokenModel != "" {
+		embOpts = append(embOpts, vectordb.WithTokenModel(m.embeddingConfig.TokenModel))
+	}
+	if m.embeddingConfig.LLMClient != nil && m.embeddingConfig.LLMModel != "" {
+		embOpts = append(embOpts, vectordb.WithCompressor(vectordb.LLMContentCompressor(m.embeddingConfig.LLMClient, m.embeddingConfig.LLMModel)))
+	}
+	embFunc := vectordb.NewEmbeddingFunc(m.embeddingConfig.BaseURL, m.embeddingConfig.APIKey, m.embeddingConfig.Model, m.embeddingConfig.Provider, m.embeddingConfig.MaxTokens)
+
+	// chromem-go archival store (unless injected via WithArchivalService).
+	if m.archivalSvc == nil {
+		archivalDir := filepath.Join(m.dataDir, "archival")
 		archSvc, err := vectordb.NewArchivalService(archivalDir, embFunc, embOpts...)
 		if err != nil {
 			log.WithError(err).Error("Failed to initialize archival memory (chromem-go), archival tools will be unavailable")
@@ -215,11 +269,9 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		}
 	}
 
-	// Letta 模式：自动创建工具索引服务（如果未通过 WithToolIndexService 注入）
-	if m.memoryProvider == "letta" && m.toolIndexSvc == nil && m.embeddingConfig != nil {
-		toolIndexDir := filepath.Join(filepath.Dir(dbPath), "tool_index")
-		embFunc := vectordb.NewEmbeddingFunc(m.embeddingConfig.BaseURL, m.embeddingConfig.APIKey, m.embeddingConfig.Model, m.embeddingConfig.Provider, m.embeddingConfig.MaxTokens)
-
+	// chromem-go tool index (unless injected via WithToolIndexService).
+	if m.toolIndexSvc == nil {
+		toolIndexDir := filepath.Join(m.dataDir, "tool_index")
 		toolIdxSvc, err := vectordb.NewToolIndexService(toolIndexDir, embFunc, embOpts...)
 		if err != nil {
 			log.WithError(err).Warn("Tool index DB corrupted, removing and recreating")
@@ -237,10 +289,81 @@ func NewMultiTenant(dbPath string, opts ...MultiTenantOption) (*MultiTenantSessi
 		}
 	}
 
-	// Letta 模式：创建时间范围搜索函数
-	if m.memoryProvider == "letta" {
-		m.recallTimeRangeFn = vectordb.NewSQLiteRecallTimeRangeFunc(db.Conn())
+	// Recall reads through the storage interface, so it works on every backend.
+	m.recallTimeRangeFn = m.storeRecallTimeRange()
+}
+
+// storeRecallTimeRange adapts the backend-agnostic MemoryStore range query to the
+// vectordb RecallTimeRangeFunc shape (keeping storage/vectordb free of any storage
+// dependency). The unbounded-end defaults mirror the SQLite implementation that
+// used to back this function.
+func (m *MultiTenantSession) storeRecallTimeRange() vectordb.RecallTimeRangeFunc {
+	return func(tenantID int64, start, end time.Time, limit int) ([]vectordb.RecallEntry, error) {
+		if start.IsZero() {
+			start = time.Date(2000, 1, 1, 0, 0, 0, 0, time.Local)
+		}
+		if end.IsZero() {
+			end = time.Now().Add(24 * time.Hour)
+		}
+		if limit <= 0 {
+			limit = 20
+		}
+		entries, err := m.store.Memory().GetHistoryEntriesInRange(context.Background(), tenantID, start, end, limit)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]vectordb.RecallEntry, len(entries))
+		for i, e := range entries {
+			out[i] = vectordb.RecallEntry{Entry: e.Entry, CreatedAt: e.CreatedAt}
+		}
+		return out, nil
 	}
+}
+
+// NewMultiTenantPG creates a MultiTenantSession backed by PostgreSQL.
+//
+// Differences from NewMultiTenant (SQLite):
+//   - No main *sqlite.DB handle and no per-session SQLite DB pool — sessions
+//     come from storage.Storage.Session(tenantID) (shared PG pool, tenant_id
+//     filtered).
+//   - Memory provider is forced to "flat": the letta/xbot provider depends on
+//     SQLite-only services (CoreMemoryService/archival) and is not PG-ready.
+//   - dbPath holds the DSN (diagnostics only; there is no file path).
+func NewMultiTenantPG(dsn string, opts ...MultiTenantOption) (*MultiTenantSession, error) {
+	store, err := storage.NewPGStorage(context.Background(), dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open pg storage: %w", err)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	m := &MultiTenantSession{
+		store:                 store,
+		memoryProvider:        "flat", // xbot/letta 记忆 provider 暂不支持 PG
+		tenantCache:           make(map[string]*TenantSession),
+		toolIndexFingerprints: make(map[int64]string),
+		toolIndexPrevNames:    make(map[int64]map[string]bool),
+		dbPath:                dsn,
+		mcpConfigPath:         "mcp.json",
+		mcpInactivityTimeout:  30 * time.Minute,
+		mcpCleanupInterval:    5 * time.Minute,
+		sessionCacheTimeout:   24 * time.Hour,
+		cleanupStopCh:         make(chan struct{}),
+		shutdownCtx:           shutdownCtx,
+		shutdownCancel:        shutdownCancel,
+		sessionDBs:            make(map[int64]*sessionDBEntry),
+	}
+
+	// 应用配置选项
+	for _, opt := range opts {
+		opt(m)
+	}
+
+	// Memory services (archival store / tool index / recall) are created through
+	// the SAME path as the SQLite constructor — see initMemoryServices. No provider
+	// is forced here: whatever WithMemoryProvider asked for is honoured, and a
+	// missing dependency surfaces as an explicit error rather than a silent
+	// downgrade to flat.
+	m.initMemoryServices()
 
 	return m, nil
 }
@@ -254,30 +377,43 @@ func (m *MultiTenantSession) SetMCPConfigPath(path string) {
 
 // RecordUserTokenUsage records token usage for a user (upsert).
 func (m *MultiTenantSession) RecordUserTokenUsage(senderID, model string, inputTokens, outputTokens, cachedTokens int, conversationCount, llmCallCount int) error {
-	db := m.db.Conn()
-	if db == nil {
+	// SQLite 停机期 m.db.Conn() 可能为 nil（PG 路径 m.db 恒为 nil）—— usage 是
+	// 展示性冗余，明确拒绝优于让底层对 nil 连接 panic。
+	if m.db != nil && m.db.Conn() == nil {
 		return fmt.Errorf("database connection is nil (agent may be shutting down)")
 	}
-	return m.tokenUsageSvc.RecordUsage(db, senderID, model, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount)
+	return m.store.Config().RecordUsage(senderID, model, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount)
 }
 
 // GetUserTokenUsage retrieves cumulative token usage for a user.
 func (m *MultiTenantSession) GetUserTokenUsage(senderID string) (*sqlite.UserTokenUsage, error) {
-	return m.tokenUsageSvc.GetUsage(senderID)
+	return m.store.Config().GetUsage(senderID)
 }
 
 // GetDailyTokenUsage retrieves daily token usage for a user.
 func (m *MultiTenantSession) GetDailyTokenUsage(senderID string, days int) ([]sqlite.DailyTokenUsage, error) {
-	return m.tokenUsageSvc.GetDailyUsage(senderID, days)
+	return m.store.Config().GetDailyUsage(senderID, days)
 }
 
 // GetDailyTokenUsageSummary retrieves aggregated per-day usage for a user.
+//
+// ⚠️ SQLite-only：GetDailyUsageSummary 未纳入 storage.ConfigStore 契约（PG 实现
+// 存在，但不经后端无关接口暴露）。PG 路径下明确报错，绝不静默返回空数据。
 func (m *MultiTenantSession) GetDailyTokenUsageSummary(senderID string, days int) ([]sqlite.DailyTokenUsage, error) {
+	if m.tokenUsageSvc == nil {
+		return nil, fmt.Errorf("daily usage summary is unavailable on the PG backend")
+	}
 	return m.tokenUsageSvc.GetDailyUsageSummary(senderID, days)
 }
 
 // GetAllUserTokenUsage retrieves token usage for all users, sorted by total desc.
+//
+// ⚠️ SQLite-only（同 GetDailyTokenUsageSummary 的理由：GetAllUsage 不在
+// storage.ConfigStore 契约内）。
 func (m *MultiTenantSession) GetAllUserTokenUsage() ([]sqlite.UserTokenUsage, error) {
+	if m.tokenUsageSvc == nil {
+		return nil, fmt.Errorf("all-user token usage is unavailable on the PG backend")
+	}
 	return m.tokenUsageSvc.GetAllUsage()
 }
 
@@ -324,7 +460,7 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 	}
 
 	// Get or create tenant ID
-	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
+	tenantID, err := m.store.Tenant().GetOrCreateTenantID(channel, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("get/create tenant: %w", err)
 	}
@@ -347,14 +483,16 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 			// is exactly one owner for every session.
 			UserID:  1,
 			BaseDir: memDir,
-			DB:      m.db.Conn(),
 		}
+		// DB-backed memory reaches the provider ONLY through the storage seam —
+		// never a driver handle. On every backend this is store.Memory().
+		deps.AgentMemory = m.getMemoryStore()
 		// Letta-specific deps
 		if m.memoryProvider == "letta" {
 			deps.LettaDeps = &letta.Deps{
-				CoreSvc:      m.coreSvc,
+				CoreSvc:      m.getMemoryStore(),
 				ArchivalSvc:  m.archivalSvc,
-				MemorySvc:    m.memorySvc,
+				MemorySvc:    m.getMemoryStore(),
 				ToolIndexSvc: m.toolIndexSvc,
 			}
 			// 前向兼容：一次性迁移 user_profiles → core memory blocks
@@ -366,28 +504,31 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 			memProvider = flat.New(tenantID, memDir)
 		}
 	}
-	// 每会话一个 DB（v71）：打开（含惰性迁移）该会话的独立库，TenantSession 的
-	// 消息读写（sessionSvc）全部落到会话库 —— 与其他会话的写真正并行（独立
-	// writeMu + WAL）。打开+迁移在 sessionDBMu 下串行（每会话一次的低频操作；
-	// 本慢路径本就持有 m.mu 全局串行，不引入新的阻塞面）。锁序：m.mu →
-	// sessionDBMu（DestroySession 同序，绝不反向）。
-	sessionDB, err := m.sessionDB(tenantID)
+	// 会话数据入口：后端无关（storage.SessionStore）。SQLite 下 m.store.Session
+	// 打开（含惰性迁移）该会话的独立库 —— TenantSession 的消息读写全部落到会话库，
+	// 与其他会话的写真正并行（独立 writeMu + WAL）；PG 下返回共享连接（tenant_id
+	// 过滤）。打开+迁移在 sessionDBMu 下串行（每会话一次的低频操作；本慢路径本就
+	// 持有 m.mu 全局串行，不引入新的阻塞面）。锁序：m.mu → sessionDBMu
+	// （DestroySession 同序，绝不反向）。
+	sessionStore, err := m.store.Session(tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("open session db for tenant %d: %w", tenantID, err)
+		return nil, fmt.Errorf("open session store for tenant %d: %w", tenantID, err)
 	}
+	// tenants 注册表（主库）：CWD / preview。后端无关（SQLite 主库 / PG 共享库）。
+	tenantStore := m.store.Tenant()
 
 	// Create tenant session
 	sess = &TenantSession{
-		tenantID:   tenantID,
-		channel:    channel,
-		chatID:     chatID,
-		sessionSvc: sqlite.NewSessionService(sessionDB), // 会话库（消息/迭代数据）
-		tenantSvc:  m.tenantSvc,                         // 主库（tenants 注册表：CWD/preview）
-		memorySvc:  m.memorySvc,                         // 主库（tenant_state/long_term/event_history）
-		memory:     memProvider,
-		mcpManager: mcpManager,
-		lastActive: time.Now(),
-		cwd:        loadPersistedCWD(m.tenantSvc, tenantID),
+		tenantID:     tenantID,
+		channel:      channel,
+		chatID:       chatID,
+		sessionStore: sessionStore, // 会话数据（SQLite 会话库 / PG 共享连接）
+		tenantStore:  tenantStore,  // 主库（tenants 注册表：CWD/preview）
+		memorySvc:    m.getMemoryStore(),
+		memory:       memProvider,
+		mcpManager:   mcpManager,
+		lastActive:   time.Now(),
+		cwd:          loadPersistedCWD(tenantStore, tenantID),
 	}
 
 	m.tenantCache[key] = sess
@@ -547,7 +688,7 @@ func (m *MultiTenantSession) indexPersonalMCPTools(tenantID int64, mgr *tools.Se
 // Only writes if the target block is currently empty to avoid overwriting user edits.
 func (m *MultiTenantSession) migrateProfileToCoreMemory(tenantID int64) {
 	// Check if persona block is already populated (persona is global, use "" for userID)
-	persona, _, err := m.coreSvc.GetBlock(tenantID, "persona", "")
+	persona, _, err := m.store.Memory().GetBlock(tenantID, "persona", "")
 	if err != nil {
 		log.WithError(err).Warn("Profile migration: failed to read persona block")
 		return
@@ -557,7 +698,7 @@ func (m *MultiTenantSession) migrateProfileToCoreMemory(tenantID int64) {
 	}
 
 	// Read self profile (__me__)
-	_, selfProfile, err := m.userProfileSvc.GetProfile("__me__")
+	_, selfProfile, err := m.store.Config().GetUserProfile("__me__")
 	if err != nil {
 		log.WithError(err).Warn("Profile migration: failed to read __me__ profile")
 		return
@@ -567,7 +708,7 @@ func (m *MultiTenantSession) migrateProfileToCoreMemory(tenantID int64) {
 	}
 
 	// Write to persona block (global, use "" for userID)
-	if err := m.coreSvc.SetBlock(tenantID, "persona", selfProfile, ""); err != nil {
+	if err := m.store.Memory().SetBlock(tenantID, "persona", selfProfile, ""); err != nil {
 		log.WithError(err).Warn("Profile migration: failed to write persona block")
 		return
 	}
@@ -606,6 +747,11 @@ func (m *MultiTenantSession) Close() error {
 	// closeAllSessionDBs 自带 sessionDBMu（锁序 m.mu → sessionDBMu，与
 	// GetOrCreateSession/DestroySession 一致，无反向获取）。
 	m.closeAllSessionDBs()
+	// 存储后端收口：SQLite 的 closeFn 即主库 Close（与原 m.db.Close() 等价）；
+	// PG 路径关闭连接池。
+	if m.store != nil {
+		return m.store.Close()
+	}
 	if m.db != nil {
 		return m.db.Close()
 	}
@@ -622,9 +768,24 @@ func (m *MultiTenantSession) DB() *sqlite.DB {
 	return m.db
 }
 
+// Store returns the backend-agnostic storage layer (SQLite adapter or PG).
+// Callers use it to reach Config()/Tenant()/Session() without depending on a
+// concrete backend — e.g. the web channel's auth store comes from
+// Store().Config() so the same wiring serves SQLite and PG.
+func (m *MultiTenantSession) getMemoryStore() storage.MemoryStore {
+	if m.store != nil {
+		return m.store.Memory()
+	}
+	return nil
+}
+
+func (m *MultiTenantSession) Store() storage.Storage {
+	return m.store
+}
+
 // CoreMemoryService returns the shared core memory service.
-func (m *MultiTenantSession) CoreMemoryService() *sqlite.CoreMemoryService {
-	return m.coreSvc
+func (m *MultiTenantSession) CoreMemoryService() storage.MemoryStore {
+	return m.getMemoryStore()
 }
 
 // ArchivalService returns the shared archival memory service.
@@ -633,8 +794,8 @@ func (m *MultiTenantSession) ArchivalService() *vectordb.ArchivalService {
 }
 
 // MemoryService returns the shared memory (recall) service.
-func (m *MultiTenantSession) MemoryService() *sqlite.MemoryService {
-	return m.memorySvc
+func (m *MultiTenantSession) MemoryService() storage.MemoryStore {
+	return m.getMemoryStore()
 }
 
 // ToolIndexService returns the shared tool index service.
@@ -648,10 +809,10 @@ func (m *MultiTenantSession) RecallTimeRange() vectordb.RecallTimeRangeFunc {
 }
 
 // NewLettaMemory creates a new LettaMemory instance with an independent tenantID.
-// The service instances (coreSvc, archivalSvc, etc.) are shared — data isolation
+// The service instances (memory store, archivalSvc, etc.) are shared — data isolation
 // is provided by the tenantID parameter.
 func (m *MultiTenantSession) NewLettaMemory(tenantID int64) *letta.LettaMemory {
-	return letta.New(tenantID, m.coreSvc, m.archivalSvc, m.memorySvc, m.toolIndexSvc)
+	return letta.New(tenantID, m.getMemoryStore(), m.archivalSvc, m.getMemoryStore(), m.toolIndexSvc)
 }
 
 // GetSessionMCPManager 实现 SessionMCPManagerProvider 接口
@@ -805,13 +966,13 @@ func (m *MultiTenantSession) DestroySession(channel, chatID string) error {
 
 	if !ok {
 		// Not in cache — still try to delete from DB in case it exists there.
-		tenantID, err := m.tenantSvc.GetTenantIDByChannelChatID(channel, chatID)
+		tenantID, err := m.store.Tenant().GetTenantIDByChannelChatID(channel, chatID)
 		if err != nil || tenantID == 0 {
 			return nil // doesn't exist, nothing to do
 		}
 		// 删会话库文件（读 db_path 必须在删 tenants 行之前 —— 注册表是路径唯一权威）。
 		m.deleteSessionDBFile(tenantID)
-		_ = m.tenantSvc.DeleteTenant(tenantID)
+		_ = m.store.Tenant().DeleteTenant(tenantID)
 		return nil
 	}
 
@@ -822,7 +983,7 @@ func (m *MultiTenantSession) DestroySession(channel, chatID string) error {
 	m.deleteSessionDBFile(sess.TenantID())
 
 	// Delete from DB (CASCADE removes all messages)
-	_ = m.tenantSvc.DeleteTenant(sess.TenantID())
+	_ = m.store.Tenant().DeleteTenant(sess.TenantID())
 
 	// Notify Registry to clean up session-scoped activations
 	if onEvict != nil {
@@ -866,7 +1027,7 @@ func (m *MultiTenantSession) InvalidateSessionMCP(sessionKey string) {
 // targetType is one of: "session", "core_persona", "core_human", "core_working",
 // "core_all", "long_term", "event_history", "archival", "reset_all".
 func (m *MultiTenantSession) ClearMemory(ctx context.Context, channel, chatID, targetType, userID string) error {
-	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
+	tenantID, err := m.store.Tenant().GetOrCreateTenantID(channel, chatID)
 	if err != nil {
 		return fmt.Errorf("resolve tenant: %w", err)
 	}
@@ -900,13 +1061,13 @@ func (m *MultiTenantSession) ClearMemory(ctx context.Context, channel, chatID, t
 		}
 		m.mu.Unlock()
 	case "core_persona":
-		appendErr("persona", m.coreSvc.ClearBlock(tenantID, "persona", ""))
+		appendErr("persona", m.store.Memory().ClearBlock(tenantID, "persona", ""))
 	case "core_human":
-		appendErr("human", m.coreSvc.ClearBlock(tenantID, "human", userID))
+		appendErr("human", m.store.Memory().ClearBlock(tenantID, "human", userID))
 	case "core_working":
-		appendErr("working_context", m.coreSvc.ClearBlock(tenantID, "working_context", ""))
+		appendErr("working_context", m.store.Memory().ClearBlock(tenantID, "working_context", ""))
 	case "core_all":
-		appendErr("core_all", m.coreSvc.ClearAllBlocks(tenantID, userID))
+		appendErr("core_all", m.store.Memory().ClearAllBlocks(tenantID, userID))
 		// Evict cached session to reset in-memory core memory references
 		sessionKey := sessKey(channel, chatID)
 		m.mu.Lock()
@@ -916,9 +1077,9 @@ func (m *MultiTenantSession) ClearMemory(ctx context.Context, channel, chatID, t
 		}
 		m.mu.Unlock()
 	case "long_term":
-		appendErr("long_term", m.memorySvc.ClearLongTerm(ctx, tenantID))
+		appendErr("long_term", m.store.Memory().ClearLongTerm(ctx, tenantID))
 	case "event_history":
-		appendErr("event_history", m.memorySvc.ClearHistory(ctx, tenantID))
+		appendErr("event_history", m.store.Memory().ClearHistory(ctx, tenantID))
 	case "archival":
 		if m.archivalSvc != nil {
 			appendErr("archival", m.archivalSvc.ClearAll(ctx, tenantID))
@@ -933,10 +1094,10 @@ func (m *MultiTenantSession) ClearMemory(ctx context.Context, channel, chatID, t
 				m.recomputeSessionPreview(sdb, tenantID)
 			}
 		}
-		appendErr("core_all", m.coreSvc.ClearAllBlocks(tenantID, userID))
-		appendErr("long_term", m.memorySvc.ClearLongTerm(ctx, tenantID))
-		appendErr("event_history", m.memorySvc.ClearHistory(ctx, tenantID))
-		appendErr("state", m.memorySvc.ClearState(ctx, tenantID))
+		appendErr("core_all", m.store.Memory().ClearAllBlocks(tenantID, userID))
+		appendErr("long_term", m.store.Memory().ClearLongTerm(ctx, tenantID))
+		appendErr("event_history", m.store.Memory().ClearHistory(ctx, tenantID))
+		appendErr("state", m.store.Memory().ClearState(ctx, tenantID))
 		if m.archivalSvc != nil {
 			appendErr("archival", m.archivalSvc.ClearAll(ctx, tenantID))
 		}
@@ -967,7 +1128,7 @@ func (m *MultiTenantSession) ClearMemory(ctx context.Context, channel, chatID, t
 func (m *MultiTenantSession) GetMemoryStats(ctx context.Context, channel, chatID, userID string) map[string]string {
 	stats := map[string]string{}
 
-	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
+	tenantID, err := m.store.Tenant().GetOrCreateTenantID(channel, chatID)
 	if err != nil {
 		return stats
 	}
@@ -980,7 +1141,7 @@ func (m *MultiTenantSession) GetMemoryStats(ctx context.Context, channel, chatID
 	}
 
 	// Core memory blocks
-	if blocks, err := m.coreSvc.GetAllBlocks(tenantID, userID); err == nil {
+	if blocks, err := m.store.Memory().GetAllBlocks(tenantID, userID); err == nil {
 		for _, name := range []string{"persona", "human", "working_context"} {
 			if content, ok := blocks[name]; ok && content != "" {
 				stats[name] = fmt.Sprintf("%d chars", len(content))
@@ -996,12 +1157,12 @@ func (m *MultiTenantSession) GetMemoryStats(ctx context.Context, channel, chatID
 	}
 
 	// Long-term memory
-	if content, err := m.memorySvc.ReadLongTerm(ctx, tenantID); err == nil && content != "" {
+	if content, err := m.store.Memory().ReadLongTerm(ctx, tenantID); err == nil && content != "" {
 		stats["long_term"] = "有内容"
 	}
 
 	// Event history count
-	if count, err := m.memorySvc.GetHistoryCount(ctx, tenantID); err == nil && count > 0 {
+	if count, err := m.store.Memory().GetHistoryCount(ctx, tenantID); err == nil && count > 0 {
 		stats["event_history"] = fmt.Sprintf("%d 条", count)
 	}
 
@@ -1017,7 +1178,7 @@ func (m *MultiTenantSession) GetMemoryStats(ctx context.Context, channel, chatID
 // tenants 元数据（CurrentModel/SessionCreatedAt/SessionLastActive）从主库补齐
 // （GetTenantUsageStats 只查会话库的 iteration_history）。
 func (m *MultiTenantSession) GetSessionUsageStats(channel, chatID string, recentLimit int) (*sqlite.TenantUsageStats, error) {
-	tenantID, err := m.tenantSvc.GetTenantIDByChannelChatID(channel, chatID)
+	tenantID, err := m.store.Tenant().GetTenantIDByChannelChatID(channel, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("get tenant: %w", err)
 	}
@@ -1026,7 +1187,7 @@ func (m *MultiTenantSession) GetSessionUsageStats(channel, chatID string, recent
 	}
 	svc, err := m.SessionServiceFor(tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("open session db for usage stats: %w", err)
+		return nil, fmt.Errorf("open session store for usage stats: %w", err)
 	}
 	stats, err := svc.GetTenantUsageStats(tenantID, recentLimit)
 	if err != nil {
@@ -1041,7 +1202,11 @@ func (m *MultiTenantSession) GetSessionUsageStats(channel, chatID string, recent
 // fillUsageStatsFromMainDB 补齐 GetTenantUsageStats 不再从会话库读的字段
 // （tenant_state 水位 + tenants 元数据 —— 主库表）。失败静默（这些是展示性
 // 字段，缺省零值可接受）。
+// PG 路径无主库 *sqlite.DB（SQLite 专属 ? 占位符查询）—— 直接跳过。
 func (m *MultiTenantSession) fillUsageStatsFromMainDB(tenantID int64, stats *sqlite.TenantUsageStats) {
+	if m.db == nil {
+		return
+	}
 	conn := m.db.Conn()
 	if conn == nil {
 		return
@@ -1060,7 +1225,7 @@ func (m *MultiTenantSession) fillUsageStatsFromMainDB(tenantID int64, stats *sql
 // GetTenantIDByChannelChatID (no tenant creation side effect). Returns
 // (nil, nil) when the session doesn't exist.
 func (m *MultiTenantSession) GetSessionUsageBuckets(channel, chatID string, bucketSeconds int64, count int, tzOffsetMinutes int) ([]sqlite.UsageBucket, error) {
-	tenantID, err := m.tenantSvc.GetTenantIDByChannelChatID(channel, chatID)
+	tenantID, err := m.store.Tenant().GetTenantIDByChannelChatID(channel, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("get tenant: %w", err)
 	}
@@ -1069,14 +1234,14 @@ func (m *MultiTenantSession) GetSessionUsageBuckets(channel, chatID string, buck
 	}
 	svc, err := m.SessionServiceFor(tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("open session db for usage buckets: %w", err)
+		return nil, fmt.Errorf("open session store for usage buckets: %w", err)
 	}
 	return svc.GetTenantUsageBuckets(tenantID, bucketSeconds, count, tzOffsetMinutes)
 }
 
 // RewindHistory truncates a session at a stable user history node.
 func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int64) (llm.ChatMessage, int, error) {
-	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
+	tenantID, err := m.store.Tenant().GetOrCreateTenantID(channel, chatID)
 	if err != nil {
 		return llm.ChatMessage{}, 0, fmt.Errorf("get tenant: %w", err)
 	}
@@ -1085,7 +1250,7 @@ func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int
 	// 无法原子 —— token 水位是派生缓存，下一条用户消息的 SaveContextTokens 自愈）。
 	svc, err := m.SessionServiceFor(tenantID)
 	if err != nil {
-		return llm.ChatMessage{}, 0, fmt.Errorf("open session db for rewind: %w", err)
+		return llm.ChatMessage{}, 0, fmt.Errorf("open session store for rewind: %w", err)
 	}
 	target, turnIdx, promptTokens, err := svc.RewindToHistoryID(tenantID, historyID)
 	if err != nil {
@@ -1094,7 +1259,7 @@ func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int
 	// tenant_state 恢复（主库，尽力而为）：截断后剩余历史的最后一条用户消息的
 	// context_tokens。失败只 Warn —— 水位是派生缓存（GetLastContextTokens 从会话库
 	// session_messages.context_tokens 读，截断已一致），不阻塞 rewind。
-	if err := m.memorySvc.SetTokenState(context.Background(), tenantID, promptTokens, 0); err != nil {
+	if err := m.store.Memory().SetTokenState(context.Background(), tenantID, promptTokens, 0); err != nil {
 		log.WithError(err).WithField("tenant_id", tenantID).Warn("rewind: restore tenant_state token watermark failed (derived cache; self-heals on next message)")
 	}
 	// preview 重算（主库 tenants.preview）：截断后最新一条 user/assistant 消息变化。

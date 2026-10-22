@@ -31,6 +31,7 @@ import (
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -472,7 +473,7 @@ type Agent struct {
 	maxSubAgentDepth int
 
 	// Cron service and scheduler
-	cronSvc *sqlite.CronService
+	cronSvc storage.CronStore
 	cronSch *cron.Scheduler
 
 	// Event trigger router
@@ -1117,60 +1118,48 @@ func (a *Agent) emitSessionState(ev protocol.SessionEvent) {
 }
 
 // renameSession renames a chat session in DB and pushes the state change.
-// Uses multiSession.DB() for DB access and emitSessionState for notification.
+// renameSession renames a chat session and pushes the state change.
+// 后端无关：一律经 TenantStore（SQLite 的 user_chats / PG 的同一张表），
+// 不再依赖主库 *sqlite.DB —— PG 后端同样可用。
 func (a *Agent) renameSession(chatID, newName string) (oldName string, err error) {
-	if a.multiSession == nil {
-		return "", fmt.Errorf("renameSession: no multiSession DB")
+	if a.multiSession == nil || a.multiSession.Store() == nil {
+		return "", fmt.Errorf("renameSession: no storage backend")
 	}
-	db := a.multiSession.DB()
-	if db == nil {
-		return "", fmt.Errorf("renameSession: no DB connection")
-	}
-	conn := db.Conn()
+	tenantStore := a.multiSession.Store().Tenant()
 
-	// Look up channel & sender from DB (works for both CLI and web chats)
-	var ch, senderID string
-	row := conn.QueryRow(`SELECT channel, sender_id FROM user_chats WHERE chat_id = ? LIMIT 1`, chatID)
-	if err := row.Scan(&ch, &senderID); err != nil {
-		// Fallback for CLI sessions not yet in user_chats
-		ch = "cli"
-		senderID = a.cliSenderID
+	// Look up channel & sender (works for both CLI and web chats)
+	ch := "cli"
+	senderID := a.cliSenderID
+	if ownerChannel, ownerSender, err := tenantStore.GetChatOwner(chatID); err == nil && ownerSender != "" {
+		if ownerChannel != "" {
+			ch = ownerChannel
+		}
+		senderID = ownerSender
 	}
-
-	// Get old name
-	row = conn.QueryRow(`SELECT label FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?`, ch, senderID, chatID)
-	if err := row.Scan(&oldName); err != nil {
-		log.Warn("Failed to scan old name: ", err)
+	if label, err := tenantStore.GetChatLabel(ch, chatID); err == nil {
+		oldName = label
 	}
 	if oldName == "" {
 		_, oldName = cli.ParseChatID(chatID)
 	}
 
-	// Deduplicate
+	// Deduplicate against this sender's existing labels.
 	finalName := channel.DeduplicateSessionName(newName, chatID, func() []channel.NameEntry {
-		rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = ? AND sender_id = ? AND label != ''`, ch, senderID)
+		chats, _, err := tenantStore.ListUserChats(ch, senderID, "", 0, 500)
 		if err != nil {
 			return nil
 		}
-		defer rows.Close()
 		var entries []channel.NameEntry
-		for rows.Next() {
-			var cid, lbl string
-			if err := rows.Scan(&cid, &lbl); err == nil {
-				entries = append(entries, channel.NameEntry{Name: lbl, ChatID: cid})
+		for _, c := range chats {
+			if c.Label != "" {
+				entries = append(entries, channel.NameEntry{Name: c.Label, ChatID: c.ChatID})
 			}
 		}
 		return entries
 	})
 
-	// Update DB
-	_, err = conn.Exec(`
-		INSERT INTO user_chats (channel, sender_id, chat_id, label)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
-		ch, senderID, chatID, finalName, finalName,
-	)
-	if err != nil {
+	// Persist the label.
+	if err := tenantStore.RenameChat(ch, senderID, chatID, finalName); err != nil {
 		return "", fmt.Errorf("rename chat in DB: %w", err)
 	}
 
@@ -1283,7 +1272,10 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	}
 	// Resolve again before replay: deletion may have happened after the probe.
 	// Never use GetOrCreateSession on this read-only recovery path.
-	tenantID, err := sqlite.NewTenantService(a.multiSession.DB()).GetTenantIDByChannelChatID(ch, chatID)
+	// 后端无关：tenant 解析走 TenantStore、replay 走 SessionStore —— 因此 PG
+	// 后端也能恢复待答问题（此前这里依赖主库 *sqlite.DB，PG 上直接跳过）。
+	tenantStore := a.multiSession.Store().Tenant()
+	tenantID, err := tenantStore.GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil || tenantID == 0 {
 		return key, nil
 	}
@@ -1378,19 +1370,16 @@ func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqli
 	if a.multiSession == nil {
 		return 0, "", false
 	}
-	db := a.multiSession.DB()
-	if db == nil {
-		return 0, "", false
-	}
+	// 后端无关：tenant 解析走 TenantStore，控制记录查询走 SessionStore —— PG 后端
+	// 同样可用（此前这里依赖主库 *sqlite.DB，PG 上直接返回 available=false）。
 	// Session-tree probes must not recreate a tenant from a stale deleted row.
-	tenantID, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(ch, chatID)
+	tenantID, err := a.multiSession.Store().Tenant().GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil {
 		return 0, "", false
 	}
 	if tenantID == 0 {
 		return 0, "", true
 	}
-	// AskUser records live in the per-session DB, not the main registry.
 	svc, err := a.multiSession.SessionServiceFor(tenantID)
 	if err != nil {
 		return 0, "", false
@@ -1874,9 +1863,12 @@ type Config struct {
 	LLM            llm.LLM
 	Model          string
 	MaxConcurrency int    // 最大并发会话处理数（默认 3）
-	DBPath         string // SQLite 数据库路径（空则使用默认路径）
-	SkillsDir      string // Skills 目录
-	AgentsDir      string // Agents 目录（空则使用 WorkDir/.xbot/agents）
+	DBPath         string // SQLite 数据库路径（空则使用默认路径）；PG 后端时为 DSN
+	// StorageType 选择存储后端："sqlite"（默认，按 DBPath 文件打开）或 "pg"。
+	// 也可省略 —— DBPath 为 "postgres://..." DSN 时自动走 PG。
+	StorageType string
+	SkillsDir   string // Skills 目录
+	AgentsDir   string // Agents 目录（空则使用 WorkDir/.xbot/agents）
 	// DisabledSkills 全局 skill 黑名单：这些 skill 不会出现在 available_skills
 	// catalog 中（LLM 不可见、不可激活）。
 	DisabledSkills []string
@@ -2021,8 +2013,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 
 // initSession 初始化多租户会话管理器。
 func initSession(cfg Config) (*session.MultiTenantSession, error) {
-	multiSession, err := session.NewMultiTenant(
-		cfg.DBPath,
+	opts := []session.MultiTenantOption{
 		session.WithMCPTimeout(cfg.MCPInactivityTimeout),
 		session.WithCleanupInterval(cfg.MCPCleanupInterval),
 		session.WithSessionCacheTimeout(cfg.SessionCacheTimeout),
@@ -2038,7 +2029,19 @@ func initSession(cfg Config) (*session.MultiTenantSession, error) {
 			LLMModel:   cfg.Model,
 			TokenModel: cfg.Model,
 		}),
-	)
+	}
+
+	// 存储后端选择：StorageType=="pg" 或 DBPath 是 postgres:// DSN → PG。
+	// （PG 路径内部强制 flat 记忆 provider，见 session.NewMultiTenantPG。）
+	if cfg.StorageType == "pg" || strings.HasPrefix(cfg.DBPath, "postgres://") {
+		multiSession, err := session.NewMultiTenantPG(cfg.DBPath, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("initialize multi-tenant session (pg): %w", err)
+		}
+		return multiSession, nil
+	}
+
+	multiSession, err := session.NewMultiTenant(cfg.DBPath, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("initialize multi-tenant session: %w", err)
 	}
@@ -2088,28 +2091,41 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.commands = NewCommandRegistry()
 	registerBuiltinCommands(a.commands)
 
-	// 初始化 Cron 服务和调度器
-	cronSvc := sqlite.NewCronService(multiSession.DB())
-	cronSch := cron.NewScheduler(cronSvc)
+	// 初始化 Cron 服务和调度器。
+	// 后端无关：cronSvc 来自 storage.CronStore（SQLite 的 cron_jobs 表 / PG 的同一张表），
+	// 因此 PG 后端同样可用（此前这里依赖主库 *sqlite.DB，PG 上整段被跳过 ⇒ cron 静默消失）。
+	if multiSession.Store() != nil {
+		cronSvc := multiSession.Store().Cron()
+		cronSch := cron.NewScheduler(cronSvc)
 
-	// 从旧的 JSON 文件迁移数据（如果需要）
-	if err := cronSvc.MigrateFromJSON(cfg.WorkDir); err != nil {
-		log.WithError(err).Warn("Failed to migrate cron jobs from JSON")
+		// 从旧的 JSON 文件迁移数据（如果需要）
+		if err := cronSvc.MigrateFromJSON(cfg.WorkDir); err != nil {
+			log.WithError(err).Warn("Failed to migrate cron jobs from JSON")
+		}
+
+		// 注册 CronTool（核心工具，始终可用）
+		registry.RegisterCore(tools.NewCronTool(cronSvc))
+
+		a.cronSvc = cronSvc
+		a.cronSch = cronSch
 	}
-
-	// 注册 CronTool（核心工具，始终可用）
-	registry.RegisterCore(tools.NewCronTool(cronSvc))
-
-	a.cronSvc = cronSvc
-	a.cronSch = cronSch
 
 	// LLM factory: per-user subscriptions are the single source for custom LLM.
 	if a.userSys == nil {
 		a.userSys = &userSystem{}
 	}
 	a.userSys.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
-	a.userSys.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
-	a.userSys.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
+	// ⚠️ PG 后端：订阅/租户服务是 SQLite 专属具体类型（*sqlite.LLMSubscriptionService
+	// / *sqlite.TenantService），PG 走 storage.ConfigStore/TenantStore 接口 —— 此处
+	// 不接线（PG 路径为后端对齐/测试用途，LLM 配置不在其范围内）。消费点都有
+	// nil 守卫（如 llm_factory.go 的 settingsSvc/subSvc 检查）。
+	if db := multiSession.DB(); db != nil {
+		a.userSys.llmFactory.SetSubscriptionSvc(storage.NewSQLiteConfigStore(db))
+		a.userSys.llmFactory.SetTenantSvc(storage.NewSQLiteTenantStore(db))
+	} else if multiSession.Store() != nil {
+		a.userSys.llmFactory.SetSubscriptionSvc(multiSession.Store().Config())
+		a.userSys.llmFactory.SetTenantSvc(multiSession.Store().Tenant())
+	}
 	// v71（每会话一个 DB）：模型切换时清零会话库的 token 基线（session_messages
 	// .context_tokens —— 不同模型上下文大小不同）。tenant_state 半边（主库）由
 	// SetTenantSubscription 清；session_messages 半边（会话库）经本钩子路由。
@@ -2205,16 +2221,22 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	// Initialize RegistryManager
 	a.registryManager = NewRegistryManager(a.skills, a.agents, cfg.WorkDir, cfg.XbotHome, cfg.Sandbox)
 
-	// Initialize UserSettingsService and SettingsService
-	userSettingsSvc := sqlite.NewUserSettingsService(multiSession.DB())
-	a.userSys.settingsSvc = NewSettingsService(userSettingsSvc)
+	// Initialize UserSettingsService and SettingsService.
+	// SettingsService 走后端无关的 storage.ConfigStore：SQLite 用适配层包主库，
+	// PG 用 Store().Config()（同一套 ConfigStore 接口，无后端分支）。
+	if db := multiSession.DB(); db != nil {
+		a.userSys.settingsSvc = NewSettingsService(storage.NewSQLiteConfigStore(db))
+	} else if multiSession.Store() != nil {
+		a.userSys.settingsSvc = NewSettingsService(multiSession.Store().Config())
+	}
 
 	// Initialize LLMSemaphoreManager and inject dependencies
 	llmSemMgr := llm.NewLLMSemaphoreManager()
 	a.userSys.llmFactory.SetLLMSemaphoreManager(llmSemMgr)
 	a.userSys.llmFactory.SetSettingsService(a.userSys.settingsSvc)
 
-	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它）
+	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它 ——
+	// nil 时 LanguageMiddleware 自行短路，见其 Process 的 nil 守卫）
 	a.initPipelines(memoryProvider)
 }
 
@@ -2876,20 +2898,23 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.multiSession.StartCleanupRoutine()
 
-	a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
-		sessionKey := channel + ":" + chatID
-		// nil-guard: bare &Agent{} construction (no New() Store) must not
-		// panic on a cron trigger — same contract as the interactive.go read
-		// sites. Normal chain stores the manager before cron starts.
-		if mgr := a.bgTaskMgr.Load(); mgr != nil {
-			mgr.SendCronFired(&tools.CronFired{
-				Key:     sessionKey,
-				Sid:     senderID,
-				Message: message,
-			})
-		}
-	})
-	a.cronSch.StartDelayed(3 * time.Second)
+	// nil 守卫：PG 后端不初始化 cron（见 initServices）—— 无调度器可启动。
+	if a.cronSch != nil {
+		a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
+			sessionKey := channel + ":" + chatID
+			// nil-guard: bare &Agent{} construction (no New() Store) must not
+			// panic on a cron trigger — same contract as the interactive.go read
+			// sites. Normal chain stores the manager before cron starts.
+			if mgr := a.bgTaskMgr.Load(); mgr != nil {
+				mgr.SendCronFired(&tools.CronFired{
+					Key:     sessionKey,
+					Sid:     senderID,
+					Message: message,
+				})
+			}
+		})
+		a.cronSch.StartDelayed(3 * time.Second)
+	}
 
 	// SetInjectFunc is now called in SetEventRouter (before Run starts),
 	// so a.eventRouter is guaranteed to have the inject function wired.
@@ -2899,7 +2924,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.agentCtx, a.agentCancel = context.WithCancel(ctx)
 	defer func() {
 		a.agentCancel() // cancel all bg subagents when Agent exits
-		a.cronSch.Stop()
+		if a.cronSch != nil {
+			a.cronSch.Stop()
+		}
 		a.multiSession.StopCleanupRoutine()
 	}()
 
@@ -4053,11 +4080,9 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		// every session it displayed. After a laptop slept overnight, all of
 		// yesterday's sessions showed up as "active today" (the sidebar groups
 		// sessions into TODAY/YESTERDAY from this column).
-		if ms := a.MultiSession(); ms != nil {
-			if db := ms.DB(); db != nil {
-				if terr := sqlite.NewTenantService(db).TouchTenantID(msg.Channel, msg.ChatID); terr != nil {
-					log.WithError(terr).Warn("failed to update tenant last_active_at on user message")
-				}
+		if ms := a.MultiSession(); ms != nil && ms.Store() != nil {
+			if terr := ms.Store().Tenant().TouchTenantID(msg.Channel, msg.ChatID); terr != nil {
+				log.WithError(terr).Warn("failed to update tenant last_active_at on user message")
 			}
 		}
 	}
@@ -4441,15 +4466,9 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	// Session name for rename hint (only injected on first user message)
 	_, sessionName := cli.ParseChatID(msg.ChatID)
-	if a.multiSession != nil {
-		if db := a.multiSession.DB(); db != nil {
-			var label string
-			if err := db.Conn().QueryRow(
-				"SELECT label FROM user_chats WHERE channel = ? AND chat_id = ? AND label != '' LIMIT 1",
-				msg.Channel, msg.ChatID,
-			).Scan(&label); err == nil && label != "" {
-				sessionName = label
-			}
+	if a.multiSession != nil && a.multiSession.Store() != nil {
+		if label, err := a.multiSession.Store().Tenant().GetChatLabel(msg.Channel, msg.ChatID); err == nil && label != "" {
+			sessionName = label
 		}
 	}
 	mc.SetExtra(ExtraKeySessionName, sessionName)
@@ -5143,18 +5162,12 @@ func (a *Agent) injectAsyncMessage(channel, chatID, senderID, content, source st
 // resolveSenderForSession looks up the real user ID (senderID) that owns a session.
 // This is needed by injectPeerMessage to use the correct LLM subscription when
 // injecting a user message into an idle target session.
-// Returns "admin" as fallback for CLI sessions when DB lookup fails.
+// Returns "admin" as fallback for CLI sessions when the lookup fails.
 func (a *Agent) resolveSenderForSession(channel, chatID string) string {
-	if a.multiSession != nil {
-		if db := a.multiSession.DB(); db != nil {
-			var senderID string
-			err := db.Conn().QueryRow(
-				"SELECT sender_id FROM user_chats WHERE channel = ? AND chat_id = ? LIMIT 1",
-				channel, chatID,
-			).Scan(&senderID)
-			if err == nil && senderID != "" {
-				return senderID
-			}
+	// 后端无关：TenantStore.GetSenderForChat 在 SQLite（user_chats）与 PG 上语义一致。
+	if a.multiSession != nil && a.multiSession.Store() != nil {
+		if senderID, err := a.multiSession.Store().Tenant().GetSenderForChat(channel, chatID); err == nil && senderID != "" {
+			return senderID
 		}
 	}
 	// Fallback: for CLI channels, the default senderID is "admin"

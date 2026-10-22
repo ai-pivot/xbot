@@ -260,7 +260,15 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		if err != nil {
 			return nil, 0, err
 		}
-		return sess.SessionService(), sess.TenantID(), nil
+		// master #444 起 SessionService() 返回存储抽象的 storage.SessionStore：
+		// 结构化消息（report/ask_user/decision/inbox）目前只有 SQLite 后端实现，
+		// PG 后端尚未落地该特性（**未覆盖项**，不是静默降级）—— 显式断言并给出
+		// 可读错误，避免批红写进一张不存在的表、消息凭空蒸发。
+		svc, ok := sess.SessionService().(*sqlite.SessionService)
+		if !ok {
+			return nil, 0, fmt.Errorf("structured messages are not supported by this storage backend (channel=%s)", sel.Channel)
+		}
+		return svc, sess.TenantID(), nil
 	}
 
 	appendFn = func(senderID string, sel web.SessionSelector, input protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"xbot/protocol"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
@@ -48,7 +49,9 @@ func (a *Agent) stateSession(channelName, chatID string) *sqliteIterationSource 
 // tiny struct so the accessors below stay testable without the agent).
 type sqliteIterationSource struct {
 	session interface {
-		SessionService() *sqlite.SessionService
+		// master #444 起 TenantSession.SessionService() 返回存储抽象的
+		// storage.SessionStore（不再是具体 *sqlite.SessionService）。
+		SessionService() storage.SessionStore
 		TenantID() int64
 	}
 }

@@ -545,7 +545,10 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
-	return nil
+	// master #444：迁移链只负责「版本差异」带来的变更；新加入 schema 的表（不伴随
+	// 版本号变化）由 ensureAdditiveTables 补齐，老库和刚迁移完的库走同一条收尾路径
+	// （当前内容就是 oauth_tokens，与本分支 Open 末尾的 ensureStartupSchema 幂等叠加）。
+	return db.ensureAdditiveTables()
 }
 
 // migrateV75ToV76 建立 interactive_agents（interactive SubAgent 注册表）。

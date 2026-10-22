@@ -1423,6 +1423,20 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ApplyHistoryRecords(records, hasCheckpoint)
+}
+
+// ApplyHistoryRecords folds an ordered slice of append-only history records into
+// the LLM-visible replay result: compression snapshots, masks, context edits and
+// AskUser control records are applied in order, keyed off each record's own
+// history id. This is the ONE implementation of the replay semantics — replayWith
+// (SQLite) and the PostgreSQL backend both drive it, so the two backends cannot
+// drift.
+//
+// hasCheckpoint must be true when records[0] is the checkpoint snapshot itself:
+// its history references predate the slice and therefore cannot be validated
+// against it.
+func ApplyHistoryRecords(records []HistoryRecord, hasCheckpoint bool) (*ReplayResult, error) {
 	result := &ReplayResult{}
 	known := make(map[int64]struct{}, len(records))
 	msgIdx := newMessageIndex(nil)
@@ -1585,7 +1599,7 @@ func latestCheckpointWith(queryer historyQueryer, tenantID int64) (HistoryRecord
 		record.Data = json.RawMessage(rawData)
 		record.CreatedAt = internal.ParseTimestamp(createdAt)
 		var snapshot ContextSnapshot
-		if json.Unmarshal(record.Data, &snapshot) != nil || !validCheckpointSnapshot(record.HistoryID, snapshot) {
+		if json.Unmarshal(record.Data, &snapshot) != nil || !ValidCheckpointSnapshot(record.HistoryID, snapshot) {
 			continue
 		}
 		return record, true, nil
@@ -1629,7 +1643,11 @@ func (s *SessionService) LatestAskControlRecord(tenantID int64) (int64, HistoryR
 	return id, HistoryRecordType(recordType), nil
 }
 
-func validCheckpointSnapshot(historyID int64, snapshot ContextSnapshot) bool {
+// ValidCheckpointSnapshot reports whether a compress/prune payload is a
+// self-contained snapshot this binary can fold in without replaying everything
+// before it. Exported so the PostgreSQL backend selects checkpoints with the
+// exact same rule as SQLite.
+func ValidCheckpointSnapshot(historyID int64, snapshot ContextSnapshot) bool {
 	if snapshot.Version != contextSnapshotVersion || snapshot.Messages == nil || snapshot.HistoryIDs == nil || len(snapshot.Messages) != len(snapshot.HistoryIDs) {
 		return false
 	}

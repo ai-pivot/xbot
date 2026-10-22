@@ -115,27 +115,63 @@ func setupLLM(cfg *config.Config) (llm_pkg.LLM, error) {
 	})
 }
 
-// setupOAuth creates OAuth server and manager.
-func setupOAuth(cfg *config.Config, dbPath string) (*oauth.Server, *oauth.Manager, *providers.FeishuProvider, *sqlite.DB, error) {
-	if !cfg.OAuth.Enable {
-		return nil, nil, nil, nil, nil
+// oauthTokenAdapter bridges the backend-neutral storage.OAuthTokenStore to the
+// oauth package's TokenStorage contract.
+//
+// Why the indirection: oauth/ must not import storage (storage imports oauth-free
+// packages, and a cycle would appear the moment oauth needed storage types). The
+// adapter keeps the dependency pointing one way — serverapp depends on both.
+type oauthTokenAdapter struct {
+	store storage.OAuthTokenStore
+}
+
+func (a *oauthTokenAdapter) GetToken(ctx context.Context, provider, channel, chatID string) (*oauth.Token, error) {
+	t, err := a.store.GetOAuthToken(provider, channel, chatID)
+	if err != nil || t == nil {
+		return nil, err
+	}
+	return &oauth.Token{
+		AccessToken:  t.AccessToken,
+		RefreshToken: t.RefreshToken,
+		ExpiresAt:    t.ExpiresAt,
+		Scopes:       t.Scopes,
+		Raw:          t.Raw,
+	}, nil
+}
+
+func (a *oauthTokenAdapter) SetToken(ctx context.Context, provider, channel, chatID string, token *oauth.Token) error {
+	return a.store.SetOAuthToken(provider, channel, chatID, &storage.OAuthToken{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		ExpiresAt:    token.ExpiresAt,
+		Scopes:       token.Scopes,
+		Raw:          token.Raw,
+	})
+}
+
+func (a *oauthTokenAdapter) DeleteToken(ctx context.Context, provider, channel, chatID string) error {
+	return a.store.DeleteOAuthToken(provider, channel, chatID)
+}
+
+// Close is a no-op: the store is owned by the storage backend, not by OAuth.
+func (a *oauthTokenAdapter) Close() error { return nil }
+
+// setupOAuth creates the OAuth server and manager on top of the storage backend.
+//
+// It takes the token store instead of opening a SQLite file: on the PG backend
+// there is no SQLite main DB at all, and the previous wiring simply disabled OAuth
+// there — the OAuth server silently disappeared when switching backends.
+func setupOAuth(cfg *config.Config, tokenStore storage.OAuthTokenStore) (*oauth.Server, *oauth.Manager, *providers.FeishuProvider, error) {
+	if !cfg.OAuth.Enable || tokenStore == nil {
+		return nil, nil, nil, nil
 	}
 
-	sharedDB, err := sqlite.Open(dbPath)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to open shared database for OAuth: %w", err)
-	}
-	tokenStorage, err := oauth.NewSQLiteStorage(sharedDB)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to create OAuth token storage: %w", err)
-	}
-
-	oauthManager := oauth.NewManager(tokenStorage)
+	oauthManager := oauth.NewManager(&oauthTokenAdapter{store: tokenStore})
 	feishuProvider := providers.NewFeishuProvider(cfg.Feishu.AppID, cfg.Feishu.AppSecret, cfg.OAuth.BaseURL+"/oauth/callback")
 	oauthManager.RegisterProvider(feishuProvider)
 	oauthServer := oauth.NewServer(oauth.Config{Enable: true, Host: cfg.OAuth.Host, Port: cfg.OAuth.Port, BaseURL: cfg.OAuth.BaseURL}, oauthManager)
 	log.WithFields(log.Fields{"port": cfg.OAuth.Port, "baseURL": cfg.OAuth.BaseURL}).Info("OAuth server started")
-	return oauthServer, oauthManager, feishuProvider, sharedDB, nil
+	return oauthServer, oauthManager, feishuProvider, nil
 }
 
 // maskAPIKey masks an API key for safe transport over WS RPC.
@@ -244,7 +280,12 @@ func GetPluginChannelConfig(cfg *config.Config, name string) map[string]string {
 }
 
 // registerChannels creates and registers all channels.
-func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, webDB *sqlite.DB, workDir string) (*feishu.FeishuChannel, *web.WebChannel, error) {
+//
+// store is the backend-agnostic storage layer (SQLite adapter or PG). The web
+// channel and its callbacks read user settings, tenants, sessions and web-user
+// auth through it, so the same wiring serves SQLite and PG with no raw SQL
+// handle threaded through.
+func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, store storage.Storage, workDir string) (*feishu.FeishuChannel, *web.WebChannel, error) {
 	var feishuCh *feishu.FeishuChannel
 	var webCh *web.WebChannel
 	if cfg.Feishu.Enabled {
@@ -269,11 +310,11 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 	var imgProvider web.OSSProvider
 
 	if cfg.Web.Enable {
-		if webDB != nil {
+		if store != nil {
 			webCh = web.NewWebChannel(web.WebChannelConfig{
 				Host:       cfg.Web.Host,
 				Port:       cfg.Web.Port,
-				DB:         webDB.Conn(),
+				Store:      store,
 				AdminToken: cfg.Admin.Token,
 				InviteOnly: cfg.Web.IsInviteOnly(),
 				PublicURL:  cfg.Sandbox.PublicURL,
@@ -315,7 +356,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			} else {
 				log.WithField("provider", provName).Info("OSS provider configured")
 			}
-			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
+			webCh.SetCallbacks(buildWebCallbacks(cfg, ag))
 			// Wire BgTaskManager real-time output push → WebChannel bg_task_output
 			// WS events. BackgroundPanel subscribes to these for live xterm updates
 			// (replaces 2s polling). sessionKey format is "channel:chatID".
@@ -449,6 +490,14 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 	return feishuCh, webCh, nil
 }
 
+// loadServerConfig resolves the server configuration selected by --config.
+func loadServerConfig(configPath string) (*config.Config, error) {
+	if configPath != "" {
+		return config.LoadWithPath(configPath)
+	}
+	return config.Load(), nil
+}
+
 func Run(args []string) error {
 	// Parse --config flag before loading config.
 	// Usage: xbot --config /path/to/config.json
@@ -462,18 +511,19 @@ func Run(args []string) error {
 		}
 	}
 
-	var cfg *config.Config
-	if configPath != "" {
-		cfg = config.LoadFromFile(configPath)
-		if cfg == nil {
-			return fmt.Errorf("load config from %s", configPath)
-		}
-	} else {
-		cfg = config.Load()
+	cfg, err := loadServerConfig(configPath)
+	if err != nil {
+		return err
 	}
 
 	setupLogging(cfg)
 	defer log.Close()
+	log.WithFields(log.Fields{
+		"attempts":  cfg.Agent.LLMRetryAttempts,
+		"delay":     time.Duration(cfg.Agent.LLMRetryDelay),
+		"max_delay": time.Duration(cfg.Agent.LLMRetryMaxDelay),
+		"timeout":   time.Duration(cfg.Agent.LLMRetryTimeout),
+	}).Info("LLM retry policy configured")
 
 	// 同一份配置（同一个 XBOT_HOME）只允许一个 serve 进程。
 	//
@@ -503,14 +553,23 @@ func Run(args []string) error {
 	xbotDir := config.XbotHome()
 	dbPath := config.DBFilePath()
 
-	if err := storage.MigrateIfNeeded(context.Background(), workDir, dbPath); err != nil {
-		log.WithError(err).Fatal("Failed to migrate data to SQLite")
+	// PG 后端：跳过 SQLite 数据迁移（v1→v72 迁移链是 SQLite 专属）。
+	// 但 setupOAuth / tokenDB 仍用 SQLite（web 认证 + runner token 持久化
+	// 是独立于存储后端的轻量 SQLite 文件），不跳过。
+	pgBackend := cfg.Storage.Type == "pg"
+	if !pgBackend {
+		if err := storage.MigrateIfNeeded(context.Background(), workDir, dbPath); err != nil {
+			log.WithError(err).Fatal("Failed to migrate data to SQLite")
+		}
 	}
 
-	oauthServer, oauthManager, _, sharedDB, err := setupOAuth(cfg, dbPath)
-	if err != nil {
-		log.WithError(err).Fatal("Failed to setup OAuth")
-	}
+	// OAuth 在 InitServer 之后创建：它需要 storage（OAuth token 表现在由存储后端
+	// 承载 —— SQLite 主库或 PG），而 storage 由 InitServer 建立。此前这里在
+	// InitServer 之前打开一个独立 SQLite 文件，PG 路径下直接跳过 ⇒ OAuth 静默消失。
+	var (
+		oauthServer  *oauth.Server
+		oauthManager *oauth.Manager
+	)
 
 	// 初始化沙箱
 	tools.InitSandbox(cfg.Sandbox, workDir)
@@ -594,6 +653,16 @@ func Run(args []string) error {
 	ag, rpcTable, disp, msgBus, err = InitServer(cfg, llmClient, dbPath, workDir, xbotDir, cfg.Web.PersonaIsolation, channelReconfigureFn, nil)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to init server")
+	}
+
+	// OAuth 现在可以创建了：token 存储来自存储后端（SQLite 主库 / PG 的 oauth_tokens
+	// 表），因此切换后端不再让 OAuth 服务消失。
+	if ag != nil && ag.MultiSession() != nil && ag.MultiSession().Store() != nil {
+		var setupErr error
+		oauthServer, oauthManager, _, setupErr = setupOAuth(cfg, ag.MultiSession().Store().OAuth())
+		if setupErr != nil {
+			log.WithError(setupErr).Fatal("Failed to setup OAuth")
+		}
 	}
 
 	// Refresh component registries once at startup (best-effort, async). This is
@@ -753,7 +822,9 @@ func Run(args []string) error {
 	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 
 	// 初始化事件触发系统（Event Trigger System）
-	triggerSvc := sqlite.NewTriggerService(ag.MultiSession().DB())
+	// 后端无关：TriggerStore 来自 Storage（SQLite 的 event_triggers / PG 同一张表），
+	// 不再依赖主库 *sqlite.DB —— 否则 PG 后端下 webhook 路由会因 nil 句柄而失效。
+	triggerSvc := ag.MultiSession().Store().Trigger()
 	eventRouter := event.NewRouter(triggerSvc)
 	ag.SetEventRouter(eventRouter)
 
@@ -784,19 +855,29 @@ func Run(args []string) error {
 		Timeout:  time.Duration(cfg.Agent.LLMRetryTimeout),
 	})
 
-	tokenDB, err := sqlite.Open(dbPath)
-	if err != nil {
-		log.WithError(err).Warn("Failed to open token database, runner tokens disabled")
-	} else {
-		tools.SetRunnerTokenDB(tokenDB.Conn())
-		wireRunnerBindingStore(tokenDB)
+	// PG 后端：token DB / runner token 持久化是 SQLite 文件专属 —— 跳过
+	// （tools.SetRunnerTokenDB / wireRunnerBindingStore 不接线）。
+	var tokenDB *sqlite.DB
+	if !pgBackend {
+		tokenDB, err = sqlite.Open(dbPath)
+		if err != nil {
+			log.WithError(err).Warn("Failed to open token database, runner tokens disabled")
+		} else {
+			tools.SetRunnerTokenDB(tokenDB.Conn())
+			wireRunnerBindingStore(tokenDB)
+		}
 	}
 
-	var webDB *sqlite.DB
-	if tokenDB != nil {
-		webDB = tokenDB
+	// Backend-agnostic storage layer (SQLite adapter or PG). The web channel and
+	// its callbacks read user settings, tenants, sessions and web-user auth
+	// through it, so the same wiring serves both backends and no raw SQL handle
+	// is threaded into the channels.
+	var store storage.Storage
+	if ms := ag.MultiSession(); ms != nil {
+		store = ms.Store()
 	}
-	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, ag, webDB, workDir)
+
+	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, ag, store, workDir)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to register channels")
 	}
@@ -866,8 +947,8 @@ func Run(args []string) error {
 		if adminChatID != "" {
 			feishuCh.SetAdminChatID(adminChatID)
 		}
-		if webDB != nil {
-			feishuCh.SetWebDB(webDB.Conn())
+		if store != nil {
+			feishuCh.SetWebDB(store.Config())
 		}
 
 		// 注入设置卡片回调（让飞书渠道能访问 Agent 的 LLM/Registry/Settings 功能）
@@ -965,7 +1046,7 @@ func Run(args []string) error {
 	}
 
 	// 恢复被 graceful shutdown 中断的 agent loop
-	resumePendingTurns(ag, webDB, sigCh)
+	resumePendingTurns(ag, store, sigCh)
 
 	// 等待退出信号
 	sig := <-sigCh
@@ -975,7 +1056,7 @@ func Run(args []string) error {
 	// 收集正在运行的 agent loop，记录到 pending_resumes 以便重启后恢复。
 	// 必须在 cancel() 之前执行：cancel() 会终止所有 agent loop，
 	// cancel 之后再遍历 chatCancelCh 就取不到任何 key 了。
-	collectPendingResumes(ag, webDB)
+	collectPendingResumes(ag, store)
 
 	// 先取消 context，让 agent.Run() 退出（其 defer 会清理 cron 和 cleanup routine）
 	cancel()
@@ -986,10 +1067,12 @@ func Run(args []string) error {
 	// dispatcher / 插件 deactivate）之前 —— 2026-09-17 的停机就是在插件阶段被卡住，
 	// 10 秒后被 supervisor SIGKILL，丢掉了约 2 分钟的已提交迭代与 2 条恢复标记。
 	// TRUNCATE 会把全部 WAL 帧写回主库并重置 WAL；它受 busy_timeout(10s) 约束、
-	// 失败只 WARN，绝不阻塞停机。
-	if webDB != nil {
-		if err := webDB.CheckpointForShutdown(); err != nil {
-			log.WithError(err).Warn("Shutdown WAL checkpoint incomplete — data already acknowledged may be lost if this process is SIGKILLed; continuing shutdown")
+	// 失败只 WARN，绝不阻塞停机。主库句柄来自 MultiSession（PG 后端为 nil ⇒ 跳过）。
+	if ag != nil && ag.MultiSession() != nil {
+		if db := ag.MultiSession().DB(); db != nil {
+			if err := db.CheckpointForShutdown(); err != nil {
+				log.WithError(err).Warn("Shutdown WAL checkpoint incomplete — data already acknowledged may be lost if this process is SIGKILLed; continuing shutdown")
+			}
 		}
 	}
 
@@ -1021,12 +1104,8 @@ func Run(args []string) error {
 		oauthManager.Close()
 	}
 
-	// 关闭 OAuth 共享数据库连接
-	if sharedDB != nil {
-		if err := sharedDB.Close(); err != nil {
-			log.WithError(err).Warn("OAuth shared DB close error")
-		}
-	}
+	// OAuth token 存储由存储后端（SQLite 主库 / PG）持有，随 storage 一起关闭 ——
+	// 这里不再单独关闭 sharedDB（那个独立 SQLite 文件已删除）。
 
 	// 关闭 runner token 数据库连接
 	if tokenDB != nil {
@@ -1042,8 +1121,8 @@ func Run(args []string) error {
 
 // collectPendingResumes records all active agent loops to pending_resumes table
 // before shutdown. Called BEFORE cancel() — after cancel, chatCancelCh is empty.
-func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
-	if ag == nil || webDB == nil {
+func collectPendingResumes(ag *agent.Agent, store storage.Storage) {
+	if ag == nil || store == nil {
 		return
 	}
 	keys := ag.ActiveSessionKeys()
@@ -1074,12 +1153,12 @@ func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
 			log.WithField("session", key).Warn("No user message found for pending resume, skipping")
 			continue
 		}
-		senderID, err := webDB.GetSessionSenderID(channel, chatID)
+		senderID, err := store.Tenant().GetSessionSenderID(channel, chatID)
 		if err != nil {
 			log.WithError(err).WithField("session", key).Warn("Failed to get sender for pending resume")
 			continue
 		}
-		if err := webDB.AddPendingResume(channel, chatID, senderID); err != nil {
+		if err := store.Tenant().AddPendingResume(channel, chatID, senderID); err != nil {
 			log.WithError(err).WithField("session", key).Warn("Failed to record pending resume")
 		} else {
 			log.WithField("session", key).Info("Recorded pending resume for graceful shutdown recovery")
@@ -1090,11 +1169,11 @@ func collectPendingResumes(ag *agent.Agent, webDB *sqlite.DB) {
 // resumePendingTurns re-triggers agent turns for sessions that were
 // interrupted by graceful shutdown. Called after all channels start.
 // A short delay lets web clients reconnect before the turn fires.
-func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh chan os.Signal) {
-	if ag == nil || webDB == nil {
+func resumePendingTurns(ag *agent.Agent, store storage.Storage, sigCh chan os.Signal) {
+	if ag == nil || store == nil {
 		return
 	}
-	pending, err := webDB.ListPendingResumes()
+	pending, err := store.Tenant().ListPendingResumes()
 	if err != nil {
 		log.WithError(err).Warn("Failed to list pending resumes")
 		return
@@ -1131,7 +1210,7 @@ func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh chan os.Signal)
 		}
 		if hasReply {
 			log.WithField("session", pr.Channel+":"+pr.ChatID).Info("Turn already completed, skipping resume")
-			webDB.ClearPendingResume(pr.Channel, pr.ChatID)
+			store.Tenant().ClearPendingResume(pr.Channel, pr.ChatID)
 			continue
 		}
 		log.WithFields(log.Fields{
@@ -1139,7 +1218,7 @@ func resumePendingTurns(ag *agent.Agent, webDB *sqlite.DB, sigCh chan os.Signal)
 			"chat_id": pr.ChatID,
 		}).Info("Resuming interrupted agent turn")
 		ag.InjectInboundResume(pr.Channel, pr.ChatID, pr.SenderID)
-		if err := webDB.ClearPendingResume(pr.Channel, pr.ChatID); err != nil {
+		if err := store.Tenant().ClearPendingResume(pr.Channel, pr.ChatID); err != nil {
 			log.WithError(err).Error("Failed to clear pending resume record after injection — residual record will self-heal on next restart if the turn completes")
 		}
 	}
@@ -1374,7 +1453,7 @@ func sessionKeyOwner(key string) string {
 
 // migrateConfigSubscriptions seeds config.json subscriptions into the DB for a given user.
 // Idempotent — skips if the user already has DB subscriptions.
-func migrateConfigSubscriptions(cfg *config.Config, subSvc *sqlite.LLMSubscriptionService, senderID string) error {
+func migrateConfigSubscriptions(cfg *config.Config, subSvc storage.SubscriptionBackend, senderID string) error {
 	if len(cfg.Subscriptions) == 0 {
 		return nil
 	}

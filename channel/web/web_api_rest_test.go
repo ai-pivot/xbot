@@ -184,7 +184,7 @@ func TestProductionSessionTreeAcceptsAuthenticatedPOST(t *testing.T) {
 
 func TestRESTChatCRUDPassesChannelToCallbacks(t *testing.T) {
 	db := newTestDB(t)
-	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, db)}, bus.NewMessageBus())
 	cliStream := wc.getEventStream(sessionRouteKey("cli", "shared"))
 	webStream := wc.getEventStream(sessionRouteKey("web", "shared"))
 	// Seed one replayable frame per route (seq assignment + ring push are one
@@ -193,7 +193,7 @@ func TestRESTChatCRUDPassesChannelToCallbacks(t *testing.T) {
 	wc.hub.sendToSession("web", "shared", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "web event"})
 	requestKey := inboundRequestKey{senderID: "web-1", channel: "cli", chatID: "shared", requestID: "request-1"}
 	wc.inboundRequests[requestKey] = &inboundRequestState{}
-	if _, err := db.Exec(
+	if _, err := db.Conn().Exec(
 		"INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)",
 		"cli", "shared", time.Now().Format(time.RFC3339),
 	); err != nil {
@@ -287,9 +287,9 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
 	msgBus.EnableDeliveryAcknowledgement()
-	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, db)}, msgBus)
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
+	if _, err := db.Conn().Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -328,7 +328,7 @@ func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
 	msgBus.EnableDeliveryAcknowledgement()
-	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, db)}, msgBus)
 	wc.SetOSSProvider(fixedOSSProvider{})
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	client := &Client{
@@ -397,7 +397,7 @@ func TestRESTMessageRetriesAreIdempotent(t *testing.T) {
 
 func TestRESTMessageEnqueueFailureLeavesNoEchoOrHistory(t *testing.T) {
 	db := newTestDB(t)
-	wc := NewWebChannel(WebChannelConfig{DB: db}, nil)
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, db)}, nil)
 	wc.SetOSSProvider(fixedOSSProvider{})
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	client := &Client{
@@ -423,7 +423,7 @@ func TestRESTMessageEnqueueFailureLeavesNoEchoOrHistory(t *testing.T) {
 	default:
 	}
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM session_messages").Scan(&count); err != nil {
+	if err := db.Conn().QueryRow("SELECT COUNT(*) FROM session_messages").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -762,13 +762,13 @@ func TestRESTHistoryCursorPrecedesInterleavedEvent(t *testing.T) {
 
 func TestRESTSessionStatusReturnsIdleOwnedSessionCWD(t *testing.T) {
 	db := newTestDB(t)
-	if _, err := db.Exec(
+	if _, err := db.Conn().Exec(
 		"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
 		"web", "web-2", "owned-chat", "Owned",
 	); err != nil {
 		t.Fatal(err)
 	}
-	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, db)}, bus.NewMessageBus())
 	wc.SetCallbacks(WebCallbacks{
 		GetCWD: func(senderID string, sel SessionSelector) (string, error) {
 			if senderID != "web-2" || sel.Channel != "web" || sel.ChatID != "owned-chat" {
@@ -788,9 +788,9 @@ func TestRESTSessionStatusReturnsIdleOwnedSessionCWD(t *testing.T) {
 
 func TestRESTSessionStatusInfersCurrentCLIChannelFromChatID(t *testing.T) {
 	db := newTestDB(t)
-	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, db)}, bus.NewMessageBus())
 	setTestCurrentSession(wc, SessionSelector{Channel: "cli", ChatID: "/home/user"})
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "cli", "/home/user", time.Now().Format(time.RFC3339)); err != nil {
+	if _, err := db.Conn().Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "cli", "/home/user", time.Now().Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
 	wc.SetCallbacks(WebCallbacks{
@@ -814,10 +814,10 @@ func TestRESTSessionStatusInfersCurrentCLIChannelFromChatID(t *testing.T) {
 
 func TestRESTHistoryInfersCurrentOwnedAgentChannelFromChatID(t *testing.T) {
 	db := newTestDB(t)
-	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, db)}, bus.NewMessageBus())
 	chatID := "web:web-2/review:1"
 	setTestCurrentSessionFor(wc, "web-2", SessionSelector{Channel: "agent", ChatID: chatID})
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "agent", chatID, time.Now().Format(time.RFC3339)); err != nil {
+	if _, err := db.Conn().Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "agent", chatID, time.Now().Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
 	wc.SetCallbacks(WebCallbacks{
