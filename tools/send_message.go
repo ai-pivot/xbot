@@ -166,9 +166,22 @@ func (t *SendMessageTool) sendStructured(ctx *ToolContext, addr, kind string, p 
 		return nil, fmt.Errorf("reply_to (target message_id) is required for kind=decision")
 	}
 
+	// 身份：子代理记成 "agent:<role>:<instance>"，主会话记成终端用户。
+	//
+	// 判据用 SessionKey 而不是 ctx.AgentID —— 兵部审计（2026-10-22）指出
+	// AgentID 在 interactive 会话里来自 msg.ParentAgentID，只有 spawn 那一次
+	// 赋值，后续 SendMessage 进来时大概率是空串，于是 sender 回落成 web-4，
+	// 导致「首辅在网页批红」被自批规则误杀、而「首辅走工具批红」却能过。
+	// SessionKey 形如 "agent:web:web-4/court.hubu:main"，角色段总是存在。
 	sender := ""
 	if ctx != nil {
 		sender = ctx.OriginUserID
+		if sk := strings.TrimSpace(ctx.SessionKey); sk != "" {
+			if i := strings.LastIndex(sk, "/"); i > 0 && i < len(sk)-1 && strings.Contains(sk, ":") {
+				roleInst := sk[i+1:] // "court.hubu:main"
+				sender = "agent:" + strings.Replace(roleInst, ":", "/", 1)
+			}
+		}
 		if sender == "" {
 			sender = ctx.SenderID
 		}

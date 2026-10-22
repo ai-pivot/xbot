@@ -62,7 +62,9 @@ var (
 	// 2026-10-22 实测漏洞：reply_to 指向一条 assistant 空行（kind=""）也能"批红成功"，
 	// 因为 CAS 只校验 answered/cancelled，从不校验 kind。批红必须落在 report/ask_user 上。
 	ErrDecisionTargetNotDecidable = errors.New("decision target is not a report or ask_user")
-	ErrIdempotencyConflict        = errors.New("idempotency key conflict")
+	// ErrDecisionSelfApproval：不能批自己提交的 report（CHARTER §3）。
+	ErrDecisionSelfApproval = errors.New("a department must not approve its own report")
+	ErrIdempotencyConflict  = errors.New("idempotency key conflict")
 )
 
 // StructuredMessage 是一条结构化消息行的完整形态。
@@ -232,11 +234,11 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 
 		// 2. 目标必须存在且仍然开着。
 		var answered, cancelledCol int
-		var targetKind string
+		var targetKind, targetSender string
 		qerr := store.QueryRow(`
-			SELECT COALESCE(answered, 0), COALESCE(cancelled, 0), COALESCE(kind, '')
+			SELECT COALESCE(answered, 0), COALESCE(cancelled, 0), COALESCE(kind, ''), COALESCE(sender_id, '')
 			  FROM session_messages WHERE tenant_id = ? AND id = ?`,
-			tenantID, targetID).Scan(&answered, &cancelledCol, &targetKind)
+			tenantID, targetID).Scan(&answered, &cancelledCol, &targetKind, &targetSender)
 		if errors.Is(qerr, sql.ErrNoRows) {
 			return ErrStructuredNotFound
 		}
@@ -245,6 +247,14 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 		}
 		if targetKind != StructuredKindReport && targetKind != StructuredKindAskUser {
 			return fmt.Errorf("%w (target %d has kind=%q)", ErrDecisionTargetNotDecidable, targetID, targetKind)
+		}
+		// 自批禁止：CHARTER §3「部门不能批自己的 report」。
+		// 2026-10-22 兵部审计可复现：部门 A 发 report 拿到 id 后自己发 decision，
+		// 因租户相同、目标不是"自身会话"，以前会通过 —— 等于自己盖章。
+		// 只在发送者身份可辨（agent: 前缀）时判自批。2026-10-21 之前的历史行
+		// 一律记成 "web-4"，无法区分"部门自批"与"首辅代批"，故不触发。
+		if strings.HasPrefix(targetSender, "agent:") && targetSender == m.SenderID {
+			return fmt.Errorf("%w (target %d was submitted by %q)", ErrDecisionSelfApproval, targetID, targetSender)
 		}
 		if cancelledCol != 0 {
 			return ErrAskUserCancelled

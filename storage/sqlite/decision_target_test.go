@@ -93,3 +93,33 @@ func itoa(n int64) string {
 	}
 	return string(buf[i:])
 }
+
+// TestAppendDecisionRejectsSelfApproval — CHARTER §3：部门不能批自己的 report。
+// 2026-10-22 兵部审计可复现：同租户、目标非"自身会话"，旧实现会放行。
+func TestAppendDecisionRejectsSelfApproval(t *testing.T) {
+	svc, tenant := newStructuredTestService(t)
+
+	rid, _, err := svc.AppendStructuredMessage(tenant, StructuredMessage{
+		ChatID: "chat-1", Kind: StructuredKindReport, CorrelationID: "self-1",
+		Direction: "in", Content: "我自己报的", SenderType: "agent", SenderID: "agent:court.hubu/main",
+	})
+	if err != nil {
+		t.Fatalf("append report: %v", err)
+	}
+
+	_, _, err = svc.AppendDecision(tenant, StructuredMessage{
+		ChatID: "chat-1", Kind: StructuredKindDecision, ReplyTo: itoa(rid),
+		Direction: "in", Content: "准", SenderType: "agent", SenderID: "agent:court.hubu/main",
+	})
+	if !errors.Is(err, ErrDecisionSelfApproval) {
+		t.Fatalf("self approval: got %v, want ErrDecisionSelfApproval", err)
+	}
+
+	// 首辅（不同 sender）可以批
+	if _, created, err := svc.AppendDecision(tenant, StructuredMessage{
+		ChatID: "chat-1", Kind: StructuredKindDecision, ReplyTo: itoa(rid),
+		Direction: "in", Content: "准", SenderType: "user", SenderID: "web-4",
+	}); err != nil || !created {
+		t.Fatalf("supervisor approval should pass: created=%v err=%v", created, err)
+	}
+}
