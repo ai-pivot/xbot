@@ -422,6 +422,22 @@ test.describe('windowing never freezes a transient (collapsed) height', () => {
     await page.addStyleTag({ content: '.iter-block > * { max-height: none; }' })
     await page.waitForTimeout(2500)
 
+    // 2026-10-22 CI：先 poll 等窗口化**真正**落地，而不是靠固定 waitForTimeout。
+    // 本文件 :314 的注释已记录 CI 上存在「首帧全部挂载」的瞬态（实测
+    // WINDOW N=60 {"nodes":2525,"mountedContents":60}）；CI 慢 runner 上该瞬态
+    // 可持续数秒，2.5s 的固定等待不够 ⇒ 报成 muted=0。poll 只是等条件成立，
+    // 真回归（窗口化彻底失效）仍会 30s 超时失败，不掩盖问题。
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const bs = Array.from(document.querySelectorAll('.iter-block'))
+            return bs.filter((b) => (b as HTMLElement).dataset.windowMuted === 'true').length
+          }),
+        { timeout: 30000, intervals: [200, 500, 1000] },
+      )
+      .toBeGreaterThan(0)
+
     const stats = await page.evaluate(() => {
       const blocks = Array.from(document.querySelectorAll('.iter-block'))
       const muted = blocks.filter((b) => (b as HTMLElement).dataset.windowMuted === 'true')
