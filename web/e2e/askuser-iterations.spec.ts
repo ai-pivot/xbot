@@ -163,10 +163,18 @@ test.describe('AskUser iteration preservation', () => {
     // 这里只保留本 spec 的原始目的：WaitingUser 不得触发 session(idle) 清空已渲染的 iterations。
 
     // ── Phase 3: Submit the answer ──
-    // ⚠️ 不再点旧面板的 role=radio / submit 按钮（AskUserPanel 已删除，该交互必然超时）。
-    // 新链路的「渲染问题 → 选择 → 提交」由 web/src/structured/StructuredCards.test.tsx
-    // 与 web/e2e/askuser-resolved.spec.ts（结构化卡片跨端投影）覆盖。
-    // 本 spec 保留 Phase 4 手工 emit SSE 模拟「答案触发的 Run」，因为它不依赖真实提交。
+    // Click the "yes" option button (AskUserPanel single-select renders role=radio)
+    await page.getByRole('radio', { name: 'yes' }).click()
+    await page.waitForTimeout(200)
+    // Click submit
+    const submitBtn = page.locator('button:has-text("确认"), button:has-text("Submit"), button:has-text("确定")')
+    if (await submitBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await submitBtn.click()
+    } else {
+      // Fallback: find the submit button by its position (last button in the panel)
+      await page.locator('[class*="rounded-lg"] button').last().click()
+    }
+    await page.waitForTimeout(300)
 
     // ── Phase 4: Simulate the answer's Run ──
     // The real backend sends turn_started with trigger="resume" (metadata
