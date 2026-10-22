@@ -177,7 +177,15 @@ test.describe('结构化消息卡片', () => {
     // 只用非投递 kind（event/report/ask_user），避免 1000 条消息各起一个 agent turn。
     const total = 1000
     const base = Date.parse('2026-10-20T00:00:00Z')
-    for (let i = 0; i < total; i++) {
+
+    // 2026-10-22 CI：原来逐条 await POST 1000 次，CI 上单次约 250ms ⇒ 累计 ~250s，
+    // 撞上 test.setTimeout(240_000) 报「Target page, context or browser has been closed」。
+    // 改为**分批并发**写入（每批 20 条 Promise.all）：数据量仍是 1000，下面的判据
+    // （首屏 < 2s、stream-count ≥ 1000、时间戳格式、虚拟滚动）一条都没放宽。
+    const WRITE_CONCURRENCY = 20
+    type Posted = { i: number; res: import('@playwright/test').APIResponse }
+
+    const buildOne = (i: number) => {
       const kind = i % 12 === 0 ? 'report' : i % 12 === 6 ? 'ask_user' : 'event'
       const createdAt = new Date(base + i * 1000).toISOString()
       const text =
@@ -206,19 +214,35 @@ test.describe('结构化消息卡片', () => {
                 ],
               }
             : { event_type: 'state.changed', severity: i % 3 === 0 ? 'warn' : 'info', index: i }
-      const res = await page.request.post('/api/message', {
-        data: {
-          channel: 'web',
-          chat_id: chatID,
-          kind,
-          idempotency_key: `bulk_${RUN}_${i}`,
-          created_at: createdAt,
-          text,
-          payload,
-        },
-        timeout: 30_000,
-      })
-      expect(res.status(), await res.text()).toBe(200)
+      return { kind, createdAt, text, payload }
+    }
+
+    for (let batchStart = 0; batchStart < total; batchStart += WRITE_CONCURRENCY) {
+      const batch: Promise<Posted>[] = []
+      const batchEnd = Math.min(batchStart + WRITE_CONCURRENCY, total)
+      for (let i = batchStart; i < batchEnd; i++) {
+        const { kind, createdAt, text, payload } = buildOne(i)
+        batch.push(
+          page.request
+            .post('/api/message', {
+              data: {
+                channel: 'web',
+                chat_id: chatID,
+                kind,
+                idempotency_key: `bulk_${RUN}_${i}`,
+                created_at: createdAt,
+                text,
+                payload,
+              },
+              timeout: 30_000,
+            })
+            .then((res) => ({ i, res })),
+        )
+      }
+      const results = await Promise.all(batch)
+      for (const { i, res } of results) {
+        expect(res.status(), `#${i} ${await res.text()}`).toBe(200)
+      }
     }
 
     const started = Date.now()
