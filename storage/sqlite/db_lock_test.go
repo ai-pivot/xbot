@@ -98,3 +98,39 @@ func TestMemoryDBDoesNotLock(t *testing.T) {
 	_ = a.Close()
 	_ = b.Close()
 }
+
+// TestDoubleCloseKeepsLockForOtherHandles — D-01 回归（2026-10-22 门下省实证）。
+//
+// 判据必须看**子进程的错误内容**，只看 exit code 没有判别力：
+// 子进程可能因别的原因失败，那样"删掉 CAS 测试仍绿"。
+//   - 子进程报 "already in use" → 锁仍在 → PASS
+//   - 子进程报 "expected Open to fail" → 锁被提前放掉 → D-01 复现 → FAIL
+func TestDoubleCloseKeepsLockForOtherHandles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xbot.db")
+
+	a, err := Open(path)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	b, err := Open(path)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+
+	_ = a.Close()
+	_ = a.Close() // 重复 Close 不得再减引用计数
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperChildOpen", "-test.v")
+	cmd.Env = append(os.Environ(), "XBOT_LOCK_TEST_DB="+path)
+	out, _ := cmd.CombinedOutput()
+	s := string(out)
+	t.Logf("child output:\n%s", s)
+
+	if strings.Contains(s, "expected Open to fail in the second process") {
+		t.Fatalf("D-01 REPRODUCED: after double Close the lock was released while handle b is still open")
+	}
+	if !strings.Contains(s, "already in use") {
+		t.Fatalf("child was not rejected with 'already in use'; output:\n%s", s)
+	}
+	_ = b.Close()
+}

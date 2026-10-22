@@ -151,9 +151,6 @@ func (t *SendMessageTool) sendStructured(ctx *ToolContext, addr, kind string, p 
 	if err != nil {
 		return nil, err
 	}
-	if ctx != nil && channel == ctx.Channel && chatID == ctx.ChatID {
-		return nil, fmt.Errorf("refusing to post kind=%s to the caller's own session (%s:%s) — it would re-trigger the caller; target the department session instead", kind, channel, chatID)
-	}
 
 	var payload map[string]any
 	if s := strings.TrimSpace(p.Payload); s != "" {
@@ -188,7 +185,11 @@ func (t *SendMessageTool) sendStructured(ctx *ToolContext, addr, kind string, p 
 	}
 	idempotency := strings.TrimSpace(p.IdempotencyKey)
 
-	id, dup, err := fn(sender, channel, chatID, protocol.StructuredMessageInput{
+	caller := CallerScope{}
+	if ctx != nil {
+		caller = CallerScope{Channel: ctx.Channel, ChatID: ctx.ChatID, SessionKey: ctx.CallerSessionKey}
+	}
+	id, dup, err := fn(sender, caller, channel, chatID, protocol.StructuredMessageInput{
 		Kind:           kind,
 		Payload:        payload,
 		CorrelationID:  idempotency,

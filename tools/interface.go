@@ -35,6 +35,7 @@ type ToolContext struct {
 	Channel                 string                                                                     // 当前消息来源渠道
 	ChatID                  string                                                                     // 当前消息来源会话
 	SenderID                string                                                                     // 直接调用者 ID（SubAgent 场景下为父 Agent ID，主 Agent 场景下等于 OriginUserID）
+	CallerSessionKey        string                                                                     // 发起本 Run 的会话物理 key（interactive=interactiveKey；主会话为空）
 	OriginUserID            string                                                                     // 原始用户 ID（始终为终端用户，用于 LLM 配置、工作区路径等需要原始用户的场景）
 	SenderName              string                                                                     // 当前消息发送者姓名
 	UserID                  int64                                                                      // Canonical user ID (from IdentityResolver, 0 in standalone mode)

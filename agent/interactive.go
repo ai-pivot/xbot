@@ -1111,6 +1111,9 @@ func (a *Agent) SpawnInteractiveSession(
 	}
 	placeholder.mu.Unlock()
 
+	// D-07：把本子代理的物理会话 key 交给它自己，供自激判定使用。
+	cfg.CallerSessionKey = key
+
 	// 持久化注册表：重启后据此重建这个子代理（幂等 upsert）。
 	a.persistInteractiveAgent(placeholder, sqlite.InteractiveAgentIdle)
 

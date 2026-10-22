@@ -1077,6 +1077,30 @@ func (a *Agent) buildSubAgentRunConfig(
 		},
 	}
 
+	// 分层 spawn（2026-10-22 用户架构要求）：让子代理也能管自己的下属。
+	// 原来这里刻意不配 InteractiveCallbacks（注释：Nil for SubAgents, they don't
+	// manage children），导致司礼监 spawn 六部时报
+	// "interactive SubAgent not supported in this context"。
+	// 关键：闭包必须用**子代理自己的** channel/chatID，这样孙代理的 parentKey
+	// 指向子代理而非主会话，完成通知才是"只回父级"。
+	childChannel, childChatID := parentCtx.Channel, parentCtx.ChatID
+	cfg.InteractiveCallbacks = &InteractiveCallbacks{
+		SpawnFn: a.SpawnInteractiveSession,
+		SendFn:  a.SendToInteractiveSession,
+		UnloadFn: func(ctx context.Context, roleName, instance string) error {
+			return a.UnloadInteractiveSession(ctx, roleName, childChannel, childChatID, instance)
+		},
+		InterruptFn: func(ctx context.Context, roleName, instance string) error {
+			return a.InterruptInteractiveSession(ctx, roleName, childChannel, childChatID, instance)
+		},
+		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
+			return a.InspectInteractiveSession(ctx, roleName, childChannel, childChatID, instance, tail)
+		},
+		ListActiveFn: func(ch, cid string) []SubAgentStatus {
+			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
+		},
+	}
+
 	return cfg, nil
 }
 

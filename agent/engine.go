@@ -202,8 +202,16 @@ type RunConfig struct {
 	SessionFinalSentCallback func() bool
 
 	// InteractiveCallbacks Interactive SubAgent 回调（nil = 不支持 interactive）。
-	// 主 Agent 注入，SubAgent 不注入。
+	// 主 Agent 与 interactive 子代理都注入（2026-10-22 起分层 spawn 需要）。
 	InteractiveCallbacks *InteractiveCallbacks
+
+	// CallerSessionKey 是**发起本 Run 的会话**的物理 key（interactive 子代理为
+	// interactiveKey 全键，形如 "web:web-4/court.hubu:main"；主会话为空）。
+	//
+	// 2026-10-22 门下省 D-07：不能用 SessionKey 代替 —— 那是"工具激活键"，
+	// 主会话为空串、子代理是 "<chatID>/<role>" 形态，都不是物理会话 key，
+	// 拿它做自激判定等于没判（实测：删掉旧守卫后测试仍全绿）。
+	CallerSessionKey string
 
 	// HookManager tool execution hook manager (nil = no hooks).
 	HookManager *hooks.Manager
@@ -1260,18 +1268,19 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	}
 
 	tc := &tools.ToolContext{
-		Ctx:            ctx,
-		AgentID:        cfg.AgentID,
-		Channel:        cfg.Channel,
-		ChatID:         cfg.ChatID,
-		SessionKey:     cfg.SessionKey,
-		SenderID:       cfg.SenderID,
-		OriginUserID:   cfg.OriginUserID,
-		SenderName:     cfg.SenderName,
-		UserID:         cfg.UserID,
-		Role:           cfg.Role,
-		SendFunc:       cfg.SendFunc,
-		RootSessionKey: cfg.RootSessionKey,
+		Ctx:              ctx,
+		AgentID:          cfg.AgentID,
+		Channel:          cfg.Channel,
+		ChatID:           cfg.ChatID,
+		SessionKey:       cfg.SessionKey,
+		SenderID:         cfg.SenderID,
+		OriginUserID:     cfg.OriginUserID,
+		CallerSessionKey: cfg.CallerSessionKey, // 物理会话 key（D-07 自激守卫用）；与 SessionKey（工具激活键）不是一个东西，别合并
+		SenderName:       cfg.SenderName,
+		UserID:           cfg.UserID,
+		Role:             cfg.Role,
+		SendFunc:         cfg.SendFunc,
+		RootSessionKey:   cfg.RootSessionKey,
 
 		// 工作区 & 沙箱
 		WorkingDir:           workingDir,

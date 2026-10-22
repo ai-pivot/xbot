@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"fmt"
 
 	log "xbot/logger"
@@ -371,6 +372,9 @@ CREATE TABLE IF NOT EXISTS shared_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_shared_artifacts_creator ON shared_artifacts(created_by);
 
+-- 注意：oauth_tokens 不在上面/下面这段 DDL 里 —— 它的建表语句单点定义在文件尾部的
+-- oauthTokensSchema 常量（createSchema 与 ensureStartupSchema 共用同一份，避免两份
+-- DDL 漂移）；列清单与 oauth/storage.go 的 initSchema 逐字一致（同一个库文件）。
 -- v74: 群组元数据（Agent 通信指挥室）。只有两张小表，没有群级消息表：
 -- 群发 = 遍历 alive 成员各发一份，消息落在各自会话库。
 CREATE TABLE IF NOT EXISTS groups (
@@ -417,6 +421,56 @@ CREATE INDEX IF NOT EXISTS ix_ia_status ON interactive_agents(status);
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
 	}
+	// oauth_tokens 的 DDL 只在这里定义一次（oauthTokensSchema），fresh DB 必须建出来，
+	// 否则 OAuth 登录路径会撞 no such table。既有库缺表由 ensureStartupSchema 补。
+	if _, err := db.Conn().Exec(oauthTokensSchema); err != nil {
+		return fmt.Errorf("create oauth schema: %w", err)
+	}
 	log.WithField("version", schemaVersion).Info("Database schema initialized")
 	return nil
+}
+
+// oauthTokensSchema is the OAuth token table + expiry index.
+//
+// Single source of truth for this DDL inside storage/sqlite: it is executed both by
+// createSchema (fresh databases) and by ensureStartupSchema (databases created
+// before the table existed). The column list MUST stay identical to
+// oauth.SQLiteStorage.initSchema — that path runs against this very database
+// (shared DB, not a separate file), and a mismatch would make one initializer
+// silently fail against the other's table.
+const oauthTokensSchema = `
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    provider TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    expires_at INTEGER NOT NULL,
+    scopes TEXT,
+    raw TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, channel, chat_id)
+);
+CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
+`
+
+// ensureStartupSchema creates the tables that a database may legitimately lack
+// even though its schema_version is already current — either because the table
+// shipped after that version was introduced, or because it was created outside
+// the migration chain entirely:
+//
+//   - oauth_tokens        (only ever created by the oauth storage/service path)
+//   - xbot_*_memories     (agent memory: created by the memory provider on first use)
+//
+// Every statement is IF NOT EXISTS, so this is idempotent and cheap on each start.
+//
+// 启动路径铁律：xbot-server 由 supervisor 托管，Open() 返回错误就会「启动失败 → 自动
+// 重启 → 再失败」崩溃循环。所以这里**只告警、不返回错误**，绝不阻断启动。
+func ensureStartupSchema(ctx context.Context, db *DB) {
+	if _, err := db.Conn().ExecContext(ctx, oauthTokensSchema); err != nil {
+		log.WithError(err).Warn("Ensure oauth_tokens schema failed; continuing without it")
+	}
+	if err := NewAgentMemoryService(db).EnsureAgentMemorySchema(ctx); err != nil {
+		log.WithError(err).Warn("Ensure agent memory schema failed; continuing without it")
+	}
 }

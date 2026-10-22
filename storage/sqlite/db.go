@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -34,6 +35,7 @@ import (
 type DB struct {
 	conn         *sql.DB
 	path         string
+	closed       atomic.Bool // Close 幂等（D-01）
 	mu           sync.RWMutex
 	historyLocks [historyLockStripes]sync.Mutex
 
@@ -224,6 +226,17 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("initialize schema: %w", err)
 	}
 
+	// 启动兜底（幂等）：补建「不在迁移链里、可能整库都没有」的表 —— oauth_tokens 与
+	// agent 记忆表（xbot_short_term_memories / xbot_long_term_memories）。本地/生产库
+	// 都已是 v76，initSchema 在 version == schemaVersion 时直接 return，不会补这类表，
+	// 所以必须在这里补；否则 OAuth 登录/记忆功能会撞 no such table。
+	// 铁律：ensureStartupSchema **不返回错误**，只打 WARN —— 启动路径永不阻塞。
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ensureStartupSchema(ctx, db)
+		cancel()
+	}
+
 	log.WithFields(log.Fields{"path": path, "caller": callerTag(1)}).Info("SQLite database opened")
 	db.logWALState("open")
 	return db, nil
@@ -245,19 +258,35 @@ func (db *DB) historyLock(tenantID int64) *sync.Mutex {
 // enough to reset the WAL of a connection that is still writing — exactly the
 // class of event that lost ~2 minutes of committed writes on 2026-09-17.
 func (db *DB) Close() error {
+	// 幂等：同一 handle 被 Close 两次时，不得再减一次引用计数。
+	// 2026-10-22 都察院 D-01 实证：Open 两次 → a.Close() 两次 → b 还活着，
+	// 但锁已 LOCK_UN，子进程成功开库（正是 10-21 事故要拦的那一步）。
+	if !db.closed.CompareAndSwap(false, true) {
+		return nil
+	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	// D-02（2026-10-22 门下省）：conn.Close() 失败时也必须释放锁并清空 conn。
+	// 旧实现错误路径直接 return，而 closed 已置 true ⇒ 再次 Close 直接返回 nil，
+	// 引用计数永久泄漏、锁永不释放（比不修更糟）。
+	var closeErr error
 	if db.conn != nil {
-		if err := db.conn.Close(); err != nil {
-			return fmt.Errorf("close database: %w", err)
-		}
+		closeErr = db.conn.Close()
 		db.conn = nil
-		log.WithFields(log.Fields{"path": db.path, "caller": callerTag(1)}).Info("SQLite database closed")
+		if closeErr != nil {
+			log.WithFields(log.Fields{"path": db.path, "error": closeErr.Error()}).Warn("SQLite close returned error")
+		} else {
+			log.WithFields(log.Fields{"path": db.path, "caller": callerTag(1)}).Info("SQLite database closed")
+		}
 		db.logWALState("close")
 	}
-	// 释放进程级独占锁：必须在 conn.Close() 之后（checkpoint 已做完）。
+	// 释放进程级独占锁：必须在 conn.Close() 之后（checkpoint 已做完），
+	// 且无论 Close 成败都要释放。
 	releaseDBLock(db.path)
 	db.lockFile = nil
+	if closeErr != nil {
+		return fmt.Errorf("close database: %w", closeErr)
+	}
 	return nil
 }
 

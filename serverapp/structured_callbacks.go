@@ -229,6 +229,30 @@ func toProtocolStructured(m sqlite.StructuredMessage) *protocol.StructuredMessag
 	return out
 }
 
+// refuseSelfTarget 是 D-07 的**自激守卫**：结构化消息若投给调用方自己的会话，
+// 会立刻把调用方再唤醒一次（自激 / 死循环），必须拒绝。
+//
+// 分两支，且**禁止从 SessionKey 做字符串切割**（那不是可靠前提，2026-10-22 门下省）：
+//   - agent 目标：目标是子代理会话，只有 interactive 子代理才有物理会话 key
+//     （CallerScope.SessionKey 非空），拿它与解析后的目标物理 key 比。
+//     主会话（SessionKey 为空）发往 agent 目标天然不是"自己"，直接放行。
+//   - 非 agent 目标：调用方 (Channel, ChatID) 与目标同形即拒。
+//
+// 旧实现把"逻辑地址"和"物理 key"直接比，永不相等 ⇒ 等于没拦；只删不补又让
+// "主会话向自己会话发 report"从被拒变成放行 = 净回归。现在是单点实现 + 表驱动测试。
+func refuseSelfTarget(kind string, caller tools.CallerScope, channel, realChatID string) error {
+	if channel == "agent" {
+		if caller.SessionKey != "" && realChatID == caller.SessionKey {
+			return fmt.Errorf("refusing to post kind=%s to the caller's own session (%s) — it would re-trigger the caller; target another session", kind, realChatID)
+		}
+		return nil
+	}
+	if caller.Channel == channel && caller.ChatID == realChatID {
+		return fmt.Errorf("refusing to post kind=%s to the caller's own session (%s:%s) — it would re-trigger the caller; target the department session instead", kind, channel, realChatID)
+	}
+	return nil
+}
+
 // structuredCallbacks 构造 WebCallbacks 的结构化消息五件套。
 func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error), answerFn func(string, web.SessionSelector, protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error), inboxFn func(web.SessionSelector, int64, int) ([]protocol.StructuredMessage, bool, int64, error), countFn func(web.SessionSelector) (int, error), listFn func(web.SessionSelector, string, int64, int64, int) ([]protocol.StructuredMessage, bool, int64, error)) {
 	sessionOf := func(sel web.SessionSelector) (*sqlite.SessionService, int64, error) {
@@ -374,12 +398,24 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 	// SendMessage(kind = report/ask_user/answer/decision) 走的就是这个 appendFn：
 	// agent 在自己会话里说"批了"→ 工具层调它 → 落到目标（部门）会话 + CAS。
 	// 共用闭包而不是另写一份，是为了让"web 点按钮"和"自然语言批红"永远同一语义。
-	tools.SetStructuredAppend(func(senderID, channel, chatID string, in protocol.StructuredMessageInput) (int64, bool, error) {
-		// 逻辑地址（agent:role/instance）→ 物理会话 key（web_web-4/role:instance）。
+	tools.SetStructuredAppend(func(senderID string, caller tools.CallerScope, channel, chatID string, in protocol.StructuredMessageInput) (int64, bool, error) {
+		// 逻辑地址（agent:role/instance）→ 物理会话 key（web:web-4/role:instance）。
 		// 不做这一步就会把批红写进一个新建的空壳会话：2026-10-22 实测事故。
-		realChatID, rerr := ag.ResolveStructuredTarget(channel, chatID)
+		//
+		// D-10：解析必须带**调用方作用域**（caller.Channel/caller.ChatID）——
+		// 目标必须在调用方作用域内（同一顶层会话的子树：六部 ↔ 司礼监可互发，
+		// 跨顶层会话一律拒），否则任意会话都能凭逻辑地址把 report/decision 投进
+		// 别人的子代理会话。解析不出来/超出作用域/多命中时
+		// ResolveStructuredTarget 返回 ("", err)，这里直接失败，不建野会话。
+		// 注意它**不校验层级**：地址里没有组织关系，「只向上报、不许平级串」
+		// 靠 CHARTCHECK 纪律 + 都察院抽查。
+		realChatID, rerr := ag.ResolveStructuredTarget(caller.Channel, caller.ChatID, channel, chatID)
 		if rerr != nil {
 			return 0, false, rerr
+		}
+		// D-07 自激守卫（判据见 refuseSelfTarget，单点实现 + 独立测试）。
+		if gerr := refuseSelfTarget(in.Kind, caller, channel, realChatID); gerr != nil {
+			return 0, false, gerr
 		}
 		msg, dup, err := appendFn(senderID, web.SessionSelector{Channel: channel, ChatID: realChatID}, in)
 		if err != nil || msg == nil {
