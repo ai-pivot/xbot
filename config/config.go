@@ -166,6 +166,59 @@ func (w WebConfig) IsInviteOnly() bool {
 	return *w.InviteOnly
 }
 
+// PushConfig 统一推送层配置。事件语义（ask_user / turn_done）与投递通道解耦，
+// 每个通道一个 Provider；新增通道 = 新增一个 *XConfig + 一个 Provider 实现。
+type PushConfig struct {
+	Enable         bool `json:"enable"`
+	IncludePreview bool `json:"include_preview"`
+	// Providers are enabled individually; a nil pointer means "configured but
+	// disabled" (the zero value of the nested Enable field also disables it).
+	FCM     *FCMConfig        `json:"fcm,omitempty"`
+	APNs    *APNsConfig       `json:"apns,omitempty"`
+	WebPush *WebPushConfig    `json:"webpush,omitempty"`
+	Feishu  *FeishuPushConfig `json:"feishu,omitempty"`
+}
+
+// FCMConfig is the Android provider (FCM HTTP v1).
+type FCMConfig struct {
+	Enable    bool   `json:"enable"`
+	ProjectID string `json:"project_id"`
+	// CredentialsFile points at the Firebase service-account JSON. It is a
+	// SECRET: read it at startup, never log it, never persist it in the DB.
+	CredentialsFile string `json:"credentials_file"`
+	// Mode selects the FCM message shape: "data" (default; the app renders the
+	// notification itself) or "notification" (the OS renders it; more reliable
+	// on aggressive OEMs, but the app cannot customise/suppress it).
+	Mode string `json:"mode"`
+}
+
+// APNsConfig is the iOS provider (APNs HTTP/2). Reserved for future use.
+type APNsConfig struct {
+	Enable  bool   `json:"enable"`
+	KeyFile string `json:"key_file"` // .p8 (secret)
+	KeyID   string `json:"key_id"`
+	TeamID  string `json:"team_id"`
+	Topic   string `json:"topic"` // bundle id
+	Env     string `json:"env"`   // production | sandbox
+}
+
+// WebPushConfig is the browser provider (VAPID + aes128gcm).
+type WebPushConfig struct {
+	Enable       bool   `json:"enable"`
+	VAPIDPublic  string `json:"vapid_public"`
+	VAPIDPrivate string `json:"vapid_private"` // secret
+	Subject      string `json:"subject"`       // mailto:...
+	// EndpointAllowlist limits which push-service hosts the server will POST
+	// to (SSRF guard: the endpoint comes from the browser).
+	EndpointAllowlist []string `json:"endpoint_allowlist"`
+}
+
+// FeishuPushConfig is the IM provider. It reuses feishu.app_id/app_secret and
+// the existing Feishu client; reserved for a later phase.
+type FeishuPushConfig struct {
+	Enable bool `json:"enable"`
+}
+
 // Config 应用配置
 // CLIConfig CLI 客户端配置（存储在 config.json，供 xbot-cli 读取）。
 // StorageConfig configures the storage backend.
@@ -199,6 +252,7 @@ type Config struct {
 	StartupNotify StartupNotifyConfig `json:"startup_notify"`
 	Admin         AdminConfig         `json:"admin"`
 	Web           WebConfig           `json:"web"`
+	Push          PushConfig          `json:"push"`
 	EventWebhook  EventWebhookConfig  `json:"event_webhook"`
 	OSS           OSSConfig           `json:"oss"`
 	TavilyAPIKey  string              `json:"tavily_api_key"`
@@ -473,6 +527,10 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"port":              ftInt,
 		"persona_isolation": ftBool,
 		"invite_only":       ftBool,
+	},
+	"push": {
+		"enable":          ftBool,
+		"include_preview": ftBool,
 	},
 	"oauth": {
 		"enable": ftBool,
@@ -1106,6 +1164,49 @@ func applyEnvOverrides(cfg *Config) {
 	setStringEnv("ADMIN_CHAT_ID", &cfg.Admin.ChatID)
 	setStringEnv("ADMIN_TOKEN", &cfg.Admin.Token)
 
+	// Push (统一推送层)
+	setBoolEnv("PUSH_ENABLE", &cfg.Push.Enable)
+	setBoolEnv("PUSH_INCLUDE_PREVIEW", &cfg.Push.IncludePreview)
+	if os.Getenv("PUSH_FCM_ENABLE") != "" || os.Getenv("PUSH_FCM_PROJECT_ID") != "" ||
+		os.Getenv("PUSH_FCM_CREDENTIALS_FILE") != "" || os.Getenv("PUSH_FCM_MODE") != "" {
+		if cfg.Push.FCM == nil {
+			cfg.Push.FCM = &FCMConfig{}
+		}
+	}
+	if cfg.Push.FCM != nil {
+		setBoolEnv("PUSH_FCM_ENABLE", &cfg.Push.FCM.Enable)
+		setStringEnv("PUSH_FCM_PROJECT_ID", &cfg.Push.FCM.ProjectID)
+		setStringEnv("PUSH_FCM_CREDENTIALS_FILE", &cfg.Push.FCM.CredentialsFile)
+		setStringEnv("PUSH_FCM_MODE", &cfg.Push.FCM.Mode)
+	}
+	if os.Getenv("PUSH_WEBPUSH_ENABLE") != "" || os.Getenv("PUSH_WEBPUSH_VAPID_PUBLIC") != "" ||
+		os.Getenv("PUSH_WEBPUSH_VAPID_PRIVATE") != "" || os.Getenv("PUSH_WEBPUSH_SUBJECT") != "" {
+		if cfg.Push.WebPush == nil {
+			cfg.Push.WebPush = &WebPushConfig{}
+		}
+	}
+	if cfg.Push.WebPush != nil {
+		setBoolEnv("PUSH_WEBPUSH_ENABLE", &cfg.Push.WebPush.Enable)
+		setStringEnv("PUSH_WEBPUSH_VAPID_PUBLIC", &cfg.Push.WebPush.VAPIDPublic)
+		setStringEnv("PUSH_WEBPUSH_VAPID_PRIVATE", &cfg.Push.WebPush.VAPIDPrivate)
+		setStringEnv("PUSH_WEBPUSH_SUBJECT", &cfg.Push.WebPush.Subject)
+	}
+	if os.Getenv("PUSH_APNS_ENABLE") != "" || os.Getenv("PUSH_APNS_KEY_FILE") != "" ||
+		os.Getenv("PUSH_APNS_KEY_ID") != "" || os.Getenv("PUSH_APNS_TEAM_ID") != "" ||
+		os.Getenv("PUSH_APNS_TOPIC") != "" || os.Getenv("PUSH_APNS_ENV") != "" {
+		if cfg.Push.APNs == nil {
+			cfg.Push.APNs = &APNsConfig{}
+		}
+	}
+	if cfg.Push.APNs != nil {
+		setBoolEnv("PUSH_APNS_ENABLE", &cfg.Push.APNs.Enable)
+		setStringEnv("PUSH_APNS_KEY_FILE", &cfg.Push.APNs.KeyFile)
+		setStringEnv("PUSH_APNS_KEY_ID", &cfg.Push.APNs.KeyID)
+		setStringEnv("PUSH_APNS_TEAM_ID", &cfg.Push.APNs.TeamID)
+		setStringEnv("PUSH_APNS_TOPIC", &cfg.Push.APNs.Topic)
+		setStringEnv("PUSH_APNS_ENV", &cfg.Push.APNs.Env)
+	}
+
 	// Misc
 	setStringEnv("TAVILY_API_KEY", &cfg.TavilyAPIKey)
 }
@@ -1219,6 +1320,19 @@ func loadEffectiveConfig(cfg *Config) *Config {
 	}
 	if cfg.Web.Port == 0 {
 		cfg.Web.Port = 8082
+	}
+	// Push defaults: only fill fields for providers that are explicitly
+	// configured (a nil pointer means "not configured", never auto-enable).
+	if cfg.Push.FCM != nil {
+		if cfg.Push.FCM.Mode == "" {
+			cfg.Push.FCM.Mode = "data"
+		}
+		if cfg.Push.FCM.CredentialsFile == "" {
+			cfg.Push.FCM.CredentialsFile = filepath.Join(XbotHome(), "fcm-service-account.json")
+		}
+	}
+	if cfg.Push.APNs != nil && cfg.Push.APNs.Env == "" {
+		cfg.Push.APNs.Env = "production"
 	}
 	if cfg.EventWebhook.Host == "" {
 		cfg.EventWebhook.Host = "0.0.0.0"

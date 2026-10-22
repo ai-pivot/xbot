@@ -478,6 +478,117 @@ func (s *sqliteConfigStore) ListSharedArtifactsByCreator(createdBy int64) ([]sql
 	return s.share.ListByCreator(createdBy)
 }
 
+// ─── Push targets (push_targets) ───
+
+func (s *sqliteConfigStore) UpsertPushTarget(t *PushTarget) error {
+	if t == nil {
+		return fmt.Errorf("nil push target")
+	}
+	meta, err := json.Marshal(t.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal push metadata: %w", err)
+	}
+	if len(t.Metadata) == 0 {
+		meta = []byte("{}")
+	}
+	now := time.Now().Unix()
+	_, err = s.db.Conn().Exec(`
+	INSERT INTO push_targets
+    (user_id, sender_id, provider, platform, address, metadata, device_name, app_version, created_at, last_seen_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(provider, address) DO UPDATE SET
+    user_id = excluded.user_id,
+    sender_id = excluded.sender_id,
+    platform = excluded.platform,
+    metadata = excluded.metadata,
+    device_name = excluded.device_name,
+    app_version = excluded.app_version,
+    last_seen_at = excluded.last_seen_at`,
+		t.UserID, t.SenderID, t.Provider, t.Platform, t.Address, string(meta),
+		t.DeviceName, t.AppVersion, now, now)
+	if err != nil {
+		return fmt.Errorf("upsert push target: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteConfigStore) DeletePushTarget(userID int64, provider, address string) error {
+	_, err := s.db.Conn().Exec(
+		`DELETE FROM push_targets WHERE user_id = ? AND provider = ? AND address = ?`,
+		userID, provider, address)
+	if err != nil {
+		return fmt.Errorf("delete push target: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteConfigStore) DeletePushTargetByID(id int64) error {
+	_, err := s.db.Conn().Exec(`DELETE FROM push_targets WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete push target by id: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteConfigStore) ListPushTargetsBySender(senderID string) ([]PushTarget, error) {
+	rows, err := s.db.Conn().Query(`
+	SELECT id, user_id, sender_id, provider, platform, address, metadata,
+       device_name, app_version, created_at, last_seen_at
+	FROM push_targets WHERE sender_id = ? ORDER BY id`, senderID)
+	if err != nil {
+		return nil, fmt.Errorf("list push targets: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]PushTarget, 0, 4)
+	for rows.Next() {
+		var t PushTarget
+		var meta string
+		var created, seen int64
+		if err := rows.Scan(&t.ID, &t.UserID, &t.SenderID, &t.Provider, &t.Platform,
+			&t.Address, &meta, &t.DeviceName, &t.AppVersion, &created, &seen); err != nil {
+			return nil, fmt.Errorf("scan push target: %w", err)
+		}
+		t.Metadata = map[string]string{}
+		if meta != "" {
+			if err := json.Unmarshal([]byte(meta), &t.Metadata); err != nil {
+				return nil, fmt.Errorf("unmarshal push metadata: %w", err)
+			}
+		}
+		t.CreatedAt = time.Unix(created, 0)
+		t.LastSeenAt = time.Unix(seen, 0)
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate push targets: %w", err)
+	}
+	return out, nil
+}
+
+func (s *sqliteConfigStore) TouchPushTargets(ids []int64, at time.Time) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := ""
+	for i := range ids {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+	}
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, at.Unix())
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	_, err := s.db.Conn().Exec(
+		`UPDATE push_targets SET last_seen_at = ? WHERE id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return fmt.Errorf("touch push targets: %w", err)
+	}
+	return nil
+}
+
 // ─── Web UI authentication (web_users) ───
 //
 // Backend-specific SQL lives here (not in channel/web): the web channel only

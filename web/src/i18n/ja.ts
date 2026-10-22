@@ -701,6 +701,18 @@ const ja: Translations = {
       layout: 'レイアウト',
       plugins: 'プラグイン',
       about: 'xbot について',
+      notifications: '通知',
+    },
+    notifications: {
+      title: 'ブラウザ通知',
+      description: 'ページを閉じていても AskUser の質問とターン完了通知を受け取ります。',
+      unsupported: 'このブラウザは Web Push に対応していません（HTTPS と Service Worker が必要）。',
+      disabled: 'サーバーで Web Push が有効になっていません。',
+      permissionDenied: 'ブラウザが通知権限を拒否しました。',
+      enable: 'ブラウザ通知を有効にする',
+      disable: 'ブラウザ通知を無効にする',
+      enabled: '有効：このブラウザはバックグラウンド通知を受け取ります。',
+      notEnabled: '無効：ページを開いている間だけリアルタイム更新を受け取ります。',
     },
     storage: {
       title: 'ファイルストレージ',

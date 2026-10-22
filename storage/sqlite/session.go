@@ -341,6 +341,33 @@ ORDER BY id DESC LIMIT 1
 	return content, nil
 }
 
+// GetLastAssistantPreview returns the truncated text of the most recent FINAL
+// assistant reply (no tool calls) in this tenant's session. Used by the unified
+// push layer for the turn-completion notification preview.
+// Returns ("", nil) when the tenant has no final assistant reply.
+func (s *SessionService) GetLastAssistantPreview(tenantID int64, maxRunes int) (string, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return "", err
+	}
+	var content string
+	err = conn.QueryRow(`
+SELECT content FROM session_messages
+WHERE tenant_id = ? AND role = 'assistant' AND COALESCE(display_only, 0) = 0
+  AND (tool_calls IS NULL OR tool_calls = '' OR tool_calls = '[]' OR tool_calls = 'null')
+ORDER BY id DESC LIMIT 1`, tenantID).Scan(&content)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get last assistant preview: %w", err)
+	}
+	return truncate(content, maxRunes), nil
+}
+
 // HasAssistantReplyAfterLastUser checks whether the last user message in
 // this tenant's session already has a subsequent final assistant reply (no
 // tool calls). Used by resume flows to detect turns that completed naturally

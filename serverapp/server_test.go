@@ -1960,7 +1960,7 @@ func TestWebChatCRUDCallbacksKeepChannelsIsolated(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	callbacks := buildWebCallbacks(&config.Config{}, ag)
+	callbacks := buildWebCallbacks(&config.Config{}, ag, nil)
 	if err := callbacks.ChatRename("web-1", "cli", chatID, "renamed cli"); err != nil {
 		t.Fatalf("rename CLI session: %v", err)
 	}

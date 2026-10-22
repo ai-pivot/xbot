@@ -369,6 +369,25 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     PRIMARY KEY (provider, channel, chat_id)
 );
 CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
+
+-- 统一推送层的投递目标。provider 决定 address 的含义：
+-- fcm=FCM token / apns=device token / webpush=PushSubscription endpoint / feishu=chat_id。
+-- metadata 存 provider 专属字段（WebPush 的 p256dh/auth、设备信息等），JSON。
+CREATE TABLE IF NOT EXISTS push_targets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    sender_id    TEXT    NOT NULL,
+    provider     TEXT    NOT NULL,
+    platform     TEXT    NOT NULL,
+    address      TEXT    NOT NULL,
+    metadata     TEXT    NOT NULL DEFAULT '{}',
+    device_name  TEXT    NOT NULL DEFAULT '',
+    app_version  TEXT    NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL DEFAULT 0,
+    last_seen_at INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(provider, address)
+);
+CREATE INDEX IF NOT EXISTS idx_push_targets_sender ON push_targets(sender_id);
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)

@@ -701,6 +701,18 @@ const en: Translations = {
       layout: 'Layout',
       plugins: 'Plugins',
       about: 'About',
+      notifications: 'Notifications',
+    },
+    notifications: {
+      title: 'Browser notifications',
+      description: 'Receive AskUser prompts and turn-complete alerts even when this page is closed.',
+      unsupported: 'This browser does not support Web Push (HTTPS and a service worker are required).',
+      disabled: 'Web Push is not enabled on the server.',
+      permissionDenied: 'The browser denied notification permission.',
+      enable: 'Enable browser notifications',
+      disable: 'Disable browser notifications',
+      enabled: 'Enabled: this browser will receive background pushes.',
+      notEnabled: 'Disabled: live updates only while the page is open.',
     },
     storage: {
       title: 'File storage',

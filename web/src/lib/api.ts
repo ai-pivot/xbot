@@ -75,6 +75,47 @@ export async function postRawAPI(
   )
 }
 
+export interface WebPushSubscription {
+  endpoint: string
+  keys?: { p256dh?: string; auth?: string }
+}
+
+export interface PushConfig {
+  webpush?: { enabled: boolean; public_key?: string }
+}
+
+/** Public push config (VAPID key); enabled=false means WebPush is off.
+ *  The timestamp bypasses a stale service-worker `api-cache` entry. */
+export function getPushConfig(): Promise<PushConfig> {
+  return postAPI<PushConfig>(`/api/push/config?ts=${Date.now()}`)
+}
+
+/** Register this browser's PushSubscription as a webpush target. */
+export function registerWebPush(
+  sub: WebPushSubscription,
+  deviceName = '',
+): Promise<unknown> {
+  return postAPI('/api/push/register', {
+    provider: 'webpush',
+    platform: 'web',
+    address: sub.endpoint,
+    metadata: {
+      p256dh: sub.keys?.p256dh || '',
+      auth: sub.keys?.auth || '',
+    },
+    device_name: deviceName.slice(0, 120),
+    app_version: '',
+  })
+}
+
+/** Remove this browser's target before unsubscribing. */
+export function unregisterWebPush(endpoint: string): Promise<unknown> {
+  return postAPI('/api/push/unregister', {
+    provider: 'webpush',
+    address: endpoint,
+  })
+}
+
 async function readEnvelope<T>(response: Response): Promise<APIResponse<T>> {
   try {
     return await response.json() as APIResponse<T>

@@ -544,3 +544,15 @@ The context bar (top border of input box) replaces the default lipgloss border w
 （`TestExpandUploadKeys_UndeclaredBindNeverLeaksIntoRef`：`127.0.0.1` / `0.0.0.0` / `[::]` / `[::1]` / `10.0.0.67` 五种绑定
 都必须是相对引用且**不含**绑定串；`TestExpandUploadKeys_ConfiguredBindHostAndPortNeverLeakIntoRef`；
 `TestExpandUploadKeys_NonHTTPSPublicURLSkipped`；`TestExpandUploadKeys_LocalProviderAbsoluteRefFromPublicURL` 仍断言绝对引用只在显式声明时出现）。
+
+## 统一推送出口（PushNotify）
+
+Web channel 不直接发系统通知，只把语义事件交给 `WebCallbacks.PushNotify`：
+
+- `SendProgress` 的 `WaitingUser` 分支且 pending 仍有效 → `Kind=ask_user`（高优先级）；
+- `SendSessionState` 且 `ev.Channel=="web"` → 带 `Action`（Notifier 只在 `busy→idle`
+  时发完成提醒）；
+- `channel/web` **不 import `push` 包**：`web.PushEvent` 是本地类型，`serverapp` 转成
+  `push.Event`。这样加通道（FCM/WebPush/APNs/飞书）不需要改 web 层。
+
+详细契约与新增 provider 的步骤见 `docs/agent/push.md`。

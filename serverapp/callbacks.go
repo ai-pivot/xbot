@@ -21,6 +21,7 @@ import (
 	"xbot/channel/web"
 	"xbot/config"
 	log "xbot/logger"
+	"xbot/push"
 	"xbot/session"
 	"xbot/storage"
 	"xbot/storage/sqlite"
@@ -178,7 +179,7 @@ func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 }
 
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
-func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
+func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Service) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
 	llmc := llmCallbacks(ag)
 
@@ -966,6 +967,34 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
 	}
 	callbacks.ReorderQueued = func(channel, chatID string, msgIDs []string) bool {
 		return ag.ReorderQueue(channel, chatID, msgIDs)
+	}
+
+	// ─── Unified push (system notifications) ───
+	// Callbacks stay nil when no provider is enabled, so the HTTP handlers
+	// answer 503 instead of pretending push works.
+	if pushSvc != nil && !pushSvc.Registry.Empty() {
+		callbacks.PushNotify = func(ev web.PushEvent) {
+			pushSvc.Notify(push.Event{
+				Kind:         push.Kind(ev.Kind),
+				Action:       ev.Action,
+				Channel:      ev.Channel,
+				ChatID:       ev.ChatID,
+				SenderID:     ev.SenderID,
+				Title:        ev.Title,
+				Body:         ev.Body,
+				RequestID:    ev.RequestID,
+				HighPriority: ev.HighPriority,
+			})
+		}
+		callbacks.PushRegister = pushSvc.Register
+		callbacks.PushUnregister = pushSvc.Unregister
+		callbacks.PushPresence = pushSvc.Presence
+		callbacks.PushTest = pushSvc.Test
+	}
+	// The config endpoint answers even when WebPush is disabled, so the web
+	// client can hide the toggle instead of seeing an error.
+	if pushSvc != nil {
+		callbacks.PushConfig = pushSvc.PushConfig
 	}
 
 	return callbacks

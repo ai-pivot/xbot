@@ -518,6 +518,13 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v74: 统一推送层的投递目标表。老库与新库走同一张 CREATE TABLE IF NOT EXISTS。
+	if from < 74 {
+		if err := migrateV73ToV74(db); err != nil {
+			return fmt.Errorf("migrate to v74: %w", err)
+		}
+	}
+
 	// 迁移链只负责「版本差异」带来的变更；新加入 schema 的表（不伴随版本号变化）
 	// 由 ensureAdditiveTables 补齐，这样老库和刚迁移完的库走的是同一条收尾路径。
 	return db.ensureAdditiveTables()
@@ -3610,5 +3617,35 @@ func migrateV52ToV53(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v53: session CWD persisted in tenants.cwd")
+	return nil
+}
+
+// migrateV73ToV74 adds push_targets — the unified push layer's delivery
+// targets. Purely additive; CREATE TABLE IF NOT EXISTS is idempotent.
+func migrateV73ToV74(db *DB) error {
+	migration := `
+	CREATE TABLE IF NOT EXISTS push_targets (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id      INTEGER NOT NULL,
+	sender_id    TEXT    NOT NULL,
+	provider     TEXT    NOT NULL,
+	platform     TEXT    NOT NULL,
+	address      TEXT    NOT NULL,
+	metadata     TEXT    NOT NULL DEFAULT '{}',
+	device_name  TEXT    NOT NULL DEFAULT '',
+	app_version  TEXT    NOT NULL DEFAULT '',
+	created_at   INTEGER NOT NULL DEFAULT 0,
+	last_seen_at INTEGER NOT NULL DEFAULT 0,
+	UNIQUE(provider, address)
+	);
+	CREATE INDEX IF NOT EXISTS idx_push_targets_sender ON push_targets(sender_id);
+	`
+	if _, err := db.Conn().Exec(migration); err != nil {
+		return fmt.Errorf("migrate v73->v74: %w", err)
+	}
+	if _, err := db.Conn().Exec("UPDATE schema_version SET version = 74"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v74 (added push_targets)")
 	return nil
 }

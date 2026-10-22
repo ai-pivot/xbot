@@ -57,6 +57,10 @@ type SessionStore interface {
 	UpdateMessageContent(tenantID int64, messageIndex int, content string) error
 	UpdateUserMessageContextTokens(tenantID int64, promptTokens int64) error
 	GetLastUserMessageContent(tenantID int64) (string, error)
+	// GetLastAssistantPreview returns the truncated text of the most recent
+	// FINAL assistant reply (no tool calls), for push-notification previews.
+	// Returns ("", nil) when the tenant has no final assistant reply.
+	GetLastAssistantPreview(tenantID int64, maxRunes int) (string, error)
 	HasAssistantReplyAfterLastUser(tenantID int64) (bool, error)
 
 	// Turns
@@ -452,6 +456,45 @@ type ConfigStore interface {
 	ListSharedArtifactsByCreator(createdBy int64) ([]sqlite.SharedArtifact, error)
 	GetAllUsage() ([]sqlite.UserTokenUsage, error)
 	GetDailyUsageSummary(senderID string, days int) ([]sqlite.DailyTokenUsage, error)
+
+	// Push delivery targets (push_targets)
+	PushStore
+}
+
+// PushTarget is one registered delivery endpoint for the unified push layer.
+// The provider decides what Address means:
+//   - fcm:     FCM registration token
+//   - apns:    APNs device token
+//   - webpush: browser PushSubscription endpoint URL (Metadata holds keys)
+//   - feishu:  Feishu chat_id / open_id
+type PushTarget struct {
+	ID         int64
+	UserID     int64
+	SenderID   string // web-<userID> (the session owner)
+	Provider   string // fcm | apns | webpush | feishu
+	Platform   string // android | ios | web | im
+	Address    string
+	Metadata   map[string]string // provider-specific (WebPush p256dh/auth, device info)
+	DeviceName string
+	AppVersion string
+	CreatedAt  time.Time
+	LastSeenAt time.Time
+}
+
+// PushStore persists push delivery targets (the push_targets table).
+// Keyed by sender_id (the session owner), not by tenant.
+type PushStore interface {
+	// UpsertPushTarget inserts or updates by (provider, address). Re-registering
+	// the same address under a different sender re-binds its ownership.
+	UpsertPushTarget(t *PushTarget) error
+	// DeletePushTarget removes one of userID's targets. A missing row is not an
+	// error (the client may unregister twice).
+	DeletePushTarget(userID int64, provider, address string) error
+	// DeletePushTargetByID removes a target the provider reported as dead.
+	DeletePushTargetByID(id int64) error
+	ListPushTargetsBySender(senderID string) ([]PushTarget, error)
+	// TouchPushTargets updates last_seen_at for delivered targets (best effort).
+	TouchPushTargets(ids []int64, at time.Time) error
 }
 
 // OAuthToken is one stored OAuth credential, in backend-neutral form.

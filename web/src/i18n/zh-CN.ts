@@ -698,6 +698,18 @@ const zhCN = {
       layout: '布局',
       plugins: '插件',
       about: '关于',
+      notifications: '通知',
+    },
+    notifications: {
+      title: '浏览器通知',
+      description: '网页关闭后也能收到 AskUser 提问和回合完成提醒。',
+      unsupported: '当前浏览器不支持 Web Push（需要 HTTPS 和 Service Worker）。',
+      disabled: '服务端未启用 Web Push。',
+      permissionDenied: '浏览器拒绝了通知权限。',
+      enable: '启用浏览器通知',
+      disable: '关闭浏览器通知',
+      enabled: '已启用：这台浏览器会收到后台推送。',
+      notEnabled: '未启用：只在页面打开时收到实时更新。',
     },
     storage: {
       title: '文件存储',

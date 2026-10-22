@@ -47,7 +47,7 @@ func TestCronTasksCallbackSessionScoped(t *testing.T) {
 		t.Fatalf("AddJob B: %v", err)
 	}
 
-	callbacks := buildWebCallbacks(&config.Config{}, ag)
+	callbacks := buildWebCallbacks(&config.Config{}, ag, nil)
 
 	// Request session A's panel — must see ONLY job-a.
 	got, err := callbacks.CronTasks("cli_user", web.SessionSelector{Channel: "web", ChatID: "chat-a"})
