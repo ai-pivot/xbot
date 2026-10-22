@@ -342,9 +342,10 @@ ORDER BY id DESC LIMIT 1
 }
 
 // GetLastAssistantPreview returns the truncated text of the most recent FINAL
-// assistant reply (no tool calls) in this tenant's session. Used by the unified
-// push layer for the turn-completion notification preview.
-// Returns ("", nil) when the tenant has no final assistant reply.
+// assistant reply. The reply text lives in iteration_history: the assistant
+// rows in session_messages are frequently empty placeholders (tool-only
+// iterations), which made a session_messages-based query return "" and the
+// push body fall back to "本轮回复已完成".
 func (s *SessionService) GetLastAssistantPreview(tenantID int64, maxRunes int) (string, error) {
 	lock := s.db.historyLock(tenantID)
 	lock.Lock()
@@ -355,10 +356,10 @@ func (s *SessionService) GetLastAssistantPreview(tenantID int64, maxRunes int) (
 	}
 	var content string
 	err = conn.QueryRow(`
-SELECT content FROM session_messages
-WHERE tenant_id = ? AND role = 'assistant' AND COALESCE(display_only, 0) = 0
-  AND (tool_calls IS NULL OR tool_calls = '' OR tool_calls = '[]' OR tool_calls = 'null')
-ORDER BY id DESC LIMIT 1`, tenantID).Scan(&content)
+	SELECT content FROM iteration_history
+	WHERE tenant_id = ? AND content <> ''
+  AND turn_id = (SELECT COALESCE(MAX(turn_id), 0) FROM iteration_history WHERE tenant_id = ?)
+	ORDER BY iteration DESC LIMIT 1`, tenantID, tenantID).Scan(&content)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

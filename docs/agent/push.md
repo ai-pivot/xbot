@@ -122,6 +122,11 @@ FCM / WebPush / APNs / Feishu Provider
 
 ## 坑
 
+- **完成预览必须读 `iteration_history`，不能读 `session_messages`**：assistant 的
+  `session_messages` 行在 tool-only 迭代里是**空 content 占位**（实测生产 PG 多条
+  `content_len=0`），用它做 `GetLastAssistantPreview` 会永远返回空，通知就退化成
+  “本轮回复已完成”。正解：取**最新 turn 的最高 iteration 的非空 `content`**
+  （SQLite + PG 同一规则；守护：`storage/sqlite/preview_test.go`）。
 - **`writeJSON` 已经包了一层 `{ok,data,error}`**：handler 里只传业务值
   （`writeJSON(w, 200, cfg)`），**不要**再传 `{"ok":true,"data":cfg}` —— 否则
   前端会收到 `data.data`，`cfg.webpush` 变成 `undefined`，界面显示“服务端未启用

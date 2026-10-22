@@ -263,15 +263,18 @@ func (s *pgSessionStore) GetLastUserMessageContent(tenantID int64) (string, erro
 }
 
 // GetLastAssistantPreview returns the truncated text of the most recent FINAL
-// assistant reply (no tool calls), for push-notification previews.
+// assistant reply. The reply text lives in iteration_history: the assistant
+// rows in session_messages are frequently empty placeholders (tool-only
+// iterations), which made a session_messages-based query return "" and the
+// push body fall back to "本轮回复已完成".
 func (s *pgSessionStore) GetLastAssistantPreview(tenantID int64, maxRunes int) (string, error) {
 	ctx := context.Background()
 	var content string
 	err := s.pool.QueryRow(ctx,
-		`SELECT content FROM session_messages
-		 WHERE tenant_id = $1 AND role = 'assistant' AND display_only = false
-		   AND (tool_calls IS NULL OR tool_calls = '' OR tool_calls = '[]' OR tool_calls = 'null')
-		 ORDER BY id DESC LIMIT 1`, tenantID).Scan(&content)
+		`SELECT content FROM iteration_history
+		 WHERE tenant_id = $1 AND content <> ''
+		   AND turn_id = (SELECT COALESCE(MAX(turn_id), 0) FROM iteration_history WHERE tenant_id = $1)
+		 ORDER BY iteration DESC LIMIT 1`, tenantID).Scan(&content)
 	if err == pgx.ErrNoRows {
 		return "", nil
 	}
