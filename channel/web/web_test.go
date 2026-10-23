@@ -35,7 +35,15 @@ func newTestDB(t *testing.T) *sqlite.DB {
 	// On Windows, an open file handle locks the file, preventing os.Remove
 	// cleanup and causing accumulation that can deadlock the SQLite driver.
 	f.Close()
-	t.Cleanup(func() { os.Remove(f.Name()) })
+	// 清理必须覆盖 SQLite 的附属文件：只删主库会把 -wal / -shm / .lock 留给 /tmp。
+	// 实测 2026-10-23：/tmp 里积了 21,456 个 xbot_web_test_* 文件（7.1 GB），
+	// 每个测试实际留 3 个附属文件，根因就是这里只 os.Remove 了主库。
+	// 清理顺序靠 t.Cleanup 的 LIFO 保证：先 db.Close()，再删文件。
+	t.Cleanup(func() {
+		for _, suf := range []string{"", "-wal", "-shm", ".lock"} {
+			os.Remove(f.Name() + suf)
+		}
+	})
 
 	db, err := sqlite.Open(f.Name())
 	if err != nil {
