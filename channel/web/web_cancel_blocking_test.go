@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -163,7 +164,14 @@ func TestCancelWithoutActiveTurnReturnsImmediately(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if elapsed > 90*time.Millisecond {
-		t.Fatalf("waited %v with no active turn — must return immediately", elapsed)
+	// 预算分两档：本机 20ms 级；CI runner 共享 CPU、无预热，单次 handler 可达数百 ms
+	// （2026-10-23 run 39967057222 同包 P50 47.9ms / P99 80.3ms）。
+	// 该断言要抓的是「无活跃 turn 却阻塞到 turn 结束」——那是 30 秒级，不是 3 倍。
+	cancelBudget := 90 * time.Millisecond
+	if os.Getenv("CI") != "" {
+		cancelBudget = 500 * time.Millisecond
+	}
+	if elapsed > cancelBudget {
+		t.Fatalf("waited %v with no active turn — must return immediately (budget %v)", elapsed, cancelBudget)
 	}
 }

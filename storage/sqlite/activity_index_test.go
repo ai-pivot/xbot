@@ -360,10 +360,17 @@ func TestActivityIndexScaleQuery(t *testing.T) {
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	p50 := percentile(durations, 0.50)
 	p99 := percentile(durations, 0.99)
-	t.Logf("activity List(limit=200) over 2000 rows: P50=%v P99=%v max=%v",
-		p50, p99, durations[len(durations)-1])
-	if p99 > 50*time.Millisecond {
-		t.Fatalf("P99 latency %v exceeds the 50ms budget", p99)
+	// 预算分两档：本机 50ms（实测 P99 1.4ms）；CI runner 共享 CPU 且无预热，
+	// 实测 P50 48ms / P99 80ms（2026-10-23 run 39967057222），比本机慢约 59 倍。
+	// 放宽到 300ms 仍能抓住「退化成按会话数线性扫描」——那种退化会到秒级，不是 3 倍。
+	budget := 50 * time.Millisecond
+	if os.Getenv("CI") != "" {
+		budget = 300 * time.Millisecond
+	}
+	t.Logf("activity List(limit=200) over 2000 rows: P50=%v P99=%v max=%v (budget=%v)",
+		p50, p99, durations[len(durations)-1], budget)
+	if p99 > budget {
+		t.Fatalf("P99 latency %v exceeds the %v budget", p99, budget)
 	}
 }
 
