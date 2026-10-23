@@ -34,6 +34,8 @@ import { ContextRing } from '@/components/agent/ContextRing'
 import { ToolSessionContext } from '@/components/agent/ToolSessionContext'
 import { RegionActionsContext, type IterationsLoadedEvent, type RegionActions } from '@/components/agent/RegionActionsContext'
 import { MessageInput } from '@/components/agent/MessageInput'
+import { AskUserFooter } from '@/components/agent/AskUserFooter'
+import { RetryLastTurnContext } from '@/components/agent/retryContext'
 import { MessageAnnotationsProvider } from '@/components/agent/MessageAnnotations'
 import { AuthContext } from '@/providers/AuthProvider'
 import { MessageList } from '@/components/agent/MessageList'
@@ -78,6 +80,17 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const [followResetToken, setFollowResetToken] = useState(0)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [interruptMode, setInterruptMode] = useState(false)
+
+  // 面板是否是该 group 的**激活 tab**：dockview 会把多个 panel 同时挂载
+  // （隐藏 tab / split view），而"待答提问"是全页唯一入口 —— 若每个挂载实例都
+  // 渲染一条横幅，就会出现同一问题叠 2–3 条（实测）。只让激活面板渲染入口。
+  const [isActive, setIsActive] = useState(api?.isActive ?? true)
+  useEffect(() => {
+    if (!api?.onDidActiveChange) return
+    const disp = api.onDidActiveChange((e: { isActive: boolean }) => setIsActive(e.isActive))
+    setIsActive(api.isActive ?? true)
+    return () => disp.dispose()
+  }, [api])
 
   // Track dockview panel visibility — only visible panels subscribe to SSE
   // (split view: both panels are visible → both subscribe; tab switch: only
@@ -139,6 +152,9 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const subscribeChatID = params.agentChatID ?? liveSubAgentChatID ?? chatID
   const messageChannel = params.agentChatID ? 'agent' : isSubAgent ? (params.parentChannel ?? 'web') : (params.channel ?? activeSession?.channel ?? 'web')
   const progressChannel = params.agentChatID || liveSubAgentChatID ? 'agent' : messageChannel
+  // 待回答的 ask_user：只认当前会话（`channel:chatID`）。key 变化时组件整个重挂，
+  // 保证展开态/收件箱行都不会跨会话残留（用户实测：换会话还会弹上一个会话的问题）。
+  const askSessionKey = chatID && !isSubAgent ? `${messageChannel}:${chatID}` : ''
   // SSE subscription follows panel visibility — invisible tabs (behind another
   // tab in the same group) disconnect SSE to save bandwidth. Visible panels
   // (active tab + split-view siblings) keep their SSE alive.
@@ -794,6 +810,19 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     return sendMessageRef.current(content, attachments, rid, interrupt)
   }, [])
 
+  // 「重试上一轮」：错误气泡里的按钮调用它 —— 重新发送最后一条用户消息。
+  // 取最后一条 user 行（排除 displayOnly 的通知行），不新造后端接口。
+  const lastUserContentRef = useRef('')
+  useEffect(() => {
+    const last = [...agentChat.messages].reverse().find((m) => m.role === 'user' && !m.displayOnly)
+    lastUserContentRef.current = last?.content ?? ''
+  }, [agentChat.messages])
+  const retryLastTurn = useCallback(() => {
+    const content = lastUserContentRef.current
+    if (!content) return
+    sendMessage(content)
+  }, [sendMessage])
+
   // Goal handlers — direct RPC (does not trigger a Run, just updates the goal text)
   // 并发编辑用 begin() 的单调序号：RPC 乱序返回时落后的提交不得回写（CR 缺陷 2）。
   const handleSetGoal = useCallback(async (objective: string) => {
@@ -1018,7 +1047,21 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           })}
         />
       )}
+      {/* 待答提问：**消息区顶部**的唯一入口（2026-10-22 用户实测：放输入框上方
+          时中间全是空白、横幅在最底下，根本看不到）。收起态只有一条带摘要的横幅，
+          点击才展开完整问题卡（绝不自动展开）。放在滚动容器外面 = 天然 sticky。 */}
+      {!isSubAgent && isVisible && isActive && !(sessionLoading || switchSplash) && chatID ? (
+        <div data-testid="ask-user-top-slot" className="shrink-0 bg-bg-primary">
+          <AskUserFooter
+            key={askSessionKey}
+            store={store}
+            channel={messageChannel}
+            chatID={chatID}
+          />
+        </div>
+      ) : null}
       {!(showLoadingScreen || switchSplash) && isVisible ? (
+      <RetryLastTurnContext.Provider value={retryLastTurn}>
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
@@ -1035,6 +1078,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         onStartEdit={handleStartEdit}
         onEndEdit={handleEndEdit}
       />
+      </RetryLastTurnContext.Provider>
       ) : null}
       {!isSubAgent && isVisible && !(sessionLoading || switchSplash) && (
         <StagingTray
@@ -1119,7 +1163,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-bg-primary text-text-muted"
         >
           <Loader2 className="size-5 animate-spin" />
-          <span className="text-xs">Loading…</span>
+          <span className="text-xs">正在加载…</span>
         </div>
       )}
     </MessageAnnotationsProvider>

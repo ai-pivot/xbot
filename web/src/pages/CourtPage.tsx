@@ -6,11 +6,10 @@ import { CourtConsole } from '@/components/court/CourtConsole'
 
 export function CourtPage({ demo = false }: { demo?: boolean }) {
   return (
-    <div className="flex h-screen min-h-0 flex-col" style={{ background: '#070b14' }}>
-      <div className="flex shrink-0 items-center gap-3 border-b px-4 py-1.5"
-        style={{ borderColor: 'rgba(148,163,184,0.14)', background: 'rgba(9,14,24,0.9)' }}>
-        <Link to="/" className="text-[11px]" style={{ color: '#38bdf8' }}>← 返回</Link>
-        <span className="text-[10px]" style={{ color: 'rgba(148,163,184,0.6)' }}>{demo ? '/court-demo' : '/court'}</span>
+    <div className="flex h-screen min-h-0 flex-col bg-bg-primary text-text-primary">
+      <div className="flex shrink-0 items-center gap-3 border-b border-border bg-bg-secondary px-4 py-1.5">
+        <Link to="/" className="text-[11px] text-app-accent">← 返回</Link>
+        <span className="text-[10px] text-text-muted">{demo ? '/court-demo' : '/court'}</span>
       </div>
       <div className="min-h-0 flex-1">
         <CourtConsole demo={demo} />

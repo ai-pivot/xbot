@@ -1001,6 +1001,31 @@ func Run(args []string) error {
 
 	// Dispatcher.Run() is already started by InitServer.
 
+	// 启动前对一次 interactive 子代理注册表（P3 僵尸行根治的收尾）。
+	//
+	// 把上一个进程留下的「僵尸 idle 行」（注册行还在、会话已被 destroy 删掉）标记
+	// unloaded —— 否则 ListActive / ListChildAgents / 组织树会把死会话当活的列出来
+	// （生产实测：81 行里 75 行 idle 全是空壳，其中 explore 61 条）。
+	//
+	// 位置：必须在渠道 Start() 之前 —— 第一屏组织树就该是干净的；此时 agent 与主库
+	// 都已由 InitServer 装配完毕（下面的 resumePendingTurns 只是把待续 turn 投递出去，
+	// 不保证在本函数内跑完）。
+	//
+	// 关于「与 interactive 会话恢复的先后」（reviewer 要求的硬约束）：本进程**不存在
+	// 启动期恢复** —— restoreInteractiveTree 在每次 processMessage 开头按父会话懒执行
+	// （agent/agent.go 的 processMessage），即恢复随时可能发生、没有「完成」这一刻，
+	// 所以「restore 之后、开始服务之前」这个窗口物理上不存在。顺序也不影响正确性：
+	// 一行能否被恢复救活，等价于「它的会话租户还在不在」（restore 走 GetOrCreateSession，
+	// 无租户就会被新建出一个空会话 —— 正是要根治的复活死会话），而这恰好就是对账判据
+	// 本身。判据与证明见 agent.ReconcileInteractiveAgentsOnStartup。
+	//
+	// 失败只 WARN：僵尸行清理绝不能阻断启动。
+	if ag != nil {
+		if err := ag.ReconcileInteractiveAgentsOnStartup(); err != nil {
+			log.WithError(err).Warn("Startup reconcile of interactive sub-agent registry failed (zombie rows may linger; boot continues)")
+		}
+	}
+
 	// 启动所有渠道
 	for name, ch := range getChannels(disp) {
 		go func(n string, c channel.Channel) {

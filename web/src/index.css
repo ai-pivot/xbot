@@ -128,6 +128,15 @@
 }
 
 /*
+ * 待答提问入口全页唯一：dockview 在会话切换时会把同一个面板再挂一次（旧 React
+ * root 不卸载），同一会话会叠出 2–3 条横幅。组件侧已按会话清理别的会话残留，
+ * 这里兜底同一会话的重复：只保留**最后挂载**的那份（旧的已经失活，点了没反应）。
+ */
+[data-ask-entry]:has(~ [data-ask-entry]) {
+  display: none;
+}
+
+/*
  * Design tokens — VSCode-style palette (Spec 1 设计系统基础).
  *
  * Two layers of variables:
@@ -158,6 +167,8 @@
   --bg-tertiary: var(--bg-tertiary-src);
   --bg-elevated: var(--bg-secondary-src);
   --border: #e0e0e0;
+  /* 卡片级别更淡的描边（通信视图卡片：1px border-subtle，不能像表格线那么重）*/
+  --border-subtle: #e6e8eb;
   --text-primary: #1e1e1e;
   --text-secondary: #6b6b6b;
   --text-muted: #999999;
@@ -169,6 +180,27 @@
   --status-error: #d1242f;
   --success: #059669;
   --warning: #d97706;
+
+  /* 会话/部门状态色（通信视图专用，不复用全局 --status-* —— 那是 UI 通用语义，
+   * 改它的色值会波及按钮/徽标）：
+   *   空闲=青灰 / 忙碌=琥珀 / 等待处理=红 / 已完成=绿。
+   * 「已离开」只用于图例可选项，窗口内几乎无意义，默认不展示。 */
+  --lane-idle: #6b7280;
+  --lane-busy: #f59e0b;
+  --lane-waiting: #ef4444;
+  --lane-done: #10b981;
+  --lane-left: #9ca3af;
+
+  /* 通信视图 kind 语义色（light）：TimelineCanvas / Sankey / 图例共用。
+   * 组件里只允许引用 var(--kind-*)；canvas 由 palette.ts 解析成具体色值。
+   * 色值按「普通人能一眼区分」定：提问紫 / 汇报蓝 / 决策橙 / 指令青 / 事件灰蓝。 */
+  --kind-ask-user: #8b5cf6;
+  --kind-answer: #10b981;
+  --kind-report: #3b82f6;
+  --kind-decision: #f97316;
+  --kind-command: #06b6d4;
+  --kind-event: #94a3b8;
+  --kind-text: #64748b;
 
   --border-strong: #cccccc;
 
@@ -264,6 +296,7 @@
   --bg-secondary-src: #252526;
   --bg-tertiary-src: #2d2d2d;
   --border: #3c3c3c;
+  --border-subtle: #333333;
   --text-primary: #cccccc;
   --text-secondary: #858585;
   --text-muted: #6b6b6b;
@@ -273,6 +306,22 @@
   --status-waiting: #e6a700;
   --status-idle: #858585;
   --status-error: #f48771;
+
+  /* 会话/部门状态色（dark）：同色相提亮，深底上仍然可区分。 */
+  --lane-idle: #9ca3af;
+  --lane-busy: #fbbf24;
+  --lane-waiting: #f87171;
+  --lane-done: #34d399;
+  --lane-left: #6b7280;
+
+  /* 通信视图 kind 语义色（dark）：亮色低饱和，保证深底上对比度足够。 */
+  --kind-ask-user: #a78bfa;
+  --kind-answer: #34d399;
+  --kind-report: #60a5fa;
+  --kind-decision: #fb923c;
+  --kind-command: #22d3ee;
+  --kind-event: #94a3b8;
+  --kind-text: #94a3b8;
   --success: #34d399;
   --warning: #fbbf24;
 
@@ -402,6 +451,19 @@
   --color-status-waiting: var(--status-waiting);
   --color-status-idle: var(--status-idle);
   --color-status-error: var(--status-error);
+  --color-kind-ask-user: var(--kind-ask-user);
+  --color-kind-answer: var(--kind-answer);
+  --color-kind-report: var(--kind-report);
+  --color-kind-decision: var(--kind-decision);
+  --color-kind-command: var(--kind-command);
+  --color-kind-event: var(--kind-event);
+  --color-kind-text: var(--kind-text);
+  --color-lane-idle: var(--lane-idle);
+  --color-lane-busy: var(--lane-busy);
+  --color-lane-waiting: var(--lane-waiting);
+  --color-lane-done: var(--lane-done);
+  --color-lane-left: var(--lane-left);
+  --color-border-subtle: var(--border-subtle);
   --color-editor-bg: var(--editor-bg);
   --color-editor-gutter: var(--editor-gutter);
 
@@ -1483,4 +1545,21 @@
 [class*='dv-tabs-overflow'],
 [class*='tabs-overflow'] {
   display: none !important;
+}
+
+
+/* ── 通信视图动效 ────────────────────────────────────────────────────────
+ * 新事件滑入 150ms；「同一次对话」在 hover 时由组件加 ring 高亮（无动画）。
+ * 尊重 prefers-reduced-motion：关闭位移，只保留瞬时出现。 */
+@keyframes feed-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.feed-item-in {
+  animation: feed-in 150ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feed-item-in { animation: none; }
 }

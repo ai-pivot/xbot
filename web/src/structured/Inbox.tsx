@@ -49,14 +49,14 @@ export function Inbox({
   return (
     <aside
       data-testid="inbox"
-      className="flex h-full min-h-0 w-[340px] shrink-0 flex-col border-l border-slate-300/40 bg-slate-50/70 dark:border-slate-700/50 dark:bg-slate-950/40"
+      className="flex h-full min-h-0 w-[340px] shrink-0 flex-col border-l border-border bg-bg-secondary"
     >
-      <header className="flex items-center justify-between border-b border-slate-300/40 px-3 py-2 dark:border-slate-700/50">
+      <header className="flex items-center justify-between border-b border-border px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold">收件箱</span>
+          <span className="text-sm font-semibold text-text-primary">收件箱</span>
           <span
             data-testid="inbox-badge"
-            className="rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white"
+            className="rounded-full bg-kind-ask-user px-1.5 py-0.5 text-[10px] font-bold text-bg-primary"
           >
             {inbox?.unanswered ?? 0}
           </span>
@@ -64,23 +64,23 @@ export function Inbox({
         <button
           type="button"
           onClick={onRefresh}
-          className="text-[11px] text-sky-500 hover:underline"
+          className="text-[11px] text-app-accent hover:underline"
         >
           刷新
         </button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {loading && items.length === 0 ? (
-          <p data-testid="inbox-loading" className="p-3 text-xs opacity-60">
+          <p data-testid="inbox-loading" className="p-3 text-xs text-text-muted">
             加载中…
           </p>
         ) : error ? (
-          <p data-testid="inbox-error" className="p-3 text-xs text-red-500">
+          <p data-testid="inbox-error" className="p-3 text-xs text-destructive">
             {error}
           </p>
         ) : items.length === 0 ? (
-          <p data-testid="inbox-empty" className="p-3 text-xs opacity-60">
-            没有待处理的问题。
+          <p data-testid="inbox-empty" className="p-3 text-xs text-text-secondary">
+            没有待处理的问题。部门 ask_user 之后会出现在这里。
           </p>
         ) : (
           <ul className="space-y-1.5">
@@ -90,20 +90,20 @@ export function Inbox({
                   type="button"
                   data-testid="inbox-item"
                   onClick={() => setExpanded((cur) => (cur === m.message_id ? null : m.message_id))}
-                  className="w-full rounded-lg border border-amber-400/30 bg-white/70 px-2.5 py-2 text-left hover:bg-amber-50 dark:bg-slate-900/60 dark:hover:bg-amber-950/30"
+                  className="w-full rounded-lg border border-kind-ask-user/30 bg-bg-primary px-2.5 py-2 text-left hover:bg-bg-tertiary"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-[13px] font-medium text-slate-600 dark:text-slate-300">
+                    <span className="truncate text-[13px] font-medium text-text-primary">
                       {formatSender(m)}
                     </span>
                     <span
-                      className="shrink-0 text-[13px] text-slate-500 dark:text-slate-400"
+                      className="shrink-0 text-[13px] text-text-muted"
                       title={`${m.created_at} · ${formatClock(m.created_at)}`}
                     >
                       {relativeTime(m.created_at)}
                     </span>
                   </div>
-                  <p className="mt-0.5 line-clamp-2 text-xs">{messageSummary(m)}</p>
+                  <p className="mt-0.5 line-clamp-2 text-xs text-text-secondary">{messageSummary(m)}</p>
                 </button>
                 {expanded === m.message_id ? (
                   <div className="mt-1.5">

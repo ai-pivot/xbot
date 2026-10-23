@@ -11,7 +11,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { GroupMessage, Lane } from './types'
-import { KIND_COLORS, KIND_WEIGHT, STATUS_COLORS, senderAddr } from './types'
+import { KIND_COLORS, KIND_WEIGHT, messageSource, senderAddr, sourceLabel } from './types'
+import { paletteKind, paletteStatus, useCourtPalette, withAlpha } from './palette'
+import { StructuredLink } from '@/components/StructuredLink'
 
 interface Props {
   lanes: Lane[]
@@ -24,6 +26,8 @@ interface Props {
   cutoff: number
   /** 实际泳道高度（随画布高度自适应）——组织树用它对齐每条泳道 */
   onLaneHeightChange?: (h: number) => void
+  /** 空态里的刷新按钮（重新拉 session-tree + 结构化消息）。 */
+  onRefresh?: () => void
 }
 
 const HEADER_W = 140
@@ -210,8 +214,12 @@ function dominantKind(msgs: GroupMessage[]): string {
 }
 
 export function TimelineCanvas({
-  lanes, messages, selectedId, onSelect, laneFilter, onLaneFilter, cutoff, onLaneHeightChange,
+  lanes, messages, selectedId, onSelect, laneFilter, onLaneFilter, cutoff, onLaneHeightChange, onRefresh,
 }: Props) {
+  // 主题感知色板：白/深主题各一套真实色值（canvas 无法用 CSS var()）。
+  const palette = useCourtPalette()
+  const paletteRef = useRef(palette)
+  paletteRef.current = palette
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const laneHRef = useRef(LANE_H)
   const reportedLaneH = useRef(LANE_H)
@@ -272,6 +280,7 @@ export function TimelineCanvas({
     sizeRef.current = { w, h }
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    const p = paletteRef.current
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
 
@@ -282,8 +291,8 @@ export function TimelineCanvas({
 
     // 背景
     const bg = ctx.createLinearGradient(0, 0, 0, h)
-    bg.addColorStop(0, '#0a1120')
-    bg.addColorStop(1, '#080d18')
+    bg.addColorStop(0, p.surface || p.surfaceAlt)
+    bg.addColorStop(1, p.surfaceAlt || p.surface)
     ctx.fillStyle = bg
     ctx.fillRect(0, 0, w, h)
 
@@ -303,24 +312,24 @@ export function TimelineCanvas({
     lanes.forEach((lane, i) => {
       const y = AXIS_H + i * laneH
       const active = !focusLane || focusLane === lane.id
-      const statusColor = STATUS_COLORS[lane.status] ?? STATUS_COLORS.idle
+      const statusColor = paletteStatus(p, lane.status)
       if (lane.status !== 'idle') {
         ctx.fillStyle = lane.status === 'blocked'
-          ? 'rgba(248,113,113,0.07)'
-          : 'rgba(251,191,36,0.055)'
+          ? withAlpha(p.danger, 0.09)
+          : withAlpha(p.waiting, 0.07)
         ctx.fillRect(HEADER_W, y, w - HEADER_W - PAD_R, laneH)
       }
       if (i > 0) {
-        ctx.strokeStyle = 'rgba(148,163,184,0.10)'
+        ctx.strokeStyle = withAlpha(p.textMuted, 0.22)
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke()
       }
       ctx.globalAlpha = active ? 1 : 0.38
-      ctx.fillStyle = lane.type === 'user' ? '#f1f5f9' : '#e2e8f0'
+      ctx.fillStyle = p.text
       ctx.font = '600 13px system-ui, -apple-system, "Segoe UI", sans-serif'
       ctx.textAlign = 'left'
       ctx.fillText(lane.name, 30, y + laneH / 2 - 12)
       ctx.font = '10.5px ui-monospace, SFMono-Regular, monospace'
-      ctx.fillStyle = 'rgba(148,163,184,0.8)'
+      ctx.fillStyle = p.textSecondary
       ctx.fillText(lane.id.replace('agent:', ''), 30, y + laneH / 2 + 4)
 
       ctx.beginPath()
@@ -332,13 +341,13 @@ export function TimelineCanvas({
       ctx.shadowBlur = 0
 
       const pw = 82
-      ctx.fillStyle = 'rgba(148,163,184,0.18)'
+      ctx.fillStyle = withAlpha(p.textMuted, 0.24)
       ctx.fillRect(30, y + laneH / 2 + 12, pw, 3)
       ctx.fillStyle = statusColor
       ctx.fillRect(30, y + laneH / 2 + 12, pw * lane.progress, 3)
 
       ctx.font = '9.5px system-ui, -apple-system, sans-serif'
-      ctx.fillStyle = 'rgba(148,163,184,0.72)'
+      ctx.fillStyle = p.textMuted
       ctx.fillText(truncateCanvas(ctx, lane.task || '暂无任务', 104), 30, y + laneH / 2 + 30)
       ctx.globalAlpha = 1
     })
@@ -348,26 +357,26 @@ export function TimelineCanvas({
     if (layout.kind === 'overview') {
       markersRef.current = []
       for (const s of layout.segs) {
-        ctx.fillStyle = s.index % 2 === 0 ? 'rgba(56,189,248,0.028)' : 'rgba(148,163,184,0.02)'
+        ctx.fillStyle = s.index % 2 === 0 ? withAlpha(p.accent, 0.05) : withAlpha(p.textMuted, 0.03)
         ctx.fillRect(s.x0, AXIS_H, Math.max(0, s.x1 - s.x0), h - AXIS_H)
-        ctx.strokeStyle = 'rgba(148,163,184,0.10)'
+        ctx.strokeStyle = withAlpha(p.textMuted, 0.2)
         ctx.beginPath(); ctx.moveTo(s.x0, AXIS_H); ctx.lineTo(s.x0, h); ctx.stroke()
 
         if (s.morning) {
           const label = `☀ ${new Date(s.start).getMonth() + 1}/${new Date(s.start).getDate()} 时段`
           ctx.font = '600 9.5px system-ui, sans-serif'
           const pw = ctx.measureText(label).width + 12
-          ctx.fillStyle = 'rgba(192,132,252,0.18)'
+          ctx.fillStyle = withAlpha(paletteKind(p, 'decision'), 0.16)
           ctx.fillRect(s.x0 + 4, 4, pw, 17)
-          ctx.strokeStyle = 'rgba(192,132,252,0.55)'
+          ctx.strokeStyle = withAlpha(paletteKind(p, 'decision'), 0.55)
           ctx.strokeRect(s.x0 + 4.5, 4.5, pw - 1, 16)
-          ctx.fillStyle = '#e9d5ff'
+          ctx.fillStyle = paletteKind(p, 'decision')
           ctx.textAlign = 'left'
           ctx.fillText(label, s.x0 + 10, 16)
           markersRef.current.push({ x: s.x0 + 4, y: 4, w: pw, h: 17, seg: s })
         }
         if (s.x1 - s.x0 > 52) {
-          ctx.fillStyle = 'rgba(148,163,184,0.78)'
+          ctx.fillStyle = p.textSecondary
           ctx.font = '10px ui-monospace, SFMono-Regular, monospace'
           ctx.textAlign = 'center'
           ctx.fillText(fmtStamp(s.start), (s.x0 + s.x1) / 2, 38)
@@ -378,19 +387,19 @@ export function TimelineCanvas({
         // 早期的 45° 斜线填充在宽 gap 上会变成半屏噪点（用户 2026-10-20
         // 「大片斜线阴影」），它传达的信息（"这里没有数据"）靠暗底和
         // `·· 2h ··` 标签已经足够。
-        ctx.fillStyle = 'rgba(2,6,23,0.42)'
+        ctx.fillStyle = withAlpha(p.surfaceRaised, 0.55)
         ctx.fillRect(g.x0, AXIS_H, g.x1 - g.x0, h - AXIS_H)
-        ctx.strokeStyle = 'rgba(148,163,184,0.12)'
+        ctx.strokeStyle = withAlpha(p.textMuted, 0.28)
         ctx.setLineDash([2, 8])
         const gcx = (g.x0 + g.x1) / 2
         ctx.beginPath(); ctx.moveTo(gcx, AXIS_H + 8); ctx.lineTo(gcx, h - 8); ctx.stroke()
         ctx.setLineDash([])
-        ctx.strokeStyle = 'rgba(148,163,184,0.18)'
+        ctx.strokeStyle = withAlpha(p.textMuted, 0.34)
         ctx.setLineDash([3, 4])
         ctx.beginPath(); ctx.moveTo(g.x0, AXIS_H); ctx.lineTo(g.x0, h); ctx.stroke()
         ctx.beginPath(); ctx.moveTo(g.x1, AXIS_H); ctx.lineTo(g.x1, h); ctx.stroke()
         ctx.setLineDash([])
-        ctx.fillStyle = 'rgba(148,163,184,0.7)'
+        ctx.fillStyle = p.textMuted
         ctx.font = '9px ui-monospace, SFMono-Regular, monospace'
         ctx.textAlign = 'center'
         ctx.fillText(`·· ${gapLabel(g.end - g.start)} ··`, (g.x0 + g.x1) / 2, 22)
@@ -400,14 +409,14 @@ export function TimelineCanvas({
       ctx.font = '10px ui-monospace, SFMono-Regular, monospace'
       for (const t of ticks) {
         const x = xOfLayout(layout, t)
-        ctx.strokeStyle = 'rgba(148,163,184,0.10)'
+        ctx.strokeStyle = withAlpha(p.textMuted, 0.2)
         ctx.beginPath(); ctx.moveTo(x, AXIS_H); ctx.lineTo(x, h); ctx.stroke()
-        ctx.fillStyle = 'rgba(203,213,225,0.8)'
+        ctx.fillStyle = p.textSecondary
         ctx.textAlign = 'center'
         ctx.fillText(fmtClock(t), x, 36)
       }
       ctx.textAlign = 'left'
-      ctx.fillStyle = 'rgba(192,132,252,0.9)'
+      ctx.fillStyle = paletteKind(p, 'decision')
       ctx.font = '600 10px system-ui, sans-serif'
       ctx.fillText(`聚焦 · ${focus?.label ?? ''} · ${fmtClock(layout.start)}–${fmtClock(layout.end)}  （双击退出）`, HEADER_W + 4, 18)
     }
@@ -454,7 +463,7 @@ export function TimelineCanvas({
     }
 
     const drawArc = (m: GroupMessage, x0: number, y0: number, x1: number, y1: number, self: boolean) => {
-      const color = KIND_COLORS[m.kind] ?? KIND_COLORS.text
+      const color = paletteKind(p, m.kind)
       const weight = KIND_WEIGHT[m.kind] ?? 1.2
       const dim = isDim(m)
       const selected = m.id === selectedId
@@ -494,7 +503,7 @@ export function TimelineCanvas({
         const py = bezierPoint(phase, y0, y0, y1, y1)
         ctx.beginPath()
         ctx.arc(px, py, selected ? 3.2 : 2, 0, Math.PI * 2)
-        ctx.fillStyle = '#f8fafc'
+        ctx.fillStyle = p.text
         ctx.globalAlpha = 0.9
         ctx.fill()
       }
@@ -539,7 +548,7 @@ export function TimelineCanvas({
       const stagger = ((bi % 7) - 3) * 3.5
       if (msgs.length > 1 && !expanded) {
         const kind = dominantKind(msgs)
-        const color = KIND_COLORS[kind] ?? KIND_COLORS.text
+        const color = paletteKind(p, kind)
         const weight = Math.min(10, 1.6 + msgs.length * 1.15)
         const alpha = dim ? 0.06 : kind === 'text' ? 0.12 : 0.20
         const y0 = b.ys[0] + stagger
@@ -580,7 +589,7 @@ export function TimelineCanvas({
         const label = `×${msgs.length}`
         ctx.font = '600 8.5px ui-monospace, SFMono-Regular, monospace'
         const tw = ctx.measureText(label).width
-        ctx.fillStyle = 'rgba(2,6,23,0.82)'
+        ctx.fillStyle = withAlpha(p.surface, 0.9)
         ctx.fillRect(mx - tw / 2 - 3, my - 6, tw + 6, 12)
         ctx.fillStyle = color
         ctx.globalAlpha = dim ? 0.15 : 1
@@ -617,7 +626,7 @@ export function TimelineCanvas({
         if (!laneIndex.has(to)) continue
         ctx.beginPath()
         ctx.arc(x, laneY(to), 6 + phase * 17, 0, Math.PI * 2)
-        ctx.strokeStyle = KIND_COLORS.ask_user
+        ctx.strokeStyle = paletteKind(p, 'ask_user')
         ctx.globalAlpha = (1 - phase) * 0.8
         ctx.lineWidth = 2
         ctx.stroke()
@@ -631,11 +640,11 @@ export function TimelineCanvas({
       const cx = xOfLayout(layout, Math.min(cutoff, layout.kind === 'focus' ? layout.end : domainMax))
       if (cx > HEADER_W && cx < w - PAD_R) {
         const grad = ctx.createLinearGradient(cx, 0, w, 0)
-        grad.addColorStop(0, 'rgba(8,13,24,0.0)')
-        grad.addColorStop(1, 'rgba(8,13,24,0.86)')
+        grad.addColorStop(0, withAlpha(p.surface, 0))
+        grad.addColorStop(1, withAlpha(p.surface, 0.9))
         ctx.fillStyle = grad
         ctx.fillRect(cx, AXIS_H, w - cx - PAD_R, h - AXIS_H)
-        ctx.strokeStyle = 'rgba(56,189,248,0.9)'
+        ctx.strokeStyle = p.accent
         ctx.lineWidth = 1.5
         ctx.beginPath(); ctx.moveTo(cx, AXIS_H); ctx.lineTo(cx, h); ctx.stroke()
       }
@@ -648,13 +657,13 @@ export function TimelineCanvas({
     ctx.font = '10px system-ui, sans-serif'
     ctx.textAlign = 'left'
     for (const k of kinds) {
-      ctx.fillStyle = KIND_COLORS[k]
+      ctx.fillStyle = paletteKind(p, k)
       ctx.fillRect(lx, ly - 7, 12, 3)
-      ctx.fillStyle = 'rgba(226,232,240,0.82)'
+      ctx.fillStyle = p.textSecondary
       ctx.fillText(k, lx + 16, ly - 1)
       lx += 26 + ctx.measureText(k).width + 16
     }
-  }, [lanes, messages, laneFilter, laneIndex, selectedId, cutoff, segments, mode, focus, hoverLane, expandedKey, teamOf])
+  }, [lanes, messages, laneFilter, laneIndex, selectedId, cutoff, segments, mode, focus, hoverLane, expandedKey, teamOf, palette])
 
   // 重绘循环（脉冲/流动点/束带）
   useEffect(() => {
@@ -831,11 +840,57 @@ export function TimelineCanvas({
     dragRef.current = null
   }, [])
 
-  // 没有任何泳道（无群组 / 无成员）时给一个明确的空状态，而不是一片黑。
+  // 没有任何泳道时给一个能教人怎么办的空状态，而不是一句「暂无通信数据」。
   if (lanes.length === 0) {
     return (
-      <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center text-xs text-text-muted">
-        暂无通信数据
+      <div data-testid="timeline-empty"
+        className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3 bg-bg-primary px-6 text-center">
+        <p className="text-sm font-medium text-text-primary">还没有可画的时间轴</p>
+        <p className="max-w-[420px] text-xs leading-5 text-text-secondary">
+          组织树里的每个部门/子代理是一条泳道。现在既没有子代理会话，也没有结构化消息
+          （汇报 / 提问 / 回答 / 决策）——让首辅启动一个部门，或在结构化消息页发一条，
+          这里就会出现时间轴事件。
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <StructuredLink
+            className="rounded-md bg-app-accent/15 px-2.5 py-1 text-[11px] font-medium text-app-accent hover:bg-app-accent/25"
+            title="打开 /structured：结构化消息 + 收件箱">
+            打开结构化消息 →
+          </StructuredLink>
+          {onRefresh ? (
+            <button type="button" onClick={onRefresh}
+              className="rounded-md bg-bg-tertiary px-2.5 py-1 text-[11px] text-text-secondary hover:text-text-primary">
+              刷新
+            </button>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+
+  // 有泳道但时间窗口内没有事件：说清「最近 24 小时没有结构化消息」，并给刷新。
+  if (messages.length === 0) {
+    return (
+      <div data-testid="timeline-empty"
+        className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3 bg-bg-primary px-6 text-center">
+        <p className="text-sm font-medium text-text-primary">最近 24 小时没有结构化消息</p>
+        <p className="max-w-[420px] text-xs leading-5 text-text-secondary">
+          组织树已经读到 {lanes.length} 个会话/部门，但它们的会话库里没有 report / ask_user /
+          answer / decision / command / event 记录。部门上报之后会按时间出现在这里。
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {onRefresh ? (
+            <button type="button" onClick={onRefresh}
+              className="rounded-md bg-app-accent/15 px-2.5 py-1 text-[11px] font-medium text-app-accent hover:bg-app-accent/25">
+              刷新
+            </button>
+          ) : null}
+          <StructuredLink
+            className="rounded-md bg-bg-tertiary px-2.5 py-1 text-[11px] text-text-secondary hover:text-text-primary"
+            title="打开 /structured：结构化消息 + 收件箱">
+            去结构化消息页
+          </StructuredLink>
+        </div>
       </div>
     )
   }
@@ -856,50 +911,50 @@ export function TimelineCanvas({
       />
 
       {/* 全景 / 聚焦切换 */}
-      <div className="absolute right-3 top-2 z-10 flex overflow-hidden rounded-md border text-[10px]"
-        style={{ borderColor: 'rgba(148,163,184,0.22)', background: 'rgba(2,6,23,0.72)' }}>
+      <div className="absolute right-3 top-2 z-10 flex overflow-hidden rounded-md border border-border bg-bg-secondary/90 text-[10px] backdrop-blur">
         <button type="button" data-testid="court-overview"
           onClick={() => { setMode('overview'); setFocus(null) }}
-          className="px-2 py-1"
-          style={{
-            background: mode === 'overview' ? 'rgba(56,189,248,0.18)' : 'transparent',
-            color: mode === 'overview' ? '#7dd3fc' : 'rgba(148,163,184,0.75)',
-          }}>
+          className={mode === 'overview'
+            ? 'bg-app-accent/15 px-2 py-1 text-app-accent'
+            : 'px-2 py-1 text-text-secondary hover:bg-bg-tertiary'}>
           全景
         </button>
         <button type="button" data-testid="court-focus"
           onClick={() => { setMode('focus'); if (!focus && latestMorning) enterFocus(latestMorning) }}
-          className="px-2 py-1"
-          style={{
-            background: mode === 'focus' ? 'rgba(192,132,252,0.18)' : 'transparent',
-            color: mode === 'focus' ? '#d8b4fe' : 'rgba(148,163,184,0.75)',
-          }}>
+          className={mode === 'focus'
+            ? 'bg-kind-decision/15 px-2 py-1 text-kind-decision'
+            : 'px-2 py-1 text-text-secondary hover:bg-bg-tertiary'}>
           聚焦时段
         </button>
       </div>
 
       {hover ? (
         <div
-          className="pointer-events-none absolute z-10 max-w-[300px] rounded-lg border px-3 py-2 text-[11px] shadow-2xl backdrop-blur"
+          className="pointer-events-none absolute z-10 max-w-[300px] rounded-lg border border-border bg-bg-primary/95 px-3 py-2 text-[11px] text-text-primary shadow-2xl backdrop-blur"
           style={{
             left: Math.min(hover.x + 14, sizeRef.current.w - 316),
             top: Math.min(hover.y + 14, sizeRef.current.h - 110),
-            background: 'rgba(10,17,32,0.96)',
-            borderColor: 'rgba(148,163,184,0.26)',
-            color: '#e2e8f0',
           }}
         >
           <div className="mb-1 flex items-center gap-2">
             <span className="inline-block size-2 rounded-full" style={{ background: KIND_COLORS[hover.msg.kind] }} />
             <span className="font-semibold">{hover.msg.sender_name}</span>
-            <span style={{ color: 'rgba(148,163,184,0.8)' }}>{hover.msg.kind}</span>
-            <span className="ml-auto font-mono" style={{ color: 'rgba(148,163,184,0.65)' }}>
+            <span className="text-text-secondary">{hover.msg.kind}</span>
+            <span className="ml-auto font-mono text-text-muted">
               {fmtClock(new Date(hover.msg.created_at).getTime())}
             </span>
           </div>
-          <div className="leading-4" style={{ color: 'rgba(226,232,240,0.92)' }}>{hover.msg.content.slice(0, 140)}</div>
+          {/* 来源：哪个会话/部门发的（悬停给完整 session key） */}
+          <div
+            data-testid="hover-source"
+            title={(() => { const s = messageSource(hover.msg); return s ? s.key : '这条事件没有携带会话来源信息' })()}
+            className="mb-1 truncate font-mono text-[10px] text-text-secondary"
+          >
+            来源：{sourceLabel(hover.msg)}
+          </div>
+          <div className="leading-4 text-text-primary">{hover.msg.content.slice(0, 140)}</div>
           {hover.msg.to && hover.msg.to.length > 0 ? (
-            <div className="mt-1 font-mono text-[10px]" style={{ color: 'rgba(148,163,184,0.72)' }}>
+            <div className="mt-1 font-mono text-[10px] text-text-secondary">
               → {hover.msg.to.join('  ')}
             </div>
           ) : null}
@@ -908,25 +963,22 @@ export function TimelineCanvas({
 
       {hoverBand ? (
         <div
-          className="pointer-events-none absolute z-10 max-w-[300px] rounded-lg border px-3 py-2 text-[11px] shadow-2xl backdrop-blur"
+          className="pointer-events-none absolute z-10 max-w-[300px] rounded-lg border border-border bg-bg-primary/95 px-3 py-2 text-[11px] text-text-primary shadow-2xl backdrop-blur"
           style={{
             left: Math.min(hoverBand.x + 14, sizeRef.current.w - 316),
             top: Math.min(hoverBand.y + 14, sizeRef.current.h - 110),
-            background: 'rgba(10,17,32,0.96)',
-            borderColor: 'rgba(148,163,184,0.26)',
-            color: '#e2e8f0',
           }}
         >
           <div className="mb-1 flex items-center gap-2">
             <span className="inline-block size-2 rounded-full" style={{ background: hoverBand.band.color }} />
             <span className="font-semibold">{hoverBand.band.from.replace('agent:', '')} → {hoverBand.band.to.replace('agent:', '')}</span>
-            <span className="ml-auto font-mono" style={{ color: '#7dd3fc' }}>×{hoverBand.band.msgs.length}</span>
+            <span className="ml-auto font-mono text-app-accent">×{hoverBand.band.msgs.length}</span>
           </div>
-          <div className="text-[10px]" style={{ color: 'rgba(148,163,184,0.8)' }}>
-            {hoverBand.band.msgs.slice(0, 3).map((m) => `${fmtClock(new Date(m.created_at).getTime())} ${m.kind}`).join(' · ')}
+          <div className="text-[10px] text-text-secondary">
+            {hoverBand.band.msgs.slice(0, 3).map((m) => `${fmtClock(new Date(m.created_at).getTime())} ${m.kind}${messageSource(m) ? `（${sourceLabel(m)}）` : ''}`).join(' · ')}
             {hoverBand.band.msgs.length > 3 ? ' …' : ''}
           </div>
-          <div className="mt-1 text-[9px]" style={{ color: 'rgba(148,163,184,0.55)' }}>hover 已展开为单条弧线</div>
+          <div className="mt-1 text-[9px] text-text-muted">hover 已展开为单条弧线</div>
         </div>
       ) : null}
     </div>

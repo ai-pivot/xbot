@@ -112,6 +112,109 @@ func TestInteractiveAgentRegistry(t *testing.T) {
 	}
 }
 
+// TestMarkOrphanedIdleUnloaded 覆盖僵尸行清理的判据：
+//   - idle + 会话租户已不在        → unloaded（真空壳，destroy 只删了会话库）
+//   - idle + 会话租户还在          → 保持 idle（重启后还能 restore，不能判死）
+//   - idle + 会话租户不在但在 liveKeys 里 → 保持 idle（运行时还活着）
+//   - running（任意情况）          → 不动（本函数只清 idle）
+//   - instance 为空的角色          → 会话 key 是 "<parent>/<role>"，不能多拼冒号
+//
+// 并且是幂等的：第二次执行影响 0 行。
+func TestMarkOrphanedIdleUnloaded(t *testing.T) {
+	db := openTestDB(t)
+	svc := NewInteractiveAgentService(db.Conn())
+	tenants := NewTenantService(db)
+
+	rec := func(key, parentChat, role, instance, status string) InteractiveAgentRecord {
+		return InteractiveAgentRecord{
+			AgentKey:      key,
+			ParentChannel: "web",
+			ParentChatID:  parentChat,
+			RoleName:      role,
+			Instance:      instance,
+			Status:        status,
+			Background:    true,
+		}
+	}
+
+	// A：僵尸 —— 有注册行，会话租户早就被 DestroySession 删掉了。
+	if err := svc.Upsert(rec("agent:explore/zombie-1", "chat_1", "explore", "zombie-1", InteractiveAgentIdle)); err != nil {
+		t.Fatalf("upsert zombie: %v", err)
+	}
+	// B：可恢复 —— 会话租户还在，重启后 restoreInteractiveTree 会重建它。
+	if err := svc.Upsert(rec("agent:court.sili/main", "chat_1", "court.sili", "main", InteractiveAgentIdle)); err != nil {
+		t.Fatalf("upsert restorable: %v", err)
+	}
+	if _, err := tenants.GetOrCreateTenantID("agent", "web:chat_1/court.sili:main"); err != nil {
+		t.Fatalf("create tenant for restorable: %v", err)
+	}
+	// C：running 行（上一个进程遗留）—— 不归本函数管。
+	if err := svc.Upsert(rec("agent:explore/legacy-run", "chat_1", "explore", "legacy-run", InteractiveAgentRunning)); err != nil {
+		t.Fatalf("upsert running: %v", err)
+	}
+	// D：instance 为空 —— 会话 key 拼法是 "web:chat_1/simple"（不带冒号）。
+	if err := svc.Upsert(rec("agent:simple/", "chat_1", "simple", "", InteractiveAgentIdle)); err != nil {
+		t.Fatalf("upsert empty-instance: %v", err)
+	}
+	if _, err := tenants.GetOrCreateTenantID("agent", "web:chat_1/simple"); err != nil {
+		t.Fatalf("create tenant for empty-instance: %v", err)
+	}
+	// E：运行时还活着（liveKeys 里）—— 即使租户不在也不许判死。
+	if err := svc.Upsert(rec("agent:explore/live-1", "chat_1", "explore", "live-1", InteractiveAgentIdle)); err != nil {
+		t.Fatalf("upsert live: %v", err)
+	}
+
+	// 启动瞬间：运行时 map 为空，E 还没起 —— 应当只有 A 被清掉。
+	n, err := svc.MarkOrphanedIdleUnloaded(nil)
+	if err != nil {
+		t.Fatalf("mark orphaned idle unloaded: %v", err)
+	}
+	if n != 2 { // A + E（E 此时不在 liveKeys 里，租户也不在 → 也是空壳）
+		t.Errorf("first pass marked %d rows, want 2 (zombie + not-yet-live)", n)
+	}
+
+	want := map[string]string{
+		"agent:explore/zombie-1":   InteractiveAgentUnloaded,
+		"agent:court.sili/main":    InteractiveAgentIdle, // 会话还在：必须保留
+		"agent:explore/legacy-run": InteractiveAgentRunning,
+		"agent:simple/":            InteractiveAgentIdle, // 会话还在：必须保留
+		"agent:explore/live-1":     InteractiveAgentUnloaded,
+	}
+	for key, status := range want {
+		got, gerr := svc.Get(key)
+		if gerr != nil {
+			t.Fatalf("get %s: %v", key, gerr)
+		}
+		if got.Status != status {
+			t.Errorf("%s status = %q, want %q", key, got.Status, status)
+		}
+	}
+
+	// 幂等：再跑一次影响 0 行。
+	n, err = svc.MarkOrphanedIdleUnloaded(nil)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("second pass marked %d rows, want 0 (idempotent)", n)
+	}
+
+	// liveKeys 保护：E 重新变 idle 后，出现在 liveKeys 里就不再被清。
+	if err := svc.MarkStatus("agent:explore/live-1", InteractiveAgentIdle, 0); err != nil {
+		t.Fatalf("mark live idle: %v", err)
+	}
+	n, err = svc.MarkOrphanedIdleUnloaded([]string{"agent:explore/live-1"})
+	if err != nil {
+		t.Fatalf("third pass: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("third pass marked %d rows, want 0 (live key protected)", n)
+	}
+	if got, _ := svc.Get("agent:explore/live-1"); got.Status != InteractiveAgentIdle {
+		t.Errorf("live agent status = %q, want idle (must not be unloaded)", got.Status)
+	}
+}
+
 func TestInteractiveAgentNotFound(t *testing.T) {
 	db := openTestDB(t)
 	svc := NewInteractiveAgentService(db.Conn())

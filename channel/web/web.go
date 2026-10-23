@@ -107,6 +107,14 @@ type WebCallbacks struct {
 	// GetActiveProgress returns the latest progress snapshot for an active turn.
 	// Used by Web history API to restore progress state on page refresh.
 	GetActiveProgress func(channel, chatID string) *protocol.ProgressEvent
+	// ActiveRunDone returns a channel that is CLOSED once the session's currently
+	// active turn has fully finished (processMessage returned, cancel state
+	// unregistered). ok=false means there is NO active turn.
+	//
+	// POST /api/cancel uses it to be BLOCKING: the HTTP response must never claim
+	// "cancelled" while the turn is still running a tool (user requirement
+	// 2026-10-22: "cancel 只要 api 返回了一定必须已经取消成功，它是阻塞的").
+	ActiveRunDone func(channel, chatID string) (<-chan struct{}, bool)
 	// ─── Authoritative state reads (STATE-MODEL §14, endpoints /api/iteration,
 	// /api/turn, /api/session-state). All are read-only and never mutate state.
 	// IterationBlock returns one iteration's authoritative block.
@@ -304,6 +312,43 @@ type WebCallbacks struct {
 	StructuredCount func(sel SessionSelector) (int, error)
 	// StructuredMessages lists structured messages filtered by kind.
 	StructuredMessages func(sel SessionSelector, kind string, cursor, afterID int64, limit int) ([]protocol.StructuredMessage, bool, int64, error)
+
+	// ── 跨会话活动流（通信视图性能重构）────────────────────────────────────
+	//
+	// 这两个回调**只打主库**：会话按 chat 分库（one session one DB）之后，跨会话
+	// 读消息必须逐库打开，会话数一涨就线性恶化。活动索引（activity_index）与
+	// 子代理注册表（interactive_agents）都在主库，视图因此与会话数无关。
+	// 实现里**禁止**出现 GetOrCreateSession / OpenSessionDB / sessionDB()。
+	//
+	// ActivityList 返回最近的结构化活动（新→旧），within 为活跃窗口（如 72h），
+	// kinds 为空表示全部结构化 kind。has_more 由多取一行判定。
+	ActivityList func(limit int, within time.Duration, kinds []string) ([]ActivityEntry, bool, error)
+	// AgentActivityList 返回活跃子代理（默认排除 unloaded），按 updated_at 倒序。
+	AgentActivityList func(within time.Duration, includeUnloaded bool) ([]AgentActivityEntry, error)
+}
+
+// ActivityEntry 是 /api/activity 的 items 元素。
+//
+// 刻意不引用 storage 包的类型：channel 层只认这个对外契约（与
+// UserChatWithPreview 同样的处理方式），字段名即 JSON 名。
+type ActivityEntry struct {
+	ChatID     string `json:"chat_id"`
+	Channel    string `json:"channel"`
+	MessageID  int64  `json:"message_id"`
+	Kind       string `json:"kind"`
+	SenderName string `json:"sender_name"`
+	Summary    string `json:"summary"`
+	CreatedAt  string `json:"created_at"`
+}
+
+// AgentActivityEntry 是 /api/agents 的 items 元素。
+type AgentActivityEntry struct {
+	AgentKey    string `json:"agent_key"`
+	RoleName    string `json:"role_name"`
+	Instance    string `json:"instance"`
+	Status      string `json:"status"`
+	UpdatedAt   string `json:"updated_at"`
+	LastReplyAt string `json:"last_reply_at"`
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.
@@ -439,6 +484,11 @@ type WebChannel struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+
+	// cancelWait overrides the POST /api/cancel blocking bound (0 = the
+	// production default cancelWaitTimeout). Tests shrink it so the timeout
+	// path can be exercised without waiting 5 real seconds.
+	cancelWait time.Duration
 
 	// PTY manager for web terminals
 	ptyMgr *ptyManager
@@ -964,6 +1014,11 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	// 分支由 handleMessage 转发）；这里补回答、收件箱、按 kind 查询。
 	mux.HandleFunc("/api/answer", wc.authenticatedPOST(wc.handleStructuredAnswer))
 	mux.HandleFunc("/api/inbox", wc.authMiddleware(wc.handleInbox))
+	// 跨会话活动流（通信视图性能重构）：只读主库索引表，绝不打开会话分库。
+	//   /api/activity —— 最近的 report/decision/answer/... 摘要流
+	//   /api/agents   —— 活跃子代理（默认不含 unloaded）
+	mux.HandleFunc("/api/activity", wc.authMiddleware(wc.handleActivity))
+	mux.HandleFunc("/api/agents", wc.authMiddleware(wc.handleAgentActivity))
 	mux.HandleFunc("/api/messages", wc.authMiddleware(wc.handleStructuredMessages))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
 	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。

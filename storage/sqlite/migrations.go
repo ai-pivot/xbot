@@ -545,10 +545,91 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v77: 主库活动流索引表（通信视图性能重构）。会话按 chat 分库（one session
+	// one DB）后，跨会话读消息必须逐库打开，会话数一涨就线性恶化。activity_index
+	// 在主库冗余一份「结构化消息摘要」，视图只打主库一张表。
+	// 幂等：CREATE TABLE/INDEX IF NOT EXISTS —— 崩溃在置 77 之前重跑安全。
+	if from < 77 {
+		if err := migrateV76ToV77(db); err != nil {
+			return fmt.Errorf("migrate to v77: %w", err)
+		}
+	}
+
 	// master #444：迁移链只负责「版本差异」带来的变更；新加入 schema 的表（不伴随
 	// 版本号变化）由 ensureAdditiveTables 补齐，老库和刚迁移完的库走同一条收尾路径
 	// （当前内容就是 oauth_tokens，与本分支 Open 末尾的 ensureStartupSchema 幂等叠加）。
 	return db.ensureAdditiveTables()
+}
+
+// migrateV76ToV77 建立 activity_index（跨会话活动流索引）。
+//
+// 为什么是主库的一张冗余表，而不是「读的时候逐会话库聚合」：会话库是 one
+// session one DB（v71/v72），聚合 N 个会话 = N 次 open + N 次扫表，代价与会话
+// 数线性相关，调参无解。索引表把「跨会话看最近发生了什么」压成一次主库查询。
+//
+// 收什么：只收结构化 kind（report/ask_user/answer/decision/command/event）的
+// 摘要行。普通 text 不入索引 —— 否则索引会被聊天文本撑成第二个消息库，违背
+// 「索引只为视图服务」的初衷（写入方判定见 serverapp/structured_callbacks.go）。
+//
+// created_at 存**固定宽度 UTC**（activityTimeLayout）：TEXT 列的字符串序等于
+// 时间序，ORDER BY created_at DESC 才能直走 idx_activity_created，而不用在查询
+// 里做函数转换（那会让索引失效，回到全表扫）。⛔ 不要改用 canonicalTimestamp：
+// 它写本地偏移，DST 切换处字符串序与真实时间序可能相反。
+func migrateV76ToV77(db *DB) error {
+	conn := db.Conn()
+	stmts := []struct{ ddl, what string }{
+		{`CREATE TABLE IF NOT EXISTS activity_index (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id   INTEGER NOT NULL,
+			chat_id     TEXT    NOT NULL,
+			channel     TEXT    NOT NULL,
+			message_id  INTEGER NOT NULL,
+			kind        TEXT    NOT NULL,
+			sender_id   TEXT    NOT NULL DEFAULT '',
+			sender_name TEXT    NOT NULL DEFAULT '',
+			summary     TEXT    NOT NULL DEFAULT '',
+			created_at  TEXT    NOT NULL,
+			UNIQUE(tenant_id, chat_id, message_id)
+		)`, "activity_index"},
+		{`CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_index(created_at DESC)`, "idx_activity_created"},
+		{`CREATE INDEX IF NOT EXISTS idx_activity_chat ON activity_index(chat_id, created_at DESC)`, "idx_activity_chat"},
+		{`CREATE INDEX IF NOT EXISTS idx_activity_kind ON activity_index(kind, created_at DESC)`, "idx_activity_kind"},
+	}
+	for _, st := range stmts {
+		if _, err := conn.Exec(st.ddl); err != nil {
+			return fmt.Errorf("create %s: %w", st.what, err)
+		}
+	}
+	// interactive_agents.last_reply_at（v76 建表时不存在的列）：活动视图要显示
+	// 「这个子代理最后一次真正说话是什么时候」，而 updated_at 会被状态变更刷新。
+	//
+	// 幂等两重守卫：① 表不存在则跳过（v74→v75 同款韧性：手工构造/残缺库不该让
+	// 启动崩在迁移里）；② columnExists —— v76 之后新建的库已带该列，老的 v76 库需要补。
+	tableOK, err := tableExists(conn, "interactive_agents")
+	if err != nil {
+		return fmt.Errorf("check interactive_agents exists: %w", err)
+	}
+	if tableOK {
+		hasCol, cerr := columnExists(conn, "interactive_agents", "last_reply_at")
+		if cerr != nil {
+			return fmt.Errorf("check interactive_agents.last_reply_at: %w", cerr)
+		}
+		if !hasCol {
+			if _, err := conn.Exec(
+				`ALTER TABLE interactive_agents ADD COLUMN last_reply_at TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("add interactive_agents.last_reply_at: %w", err)
+			}
+		}
+		if _, err := conn.Exec(
+			`CREATE INDEX IF NOT EXISTS ix_ia_updated ON interactive_agents(updated_at DESC)`); err != nil {
+			return fmt.Errorf("create ix_ia_updated: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 77"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v77: activity_index (cross-session activity feed)")
+	return nil
 }
 
 // migrateV75ToV76 建立 interactive_agents（interactive SubAgent 注册表）。

@@ -10,7 +10,7 @@
  *
  * 安全：全部走 React 文本节点（不做 dangerouslySetInnerHTML）。
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
   AskPayload,
@@ -129,6 +129,76 @@ function RowMeta({ message, state }: { message: StructuredMessage; state?: strin
         <span className="ml-auto shrink-0 rounded-full bg-black/[0.06] px-2 py-0.5 text-[12px] font-medium text-slate-600 dark:bg-white/10 dark:text-slate-300">
           {state}
         </span>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * ask_user 的「背景」块（2026-10-22）：`message.text` 承载的是**提问的完整背景**
+ * —— 触发原因、关键事实/数字/路径、每个选项的后果、不选的后果。它必须显示在
+ * 问题**上方**，并且和问题视觉上分开（否则读者会把背景当成问题的一部分）。
+ *
+ * 长文本默认折叠到 ~6 行（`line-clamp-6`），点「展开」看全文；是否真的溢出用
+ * `scrollHeight > clientHeight` 实测，而不是猜字数。
+ */
+function AskContextBlock({ text, questions }: { text: string; questions: AskQuestion[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const [overflowing, setOverflowing] = useState(false)
+  const ref = useRef<HTMLParagraphElement | null>(null)
+
+  useEffect(() => {
+    if (expanded) return // 展开后不再改变"是否溢出"的结论（否则按钮会消失）
+    const el = ref.current
+    if (!el || typeof el.scrollHeight !== 'number') return
+    setOverflowing(el.scrollHeight - el.clientHeight > 2)
+  }, [text, expanded])
+
+  // 「没有背景」的两种形态：① 压根没填；② 服务端把问题原文回落成了 message.text
+  //（structuredContent 的 ask_user 分支在 text 为空时会用问题拼正文）—— 那等于没有
+  // 背景，同样必须明说，不能假装有。
+  const body = text.trim()
+  const questionText = questions.map((q) => (q.question ?? '').trim()).filter(Boolean).join('\n')
+  const noBackground = body === '' || body === questionText || (questions.length === 1 && body === (questions[0].question ?? '').trim())
+
+  if (noBackground) {
+    // 后端已强制要求 message 承载背景；历史行 / 第三方调用方可能仍缺失 —— 明说，不静默。
+    return (
+      <div
+        data-testid="ask-user-missing-context"
+        className="mb-2 rounded-lg border border-amber-500/50 bg-amber-500/10 px-2.5 py-1.5 text-[12px] leading-5 text-amber-700 dark:text-amber-300"
+      >
+        ⚠️ 该提问缺少上下文（发问方未填写背景），可直接向它追问
+      </div>
+    )
+  }
+
+  return (
+    <div
+      data-testid="ask-user-context"
+      className="mb-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.07] px-2.5 py-2"
+    >
+      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+        背景
+      </p>
+      <p
+        ref={ref}
+        data-testid="ask-user-context-text"
+        className={`whitespace-pre-wrap break-words text-[13px] leading-relaxed text-slate-700 dark:text-slate-200 ${
+          expanded ? '' : 'line-clamp-6'
+        }`}
+      >
+        {body}
+      </p>
+      {overflowing || expanded ? (
+        <button
+          type="button"
+          data-testid="ask-user-context-toggle"
+          className="mt-1 text-[12px] text-amber-700 hover:underline dark:text-amber-300"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? '收起背景' : '展开背景全文'}
+        </button>
       ) : null}
     </div>
   )
@@ -305,6 +375,8 @@ export function AskUserCard({
       state={message.cancelled ? '已取消' : message.answered ? '已回答' : '等待处理'}
       testId="ask-user-card"
     >
+      {/* 背景在问题**上方**且视觉分区（用户要求：先看懂背景，再回答问题） */}
+      <AskContextBlock text={message.text ?? ''} questions={questions} />
       <div className={waiting ? 'animate-pulse' : ''}>
         {questions.map((q) => {
           const chosen = selected[q.id] ?? []

@@ -7,12 +7,13 @@
  * Icons: ⏰ cron task, ▶ running bg command, ✓ completed, ✗ failed.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { AlarmClock, Bot, Check, Loader2, Network, Play, Square, Trash2, X } from 'lucide-react'
+import { AlarmClock, Bot, Check, Inbox, Loader2, Network, Play, Square, Trash2, X } from 'lucide-react'
 import { useI18n } from '@/providers/i18n'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTasks } from '@/hooks/useTasks'
 import { openMobileAgent } from '@/lib/mobileNav'
+import { StructuredLink } from '@/components/StructuredLink'
 import { flattenSubAgentTree } from '@/components/session/session-tree'
 import { parseAgentChatID } from '@/lib/session-grouping'
 import type { TabManager } from '@/hooks/useTabManager'
@@ -106,7 +107,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
           onClick={() =>
             tabManager?.openTab({
               type: 'panel',
-              title: '通信视图',
+              title: t('sidebar.courtEntry'),
               icon: 'git-branch',
               closable: true,
               data: { panelId: 'court' },
@@ -116,11 +117,25 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
         >
           <Network className="size-3.5 shrink-0 text-text-secondary" />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-xs font-medium text-text-primary">通信视图</span>
-            <span className="block truncate text-[10px] text-text-muted">群组通信 · 组织树 · 时间轴</span>
+            <span className="block truncate text-xs font-medium text-text-primary">{t('sidebar.courtEntry')}</span>
+            <span className="block truncate text-[10px] text-text-muted">{t('sidebar.courtEntryDesc')}</span>
           </span>
-          <span className="shrink-0 text-[10px] text-text-muted">打开 →</span>
+          <span className="shrink-0 text-[10px] text-text-muted">{t('sidebar.openEntry')}</span>
         </button>
+
+        {/* 结构化消息入口：/structured 路由原本没有任何侧栏链接，用户只能靠猜 URL
+            （2026-10-22：「面板完全没用处没人知道怎么用」）。用 <Link> 走项目已有的
+            react-router 跳转，不用 window.location（会整页重载并丢掉 WS 连接）。 */}
+        <StructuredLink
+          className="flex w-full items-center gap-2 rounded-md bg-bg-tertiary px-2 py-2 text-left transition-colors hover:bg-bg-secondary"
+          title={t('sidebar.structuredEntryTitle')}>
+          <Inbox className="size-3.5 shrink-0 text-text-secondary" />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs font-medium text-text-primary">{t('sidebar.structuredEntry')}</span>
+            <span className="block truncate text-[10px] text-text-muted">{t('sidebar.structuredEntryDesc')}</span>
+          </span>
+          <span className="shrink-0 text-[10px] text-text-muted">{t('sidebar.openEntry')}</span>
+        </StructuredLink>
 
         {/* Cron tasks */}
         <section className="flex flex-col gap-2">

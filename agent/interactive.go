@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -233,6 +234,9 @@ func (a *Agent) interactiveSessionTTL() time.Duration {
 // 跳过 running==true 的会话：正在执行 Run() 的 session 即使 lastUsed 较旧也不应被清理，
 // 否则父 agent 的 SubAgent 工具调用会永远阻塞（Run() 是同步阻塞的）。
 func (a *Agent) cleanupExpiredSessions() {
+	// 启动后第一次触达 interactive 子系统时对一次账（进程级一次，幂等）。
+	a.reconcileInteractiveRegistryOnce()
+
 	now := time.Now()
 	ttl := a.interactiveSessionTTL()
 	a.interactiveSubAgents.Range(func(k, v any) bool {
@@ -729,7 +733,41 @@ func (a *Agent) destroyInteractiveSession(key string) {
 		}
 	}
 
+	// 注册表回写：本 agent 及其全部后代标记 unloaded（递归 CTE，幂等）。
+	//
+	// 这是僵尸行的根因：销毁以前只删会话库（DestroySession），主库 interactive_agents
+	// 里那一行永远是 idle ⇒ ListActive / ListChildAgents / 组织树把死会话当活的列出来。
+	// destroyInteractiveSession 是所有销毁路径的唯一漏斗（TTL / unload / cancel / panic /
+	// spawn 失败 / 级联子会话），所以回写放在这里一处即可覆盖全部。
+	//
+	// 三个约束：
+	//  1) 锁外执行 —— 上面两段 ia.mu 都已 Unlock，绝不在持锁状态下做 DB 写；
+	//  2) 幂等 —— 重复调用已被上面的墓碑 CAS 挡住，MarkUnloadedCascade 本身也是纯 UPDATE；
+	//  3) 不覆盖新一代 —— 注册项已摘除，但同一 key 可能已被新的 spawn 占住并写了新行。
+	//     此时回写会把活会话的行标成 unloaded（该行随后会被下一次状态写入纠正，但没必要
+	//     制造这个窗口），所以先看一眼 map：有新实例就跳过。
+	if _, live := a.interactiveSubAgents.Load(key); live {
+		log.WithFields(log.Fields{"key": key}).
+			Debug("skip registry unload: a new session generation already owns this key")
+	} else {
+		a.markRegistryUnloaded(roleName, instance)
+	}
+
 	a.destroyInteractiveSessionResources(key)
+}
+
+// markRegistryUnloaded 把 (role, instance) 及其全部后代在注册表里标记为 unloaded。
+// 幂等、无锁要求（调用方必须在持有 ia.mu 之外调用）。失败只记日志：注册表回写失败
+// 不能影响销毁本身，否则会漏掉会话库清理。
+func (a *Agent) markRegistryUnloaded(roleName, instance string) {
+	if a == nil || a.multiSession == nil {
+		return
+	}
+	agentKey := "agent:" + roleName + "/" + instance
+	if err := a.interactiveAgentSvc().MarkUnloadedCascade(agentKey); err != nil {
+		log.WithError(err).WithField("agent_key", agentKey).
+			Warn("Failed to mark interactive agent unloaded in the registry")
+	}
 }
 
 // destroyInteractiveSessionResources 释放会话的外部资源（progress 快照、
@@ -773,6 +811,99 @@ func (a *Agent) destroyInteractiveSessionResources(key string) {
 			log.Warn("Failed to destroy agent session: ", err)
 		}
 	}
+}
+
+// interactiveRegistryReconcileOnce 保证「启动后对账」每个进程只做一次。
+//
+// 为什么不是「构造函数里做」：Agent 的装配点不在本文件，而本文件是 interactive
+// 子系统的入口。进程起来后第一次触达 interactive 子系统（spawn / 列表 / TTL 清理，
+// 三者都先过 cleanupExpiredSessions）时做一次对账，语义上就是「启动时清历史僵尸」：
+// 那一刻运行时 map 还是空的，DB 里的行全是上一个进程留下的。
+//
+// 进程内只有 serverapp 装配的那一个 Agent 持有 multiSession；测试里的多实例可以
+// 直接调 ReconcileInteractiveAgentsOnStartup 显式对账（Once 只保护懒触发路径）。
+var interactiveRegistryReconcileOnce sync.Once
+
+// reconcileInteractiveRegistryOnce 是 cleanupExpiredSessions 里的懒触发入口。
+// 没有 multiSession（纯内存 Agent、测试桩）时**不消耗** Once —— 那样第一个真正
+// 带库的 Agent 仍然会对账。
+func (a *Agent) reconcileInteractiveRegistryOnce() {
+	if a == nil || a.multiSession == nil {
+		return
+	}
+	interactiveRegistryReconcileOnce.Do(func() {
+		if err := a.ReconcileInteractiveAgentsOnStartup(); err != nil {
+			log.WithError(err).Warn("Lazy startup reconcile of interactive sub-agent registry failed (zombie rows may linger)")
+		}
+	})
+}
+
+// ReconcileInteractiveAgentsOnStartup 是进程启动时的注册表对账，幂等。
+//
+// 返回 error 只表示「写库失败」，由调用方决定怎么处理（serverapp 只 WARN，绝不
+// 因此阻断启动）。单个步骤失败不阻止另一个步骤执行。
+//
+// 两步（顺序不能反）：
+//  1. running → interrupted：上一个进程的 goroutine 已随进程消失，不可能"还在计算"；
+//  2. 僵尸 idle → unloaded：DB 里有行，但（a）运行时 interactiveSubAgents 里没有这个
+//     实例，且（b）它的会话租户已经不在了。判据与理由见
+//     sqlite.InteractiveAgentService.MarkOrphanedIdleUnloaded。
+//
+// 为什么要 (b)：只按「运行时没有」判定会在启动瞬间把**全部** idle 行判死（启动时
+// map 必然是空的），包括「会话还在、下一条消息就能恢复」的正常子代理 —— 而
+// restoreInteractiveTree 跳过 unloaded ⇒ 重启恢复功能被自己对账关掉。
+func (a *Agent) ReconcileInteractiveAgentsOnStartup() error {
+	if a == nil || a.multiSession == nil {
+		// 没有主库（纯内存 Agent / 测试桩）：没有注册表可对账，不算失败。
+		return nil
+	}
+	svc := a.interactiveAgentSvc()
+
+	var errs []error
+	if n, err := svc.MarkAllRunningAsInterrupted(); err != nil {
+		log.WithError(err).Warn("Startup reconcile: mark running sub-agents interrupted failed")
+		errs = append(errs, fmt.Errorf("mark running sub-agents interrupted: %w", err))
+	} else if n > 0 {
+		log.WithField("rows", n).Info("Startup reconcile: previously running sub-agents marked interrupted")
+	}
+
+	live := a.liveInteractiveAgentKeys()
+	if n, err := svc.MarkOrphanedIdleUnloaded(live); err != nil {
+		log.WithError(err).Warn("Startup reconcile: mark zombie sub-agent rows unloaded failed")
+		errs = append(errs, fmt.Errorf("mark zombie sub-agent rows unloaded: %w", err))
+	} else if n > 0 {
+		log.WithFields(log.Fields{"rows": n, "live": len(live)}).
+			Info("Startup reconcile: zombie sub-agent rows marked unloaded")
+	}
+	return errors.Join(errs...)
+}
+
+// liveInteractiveAgentKeys 返回运行时 interactiveSubAgents 里每个实例对应的注册表
+// agent_key（形态 "agent:<role>/<instance>"，与 persistInteractiveAgent 写入的一致）。
+//
+// map key 是 "channel:chatID/role[:instance]"，agent_key 是 "agent:role/instance"，
+// 两者不是同一个串 —— 必须用同一个解析器换算，不能拼前缀。
+func (a *Agent) liveInteractiveAgentKeys() []string {
+	if a == nil {
+		return nil
+	}
+	out := make([]string, 0, 32)
+	a.interactiveSubAgents.Range(func(k, v any) bool {
+		key, ok := k.(string)
+		if !ok {
+			return true
+		}
+		if _, ok := v.(*interactiveAgent); !ok {
+			return true
+		}
+		_, _, role, instance := parseInteractiveKeyTail(key)
+		if role == "" {
+			return true
+		}
+		out = append(out, "agent:"+role+"/"+instance)
+		return true
+	})
+	return out
 }
 
 // emitRemovedSubAgentEvent emits subagent_stopped(Removed=true) for a session
@@ -3083,11 +3214,9 @@ func (a *Agent) UnloadInteractiveSession(
 	if ia.cancelCurrent != nil {
 		ia.cancelCurrent()
 	}
-	// 注册表：本 agent 及其所有后代标记 unloaded（重启后不再恢复）。
-	if err := a.interactiveAgentSvc().MarkUnloadedCascade("agent:" + roleName + "/" + instance); err != nil {
-		log.WithError(err).WithField("role", roleName).WithField("instance", instance).
-			Warn("Failed to mark interactive agents unloaded in the registry")
-	}
+	// 注册表回写挪到锁外：destroyInteractiveSession 自己会把本 agent 与全部后代
+	// 标记 unloaded（同一条 MarkUnloadedCascade）。以前这里在 ia.mu 里写主库，
+	// 与并发 spawn 抢同一行 —— 持锁做 DB 写是明确要避免的模式。
 	// Close the waitable task so a pending task_wait unblocks immediately
 	// instead of blocking until its timeout (the parent triggered the unload).
 	// TOCTOU fix (xbotgh cr): Load() once into a local — same as destroyInteractiveSession.

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"xbot/bus"
 	log "xbot/logger"
@@ -301,6 +302,25 @@ func (wc *WebChannel) isCommandMessage(content string) bool {
 	return isSlashCommand(content) || strings.HasPrefix(strings.TrimSpace(content), "!")
 }
 
+// cancelWaitTimeout bounds how long POST /api/cancel blocks waiting for the
+// cancelled turn to actually stop.
+//
+// ⛔ 语义（用户 2026-10-22 硬要求）：「cancel 只要 api 返回了一定必须已经取消成功，
+// 它是阻塞的」。旧实现只把信号塞进 chatCancelCh 就 200 返回，而 turn 还在跑当前工具
+// —— 客户端看到"已取消"却没停（实测要等 ~10s）。现在的契约：
+//   - 有活跃轮次 ⇒ 阻塞到该轮收尾（ActiveRunDone 关闭）再返回 200，响应带 waited_ms；
+//   - 5s 仍未收尾 ⇒ **504 + cancel_timeout**，绝不谎报成功；
+//   - 无活跃轮次 ⇒ 立即 200（cancelled 无操作，保持原行为）。
+const cancelWaitTimeout = 5 * time.Second
+
+// cancelWaitDuration returns the effective blocking bound for POST /api/cancel.
+func (wc *WebChannel) cancelWaitDuration() time.Duration {
+	if wc.cancelWait > 0 {
+		return wc.cancelWait
+	}
+	return cancelWaitTimeout
+}
+
 func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {
 	var request sessionBody
 	if err := decodeJSONBody(r, &request, true); err != nil {
@@ -311,12 +331,59 @@ func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if request.ChatID != "" && request.Channel == "" {
 		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
-	sel, err := wc.dispatchCancel(r.Context(), identity, request.Channel, request.ChatID)
+	started := time.Now()
+	sel, err := wc.resolveInboundSession(r.Context(), identity, request.Channel, request.ChatID)
 	if err != nil {
 		writeInboundError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"chat_id": sel.ChatID, "channel": sel.Channel})
+	// Snapshot the run-done channel BEFORE dispatching the cancel: it must belong
+	// to the turn we are cancelling, not to a later turn that could start in the
+	// window between dispatch and wait.
+	var runDone <-chan struct{}
+	activeRun := false
+	if wc.callbacks.ActiveRunDone != nil {
+		runDone, activeRun = wc.callbacks.ActiveRunDone(sel.Channel, sel.ChatID)
+	}
+	if err := wc.dispatchCancelResolved(r.Context(), identity, sel); err != nil {
+		writeInboundError(w, err)
+		return
+	}
+	waitBound := wc.cancelWaitDuration()
+	if activeRun && runDone != nil {
+		select {
+		case <-runDone:
+		case <-r.Context().Done():
+			// The caller went away (tab closed / request aborted). The cancel is
+			// already dispatched — nothing to report back to.
+			return
+		case <-time.After(waitBound):
+			// Explicit failure, never a fake success. Envelope-shaped like every
+			// other API error (ok=false + error.code), with the timing carried in
+			// data so the caller can see how long we actually waited.
+			writeAPIResponse(w, http.StatusGatewayTimeout, apiResponse{
+				OK: false,
+				Data: map[string]any{
+					"chat_id":    sel.ChatID,
+					"channel":    sel.Channel,
+					"cancelled":  false,
+					"timeout_ms": waitBound.Milliseconds(),
+					"waited_ms":  time.Since(started).Milliseconds(),
+				},
+				Error: &apiError{
+					Code:    "cancel_timeout",
+					Message: fmt.Sprintf("turn still running %dms after /cancel — cancellation NOT confirmed", waitBound.Milliseconds()),
+				},
+			})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chat_id":   sel.ChatID,
+		"channel":   sel.Channel,
+		"cancelled": true,
+		"waited_ms": time.Since(started).Milliseconds(),
+	})
 }
 
 func writeInboundError(w http.ResponseWriter, err error) {

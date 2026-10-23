@@ -21,15 +21,15 @@ export function PlaybackBar({ min, max, cursor, playing, speed, onSeek, onToggle
   const pct = max > min ? ((cursor - min) / (max - min)) * 100 : 100
   const live = cursor >= max - 1
   return (
-    <div className="flex items-center gap-3 border-t px-4 py-2"
-      style={{ borderColor: 'rgba(148,163,184,0.12)', background: 'rgba(9,14,24,0.85)' }}>
+    <div className="flex items-center gap-3 border-t border-border bg-bg-secondary px-4 py-2">
       <button type="button" onClick={onToggle}
-        className="flex size-7 items-center justify-center rounded-full text-[11px] font-bold"
-        style={{ background: playing ? 'rgba(239,68,68,0.18)' : 'rgba(56,189,248,0.18)', color: playing ? '#ef4444' : '#38bdf8' }}
+        className={playing
+          ? 'flex size-7 items-center justify-center rounded-full bg-destructive/15 text-[11px] font-bold text-destructive'
+          : 'flex size-7 items-center justify-center rounded-full bg-app-accent/15 text-[11px] font-bold text-app-accent'}
         aria-label={playing ? '暂停回放' : '开始回放'}>
         {playing ? '❚❚' : '▶'}
       </button>
-      <span className="w-[112px] shrink-0 font-mono text-[10px]" style={{ color: 'rgba(148,163,184,0.8)' }}>
+      <span className="w-[112px] shrink-0 font-mono text-[10px] text-text-secondary">
         {fmt(cursor)}
       </span>
       <div className="relative min-w-0 flex-1">
@@ -41,30 +41,26 @@ export function PlaybackBar({ min, max, cursor, playing, speed, onSeek, onToggle
           onChange={(e) => onSeek(Number(e.target.value))}
           className="h-1 w-full cursor-pointer appearance-none rounded-full"
           style={{
-            background: `linear-gradient(to right, #38bdf8 0%, #38bdf8 ${pct}%, rgba(148,163,184,0.22) ${pct}%, rgba(148,163,184,0.22) 100%)`,
+            background: `linear-gradient(to right, var(--accent) 0%, var(--accent) ${pct}%, var(--bg-tertiary) ${pct}%, var(--bg-tertiary) 100%)`,
           }}
           aria-label="回放时间"
         />
       </div>
-      <span className="shrink-0 font-mono text-[10px]" style={{ color: 'rgba(148,163,184,0.55)' }}>{fmt(max)}</span>
+      <span className="shrink-0 font-mono text-[10px] text-text-muted">{fmt(max)}</span>
       <div className="flex shrink-0 items-center gap-1">
         {[1, 10, 100].map((s) => (
           <button key={s} type="button" onClick={() => onSpeed(s)}
-            className="rounded px-1.5 py-0.5 font-mono text-[10px]"
-            style={{
-              background: speed === s ? 'rgba(56,189,248,0.18)' : 'rgba(148,163,184,0.08)',
-              color: speed === s ? '#38bdf8' : 'rgba(148,163,184,0.75)',
-            }}>
+            className={speed === s
+              ? 'rounded bg-app-accent/15 px-1.5 py-0.5 font-mono text-[10px] text-app-accent'
+              : 'rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-[10px] text-text-secondary'}>
             {s}x
           </button>
         ))}
       </div>
       <button type="button" onClick={onLive}
-        className="shrink-0 rounded px-2 py-1 text-[10px]"
-        style={{
-          background: live ? 'rgba(34,197,94,0.12)' : 'rgba(245,165,36,0.14)',
-          color: live ? '#22c55e' : '#f5a524',
-        }}>
+        className={live
+          ? 'shrink-0 rounded bg-status-running/10 px-2 py-1 text-[10px] text-status-running'
+          : 'shrink-0 rounded bg-status-waiting/15 px-2 py-1 text-[10px] text-status-waiting'}>
         {live ? '● 实时' : '回到最新'}
       </button>
     </div>

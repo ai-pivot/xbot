@@ -400,11 +400,12 @@ func uploadKeyReferenced(content, key string) bool {
 		strings.Contains(content, prefix+strings.ReplaceAll(escaped, "+", "%20"))
 }
 
-func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdentity, channelName, chatID string) (SessionSelector, error) {
-	sel, err := wc.resolveInboundSession(ctx, identity, channelName, chatID)
-	if err != nil {
-		return SessionSelector{}, err
-	}
+// dispatchCancelResolved pushes the "/cancel" message for an ALREADY resolved
+// session (the caller resolves first so it can snapshot the turn's run-done
+// channel — ActiveRunDone — BEFORE the cancel is dispatched; the channel it
+// waits on must belong to the turn it cancelled, not to a later turn that may
+// start in between).
+func (wc *WebChannel) dispatchCancelResolved(ctx context.Context, identity inboundIdentity, sel SessionSelector) error {
 	msgSenderID := identity.SenderID
 	msgSenderName := identity.SenderName
 	if identity.IsCLI {
@@ -426,7 +427,7 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 	// cancelled=true) consistent with the WebSocket transport.
 	cancelMeta["ask_user_cancel"] = "true"
 	withPhysicalChannel(cancelMeta, identity.IsCLI)
-	_, err = wc.enqueueInbound(ctx, bus.InboundMessage{
+	_, err := wc.enqueueInbound(ctx, bus.InboundMessage{
 		Channel:    sel.Channel,
 		SenderID:   msgSenderID,
 		SenderName: msgSenderName,
@@ -438,7 +439,7 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 		From:       bus.NewIMAddress(sel.Channel, msgSenderID),
 		Metadata:   cancelMeta,
 	})
-	return sel, err
+	return err
 }
 
 func (wc *WebChannel) enqueueInbound(ctx context.Context, message bus.InboundMessage) (bus.DeliveryResult, error) {

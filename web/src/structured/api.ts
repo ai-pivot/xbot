@@ -3,7 +3,9 @@ import type { InboxResult, StructuredAnswerInput, StructuredMessage } from './ty
 
 /** 统一读取 {ok,data,error} 信封的 GET。 */
 async function getAPI<T>(endpoint: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(endpoint, { headers: { Accept: 'application/json' }, signal })
+  // no-store：收件箱/消息流是实时数据，浏览器 HTTP 缓存会把"刚答完还在"的旧结果
+  // 协议式地喂回来（实测：答完后卡片还挂着）。
+  const response = await fetch(endpoint, { headers: { Accept: 'application/json' }, signal, cache: 'no-store' })
   type Envelope = { ok?: boolean; data?: T; error?: { code?: string; message?: string } }
   let envelope: Envelope
   try {

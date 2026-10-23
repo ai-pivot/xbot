@@ -504,6 +504,18 @@ type Agent struct {
 	cancelStateMu sync.Mutex
 	chatCancelCh  sync.Map
 
+	// runDoneChs: key: "channel:chatID" -> chan struct{}，在该会话**当前轮**的收尾
+	// （processMessage 已返回、cancel 注册已摘除）时 close。
+	//
+	// ⛔ 存在的唯一理由（用户 2026-10-22：「cancel 只要 api 返回了一定必须已经取消
+	// 成功，它是阻塞的」）：旧实现里 interceptCancel 只把信号塞进 chatCancelCh 就
+	// 立刻 return，HTTP 已经回了 "已取消"，而 turn 还在跑当前工具 —— 客户端看到的是
+	// "取消了但没停"。⇒ 需要一个"这一轮真的结束了"的**权威信号**，让取消方阻塞到
+	// 它关闭（见 ActiveRunDone）。
+	// 与 chatCancelCh 同生共死：registerActiveCancelState 建，finishActiveCancelState
+	// / cleanupStaleCancelState 摘除并 close。
+	runDoneChs sync.Map
+
 	// runGen：每个 chat 最近一次 Run 的**轮次代号**（单调递增）。
 	// ⛔ 存在的唯一理由（用户 2026-10-17 P0「后端乱发 session_idle」）：回合收尾的 defer 会在
 	//   processMessage 返回后**无条件**发 session(idle)。若用户在前一轮收尾前就发来下一条消息
@@ -1719,6 +1731,9 @@ func (a *Agent) emitSessionIdleIfCurrent(chatKey, channel, chatID, senderID stri
 func (a *Agent) registerActiveCancelState(cancelKey string, cancelCh chan struct{}, reqCancel context.CancelFunc) bool {
 	a.cancelStateMu.Lock()
 	defer a.cancelStateMu.Unlock()
+	// 新一轮 = 新的 run-done 通道。绝不复用上一轮的（那条已经 close，等待方会
+	// 立刻返回并谎报"已取消"）。
+	a.runDoneChs.Store(cancelKey, make(chan struct{}))
 	a.chatCancelCh.Store(cancelKey, cancelCh)
 	_, pending := a.pendingCancel.LoadAndDelete(cancelKey)
 	if pending {
@@ -1736,7 +1751,43 @@ func (a *Agent) finishActiveCancelState(cancelKey string, reqCtx context.Context
 	wasCancelled := reqCtx.Err() == context.Canceled
 	a.chatCancelCh.Delete(cancelKey)
 	reqCancel()
+	a.closeRunDone(cancelKey)
 	return wasCancelled
+}
+
+// closeRunDone 关闭该会话当前轮的 run-done 通道（幂等：重复 close 会 panic，
+// 所以必须先 LoadAndDelete 拿到"这一次"的独占所有权）。
+// 调用方必须持有 cancelStateMu（与 chatCancelCh 的摘除保持同一临界区）。
+func (a *Agent) closeRunDone(cancelKey string) {
+	if v, ok := a.runDoneChs.LoadAndDelete(cancelKey); ok {
+		if done, ok := v.(chan struct{}); ok {
+			close(done)
+		}
+	}
+}
+
+// ActiveRunDone 返回该会话**当前轮**的完成信号：通道关闭 ⇒ 这一轮真的跑完了
+// （processMessage 返回、cancel 注册已摘除）。ok=false ⇒ 当前没有活跃轮次，
+// 此时 /cancel 是无操作，调用方必须立即返回成功（不等待）。
+//
+// 这是唯一被授权回答"取消是否已经生效"的接口：chatCancelCh 的存在只说明
+// "有活跃轮次"，不代表取消已经生效 —— 生效点在这里关闭的那一刻。
+func (a *Agent) ActiveRunDone(ch, chatID string) (<-chan struct{}, bool) {
+	if ch == "" || chatID == "" {
+		return nil, false
+	}
+	cancelKey := ch + ":" + chatID
+	a.cancelStateMu.Lock()
+	defer a.cancelStateMu.Unlock()
+	if _, active := a.chatCancelCh.Load(cancelKey); !active {
+		return nil, false
+	}
+	if v, ok := a.runDoneChs.Load(cancelKey); ok {
+		if done, ok := v.(chan struct{}); ok {
+			return done, true
+		}
+	}
+	return nil, false
 }
 
 // cleanupStaleCancelState —— chatProcessLoop 的「最后防线」兜底（2026-10-01 cancel 无效事故）。
@@ -1757,10 +1808,13 @@ func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, last
 	a.cancelStateMu.Lock()
 	chVal, stillRegistered := a.chatCancelCh.LoadAndDelete(chatKey)
 	a.pendingCancel.Delete(chatKey)
-	a.cancelStateMu.Unlock()
 	if !stillRegistered {
+		a.cancelStateMu.Unlock()
 		return // 正常路径：keepRunning 收尾已清 —— 零副作用
 	}
+	// Run 无声消失也要释放 run-done 等待方，否则 /api/cancel 只能等满超时。
+	a.closeRunDone(chatKey)
+	a.cancelStateMu.Unlock()
 	log.WithField("cancel_key", chatKey).Warn(
 		"Stale cancel state after chatProcessLoop exit — self-healing (Run vanished without teardown)")
 	if ch, ok := chVal.(chan struct{}); ok {

@@ -10,6 +10,7 @@ import (
 
 	"xbot/agent"
 	"xbot/channel/web"
+	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -23,7 +24,10 @@ import (
 //   3. 幂等落库（AppendStructuredMessage / AnswerAskUser）；
 //   4. 投递：answer/decision/command/text 进入 agent 插队优先队列
 //      （运行中在 iteration 边界注入，空闲时开启新 turn）；
-//   5. 返回可渲染消息，由 web 层广播 structured_message。
+//   5. 返回可渲染消息，由 web 层广播 structured_message；
+//   6. 原文落库**成功之后**，把这条消息的摘要写进主库 activity_index —— 跨会话
+//      活动视图（/api/activity）因此只打主库一张表，不必逐会话库打开。索引是
+//      派生物：写失败只记日志，绝不回滚已落库的原消息。
 
 // structuredPriority 返回 kind 对应的插队优先级（设计 §9.2）。
 func structuredPriority(kind string) int {
@@ -271,6 +275,50 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		return svc, sess.TenantID(), nil
 	}
 
+	// activityIdx 是主库活动索引（跨会话活动流的唯一写入口）。PG 后端没有这张
+	// 表 ⇒ nil，Insert 静默跳过（视图退化为空列表，而不是 500）。
+	var activityIdx *sqlite.ActivityIndex
+	if ms := ag.MultiSession(); ms != nil && ms.DB() != nil {
+		activityIdx = sqlite.NewActivityIndex(ms.DB().Conn())
+	}
+
+	// indexActivity 把一条**已落库**的结构化消息摘要写进主库索引。
+	//
+	// 时序铁律：只在原文写成功之后调用（索引可以有延迟，但绝不能出现「索引里有、
+	// 原文没有」—— 用户点进去会 404）。普通 text 不入索引（见 ActivityKindIndexed）。
+	indexActivity := func(tenantID int64, sel web.SessionSelector, row *sqlite.StructuredMessage, summary string) {
+		if activityIdx == nil || row == nil {
+			return
+		}
+		kind := row.Kind
+		if kind == "" {
+			kind = sqlite.StructuredKindText
+		}
+		if !sqlite.ActivityKindIndexed(kind) {
+			return
+		}
+		if strings.TrimSpace(summary) == "" {
+			summary = row.Content
+		}
+		err := activityIdx.Insert(sqlite.ActivityItem{
+			TenantID:   tenantID,
+			ChatID:     sel.ChatID,
+			Channel:    sel.Channel,
+			MessageID:  row.ID,
+			Kind:       kind,
+			SenderID:   row.SenderID,
+			SenderName: row.SenderName,
+			Summary:    summary,
+			CreatedAt:  sqlite.FormatActivityTime(row.CreatedAt),
+		})
+		if err != nil {
+			// 派生物失败不影响主流程：丢掉一行索引只是少一条活动，原消息仍在会话库。
+			log.WithError(err).WithFields(log.Fields{
+				"chat_id": sel.ChatID, "message_id": row.ID, "kind": kind,
+			}).Warn("Failed to index structured message into activity_index")
+		}
+	}
+
 	appendFn = func(senderID string, sel web.SessionSelector, input protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
 		svc, tenantID, err := sessionOf(sel)
 		if err != nil {
@@ -279,7 +327,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		// kind=answer 与 /api/answer 共用同一套 CAS 闭环（见 answerViaMessage）：
 		// 否则 /api/message 写一行 answer 却不会把 ask_user 置 answered，收件箱永远不收敛。
 		if input.Kind == "answer" {
-			return answerViaMessage(senderID, sel, svc, tenantID, ag, input)
+			return answerViaMessage(senderID, sel, svc, tenantID, ag, activityIdx, input)
 		}
 		createdAt, err := parseStructuredCreatedAt(input.CreatedAt)
 		if err != nil {
@@ -320,6 +368,8 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		if err != nil {
 			return nil, false, err
 		}
+		// payload.summary 优先（发送方自己给的一句话结论），否则退回正文前 200 字符。
+		indexActivity(tenantID, sel, row, structuredPayloadString(input.Payload, "summary"))
 		deliver := created && structuredDeliverable(input.Kind)
 		item := &agent.StructuredQueueItem{
 			ID:            fmt.Sprintf("structured:%d", id),
@@ -351,7 +401,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		if err != nil {
 			return nil, false, err
 		}
-		return applyStructuredAnswer(senderID, sel, svc, tenantID, ag, input)
+		return applyStructuredAnswer(senderID, sel, svc, tenantID, ag, activityIdx, input)
 	}
 
 	inboxFn = func(sel web.SessionSelector, cursor int64, limit int) ([]protocol.StructuredMessage, bool, int64, error) {
@@ -475,7 +525,7 @@ func parseStructuredCreatedAt(raw string) (time.Time, error) {
 //
 // 与 /api/answer 的唯一区别是寻址方式：这里用 reply_to（message_id）定位问题行，
 // correlation_id 从目标行派生（客户端显式传了就必须一致）。
-func answerViaMessage(senderID string, sel web.SessionSelector, svc *sqlite.SessionService, tenantID int64, ag *agent.Agent, input protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
+func answerViaMessage(senderID string, sel web.SessionSelector, svc *sqlite.SessionService, tenantID int64, ag *agent.Agent, activityIdx *sqlite.ActivityIndex, input protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
 	targetID, perr := strconv.ParseInt(strings.TrimSpace(input.ReplyTo), 10, 64)
 	if perr != nil || targetID <= 0 {
 		return nil, false, fmt.Errorf("invalid: reply_to must be the ask_user message_id for kind=answer")
@@ -497,7 +547,7 @@ func answerViaMessage(senderID string, sel web.SessionSelector, svc *sqlite.Sess
 	if err != nil {
 		return nil, false, err
 	}
-	return applyStructuredAnswer(senderID, sel, svc, tenantID, ag, protocol.StructuredAnswerInput{
+	return applyStructuredAnswer(senderID, sel, svc, tenantID, ag, activityIdx, protocol.StructuredAnswerInput{
 		CorrelationID:  target.CorrelationID,
 		Answers:        answers,
 		Cancelled:      cancelled,
@@ -543,7 +593,7 @@ func answersFromPayload(payload map[string]any) ([]protocol.StructuredAnswer, bo
 
 // applyStructuredAnswer 是 /api/answer 与 /api/message(kind=answer) 的共同闭环：
 // 校验答案形状 → CAS 置位目标 ask_user → 写 answer 行 → 投递 agent。
-func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc *sqlite.SessionService, tenantID int64, ag *agent.Agent, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error) {
+func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc *sqlite.SessionService, tenantID int64, ag *agent.Agent, activityIdx *sqlite.ActivityIndex, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error) {
 	// 校验答案形状（multi_select=false 时 option_ids ≤ 1 等）。
 	if err := validateAskUserAnswers(svc, tenantID, input); err != nil {
 		return nil, false, err
@@ -564,6 +614,28 @@ func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc *sqlite
 	if err != nil {
 		return nil, false, err
 	}
+	// 答案行同样是结构化消息：落库成功后进活动索引（summary 用回答正文）。
+	indexAnswer := func() {
+		if activityIdx == nil || stored == nil {
+			return
+		}
+		if err := activityIdx.Insert(sqlite.ActivityItem{
+			TenantID:   tenantID,
+			ChatID:     sel.ChatID,
+			Channel:    sel.Channel,
+			MessageID:  stored.ID,
+			Kind:       sqlite.StructuredKindAnswer,
+			SenderID:   stored.SenderID,
+			SenderName: stored.SenderName,
+			Summary:    text,
+			CreatedAt:  sqlite.FormatActivityTime(stored.CreatedAt),
+		}); err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"chat_id": sel.ChatID, "message_id": stored.ID, "kind": "answer",
+			}).Warn("Failed to index answer into activity_index")
+		}
+	}
+	indexAnswer()
 	if created {
 		ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
 			ID:            fmt.Sprintf("answer:%d", id),

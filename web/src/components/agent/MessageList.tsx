@@ -1731,9 +1731,25 @@ export const MessageList = memo(function MessageList({
             <span className="text-xs text-text-muted">{t('agent.loading')}</span>
           </div>
         )}
+        {/* 后端原始报错不直接印在页面上（用户 2026-10-22）：
+            先说人话「这段历史没加载出来」，原始串收进默认折叠的技术详情。 */}
         {error && (
-          <div className="mx-auto my-4 max-w-md rounded-md border border-status-error/40 bg-status-error/10 p-3 text-sm text-status-error">
-            {error}
+          <div
+            data-testid="history-error"
+            className="mx-auto my-4 max-w-md rounded-md border border-lane-waiting/40 bg-lane-waiting/8 p-3 text-sm"
+          >
+            <div className="font-medium text-text-primary">这段历史没有加载出来</div>
+            <div className="mt-0.5 text-xs text-text-secondary">
+              可以切到别的会话再切回来重试；如果一直这样，展开下面的技术详情反馈给管理员。
+            </div>
+            <details className="mt-1.5">
+              <summary className="cursor-pointer select-none text-[10px] text-text-muted hover:text-text-secondary">
+                技术详情
+              </summary>
+              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-bg-tertiary p-2 font-mono text-[9.5px] leading-4 text-text-secondary">
+                {error}
+              </pre>
+            </details>
           </div>
         )}
         {rows.length === 0 && !loading && !error && (

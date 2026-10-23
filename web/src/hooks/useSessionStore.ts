@@ -315,13 +315,13 @@ function persistActiveChannel(channel: string | null): void {
 
 /* ── API responses ── */
 
-interface ListSessionTreeResponse {
+export interface ListSessionTreeResponse {
   sessions?: RawTreeNode[]
   orphan_subagents?: RawChat[]
   has_more?: boolean
   next_offset?: number
 }
-interface RawChat {
+export interface RawChat {
   chat_id: string
   channel?: string
   label: string
@@ -343,7 +343,7 @@ interface RawChat {
   synthetic?: boolean
   children?: RawChat[]
 }
-type RawTreeNode = RawChat
+export type RawTreeNode = RawChat
 interface CreateChatResponse {
   chat_id?: string
 }

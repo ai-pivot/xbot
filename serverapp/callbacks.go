@@ -454,6 +454,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetActiveProgressFolded(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
 	}
+	// Blocking cancel (2026-10-22): POST /api/cancel must not answer "cancelled"
+	// while the turn is still running a tool — it waits on this channel.
+	callbacks.ActiveRunDone = ag.ActiveRunDone
 	// 状态机权威读取（STATE-MODEL §2.4/§3.5）：按对象拉权威，替代帧重放。
 	// 三个端点共用同一批只读访问器；属主校验在 web 层（resolveAPISession）。
 	callbacks.IterationBlock = func(channel, chatID string, turnID uint64, iteration int) (*protocol.IterationBlock, error) {
@@ -1141,6 +1144,52 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent) web.WebCallbacks {
 	callbacks.StructuredInbox = structuredInbox
 	callbacks.StructuredCount = structuredCount
 	callbacks.StructuredMessages = structuredList
+
+	// ─── 跨会话活动流（通信视图性能重构）───
+	// 只绑主库连接（webSQL）。PG 后端没有 activity_index/interactive_agents 的
+	// 兼容实现 ⇒ 两个回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
+	if webSQL != nil {
+		activityIdx := sqlite.NewActivityIndex(webSQL)
+		agentSvc := sqlite.NewInteractiveAgentService(webSQL)
+		callbacks.ActivityList = func(limit int, within time.Duration, kinds []string) ([]web.ActivityEntry, bool, error) {
+			rows, hasMore, err := activityIdx.List(limit, within, kinds)
+			if err != nil {
+				return nil, false, err
+			}
+			out := make([]web.ActivityEntry, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, web.ActivityEntry{
+					ChatID:     r.ChatID,
+					Channel:    r.Channel,
+					MessageID:  r.MessageID,
+					Kind:       r.Kind,
+					SenderName: r.SenderName,
+					Summary:    r.Summary,
+					CreatedAt:  r.CreatedAt,
+				})
+			}
+			return out, hasMore, nil
+		}
+		callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
+			cutoff := time.Now().Add(-sqlite.NormalizeActivityWindow(within))
+			rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]web.AgentActivityEntry, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, web.AgentActivityEntry{
+					AgentKey:    r.AgentKey,
+					RoleName:    r.RoleName,
+					Instance:    r.Instance,
+					Status:      r.Status,
+					UpdatedAt:   r.UpdatedAt,
+					LastReplyAt: r.LastReplyAt,
+				})
+			}
+			return out, nil
+		}
+	}
 
 	return callbacks
 }

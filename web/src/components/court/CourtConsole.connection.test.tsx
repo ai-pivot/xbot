@@ -41,7 +41,7 @@ beforeEach(() => { stubCanvas2D() })
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('CourtConsole 连接状态', () => {
-  it('后端在线但没有可见群组 ⇒ 显示「已连接」+ 空态原因，绝不显示「离线」', async () => {
+  it('后端在线但没有数据 ⇒ 显示「已连接」+ 空态提示（不提「群组」），绝不显示「离线」', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ ok: true, data: { groups: [] }, error: null })))
 
     render(<CourtConsole />)
@@ -52,7 +52,10 @@ describe('CourtConsole 连接状态', () => {
     expect(screen.queryByText('离线')).toBeNull()
 
     const reason = await screen.findByTestId('court-empty-reason')
-    expect(reason).toHaveTextContent('当前账号还没有可见群组')
+    // 2026-10-22 文案收尾：只说事实 + 预期，不提「群组」
+    expect(reason).toHaveTextContent('已连接。当前没有可展示的通信数据')
+    expect(reason).toHaveTextContent('下面任一视图都会在你产生第一条消息后自动更新')
+    expect(reason).not.toHaveTextContent('群组')
   })
 
   it('请求真的失败（HTTP 500）⇒ 才显示「离线」并给出错误原因', async () => {
@@ -98,5 +101,26 @@ describe('CourtConsole 连接状态', () => {
     expect(badge).toHaveTextContent('已连接')
     expect(screen.queryByTestId('court-empty-reason')).toBeNull()
     await waitFor(() => expect(screen.getAllByText(/court\.gongbu\/main/).length).toBeGreaterThan(0))
+  })
+})
+
+describe('CourtConsole 示例模式（/court-demo）', () => {
+  it('顶部有「示例数据」角标，且示例部门只用真实编制名', async () => {
+    render(<CourtConsole demo />)
+
+    const badge = await screen.findByTestId('court-sample-badge')
+    expect(badge).toHaveTextContent('示例数据')
+
+    const lanes = [...document.querySelectorAll('[data-lane]')].map((e) => e.getAttribute('data-lane') ?? '')
+    expect(lanes.length).toBeGreaterThan(0)
+    // 真实编制：首辅 + 工部/户部/翰林院/兵部/都察院/司礼监/门下省
+    const real = /court\.(gongbu|hubu|hanlin|bingbu|ducha|sili|menxia)/
+    for (const lane of lanes) {
+      expect(lane === 'web-1' || real.test(lane)).toBe(true)
+    }
+    const text = document.body.textContent ?? ''
+    for (const fake of ['吏部', '礼部', '刑部']) {
+      expect(text).not.toContain(fake)
+    }
   })
 })

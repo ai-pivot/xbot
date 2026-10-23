@@ -80,7 +80,7 @@ type DB struct {
 	lockFile *os.File
 }
 
-const schemaVersion = 76
+const schemaVersion = 77
 const historyLockStripes = 64
 
 // dbLockEntry 是进程内对某个数据库文件持有的 flock，带引用计数。
@@ -227,7 +227,7 @@ func Open(path string) (*DB, error) {
 
 	// 启动兜底（幂等）：补建「不在迁移链里、可能整库都没有」的表 —— oauth_tokens 与
 	// agent 记忆表（xbot_short_term_memories / xbot_long_term_memories）。本地/生产库
-	// 都已是 v76，initSchema 在 version == schemaVersion 时直接 return，不会补这类表，
+	// 都已是当前版本，initSchema 在 version == schemaVersion 时直接 return，不会补这类表，
 	// 所以必须在这里补；否则 OAuth 登录/记忆功能会撞 no such table。
 	// 铁律：ensureStartupSchema **不返回错误**，只打 WARN —— 启动路径永不阻塞。
 	{

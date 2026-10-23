@@ -22,8 +22,9 @@ export interface CourtStatus {
 
 /** 在线但无数据的原因；有数据返回 null。 */
 export function emptyReasonFor(groupCount: number, messageCount: number): string | null {
-  if (groupCount === 0) return '当前账号还没有可见群组（需先在群里发过言/被加入群）'
-  if (messageCount === 0) return '本群在当前会话视角还没有消息'
+  // 文案不提「群组 / 群」：那是内部数据模型，用户看到的只是「没有数据」。
+  if (groupCount === 0) return '当前账号下还没有可见的会话或消息'
+  if (messageCount === 0) return '这个会话还没有消息'
   return null
 }
 

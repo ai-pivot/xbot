@@ -8,7 +8,7 @@ import (
 )
 
 // createSchema creates the initial database schema at the current schemaVersion.
-// The DDL includes ALL tables/columns/indexes that migrations v1→v69 would add,
+// The DDL includes ALL tables/columns/indexes that migrations v1→v77 would add,
 // so fresh databases skip the migration chain entirely. This is critical on
 // Windows where running every migration per test DB causes CI timeouts (600s+).
 //
@@ -157,7 +157,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (76);
+INSERT INTO schema_version (version) VALUES (77);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -412,11 +412,42 @@ CREATE TABLE IF NOT EXISTS interactive_agents (
     parent_agent_id TEXT NOT NULL DEFAULT '',
     last_error      TEXT NOT NULL DEFAULT '',
     last_reply      TEXT NOT NULL DEFAULT '',
+    -- v77: 最近一次「回复文本发生变化」的时刻（空 = 从未回复）。活动视图按它显示
+    -- 「这个子代理最后一次真正说话是什么时候」。
+    last_reply_at   TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_ia_parent ON interactive_agents(parent_channel, parent_chat_id);
 CREATE INDEX IF NOT EXISTS ix_ia_status ON interactive_agents(status);
+CREATE INDEX IF NOT EXISTS ix_ia_updated ON interactive_agents(updated_at DESC);
+-- v77: 跨会话「活动流」索引（通信视图性能重构）。
+--
+-- 铁律：结构化消息本体只落会话分库（one session one DB）。跨会话看消息若逐库
+-- 打开，代价随会话数线性恶化（40 会话 ≈ 40 次 open + 8000 行）。这张表在主库
+-- 冗余一份「可展示的最小摘要」，视图只打主库一张表，与会话数无关。
+--
+-- 只收结构化 kind（report/ask_user/answer/decision/command/event），普通 text
+-- 不入索引 —— 否则索引会被聊天文本撑成第二个消息库。
+-- created_at 固定宽度 UTC（2006-01-02T15:04:05.000000000Z）：字符串序 == 时间序，
+-- 因此 ORDER BY created_at DESC 可以直走索引（不用函数索引/解析）。
+CREATE TABLE IF NOT EXISTS activity_index (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id   INTEGER NOT NULL,
+    chat_id     TEXT    NOT NULL,
+    channel     TEXT    NOT NULL,
+    message_id  INTEGER NOT NULL,
+    kind        TEXT    NOT NULL,
+    sender_id   TEXT    NOT NULL DEFAULT '',
+    sender_name TEXT    NOT NULL DEFAULT '',
+    summary     TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,
+    UNIQUE(tenant_id, chat_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_index(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_chat   ON activity_index(chat_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_kind   ON activity_index(kind, created_at DESC);
+
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
