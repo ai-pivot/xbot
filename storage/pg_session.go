@@ -262,6 +262,44 @@ func (s *pgSessionStore) GetLastUserMessageContent(tenantID int64) (string, erro
 	return content, err
 }
 
+// GetLastAssistantPreview returns the truncated text of the most recent FINAL
+// assistant reply. The reply text lives in iteration_history: the assistant
+// rows in session_messages are frequently empty placeholders (tool-only
+// iterations), which made a session_messages-based query return "" and the
+// push body fall back to "本轮回复已完成".
+func (s *pgSessionStore) GetLastAssistantPreview(tenantID int64, maxRunes int) (string, error) {
+	ctx := context.Background()
+	var content string
+	err := s.pool.QueryRow(ctx,
+		`SELECT content FROM iteration_history
+		 WHERE tenant_id = $1 AND content <> ''
+		   AND turn_id = (SELECT COALESCE(MAX(turn_id), 0) FROM iteration_history WHERE tenant_id = $1)
+		 ORDER BY iteration DESC LIMIT 1`, tenantID).Scan(&content)
+	if err == pgx.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get last assistant preview: %w", err)
+	}
+	return truncateRunes(content, maxRunes), nil
+}
+
+// truncateRunes cuts s to at most max runes, appending "..." when cut.
+// maxRunes <= 0 means no truncation.
+func truncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	if maxRunes <= 3 {
+		return string(r[:maxRunes])
+	}
+	return string(r[:maxRunes-3]) + "..."
+}
+
 func (s *pgSessionStore) HasAssistantReplyAfterLastUser(tenantID int64) (bool, error) {
 	ctx := context.Background()
 	var count int

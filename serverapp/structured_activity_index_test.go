@@ -42,7 +42,7 @@ func newActivityAgent(t *testing.T) *agent.Agent {
 
 func TestStructuredAppendIndexesActivity(t *testing.T) {
 	ag := newActivityAgent(t)
-	callbacks := buildWebCallbacks(&config.Config{}, ag)
+	callbacks := buildWebCallbacks(&config.Config{}, ag, nil) // nil = push 层未启用
 	if callbacks.StructuredAppend == nil {
 		t.Fatal("StructuredAppend callback is nil")
 	}

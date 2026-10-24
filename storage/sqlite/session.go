@@ -341,6 +341,34 @@ ORDER BY id DESC LIMIT 1
 	return content, nil
 }
 
+// GetLastAssistantPreview returns the truncated text of the most recent FINAL
+// assistant reply. The reply text lives in iteration_history: the assistant
+// rows in session_messages are frequently empty placeholders (tool-only
+// iterations), which made a session_messages-based query return "" and the
+// push body fall back to "本轮回复已完成".
+func (s *SessionService) GetLastAssistantPreview(tenantID int64, maxRunes int) (string, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return "", err
+	}
+	var content string
+	err = conn.QueryRow(`
+	SELECT content FROM iteration_history
+	WHERE tenant_id = ? AND content <> ''
+  AND turn_id = (SELECT COALESCE(MAX(turn_id), 0) FROM iteration_history WHERE tenant_id = ?)
+	ORDER BY iteration DESC LIMIT 1`, tenantID, tenantID).Scan(&content)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get last assistant preview: %w", err)
+	}
+	return truncate(content, maxRunes), nil
+}
+
 // HasAssistantReplyAfterLastUser checks whether the last user message in
 // this tenant's session already has a subsequent final assistant reply (no
 // tool calls). Used by resume flows to detect turns that completed naturally

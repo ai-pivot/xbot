@@ -24,6 +24,7 @@ import (
 	"xbot/oauth"
 	"xbot/oauth/providers"
 	"xbot/plugin"
+	"xbot/push"
 	"xbot/registry"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -285,9 +286,10 @@ func GetPluginChannelConfig(cfg *config.Config, name string) map[string]string {
 // channel and its callbacks read user settings, tenants, sessions and web-user
 // auth through it, so the same wiring serves SQLite and PG with no raw SQL
 // handle threaded through.
-func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, store storage.Storage, workDir string) (*feishu.FeishuChannel, *web.WebChannel, error) {
+func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.MessageBus, ag *agent.Agent, store storage.Storage, workDir string) (*feishu.FeishuChannel, *web.WebChannel, *push.Service, error) {
 	var feishuCh *feishu.FeishuChannel
 	var webCh *web.WebChannel
+	pushSvc := push.NewService(cfg.Push, store)
 	if cfg.Feishu.Enabled {
 		feishuCh = feishu.NewFeishuChannel(feishu.FeishuConfig{
 			AppID:             cfg.Feishu.AppID,
@@ -356,7 +358,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			} else {
 				log.WithField("provider", provName).Info("OSS provider configured")
 			}
-			webCh.SetCallbacks(buildWebCallbacks(cfg, ag))
+			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, pushSvc))
 			// Wire BgTaskManager real-time output push → WebChannel bg_task_output
 			// WS events. BackgroundPanel subscribes to these for live xterm updates
 			// (replaces 2s polling). sessionKey format is "channel:chatID".
@@ -487,7 +489,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 		}
 	}
 
-	return feishuCh, webCh, nil
+	return feishuCh, webCh, pushSvc, nil
 }
 
 // loadServerConfig resolves the server configuration selected by --config.
@@ -877,9 +879,12 @@ func Run(args []string) error {
 		store = ms.Store()
 	}
 
-	feishuCh, webCh, err := registerChannels(disp, cfg, msgBus, ag, store, workDir)
+	feishuCh, webCh, pushSvc, err := registerChannels(disp, cfg, msgBus, ag, store, workDir)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to register channels")
+	}
+	if pushSvc != nil {
+		defer pushSvc.Close()
 	}
 
 	// channelReconfigureFn was moved before InitServer call and passed as parameter.

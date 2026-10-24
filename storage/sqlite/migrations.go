@@ -518,50 +518,63 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
-	// v74: 群组元数据（Agent 通信指挥室）+ 会话库群消息信封列。
-	// 主库建 groups/group_members；会话库在 OpenSessionDB 的幂等 DDL 里补齐
-	// group_id/sender_* 列与 ix_sm_group_cursor 索引（主库 v72 后无消息表）。
+	// v74: 统一推送层的投递目标表。老库与新库走同一张 CREATE TABLE IF NOT EXISTS。
 	if from < 74 {
 		if err := migrateV73ToV74(db); err != nil {
 			return fmt.Errorf("migrate to v74: %w", err)
 		}
 	}
 
-	// v75: 主库遗留 session_messages 补结构化消息列（迁移期 migrated=0 的会话仍
-	// 从主库读）。v72 之后主库通常已无该表 ⇒ 表不存在时静默跳过（幂等）。
+	// v75: 推送层运行配置（单行加密 JSON blob）。
 	if from < 75 {
 		if err := migrateV74ToV75(db); err != nil {
 			return fmt.Errorf("migrate to v75: %w", err)
 		}
 	}
 
-	// v76: interactive SubAgent 注册表。进程重启后 interactiveSubAgents 这个
-	// sync.Map 会清空，导致「重启前的子代理叫不醒」（SendMessage 报 unknown
-	// channel）。这张表持久化每个子代理的可寻址身份与运行状态，主会话进入
-	// turn 时据此递归重建整棵子代理树。
+	// v76: 群组元数据 + 会话库群消息信封列。
+	// 主库建 groups/group_members；会话库在 OpenSessionDB 的幂等 DDL 里补齐
+	// group_id/sender_* 列与 ix_sm_group_cursor 索引（主库 v72 后无消息表）。
 	if from < 76 {
 		if err := migrateV75ToV76(db); err != nil {
 			return fmt.Errorf("migrate to v76: %w", err)
 		}
 	}
 
-	// v77: 主库活动流索引表（通信视图性能重构）。会话按 chat 分库（one session
-	// one DB）后，跨会话读消息必须逐库打开，会话数一涨就线性恶化。activity_index
-	// 在主库冗余一份「结构化消息摘要」，视图只打主库一张表。
-	// 幂等：CREATE TABLE/INDEX IF NOT EXISTS —— 崩溃在置 77 之前重跑安全。
+	// v77: 主库遗留 session_messages 补结构化消息列（迁移期 migrated=0 的会话仍
+	// 从主库读）。v72 之后主库通常已无该表 ⇒ 表不存在时静默跳过（幂等）。
 	if from < 77 {
 		if err := migrateV76ToV77(db); err != nil {
 			return fmt.Errorf("migrate to v77: %w", err)
 		}
 	}
 
-	// master #444：迁移链只负责「版本差异」带来的变更；新加入 schema 的表（不伴随
-	// 版本号变化）由 ensureAdditiveTables 补齐，老库和刚迁移完的库走同一条收尾路径
-	// （当前内容就是 oauth_tokens，与本分支 Open 末尾的 ensureStartupSchema 幂等叠加）。
+	// v78: interactive SubAgent 注册表。进程重启后 interactiveSubAgents 这个
+	// sync.Map 会清空，导致「重启前的子代理叫不醒」（SendMessage 报 unknown
+	// channel）。这张表持久化每个子代理的可寻址身份与运行状态，主会话进入
+	// turn 时据此递归重建整棵子代理树。
+	if from < 78 {
+		if err := migrateV77ToV78(db); err != nil {
+			return fmt.Errorf("migrate to v78: %w", err)
+		}
+	}
+
+	// v79: 主库活动流索引表（跨会话视图性能）。会话按 chat 分库（one session
+	// one DB）后，跨会话读消息必须逐库打开，会话数一涨就线性恶化。activity_index
+	// 在主库冗余一份「结构化消息摘要」，视图只打主库一张表。
+	// 幂等：CREATE TABLE/INDEX IF NOT EXISTS —— 崩溃在置 79 之前重跑安全。
+	if from < 79 {
+		if err := migrateV78ToV79(db); err != nil {
+			return fmt.Errorf("migrate to v79: %w", err)
+		}
+	}
+
+	// 迁移链只负责「版本差异」带来的变更；新加入 schema 的表（不伴随版本号变化）
+	// 由 ensureAdditiveTables 补齐，这样老库和刚迁移完的库走的是同一条收尾路径。
 	return db.ensureAdditiveTables()
 }
 
-// migrateV76ToV77 建立 activity_index（跨会话活动流索引）。
+// migrateV78ToV79 建立 activity_index（跨会话活动流索引）。
 //
 // 为什么是主库的一张冗余表，而不是「读的时候逐会话库聚合」：会话库是 one
 // session one DB（v71/v72），聚合 N 个会话 = N 次 open + N 次扫表，代价与会话
@@ -575,7 +588,7 @@ func (db *DB) migrateSchema(from int) error {
 // 时间序，ORDER BY created_at DESC 才能直走 idx_activity_created，而不用在查询
 // 里做函数转换（那会让索引失效，回到全表扫）。⛔ 不要改用 canonicalTimestamp：
 // 它写本地偏移，DST 切换处字符串序与真实时间序可能相反。
-func migrateV76ToV77(db *DB) error {
+func migrateV78ToV79(db *DB) error {
 	conn := db.Conn()
 	stmts := []struct{ ddl, what string }{
 		{`CREATE TABLE IF NOT EXISTS activity_index (
@@ -625,14 +638,14 @@ func migrateV76ToV77(db *DB) error {
 			return fmt.Errorf("create ix_ia_updated: %w", err)
 		}
 	}
-	if _, err := conn.Exec("UPDATE schema_version SET version = 77"); err != nil {
+	if _, err := conn.Exec("UPDATE schema_version SET version = 79"); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
-	log.Info("Database migrated to v77: activity_index (cross-session activity feed)")
+	log.Info("Database migrated to v79: activity_index (cross-session activity feed)")
 	return nil
 }
 
-// migrateV75ToV76 建立 interactive_agents（interactive SubAgent 注册表）。
+// migrateV77ToV78 建立 interactive_agents（interactive SubAgent 注册表）。
 //
 // 只存「重建所需的最小事实」：
 //   - 可寻址身份：agent_key（= AgentChannel 名，也是 SendMessage 的地址）、parent_*
@@ -642,7 +655,7 @@ func migrateV76ToV77(db *DB) error {
 //
 // 不存 messages（已在各子代理自己的 TenantSession 里）、不存 cfg（运行时对象，
 // 恢复时用 role 定义重新构建）。
-func migrateV75ToV76(db *DB) error {
+func migrateV77ToV78(db *DB) error {
 	conn := db.Conn()
 	if _, err := conn.Exec(`
 		CREATE TABLE IF NOT EXISTS interactive_agents (
@@ -676,27 +689,27 @@ func migrateV75ToV76(db *DB) error {
 		`CREATE INDEX IF NOT EXISTS ix_ia_status ON interactive_agents(status)`); err != nil {
 		return fmt.Errorf("create ix_ia_status: %w", err)
 	}
-	if _, err := conn.Exec("UPDATE schema_version SET version = 76"); err != nil {
+	if _, err := conn.Exec("UPDATE schema_version SET version = 78"); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
-	log.Info("Database migrated to v76: interactive_agents (sub-agent registry for restart recovery)")
+	log.Info("Database migrated to v78: interactive_agents (sub-agent registry for restart recovery)")
 	return nil
 }
 
-// migrateV74ToV75 给主库遗留 session_messages 补 v5 结构化消息列。
+// migrateV76ToV77 给主库遗留 session_messages 补 v5 结构化消息列。
 // 会话库自己的列由 OpenSessionDB 的幂等 DDL/ALTER 补齐；这里只处理主库旧表，
 // 保证迁移期（tenants.migrated=0）读取路径的列清单完整。
-func migrateV74ToV75(db *DB) error {
+func migrateV76ToV77(db *DB) error {
 	conn := db.Conn()
 	tableOK, err := tableExists(conn, "session_messages")
 	if err != nil {
 		return fmt.Errorf("check session_messages exists: %w", err)
 	}
 	if !tableOK {
-		if _, err := conn.Exec("UPDATE schema_version SET version = 75"); err != nil {
+		if _, err := conn.Exec("UPDATE schema_version SET version = 77"); err != nil {
 			return fmt.Errorf("update schema version: %w", err)
 		}
-		log.Info("Database migrated to v75: main session_messages absent — structured columns skipped")
+		log.Info("Database migrated to v77: main session_messages absent — structured columns skipped")
 		return nil
 	}
 	for _, c := range []struct{ name, ddl string }{
@@ -720,10 +733,10 @@ func migrateV74ToV75(db *DB) error {
 			}
 		}
 	}
-	if _, err := conn.Exec("UPDATE schema_version SET version = 75"); err != nil {
+	if _, err := conn.Exec("UPDATE schema_version SET version = 77"); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
-	log.Info("Database migrated to v75: main session_messages structured columns added")
+	log.Info("Database migrated to v77: main session_messages structured columns added")
 	return nil
 }
 
@@ -765,13 +778,13 @@ func migrateV72ToV73(db *DB) error {
 	return nil
 }
 
-// migrateV73ToV74 建立群组元数据两张小表（groups / group_members）。
+// migrateV75ToV76 建立群组元数据两张小表（groups / group_members）。
 //
 // 会话库的 group_id / sender_* 列与 ix_sm_group_cursor 索引不在这里改：
 // v72 之后主库已无 session_messages（数据在每会话独立 DB），列由
 // OpenSessionDB 的幂等 DDL + columnExists 守卫补齐（见 initSessionSchema）。
 // 本迁移只做纯增量 CREATE TABLE IF NOT EXISTS，幂等、可回滚（DROP 两表）。
-func migrateV73ToV74(db *DB) error {
+func migrateV75ToV76(db *DB) error {
 	conn := db.Conn()
 	if _, err := conn.Exec(`
 CREATE TABLE IF NOT EXISTS groups (
@@ -818,10 +831,10 @@ CREATE INDEX IF NOT EXISTS ix_group_members_addr ON group_members(member_addr, s
 			return fmt.Errorf("create ix_sm_group_cursor: %w", err)
 		}
 	}
-	if _, err := conn.Exec("UPDATE schema_version SET version = 74"); err != nil {
+	if _, err := conn.Exec("UPDATE schema_version SET version = 76"); err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
-	log.Info("Database migrated to v74: groups + group_members created")
+	log.Info("Database migrated to v76: groups + group_members created")
 	return nil
 }
 
@@ -3874,5 +3887,55 @@ func migrateV52ToV53(conn *sql.DB) error {
 		return fmt.Errorf("update schema version: %w", err)
 	}
 	log.Info("Database migrated to v53: session CWD persisted in tenants.cwd")
+	return nil
+}
+
+// migrateV73ToV74 adds push_targets — the unified push layer's delivery
+// targets. Purely additive; CREATE TABLE IF NOT EXISTS is idempotent.
+func migrateV73ToV74(db *DB) error {
+	migration := `
+	CREATE TABLE IF NOT EXISTS push_targets (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id      INTEGER NOT NULL,
+	sender_id    TEXT    NOT NULL,
+	provider     TEXT    NOT NULL,
+	platform     TEXT    NOT NULL,
+	address      TEXT    NOT NULL,
+	metadata     TEXT    NOT NULL DEFAULT '{}',
+	device_name  TEXT    NOT NULL DEFAULT '',
+	app_version  TEXT    NOT NULL DEFAULT '',
+	created_at   INTEGER NOT NULL DEFAULT 0,
+	last_seen_at INTEGER NOT NULL DEFAULT 0,
+	UNIQUE(provider, address)
+	);
+	CREATE INDEX IF NOT EXISTS idx_push_targets_sender ON push_targets(sender_id);
+	`
+	if _, err := db.Conn().Exec(migration); err != nil {
+		return fmt.Errorf("migrate v73->v74: %w", err)
+	}
+	if _, err := db.Conn().Exec("UPDATE schema_version SET version = 74"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v74 (added push_targets)")
+	return nil
+}
+
+// migrateV74ToV75 adds push_settings — the runtime push configuration is a
+// single encrypted JSON blob; config.json's push block is only the initial seed.
+func migrateV74ToV75(db *DB) error {
+	migration := `
+	CREATE TABLE IF NOT EXISTS push_settings (
+	id         INTEGER PRIMARY KEY CHECK (id = 1),
+	config     TEXT NOT NULL,
+	updated_at INTEGER NOT NULL DEFAULT 0
+	);
+	`
+	if _, err := db.Conn().Exec(migration); err != nil {
+		return fmt.Errorf("migrate v74->v75: %w", err)
+	}
+	if _, err := db.Conn().Exec("UPDATE schema_version SET version = 75"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v75 (added push_settings)")
 	return nil
 }

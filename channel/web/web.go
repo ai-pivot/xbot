@@ -325,6 +325,32 @@ type WebCallbacks struct {
 	ActivityList func(limit int, within time.Duration, kinds []string) ([]ActivityEntry, bool, error)
 	// AgentActivityList 返回活跃子代理（默认排除 unloaded），按 updated_at 倒序。
 	AgentActivityList func(within time.Duration, includeUnloaded bool) ([]AgentActivityEntry, error)
+
+	// ─── Unified push (system notifications) ───
+	//
+	// PushNotify publishes a semantic event for background delivery. It MUST be
+	// non-blocking (the notifier only enqueues); nil = push disabled.
+	// channel/web deliberately does not import the push package: serverapp
+	// converts PushEvent to push.Event, keeping this layer transport-agnostic.
+	PushNotify func(PushEvent)
+	// PushRegister validates and stores a delivery target for the authenticated
+	// user. senderID/userID come from the session cookie, never the body.
+	PushRegister func(senderID string, userID int64, t storage.PushTarget) error
+	// PushUnregister removes one of the caller's own targets.
+	PushUnregister func(senderID string, userID int64, provider, address string) error
+	// PushPresence marks a target as visible (active=true) or backgrounded.
+	PushPresence func(provider, address string, active bool)
+	// PushTest sends a test notification to the caller's targets; returns the
+	// number of targets attempted.
+	PushTest func(senderID string) (int, error)
+	// PushConfig returns the public push configuration for the web client
+	// (currently the VAPID public key). Enabled=false means WebPush is off.
+	PushConfig func() map[string]any
+	// PushSettings returns the persisted push settings (VAPID private masked).
+	PushSettings func() map[string]any
+	// PushSaveSettings validates/persists the settings and hot-swaps the push
+	// layer; raw is the JSON body from the UI.
+	PushSaveSettings func(raw json.RawMessage) error
 }
 
 // ActivityEntry 是 /api/activity 的 items 元素。
@@ -349,6 +375,20 @@ type AgentActivityEntry struct {
 	Status      string `json:"status"`
 	UpdatedAt   string `json:"updated_at"`
 	LastReplyAt string `json:"last_reply_at"`
+}
+
+// PushEvent is a transport-independent notification request. The push package
+// renders it per provider (FCM data message, WebPush JSON, ...).
+type PushEvent struct {
+	Kind         string // ask_user | (empty for session state)
+	Action       string // busy | idle | ... (session state only)
+	Channel      string
+	ChatID       string
+	SenderID     string
+	Title        string
+	Body         string
+	RequestID    string
+	HighPriority bool
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.
@@ -738,6 +778,13 @@ func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
 		}
 		wc.hub.broadcastSessionStateToWebClients(msg, exclude...)
 	}
+	// Unified push: only web sessions; the Notifier turns busy→idle into a
+	// completion notification and ignores every other action.
+	if ev.Channel == "web" {
+		wc.notifyPush(PushEvent{
+			Action: ev.Action, Channel: ev.Channel, ChatID: ev.ChatID, SenderID: ev.SenderID,
+		})
+	}
 }
 
 // isSidebarSessionEvent reports whether the event is a lightweight sidebar state
@@ -1021,6 +1068,14 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/agents", wc.authMiddleware(wc.handleAgentActivity))
 	mux.HandleFunc("/api/messages", wc.authMiddleware(wc.handleStructuredMessages))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
+	// Unified push (system notifications): one generic surface for every
+	// provider (FCM / WebPush / APNs / Feishu).
+	mux.HandleFunc("/api/push/register", wc.authenticatedPOST(wc.handlePushRegister))
+	mux.HandleFunc("/api/push/unregister", wc.authenticatedPOST(wc.handlePushUnregister))
+	mux.HandleFunc("/api/push/presence", wc.authenticatedPOST(wc.handlePushPresence))
+	mux.HandleFunc("/api/push/test", wc.authenticatedPOST(wc.handlePushTest))
+	mux.HandleFunc("/api/push/config", wc.authenticatedPOST(wc.handlePushConfig))
+	mux.HandleFunc("/api/push/settings", wc.authMiddleware(wc.handlePushSettings))
 	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。
 	mux.HandleFunc("/api/plugin-files/upload", wc.authMiddleware(postOnly(wc.handlePluginFileUpload)))
 	mux.HandleFunc("/api/plugin-files/", wc.authMiddleware(wc.handlePluginFiles))
@@ -1264,10 +1319,12 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 			})
 			if matched {
 				wc.hub.sendToSession(channelName, targetClientID, askMsg)
+				wc.notifyAskUserPush(msg.Channel, msg.ChatID, askMsg.Progress)
 			}
 			// pending cleared (answered/cancelled) → skip re-announcing.
 		} else {
 			wc.hub.sendToSession(channelName, targetClientID, askMsg)
+			wc.notifyAskUserPush(msg.Channel, msg.ChatID, askMsg.Progress)
 		}
 	}
 

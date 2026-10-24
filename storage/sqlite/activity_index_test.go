@@ -21,9 +21,9 @@ import (
 
 // ── 迁移 ────────────────────────────────────────────────────────────────────
 
-// TestMigrationV77CreatesActivityIndex：v76 的老库升级后必须同时拿到
+// TestMigrationV79CreatesActivityIndex：v76 的老库升级后必须同时拿到
 // activity_index（表 + 3 个索引）和 interactive_agents.last_reply_at。
-func TestMigrationV77CreatesActivityIndex(t *testing.T) {
+func TestMigrationV79CreatesActivityIndex(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "v76.db")
 
@@ -77,7 +77,7 @@ func TestMigrationV77CreatesActivityIndex(t *testing.T) {
 
 	db, err := Open(path)
 	if err != nil {
-		t.Fatalf("Open (migrate v76→v77): %v", err)
+		t.Fatalf("Open (migrate v76→v79): %v", err)
 	}
 	defer db.Close()
 
@@ -85,8 +85,8 @@ func TestMigrationV77CreatesActivityIndex(t *testing.T) {
 	if err := db.Conn().QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 77 {
-		t.Fatalf("schema version = %d, want 77", version)
+	if version != 79 {
+		t.Fatalf("schema version = %d, want 79", version)
 	}
 	if ok, err := tableExists(db.Conn(), "activity_index"); err != nil || !ok {
 		t.Fatalf("activity_index missing after migration (err=%v)", err)
@@ -112,8 +112,8 @@ func TestMigrationV77CreatesActivityIndex(t *testing.T) {
 	}
 }
 
-// TestMigrationV76ToV77Idempotent：同一迁移重跑两次不报错、不重复、不丢数据。
-func TestMigrationV76ToV77Idempotent(t *testing.T) {
+// TestMigrationV78ToV79Idempotent：同一迁移重跑两次不报错、不重复、不丢数据。
+func TestMigrationV78ToV79Idempotent(t *testing.T) {
 	db := openTestDB(t)
 	// 先灌一行，验证重跑不会清表。
 	if err := NewActivityIndex(db.Conn()).Insert(ActivityItem{
@@ -123,7 +123,7 @@ func TestMigrationV76ToV77Idempotent(t *testing.T) {
 		t.Fatalf("insert before rerun: %v", err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := migrateV76ToV77(db); err != nil {
+		if err := migrateV78ToV79(db); err != nil {
 			t.Fatalf("rerun #%d: %v", i+1, err)
 		}
 	}
@@ -138,8 +138,8 @@ func TestMigrationV76ToV77Idempotent(t *testing.T) {
 	if err := db.Conn().QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if version != 77 {
-		t.Fatalf("version = %d, want 77", version)
+	if version != 79 {
+		t.Fatalf("version = %d, want 79", version)
 	}
 }
 

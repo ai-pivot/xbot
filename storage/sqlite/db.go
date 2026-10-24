@@ -80,7 +80,7 @@ type DB struct {
 	lockFile *os.File
 }
 
-const schemaVersion = 77
+const schemaVersion = 79
 const historyLockStripes = 64
 
 // dbLockEntry 是进程内对某个数据库文件持有的 flock，带引用计数。

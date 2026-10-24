@@ -37,6 +37,7 @@ import { InboxEntry } from '@/components/panel/InboxEntry'
 import { SessionBatchActions, SessionMultiSelectButton } from './SessionBatchActions'
 import { NewSessionDialog } from './NewSessionDialog'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
+import { usePushChatNavigation } from '@/hooks/usePushChatNavigation'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -156,6 +157,12 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
     },
     [store.sessions, store.subAgents, store.switchSession, store.activateSession, tabManager, onSessionSelected, onSubAgentSelect],
   )
+
+  // WebPush click (mobile layout): select the session; AgentPanel follows activeSession.
+  usePushChatNavigation((chatID) => {
+    void store.switchSession(chatID, 'web')
+    onSessionSelected?.()
+  })
 
   // Export handler: download a session in the specified format
   const handleExport = useCallback(

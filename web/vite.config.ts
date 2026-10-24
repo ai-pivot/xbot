@@ -75,6 +75,9 @@ export default defineConfig(({ mode }) => {
         // HTML 始终走网络（NetworkFirst），JS/CSS/assets 走 precache。
         globPatterns: ['**/*.{js,css,svg,png,ico,woff2}'],
         globIgnores: ['**/index.html'],
+        // WebPush handler (push / notificationclick) — plain script, imported
+        // by the generated Workbox SW.
+        importScripts: ['/push-sw.js'],
         // 禁用 Workbox 的 NavigationRoute（createHandlerBoundToURL）——
         // 它用 precache 的 index.html 拦截导航请求，导致版本倒退。
         // 导航请求由 runtimeCaching 的 NetworkFirst 处理。
@@ -113,7 +116,10 @@ export default defineConfig(({ mode }) => {
             urlPattern: ({ url }) =>
               url.pathname.startsWith('/api/') &&
               !url.pathname.startsWith('/api/sse') &&
-              !url.pathname.startsWith('/api/files/'),
+              !url.pathname.startsWith('/api/files/') &&
+              // Push config/registration is time-sensitive; never let a stale
+              // api-cache answer "WebPush disabled" after the server changed.
+              !url.pathname.startsWith('/api/push/'),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',

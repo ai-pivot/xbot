@@ -219,6 +219,28 @@ func initPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 
+		// ── Push targets (unified push layer) ──
+		`CREATE TABLE IF NOT EXISTS push_targets (
+			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			user_id BIGINT NOT NULL,
+			sender_id TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			platform TEXT NOT NULL,
+			address TEXT NOT NULL,
+			metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+			device_name TEXT NOT NULL DEFAULT '',
+			app_version TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE(provider, address)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_push_targets_sender ON push_targets(sender_id)`,
+		`CREATE TABLE IF NOT EXISTS push_settings (
+			id BIGINT PRIMARY KEY CHECK (id = 1),
+			config TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+
 		// ── User settings ──
 		`CREATE TABLE IF NOT EXISTS user_settings (
 			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
