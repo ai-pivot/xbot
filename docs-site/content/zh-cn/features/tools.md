@@ -33,6 +33,8 @@ xbot 内置 50+ 工具，Agent 在对话中可以随时调用。所有工具默�
 **后台模式**：设置 `background: true` 用于开发服务器或构建进程。Agent 会收到任务 ID 并继续工作。使用 `task_status` 查看进度——但不要反复轮询。
 
 **转后台（Web UI）**：前台执行中的 Shell 命令可以在 Web 上点"转后台"按钮（运行中的终端卡片下方）——命令立即转入后台，Agent 本轮继续工作，输出完成后自动注入对话。执行中的命令超时也会自动转后台（不再重新执行，原进程直接接管）。转入后台后可用 `task_wait` / `task_status` / `task_kill` 管理。
+
+**工作目录丢失**：会话存活期间工作目录被删除/移走（开发机迁移、git worktree 清理、临时目录回收）时，`Shell` 会立即返回 `working directory "<path>" is not accessible: …; use the Cd tool to change to an existing directory`。这**不是** shell 二进制缺失或损坏（旧版本会误报成 `fork/exec <shell>: no such file or directory`），xbot 也**刻意不会**自动退到 home 或上级目录——在错误的目录里跑 `git`/`rm` 比明确失败更危险。用 `Cd` 切到一个存在的绝对路径即可恢复，`Shell` 立刻恢复正常。
 {{< /hint >}}
 
 ## Web & Search
