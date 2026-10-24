@@ -350,8 +350,9 @@ test.describe('结构化消息卡片', () => {
       await gotoStructured(pageA, chatID)
       await gotoStructured(pageB, chatID)
 
-      // B 端初始视图：一件待答 + 一张待决策。
-      await expect(pageB.getByTestId('inbox-badge')).toHaveText('1')
+      // B 端初始视图：收件箱 = 待人工处理的结构化消息，ask_user（待回答）
+      // 与 report（待批复）都算，所以是 2 而不是 1。
+      await expect(pageB.getByTestId('inbox-badge')).toHaveText('2')
       const cardB = pageB.getByTestId('report-card').filter({ hasText: summary }).first()
       await expect(cardB.getByText('待决策')).toBeVisible()
 

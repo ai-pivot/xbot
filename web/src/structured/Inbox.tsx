@@ -50,10 +50,10 @@ export function Inbox({
   const items = inbox?.items ?? []
 
   return (
+    // 窄屏（<768px）上下堆叠：340px 固定宽栏会把消息流挤到 230px 并裁字
+    // （2026-10-24 390×844 实测）；桌面仍是右侧固定宽栏。
     <aside
       data-testid="inbox"
-      // 窄屏（<768px）改成上下堆叠：340px 固定宽度会把消息流挤到 230px 并裁字
-      // （2026-10-24 390×844 实测）。桌面仍是右侧固定宽栏。
       className="flex min-h-0 w-full shrink-0 basis-[45%] flex-col border-t border-border bg-bg-secondary md:h-full md:basis-auto md:w-[340px] md:border-l md:border-t-0"
     >
       <header className="flex items-center justify-between border-b border-border px-3 py-2">
