@@ -56,6 +56,8 @@ import { useWSConnection } from '@/providers/WSProvider'
 import { useCwd } from '@/providers/CwdProvider'
 import { useAuth } from '@/hooks/useAuth'
 import { useSessionStore } from '@/hooks/useSessionStore'
+import { usePushChatNavigation } from '@/hooks/usePushChatNavigation'
+import { openAgentSessionTab } from '@/lib/sessionTabs'
 import { ThemeContext } from '@/providers/theme'
 import { I18nContext } from '@/providers/i18n'
 import { WSContext } from '@/providers/WSProvider'
@@ -142,6 +144,11 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
   const cwdValue = useCwd()
   const authValue = useAuth()
   const sessionStoreValue = useSessionStore()
+  // WebPush click: select the session AND open/focus its agent tab (desktop).
+  usePushChatNavigation((chatID) => {
+    openAgentSessionTab(tabManager, chatID, 'web')
+    sessionStoreValue.activateSession(chatID, 'web')
+  })
   const rightSidebarValue = useRightSidebarControl()
   // PluginRuntime for the isolated dockview roots — without this the
   // iteration UI injection point (IterationSlot → usePluginRuntime) returns

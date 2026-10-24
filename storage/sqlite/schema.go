@@ -138,7 +138,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (73);
+INSERT INTO schema_version (version) VALUES (75);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -369,6 +369,33 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     PRIMARY KEY (provider, channel, chat_id)
 );
 CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
+
+-- 统一推送层的投递目标。provider 决定 address 的含义：
+-- fcm=FCM token / apns=device token / webpush=PushSubscription endpoint / feishu=chat_id。
+-- metadata 存 provider 专属字段（WebPush 的 p256dh/auth、设备信息等），JSON。
+CREATE TABLE IF NOT EXISTS push_targets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    sender_id    TEXT    NOT NULL,
+    provider     TEXT    NOT NULL,
+    platform     TEXT    NOT NULL,
+    address      TEXT    NOT NULL,
+    metadata     TEXT    NOT NULL DEFAULT '{}',
+    device_name  TEXT    NOT NULL DEFAULT '',
+    app_version  TEXT    NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL DEFAULT 0,
+    last_seen_at INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(provider, address)
+);
+CREATE INDEX IF NOT EXISTS idx_push_targets_sender ON push_targets(sender_id);
+
+-- 推送层的运行配置（单个 JSON blob，crypto.Encrypt 加密后落库）。
+-- config.json 的 push 段只作为首次启动的种子，之后以这里为准。
+CREATE TABLE IF NOT EXISTS push_settings (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    config     TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
