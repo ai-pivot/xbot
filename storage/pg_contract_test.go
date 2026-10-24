@@ -7,8 +7,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"xbot/llm"
 )
 
 // newPGTestPool creates a fresh PG database (unique per test) with the runtime
@@ -102,4 +105,39 @@ func NewPGStorageWithPool(pool *pgxpool.Pool) (Storage, error) {
 
 func TestPGStorageContract(t *testing.T) {
 	RunStorageContractTests(t, newPGTestStorage)
+}
+
+// TestPGSessionStoreNULMessageStoredSanitized is the backend-specific half of
+// the binary-tool-output regression: SQLite silently stores NUL bytes (and
+// invalid UTF-8), so the failure only surfaced after switching to PostgreSQL,
+// which rejects the whole INSERT with SQLSTATE 22021
+// ("invalid byte sequence for encoding UTF8": 0x00). A binary tool result must
+// be storable and read back as valid UTF-8 without NUL.
+func TestPGSessionStoreNULMessageStoredSanitized(t *testing.T) {
+	s := newPGTestStorage(t)
+	defer s.Close()
+	tenantID := createTestTenant(t, s, uniqueChatID(t))
+	ss := getSessionStore(t, s, tenantID)
+
+	content := "ELF header\x00\x00 then \xff\xfe bytes"
+	if err := ss.AddMessage(tenantID, llm.ChatMessage{Role: "tool", Content: content}); err != nil {
+		t.Fatalf("AddMessage with NUL must not fail on PG: %v", err)
+	}
+	msgs, err := ss.GetHistory(tenantID, 10)
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("GetHistory returned %d messages, want 1", len(msgs))
+	}
+	got := msgs[0].Content
+	if strings.ContainsRune(got, 0) {
+		t.Errorf("stored content still carries NUL: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("stored content is not valid UTF-8: %q", got)
+	}
+	if !strings.Contains(got, "ELF header") || !strings.Contains(got, "bytes") {
+		t.Errorf("sanitisation dropped payload: %q", got)
+	}
 }

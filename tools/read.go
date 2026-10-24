@@ -8,6 +8,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
+
 	"xbot/llm"
 )
 
@@ -167,6 +169,12 @@ func (t *ReadTool) executeInSandbox(ctx *ToolContext, filePath string) (*ToolRes
 		return nil, fmt.Errorf("failed to read file in sandbox: %v, output: %s", err, output)
 	}
 
+	// Same binary gate as the local path: `cat` on an ELF/PNG returns raw bytes
+	// whose NULs would otherwise poison the context and the PG write.
+	if reason := detectBinary(output); reason != "" {
+		return nil, binaryFileError(filePath, reason)
+	}
+
 	return NewResultWithTips(output, "如需修改此文件，优先使用 Edit 工具。"), nil
 }
 
@@ -250,6 +258,56 @@ func (t *ReadTool) executeLocal(ctx *ToolContext, filePath string) (*ToolResult,
 		if res.err != nil {
 			return nil, fmt.Errorf("failed to read file: %w", res.err)
 		}
-		return NewResultWithTips(string(res.data), "如需修改此文件，优先使用 Edit 工具。"), nil
+		content := string(res.data)
+		if reason := detectBinary(content); reason != "" {
+			return nil, binaryFileError(resolvedPath, reason)
+		}
+		return NewResultWithTips(content, "如需修改此文件，优先使用 Edit 工具。"), nil
 	}
+}
+
+// binaryProbeBytes is how much of a file Read inspects when deciding whether it
+// is text. 8 KiB matches git's heuristic and keeps checking huge files cheap.
+const binaryProbeBytes = 8192
+
+// detectBinary reports why content looks like a binary blob instead of UTF-8
+// text ("" means it looks like text). Both markers are evaluated on the first
+// 8 KiB only, so a long text file is never rejected for a late stray byte:
+//
+//   - a NUL byte. NUL is valid UTF-8 (U+0000) but never appears in real text
+//     files, and PostgreSQL's text type cannot store it at all — a tool result
+//     carrying NUL used to abort the entire turn (SQLSTATE 22021).
+//   - more than 25% of the probed bytes are not valid UTF-8: catches binary
+//     payloads without NULs, and UTF-16/UTF-32 text (which Read cannot present
+//     as readable text anyway). One torn byte in an otherwise textual log stays
+//     under the threshold and is repaired by the text pipeline downstream.
+func detectBinary(content string) string {
+	probe := content
+	if len(probe) > binaryProbeBytes {
+		probe = probe[:binaryProbeBytes]
+	}
+	if i := strings.IndexByte(probe, 0); i >= 0 {
+		return fmt.Sprintf("NUL byte at offset %d", i)
+	}
+	invalid := 0
+	for i := 0; i < len(probe); {
+		r, size := utf8.DecodeRuneInString(probe[i:])
+		if r == utf8.RuneError && size == 1 {
+			invalid++
+			i++
+			continue
+		}
+		i += size
+	}
+	if len(probe) > 0 && invalid*4 > len(probe) {
+		return fmt.Sprintf("%d%% of the first %d bytes are not valid UTF-8", invalid*100/len(probe), len(probe))
+	}
+	return ""
+}
+
+// binaryFileError is the single wording for both the local and sandbox read
+// paths — the model must learn the file is binary (or in another encoding) and
+// how to inspect it instead of retrying Read or assuming the tool is broken.
+func binaryFileError(path, reason string) error {
+	return fmt.Errorf("binary or non-UTF-8 file (%s): %s — Read returns UTF-8 text only; use Shell (iconv / xxd / head -c / base64) to inspect or convert it", reason, path)
 }

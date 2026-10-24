@@ -12,6 +12,7 @@ import (
 	"xbot/agent/hooks"
 	"xbot/channel"
 	"xbot/clipanic"
+	"xbot/internal/textutil"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/memory"
@@ -2288,7 +2289,7 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 			s.selfCompactRequested = true
 		}
 
-		toolMsg := llm.NewToolMessage(tc.Name, tc.ID, tc.Arguments, content)
+		toolMsg := llm.NewToolMessage(tc.Name, tc.ID, tc.Arguments, textutil.SanitizeText(content))
 		if r.result != nil && r.result.Detail != "" {
 			toolMsg.Detail = r.result.Detail
 		}
@@ -2621,7 +2622,7 @@ func newSyntheticToolPair(toolName, toolID, toolContent string) (llm.ChatMessage
 			Arguments: "{}", // must be valid JSON; empty string "" causes 400 on strict backends (e.g. SGLang)
 		}},
 	}
-	toolMsg := llm.NewToolMessage(toolName, toolID, "{}", toolContent)
+	toolMsg := llm.NewToolMessage(toolName, toolID, "{}", textutil.SanitizeText(toolContent))
 	return assistantMsg, toolMsg
 }
 

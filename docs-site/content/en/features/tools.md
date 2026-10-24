@@ -18,7 +18,7 @@ sidebar" and the agent handles it.
 
 | Tool | Description |
 |------|-------------|
-| `Read` | Read file content with line numbers. Supports `offset` and `max_lines` for pagination. |
+| `Read` | Read file content with line numbers. Supports `offset` and `max_lines` for pagination. **Binary files are rejected** (NUL byte / non-UTF-8 payload) with a hint to inspect them via `Shell` (`xxd` / `head -c` / `base64`) — raw binary bytes are not text and cannot be persisted by every backend. |
 | `FileCreate` | Create new files (and parent directories). Errors if file already exists unless `rewrite` is set. |
 | `FileReplace` | Find-and-replace in files: exact string match or RE2 regex. Supports `replace_all`, line range restriction. |
 | `Glob` | Find files by glob pattern with `**` recursive matching. |
