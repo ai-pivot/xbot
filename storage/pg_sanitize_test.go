@@ -35,16 +35,44 @@ func TestPGTextRepairsTornRunes(t *testing.T) {
 	}
 }
 
+// TestPGTextRepairsNUL pins the other half of the write-boundary defence.
+// NUL (0x00) IS valid UTF-8, so a UTF-8 validator lets it through — but
+// PostgreSQL text cannot store it and rejects the whole statement with
+//
+//	ERROR: invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)
+//
+// Real production failure: Read on a binary file killed the turn's persistence
+// (8 occurrences in the server log).
+func TestPGTextRepairsNUL(t *testing.T) {
+	for _, bad := range []string{
+		"before\x00after",
+		"ELF\x7f\x02\x01\x00\x00\x00",
+		"\x00",
+		"中文\x00中文",
+	} {
+		got := pgText(bad)
+		if strings.ContainsRune(got, 0) {
+			t.Fatalf("NUL survived pgText: %q", got)
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("pgText produced invalid UTF-8: %q", got)
+		}
+		if !strings.Contains(got, "before") && strings.HasPrefix(bad, "before") {
+			t.Fatalf("payload lost: %q", got)
+		}
+	}
+}
+
 // TestMessageArgsAreValidUTF8 asserts the arg vector handed to pgx can never
 // carry an invalid byte sequence, whatever the caller passes in.
 func TestMessageArgsAreValidUTF8(t *testing.T) {
 	s := &pgSessionStore{}
 	msg := llm.ChatMessage{
 		Role:             "tool",
-		Content:          "输出\xe6...",
+		Content:          "输出\xe6...\x00binary",
 		ToolName:         "Shell",
 		ToolCallID:       "call\xe6",
-		ToolArguments:    `{"command":"cd /x && echo 中文` + "\xe6" + `"}`,
+		ToolArguments:    `{"command":"cd /x && echo 中文` + "\xe6" + `\x00"}`,
 		Detail:           "detail\xef\xbc",
 		ReasoningContent: "思考\xe5",
 	}
@@ -56,6 +84,9 @@ func TestMessageArgsAreValidUTF8(t *testing.T) {
 		}
 		if !utf8.ValidString(str) {
 			t.Errorf("arg %d is invalid UTF-8: %q", i, str)
+		}
+		if strings.ContainsRune(str, 0) {
+			t.Errorf("arg %d still contains NUL: %q", i, str)
 		}
 	}
 }

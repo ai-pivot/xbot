@@ -43,6 +43,42 @@ func TestSanitizeUTF8(t *testing.T) {
 	}
 }
 
+// TestSanitizeText pins the NUL half of the contract. NUL (0x00) is valid
+// UTF-8, so SanitizeUTF8 deliberately leaves it alone — but PostgreSQL's text
+// type cannot store it and rejects the whole INSERT with
+//
+//	ERROR: invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)
+//
+// (real production failure: a Read of a binary file killed the turn).
+func TestSanitizeText(t *testing.T) {
+	if got := SanitizeText("hello 世界"); got != "hello 世界" {
+		t.Fatalf("valid text changed: %q", got)
+	}
+	if got := SanitizeUTF8("a\x00b"); got != "a\x00b" {
+		t.Fatalf("SanitizeUTF8 must stay encoding-only (NUL is valid UTF-8), got %q", got)
+	}
+
+	got := SanitizeText("a\x00b\xffc")
+	if strings.ContainsRune(got, 0) {
+		t.Fatalf("NUL survived: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("result not valid UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(got, "a"+string(utf8.RuneError)+"b") {
+		t.Fatalf("unexpected repair shape: %q", got)
+	}
+	if !strings.HasSuffix(got, "c") {
+		t.Fatalf("tail lost: %q", got)
+	}
+
+	// Realistic binary prefix (ELF magic + NULs).
+	elf := "\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00"
+	if got := SanitizeText(elf); strings.ContainsRune(got, 0) || !utf8.ValidString(got) {
+		t.Fatalf("binary prefix not sanitised: %q", got)
+	}
+}
+
 func TestTruncateBytesRuneSafe(t *testing.T) {
 	s := strings.Repeat("中", 10) // 30 bytes, every rune 3 bytes
 

@@ -54,6 +54,29 @@ func testSessionStoreContract(t *testing.T, factory StorageFactory) {
 		}
 	})
 
+	t.Run("AddMessage_NULAndInvalidUTF8_DoesNotFail", func(t *testing.T) {
+		// Tool output is arbitrary bytes: NUL (valid UTF-8, invalid for PG text)
+		// and torn sequences. PostgreSQL used to reject the whole INSERT with
+		// SQLSTATE 22021, losing the turn; both backends must now accept it.
+		ss := getSessionStore(t, s, tenantID)
+		if err := ss.Clear(tenantID); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		if err := ss.AddMessage(tenantID, dummyMsg("tool", "before\x00after\xe6...")); err != nil {
+			t.Fatalf("AddMessage(binary tool output) must not fail: %v", err)
+		}
+		msgs, err := ss.GetHistory(tenantID, 10)
+		if err != nil {
+			t.Fatalf("GetHistory: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("GetHistory returned %d messages, want 1", len(msgs))
+		}
+		if !strings.Contains(msgs[0].Content, "before") || !strings.Contains(msgs[0].Content, "after") {
+			t.Errorf("payload lost around the damaged bytes: %q", msgs[0].Content)
+		}
+	})
+
 	t.Run("GetHistory_ReturnsNewestWindow", func(t *testing.T) {
 		ss := getSessionStore(t, s, tenantID)
 		if err := ss.Clear(tenantID); err != nil {

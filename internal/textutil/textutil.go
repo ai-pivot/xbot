@@ -25,7 +25,30 @@ import (
 // Valid input is returned unchanged (and without allocating), so this is safe
 // to call on every write.
 func SanitizeUTF8(s string) string {
-	if utf8.ValidString(s) {
+	return sanitize(s, false)
+}
+
+// SanitizeText normalises s into the text pipeline's invariant: valid UTF-8 and
+// free of NUL bytes. Every invalid sequence AND every 0x00 byte becomes U+FFFD.
+//
+// NUL is not a UTF-8 problem (0x00 is a valid encoding of U+0000), which is why
+// SanitizeUTF8 lets it through — but PostgreSQL's text type cannot store it at
+// all. The server rejects the whole statement with SQLSTATE 22021
+// (`invalid byte sequence for encoding "UTF8": 0x00`), so one NUL in a tool
+// result (Read on a binary file, Shell `cat` on an ELF, an MCP server) used to
+// cost the entire conversation turn. text is arbitrary bytes at the edges;
+// this is the normalisation point before it becomes model context or a DB row.
+//
+// Valid input without NUL is returned unchanged and without allocating.
+func SanitizeText(s string) string {
+	return sanitize(s, true)
+}
+
+// sanitize is the single scan shared by both entry points. replaceNUL is false
+// only for SanitizeUTF8, which is deliberately encoding-only (the migration
+// tool's historical contract).
+func sanitize(s string, replaceNUL bool) string {
+	if utf8.ValidString(s) && (!replaceNUL || !strings.ContainsRune(s, 0)) {
 		return s
 	}
 	var b strings.Builder
@@ -36,6 +59,11 @@ func SanitizeUTF8(s string) string {
 			// One invalid byte. Consume exactly one so the following bytes get
 			// their own chance to decode (a valid rune may start mid-sequence
 			// after a torn prefix).
+			b.WriteRune(utf8.RuneError)
+			i++
+			continue
+		}
+		if r == 0 && replaceNUL {
 			b.WriteRune(utf8.RuneError)
 			i++
 			continue

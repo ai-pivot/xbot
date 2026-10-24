@@ -61,6 +61,18 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
 
 ## Gotchas (PG)
 
+- **Text columns reject NUL, not just invalid UTF-8.** PG `text` cannot store `0x00`:
+  the server fails the whole statement with SQLSTATE 22021
+  (`invalid byte sequence for encoding "UTF8": 0x00`). NUL *is* valid UTF-8, so a
+  plain UTF-8 validator passes it — binary tool output (Read on an ELF, Shell `cat`)
+  used to kill the turn's persistence. Every free-text param in the PG stores goes
+  through `pgText` = `textutil.SanitizeText` (invalid sequences **and** NUL → U+FFFD);
+  `cmd/xbot-migrate` uses the same function so migrated rows match runtime writes.
+  Do NOT "fix" this by rejecting the write — a lost turn is worse than a U+FFFD.
+  Guard: `storage/pg_sanitize_test.go`,
+  `TestPGSessionStoreNULMessageStoredSanitized`, and the shared
+  `AddMessage_NULAndInvalidUTF8_DoesNotFail` contract case.
+
 - **`sql.ErrNoRows` ≠ `pgx.ErrNoRows`.** All PG code must check `pgx.ErrNoRows`; a
   `sql.ErrNoRows` check never fires → the "not found" branch is dead (silent wrong result).
 - **Native `BOOLEAN`, not `INTEGER 0/1` — in BOTH directions.** `pg_schema.go`
