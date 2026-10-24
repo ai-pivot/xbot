@@ -2,9 +2,11 @@ package push
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"xbot/storage"
 )
@@ -172,5 +174,45 @@ func TestNotifierOwnerResolutionFailureDrops(t *testing.T) {
 	n.deliver(Event{Kind: KindTest, Channel: "web", ChatID: "c1"})
 	if got := p.count(); got != 0 {
 		t.Fatalf("ownerless session delivered %d pushes, want 0", got)
+	}
+}
+
+func TestNotifierClampsLongNotificationText(t *testing.T) {
+	targets := &fakeTargets{targets: []storage.PushTarget{{ID: 1, Provider: "fake", Address: "a", Platform: "android"}}}
+	p := &fakeProvider{name: "fake"}
+	n := newTestNotifier(t, targets, fakeSessions{sender: "web-1"}, p, false)
+
+	longBody := strings.Repeat("问", 2000)
+	longTitle := strings.Repeat("标", 100)
+	n.deliver(Event{
+		Kind: KindAskUser, Channel: "web", ChatID: "c1", SenderID: "web-1",
+		RequestID: "r1", Title: longTitle, Body: longBody,
+	})
+
+	if got := p.count(); got != 1 {
+		t.Fatalf("delivered %d pushes, want 1", got)
+	}
+	p.mu.Lock()
+	ev := p.sent[0]
+	p.mu.Unlock()
+	if got := utf8.RuneCountInString(ev.Body); got > maxPushBodyRunes {
+		t.Fatalf("body runes = %d, want <= %d", got, maxPushBodyRunes)
+	}
+	if got := utf8.RuneCountInString(ev.Title); got > maxPushTitleRunes {
+		t.Fatalf("title runes = %d, want <= %d", got, maxPushTitleRunes)
+	}
+}
+
+func TestNotifierDropKeepsTarget(t *testing.T) {
+	targets := &fakeTargets{targets: []storage.PushTarget{{ID: 42, Provider: "fake", Address: "a", Platform: "android"}}}
+	p := &fakeProvider{name: "fake", err: DropError(context.DeadlineExceeded)}
+	n := newTestNotifier(t, targets, fakeSessions{sender: "web-1"}, p, false)
+
+	n.deliver(Event{Kind: KindTest, Channel: "web", ChatID: "c1", SenderID: "web-1"})
+
+	targets.mu.Lock()
+	defer targets.mu.Unlock()
+	if len(targets.deleted) != 0 {
+		t.Fatalf("Drop deleted targets %v; a payload/config error must keep the token", targets.deleted)
 	}
 }

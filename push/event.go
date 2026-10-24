@@ -48,6 +48,9 @@ const (
 	Transient
 	// Auth: the provider credentials expired — refresh and retry once.
 	Auth
+	// Drop: this message is invalid for this target (payload/config error).
+	// Do not retry and do not delete the target — the token may still be valid.
+	Drop
 )
 
 // DeliveryError classifies a provider failure.
@@ -70,6 +73,10 @@ func TransientError(err error) error { return &DeliveryError{Kind: Transient, Er
 
 // AuthError marks an expired provider credential.
 func AuthError(err error) error { return &DeliveryError{Kind: Auth, Err: err} }
+
+// DropError marks a message-level failure (bad payload/config). The Notifier
+// logs it but neither retries nor deletes the target.
+func DropError(err error) error { return &DeliveryError{Kind: Drop, Err: err} }
 
 // ErrorKindOf reports the classification of err; unknown errors are Permanent
 // (never retry blindly).

@@ -165,7 +165,7 @@ func TestClassifyFCM(t *testing.T) {
 		{401, Auth},
 		{403, Auth},
 		{404, Permanent},
-		{400, Permanent},
+		{400, Drop},
 		{429, Transient},
 		{500, Transient},
 		{503, Transient},
@@ -181,5 +181,22 @@ func TestClassifyFCM(t *testing.T) {
 		if got := ErrorKindOf(err); got != c.kind {
 			t.Errorf("status %d: kind %v, want %v", c.status, got, c.kind)
 		}
+	}
+}
+
+func TestClassifyFCMPayloadVsToken(t *testing.T) {
+	tokenErr := classifyFCM(400, []byte(`{"error":{"status":"INVALID_ARGUMENT","message":"The registration token is not a valid FCM registration token"}}`))
+	if got := ErrorKindOf(tokenErr); got != Permanent {
+		t.Fatalf("token 400 kind = %v, want Permanent", got)
+	}
+	payloadErr := classifyFCM(400, []byte(`{"error":{"status":"INVALID_ARGUMENT","message":"Request contains an invalid argument."}}`))
+	if got := ErrorKindOf(payloadErr); got != Drop {
+		t.Fatalf("payload 400 kind = %v, want Drop (keep the target)", got)
+	}
+	if got := ErrorKindOf(classifyFCM(413, []byte("message too large"))); got != Drop {
+		t.Fatalf("413 kind = %v, want Drop", got)
+	}
+	if got := ErrorKindOf(classifyFCM(404, []byte("UNREGISTERED"))); got != Permanent {
+		t.Fatalf("404 kind = %v, want Permanent", got)
 	}
 }

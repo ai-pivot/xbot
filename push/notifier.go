@@ -228,11 +228,13 @@ func (n *Notifier) deliver(ev Event) {
 			log.WithError(err).WithFields(log.Fields{
 				"provider": t.Provider, "kind": ev.Kind, "chat_id": ev.ChatID, "target_id": t.ID,
 			}).Warn("push: delivery failed")
-			if kind == Permanent {
+			switch kind {
+			case Permanent:
 				_ = n.opts.Targets.DeletePushTargetByID(t.ID)
-			}
-			if kind == Transient {
+			case Transient:
 				n.retry(p, t, ev)
+			case Drop:
+				// Message-level failure (bad payload/config): keep the target.
 			}
 			continue
 		}
@@ -253,8 +255,11 @@ func (n *Notifier) retry(p Provider, t storage.PushTarget, ev Event) {
 			_ = n.opts.Targets.TouchPushTargets([]int64{t.ID}, time.Now())
 			return
 		}
-		if ErrorKindOf(err) == Permanent {
+		switch ErrorKindOf(err) {
+		case Permanent:
 			_ = n.opts.Targets.DeletePushTargetByID(t.ID)
+			return
+		case Drop:
 			return
 		}
 	}
@@ -285,6 +290,34 @@ func (n *Notifier) fillContent(ev *Event) {
 			ev.Body = "打开 xbot 查看详情。"
 		}
 	}
+	// FCM data messages are capped at 4096 bytes (WebPush payloads are also
+	// ~4KB). An AskUser question has no length limit, so clamp before sending;
+	// otherwise FCM returns 400/INVALID_ARGUMENT (which must not delete the
+	// token — see classifyFCM).
+	ev.Title, ev.Body = clampPushText(ev.Title, ev.Body)
+}
+
+const (
+	maxPushTitleRunes = 64
+	maxPushBodyRunes  = 500
+)
+
+func clampPushText(title, body string) (string, string) {
+	return truncatePushRunes(title, maxPushTitleRunes), truncatePushRunes(body, maxPushBodyRunes)
+}
+
+func truncatePushRunes(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 3 {
+		return string(r[:max])
+	}
+	return string(r[:max-3]) + "..."
 }
 
 func dedupeKey(ev Event) string {

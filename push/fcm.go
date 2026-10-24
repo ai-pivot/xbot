@@ -199,10 +199,19 @@ func classifyFCM(status int, body []byte) error {
 	case status == http.StatusNotFound:
 		return PermanentError(err)
 	case status == http.StatusBadRequest:
-		// UNREGISTERED / INVALID_ARGUMENT mean the token is dead.
-		return PermanentError(err)
+		// Only a token-specific error means the target is dead. Payload errors
+		// (e.g. a >4096-byte AskUser question) also return 400/INVALID_ARGUMENT;
+		// deleting the target there would silently disable all future pushes.
+		lower := strings.ToLower(detail)
+		if strings.Contains(lower, "unregistered") ||
+			strings.Contains(lower, "registration token") ||
+			strings.Contains(lower, "not a valid") {
+			return PermanentError(err)
+		}
+		return DropError(err)
 	default:
-		return PermanentError(err)
+		// Other 4xx are message/config errors — never delete a possibly valid token.
+		return DropError(err)
 	}
 }
 

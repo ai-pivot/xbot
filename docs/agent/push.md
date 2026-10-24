@@ -142,3 +142,22 @@ FCM / WebPush / APNs / Feishu Provider
   在 Notifier 的 worker 里异步查询，不要放进 `SendSessionState` 的广播路径。
 - **WebPush endpoint 必须 https + allowlist**，否则服务端会被当成 SSRF 跳板。
 - 飞书/APNs 目前只有配置位与接口，未实现；启用会在启动日志里告警并跳过。
+- **WebPush `Topic` 必须是合法 base64url（≤32 字符）**：业务 collapse key
+  （`web:<chatID>:<unix秒>`）含冒号且会超长，直接传给 `webpush-go` 会被合规推送服务
+  以 400 拒绝；`WebPushProvider` 现在用 SHA-256 后取 32 位 base64url
+  （`webPushTopic`，守护 `push/webpush_test.go`）。**绝不能把业务 key 原样塞进 Topic**。
+- **FCM 400 不一定是 token 失效**：长 AskUser 问题会超过 4096 字节触发
+  `INVALID_ARGUMENT`，若一律按 `Permanent` 处理会删掉有效 token。现在：
+  - 只有 404 / `UNREGISTERED` / 明确 token 错误才 `Permanent`（删 target）；
+  - 其他 4xx（payload/config）返回新增的 `Drop`：不重试、**不删 target**；
+  - `Notifier.fillContent` 把标题/正文限制为 64/500 rune（FCM/WebPush 载荷上限）。
+  守护：`push/fcm_test.go`、`push/notifier_test.go`。
+- **浏览器推送必须跟认证生命周期绑定**：`web/src/lib/webpush.ts` 的
+  `unregisterCurrentWebPush` 在 logout（cookie 失效前）调用；`registerCurrentWebPush`
+  在启动/登录后重新 upsert，避免共享浏览器继续收到上一个账号的 AskUser 正文。
+- **通知点击必须真的打开会话**：`public/push-sw.js` 发 `xbot:open-chat` / 打开
+  `/?chat=`，前端由 `usePushChatNavigation`（`DockviewContainer` 桌面 +
+  `SessionSidebar` 手机）消费：桌面开/聚焦 agent tab，手机 `switchSession`。
+  只 focus 窗口不选会话是已知 review 问题。
+- **白名单 textarea 不能在每次输入时 trim**：受控值必须保留原始换行
+  （`allowlistText`），保存时再 split/trim/filter；否则按 Enter 加不了第二行。

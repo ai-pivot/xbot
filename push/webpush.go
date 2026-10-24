@@ -2,6 +2,8 @@ package push
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -79,6 +81,18 @@ func (p *WebPushProvider) hostAllowed(host string) bool {
 	return false
 }
 
+// webPushTopic maps the business collapse key (e.g. "web:chat_x:1729") to a
+// valid RFC 8030 §5.4 Topic: at most 32 base64url characters. Passing the raw
+// key makes compliant push services reject every completion notification with
+// 400, which the notifier would otherwise misread as a dead subscription.
+func webPushTopic(collapseKey string) string {
+	if collapseKey == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(collapseKey))
+	return base64.RawURLEncoding.EncodeToString(sum[:])[:32]
+}
+
 func (p *WebPushProvider) Send(ctx context.Context, t storage.PushTarget, ev Event) error {
 	payload, err := json.Marshal(map[string]string{
 		"kind":       string(ev.Kind),
@@ -104,7 +118,7 @@ func (p *WebPushProvider) Send(ctx context.Context, t storage.PushTarget, ev Eve
 		VAPIDPrivateKey: p.vapidPrivate,
 		TTL:             3600,
 		HTTPClient:      p.client,
-		Topic:           ev.CollapseKey,
+		Topic:           webPushTopic(ev.CollapseKey),
 	}
 	if ev.HighPriority {
 		opts.Urgency = webpush.UrgencyHigh

@@ -91,12 +91,18 @@ export function SettingsPushConfig() {
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The allowlist is edited as raw text; parsing/filtering happens on save so
+  // pressing Enter to add another line is not immediately undone.
+  const [allowlistText, setAllowlistText] = useState('')
 
   useEffect(() => {
     let alive = true
     getPushSettings()
       .then((s) => {
-        if (alive) setSettings(s)
+        if (alive) {
+          setSettings(s)
+          setAllowlistText((s.webpush?.endpoint_allowlist ?? []).join('\n'))
+        }
       })
       .catch((e) => {
         if (alive) setError(e instanceof Error ? e.message : String(e))
@@ -129,8 +135,18 @@ export function SettingsPushConfig() {
     setError(null)
     setMessage(null)
     try {
-      await savePushSettings(settings)
-      setSettings(await getPushSettings())
+      const parsedAllowlist = allowlistText
+        .split('\n')
+        .map((v) => v.trim())
+        .filter(Boolean)
+      const payload: PushSettings = {
+        ...settings,
+        webpush: { ...webpush, endpoint_allowlist: parsedAllowlist },
+      }
+      await savePushSettings(payload)
+      const fresh = await getPushSettings()
+      setSettings(fresh)
+      setAllowlistText((fresh.webpush?.endpoint_allowlist ?? []).join('\n'))
       setMessage(t('settings.notifications.saved'))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -261,15 +277,8 @@ export function SettingsPushConfig() {
             >
               <textarea
                 rows={3}
-                value={webpush.endpoint_allowlist.join('\n')}
-                onChange={(e) =>
-                  patchWebPush({
-                    endpoint_allowlist: e.target.value
-                      .split('\n')
-                      .map((v) => v.trim())
-                      .filter(Boolean),
-                  })
-                }
+                value={allowlistText}
+                onChange={(e) => setAllowlistText(e.target.value)}
                 className="w-full resize-y rounded-lg border border-border bg-bg-secondary px-2.5 py-2 font-mono text-xs text-text-primary focus:border-accent focus:outline-none"
                 placeholder={'fcm.googleapis.com\npush.services.mozilla.com'}
               />
