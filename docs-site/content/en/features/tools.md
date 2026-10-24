@@ -44,6 +44,16 @@ and the output is injected into the conversation when it finishes. Timed-out
 commands are auto-promoted the same way (the live process is adopted in place,
 never re-executed). Manage promoted tasks with `task_wait` / `task_status` /
 `task_kill`.
+
+**Missing working directory:** if the session's working directory is deleted or
+moved while the session is alive (machine migration, git worktree cleanup,
+temporary-directory reclamation), `Shell` fails immediately with
+`working directory "<path>" is not accessible: …; use the Cd tool to change to
+an existing directory`. This is **not** a missing/broken shell binary (older
+versions misreported it as `fork/exec <shell>: no such file or directory`), and
+xbot deliberately does **not** fall back to your home or a parent directory —
+running `git`/`rm` in the wrong place is worse than an explicit failure. Recover
+by calling `Cd` with an existing absolute path; `Shell` works again right away.
 {{< /hint >}}
 
 ## Web & Search
