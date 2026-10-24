@@ -126,8 +126,12 @@ type ProgressEvent struct {
 	ChatID         string            `json:"chat_id,omitempty"`
 	Seq            uint64            `json:"seq,omitempty"`
 	Phase          string            `json:"phase,omitempty"`
-	ActiveTools    []ToolProgress    `json:"active_tools,omitempty"`
-	CompletedTools []ToolProgress    `json:"completed_tools,omitempty"`
+	// ⛔ 审计确证（state-gate-8-1）：`omitempty` 会把**空 slice** 也省掉 ⇒ 之前"恒发非 nil
+	//   （空即 `[]`）"的修法**完全无效**（`make([]T,0,n)` + `omitempty` = 键消失）。
+	//   这两条是"当前有没有工具"的唯一表达 ⇒ 必须能表达"显式空"（否则客户端只能沿用上一帧，
+	//   同一迭代内 promote/取消后 pill 不收口）。
+	ActiveTools    []ToolProgress    `json:"active_tools"`
+	CompletedTools []ToolProgress    `json:"completed_tools"`
 	SubAgents      []SubAgentInfo    `json:"sub_agents,omitempty"`
 	Todos          []TodoItem        `json:"todos"`
 	Goal           *GoalInfo         `json:"goal,omitempty"`
@@ -501,6 +505,10 @@ type SessionEvent struct {
 	Channel         string `json:"channel"`
 	ChatID          string `json:"chat_id"`
 	Action          string `json:"action"`
+	// TurnID 把 busy/idle **钉到具体的一轮**（结构性：让"这条 idle 结束的是哪一轮"可表达）。
+	// 0/缺省 = 未指定（旧发射点，客户端按"当前轮"处理）。客户端规则：`idle` 且
+	// `turn_id != 当前 activeTurn` ⇒ 这是**旧轮**的迟到 idle，不得把新一轮降成 idle。
+	TurnID          uint64 `json:"turn_id,omitempty"`
 	Label           string `json:"label,omitempty"`
 	Role            string `json:"role,omitempty"`
 	Instance        string `json:"instance,omitempty"`

@@ -38,6 +38,12 @@ func (a *todoManagerAdapter) GetTodoSummary(sessionKey string) string {
 
 func (a *todoManagerAdapter) GetTodoItems(sessionKey string) []TodoProgressItem {
 	items := a.mgr.GetTodos(sessionKey)
+	// ⛔ 三态（state-gate-11-6 确证）：`nil`（无记录 = **未携带**）必须保持 nil，
+	//   不能 `make(len)` 折成非 nil 空切片 —— 否则结构化帧恒带 `todos: []`，
+	//   前端会把它读成"服务端显式清空"，抹掉本地更新的列表（编辑后闪回/面板偶发清空）。
+	if items == nil {
+		return nil
+	}
 	result := make([]TodoProgressItem, len(items))
 	for i, item := range items {
 		result[i] = TodoProgressItem{Text: item.Text, Status: item.Status}
@@ -499,7 +505,12 @@ func (a *Agent) buildMainRunConfig(
 		if a.channelFinder != nil {
 			// ⛔ per-session 持久 seq（不是 per-Run 局部变量）：resume 后新 run 的
 			//    seq 必须继续高于客户端水位，否则事件会被误判"重放"丢弃。
-			progressSeq := a.progressSeqFor(cfg.SessionKey)
+			// ⛔ 审计确证（state-gate-8-5 C1）：结构化帧此前用 `cfg.SessionKey` 取计数器，而
+			//   轻帧（`emitTodosProgress`/`ClearGoal`/`emitGoalProgress`）用
+			//   `qualifyChatID(ch, chatID)` ⇒ 同一 chat 的 `Seq` 由**两个独立计数器**盖戳 ⇒
+			//   客户端的水位判断（轻帧水位、`lastSeq` 陈旧判定）会失效（误丢新帧 / 误收旧帧）。
+			//   ⇒ 统一到 `qualifyChatID`（与所有会话级发射点同一个键 = 同一个计数器）。
+			progressSeq := a.progressSeqFor(qualifyChatID(channel, chatID))
 			cfg.ProgressSeq = progressSeq
 			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc, cfg.ResetStreamTiming = a.buildStreamCallbacks(chatID, channel, progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
 		}
@@ -1984,6 +1995,11 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 		HistoryCompacted: s.HistoryCompacted, CWD: s.CWD,
 		TurnID: s.TurnID,
 	}
+	// ⛔ 审计确证（be-state-1 §1）：这两个字段 `omitempty`，nil 时**键消失** ⇒ "没有工具"
+	//   与"未携带"无法区分；同一迭代内工具被清空（promote/取消）时客户端只能等迭代推进。
+	//   ⇒ 恒发**非 nil**（空即 `[]` = 显式"无工具"），与 `todos` 的契约一致。
+	payload.ActiveTools = make([]protocol.ToolProgress, 0, len(s.ActiveTools))
+	payload.CompletedTools = make([]protocol.ToolProgress, 0, len(s.CompletedTools))
 	for _, t := range s.ActiveTools {
 		payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
 			Name: t.Name, Label: t.Label, Status: string(t.Status),
@@ -2003,9 +2019,17 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 		})
 	}
 	payload.SubAgents = resolveSubAgents(event)
-	payload.Todos = make([]protocol.TodoItem, len(s.Todos))
-	for i, td := range s.Todos {
-		payload.Todos[i] = protocol.TodoItem{Text: td.Text, Status: td.Status}
+	// ⛔ 2026-10-21（state-gate-12-6 确证-1）：`make(len(nil))` 得到**非 nil 空切片**，而
+	//   `todos` 无 `omitempty` ⇒ 结构化帧恒带 `"todos": []`，把三态（nil=未携带 / []=显式清空）
+	//   折叠回两态 ⇒ todoKey 错位窗口里会静默抹掉客户端合法持有的清单。
+	//   ⇒ nil 必须保持 nil（线上出 `null`，客户端读作"未携带"）。
+	if s.Todos == nil {
+		payload.Todos = nil
+	} else {
+		payload.Todos = make([]protocol.TodoItem, len(s.Todos))
+		for i, td := range s.Todos {
+			payload.Todos[i] = protocol.TodoItem{Text: td.Text, Status: td.Status}
+		}
 	}
 	payload.Goal = s.Goal
 	if s.TokenUsage != nil {

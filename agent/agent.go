@@ -1574,6 +1574,15 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		return
 	}
 	if a.resolvePendingAskUser(msg.Channel, msg.ChatID, "cancelled") {
+		// ⛔ 审计确证（state-gate-11-4 确证-2）：本分支此前**无条件**清 activeTurn 并发 idle，
+		//   而 `setActiveTurn` 早于 `registerActiveCancelState` ⇒ 存在"新一轮已认领 activeTurn、
+		//   而这条取消还指向被暂停的旧轮"的窗口 ⇒ 会把**新轮**标 idle 并清掉它的 activeTurnID
+		//   （`GetActiveProgress` 随即把在飞快照降级 done、清空 stream/tools ⇒ live turn 消失）。
+		//   ⇒ 先用 pending 快照里记录的**被暂停轮**做身份比对，只有"还是那一轮"才允许收尾。
+		pausedTurn := uint64(0)
+		if _, pe := a.loadPendingAskUserEntry(msg.Channel, msg.ChatID); pe != nil && pe.pending != nil {
+			pausedTurn = pe.pending.TurnID
+		}
 		// Persist ask_answer to invalidate the pending ask_question record.
 		// Without this, Replay() finds an unanswered ask_question on reload
 		// and restores the AskUser prompt — the user sees it again after
@@ -1605,7 +1614,26 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 			state.(*bgSessionState).busy.Store(false)
 		}
 		tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
-		a.emitSessionIdleIfNoActiveRun(cancelKey, msg.Channel, msg.ChatID, msg.SenderID)
+		// ⛔ 审计确证（state-gate-9-1）：WaitingUser 暂停期间 `activeTurnID` 仍指向该轮 ⇒
+		//   `emitSessionIdleIfNoActiveRun` 的守卫（有活动轮次不发 idle）**恒挡下**这条 idle
+		//   ⇒ 前端 `activeTurn` 永不清（busyFallback = activeTurn !== null）⇒ 用户取消 ask
+		//   后输入框停在「停止/思考中」，而侧栏 running 已是 false —— 两个源相反。
+		//   ⇒ 结构：这个分支的语义就是"该轮被取消"，先把活动轮次清掉，再发**带该轮 id** 的 idle
+		//   （客户端用 turn_id 丢弃旧轮迟到的 idle，见 `reduce.ts` 的 idle 归属规则）。
+		//   ⚠️ 不走 `emitSessionIdleIfNoActiveRun`：它的守卫前提（无活动轮次）与这里相反。
+		cancelledTurn := a.getActiveTurnID(cancelKey)
+		// 身份比对：若当前 activeTurnID 已属于**另一轮**（新一轮已认领），这条取消是旧的 ⇒
+		// 只清 pending + 写 ask_answer，**不动** activeTurnID、不发 idle（否则清掉新轮）。
+		if pausedTurn != 0 && cancelledTurn != 0 && pausedTurn != cancelledTurn {
+			a.sendPendingAskUserCancelAck(msg)
+			log.WithField("cancel_key", cancelKey).Info("AskUser cancel ignored: a newer turn already owns the chat")
+			return
+		}
+		a.clearActiveTurn(cancelKey)
+		a.emitSessionState(protocol.SessionEvent{
+			Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+			SenderID: msg.SenderID, TurnID: cancelledTurn,
+		})
 		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
 		return
@@ -1691,6 +1719,9 @@ func (a *Agent) emitSessionIdleIfCurrent(chatKey, channel, chatID, senderID stri
 	}
 	a.emitSessionState(protocol.SessionEvent{
 		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
+		// 结构性：把 idle 钉到**它结束的那一轮** —— 客户端据此丢弃"旧轮迟到 idle"
+		// （没有它，客户端只能靠 `sessionRunning` 猜，或者无条件降级 ⇒ 卡 busy）。
+		TurnID: a.getActiveTurnID(chatKey),
 	})
 }
 
@@ -1748,7 +1779,21 @@ func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, last
 		ss.busy.Store(false)
 	}
 	if i := strings.Index(chatKey, ":"); i > 0 {
-		a.emitSessionIdleIfNoActiveRun(chatKey, chatKey[:i], chatKey[i+1:], lastSenderID)
+		// ⛔ 审计确证（state-gate-11-1 确证-1 / 11-4）：旧实现直接调
+		//   `emitSessionIdleIfNoActiveRun`，而它的首行守卫是「有活动轮次 ⇒ 不发 idle」
+		//   —— 而本函数的触发前提（teardown 没执行 ⇒ 注册残留）恰好意味着
+		//   `activeTurnID` 仍指向那个**已经死掉**的轮次 ⇒ 这条"自愈 idle"在它唯一要救的
+		//   场景里**恒被自己挡下**（唯一目的 100% 失效）⇒ 前端永久卡 busy / 工具 pill 永久转圈。
+		//   ⇒ 自愈路径必须显式表达"这一轮注定结束"：先清活动轮次，再发**带该轮 id** 的 idle。
+		if deadTurn := a.getActiveTurnID(chatKey); deadTurn != 0 {
+			a.clearActiveTurn(chatKey)
+			a.emitSessionState(protocol.SessionEvent{
+				Channel: chatKey[:i], ChatID: chatKey[i+1:], Action: "idle",
+				SenderID: lastSenderID, TurnID: deadTurn,
+			})
+		} else {
+			a.emitSessionIdleIfNoActiveRun(chatKey, chatKey[:i], chatKey[i+1:], lastSenderID)
+		}
 	}
 }
 
@@ -1760,6 +1805,19 @@ func (a *Agent) emitSessionIdleIfNoActiveRun(chatKey, channel, chatID, senderID 
 		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active run owns this chat")
 		return
 	}
+	// ⛔ 审计确证（be-audit-1 C1）：存在「turn 已 announce、cancel 状态尚未注册」的窗口 ——
+	//   此时 `chatCancelCh` 查不到，但 `activeTurnID` 已经是**新一轮** ⇒ 照发 idle 会把它关掉。
+	//   ⇒ 有活动轮次就不发 idle（真收尾由 `emitSessionIdleIfCurrent` 那条带 runGen 守卫的路径负责）。
+	if a.getActiveTurnID(chatKey) != 0 {
+		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active turn still owns this chat")
+		return
+	}
+	// ⛔ 审计确证（state-gate-9-1 / 9-8）：本函数到达这里时 `activeTurnID` **必然为 0**
+	//   （上面的守卫已经返回），所以旧代码的 `clearActiveTurn` 与 `TurnID: getActiveTurnID()` 都是
+	//   **空操作/恒 0** —— 注释说"把 idle 钉到发起时的那一轮"，实际钉的是 0（客户端的
+	//   "旧轮迟到的 idle 丢弃"判据因此拿不到身份）。⇒ 删掉这两句死代码，语义回到诚实的
+	//   "会话级 idle（无轮次归属）"；带轮次身份的 idle 由 `emitSessionIdleIfCurrent`
+	//   （runGen 守卫）与该轮终止的显式出口（AskUser 取消分支）负责发射。
 	a.emitSessionState(protocol.SessionEvent{
 		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
 	})
@@ -3632,6 +3690,9 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					if !isWaitingUser {
 						// ⛔ 只有"仍是当前轮"才发 idle：迟到的旧轮收尾不得把新一轮误标 idle
 						a.emitSessionIdleIfCurrent(cancelKey, msg.Channel, msg.ChatID, msg.SenderID, runGen)
+						// ⛔ F15：回合收尾清掉 turn 归属 ⇒ 之后的「回合外」事件（todos/goal/命令）
+						//   不再携带上一个已完成 turn 的 id。
+						a.clearActiveTurn(cancelKey)
 						key := qualifyChatID(msg.Channel, msg.ChatID)
 						a.lastProgressSnapshot.Delete(key)
 						a.iterationHistories.Delete(key)
@@ -4603,6 +4664,20 @@ func (a *Agent) getActiveTurnID(sessionKey string) uint64 {
 	return 0
 }
 
+// clearActiveTurn 清掉"当前 turn"标记 —— 回合收尾必须调用。
+//
+// ⛔ 审计确证（F15）：`activeTurnID` 此前**只有写入、永不复位**（全仓唯一写点是 turn 开始），
+// 而「回合外」的 progress 事件（编辑 todo / 设置 goal / `/compress` / `/new`）都通过
+// `getActiveTurnID` 取 turn 归属 ⇒ 这些帧会带上**上一个已完成 turn** 的 id
+// （`phase=done` 帧因此把"结束"应用到已提交的那个 turn）。回合外事件不应携带 turn 归属。
+func (a *Agent) clearActiveTurn(sessionKey string) {
+	if state, ok := a.bgSessionStates.Load(sessionKey); ok {
+		if ss, ok2 := state.(*bgSessionState); ok2 && ss != nil {
+			ss.setActiveTurn(0)
+		}
+	}
+}
+
 // getActiveIteration returns the iteration number of the currently-processing
 // iteration for the given session key, or 0 if no turn is active. Set by
 // runState.beginIteration via cfg.OnIterationChange; read by stream callbacks
@@ -4674,11 +4749,27 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	seqPtr := a.progressSeqFor(progressKey)
 	seq := seqPtr.Add(1)
 
+	// ⛔ 审计（2026-10-21）：本 payload 会**覆盖** lastProgressSnapshot（见下方 Store），
+	//   但它此前**不带会话级字段** ⇒ 从 turn_started 到首个 iteration 事件之间若断线/心跳
+	//   重连，`GetActiveProgress` 返回的快照里 `todos:null`、无 goal ⇒ 前端只能保留旧值
+	//   （冷启动时干脆没有）⇒ 表现为「发消息后 todo/goal 空一段」。
+	//   这里补齐（todos 恒给：`[]` = 显式清空；goal 可空）。
+	var turnGoal *protocol.GoalInfo
+	if a.goalManager != nil {
+		turnGoal = a.goalManager.GoalInfo(progressKey)
+		if turnGoal == nil {
+			// ⛔ 审计确证（be-state-1 §1）：清除后 `GoalInfo` 为 nil 且 `Goal` 是 omitempty
+			//   ⇒ 该帧**没有 goal 键**，客户端无法从这条帧得知"已清除"（墓碑此前只在 pull 注入）。
+			turnGoal = a.goalManager.Tombstone(progressKey)
+		}
+	}
 	payload := &protocol.ProgressEvent{
-		ChatID: progressKey,
-		Phase:  "turn_started",
-		Seq:    seq,
-		TurnID: turnID,
+		ChatID:     progressKey,
+		Phase:      "turn_started",
+		Seq:        seq,
+		TurnID:     turnID,
+		Todos:      a.GetTodos(msg.Channel, msg.ChatID),
+		Goal:       turnGoal,
 		TurnStart: &protocol.TurnStartInfo{
 			Trigger:    trigger,
 			Content:    content,
@@ -4717,6 +4808,11 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 		Seq:       seq,
 		TurnID:    a.getActiveTurnID(progressKey),
 		Iteration: 0,
+		// ⛔ 审计确证（F14）：此 payload 随后被 `updateSnapshotFields` 写回快照 —— 若这里不填
+		//   Todos/Goal，就会把 **nil** 写进权威快照（**反向清掉** todos/goal）。而且发出去的帧
+		//   本身是 `"todos":null`，与「`[]` = 显式清空」的契约不一致。⇒ 必须填权威值。
+		Todos: a.GetTodos(chName, chatID),
+		Goal:  a.GetGoal(chName, chatID),
 	}
 
 	// Builtin commands use the same channel-agnostic fan-out contract as
@@ -4731,7 +4827,13 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 	}
 
 	// Store snapshot for mid-session reconnect
-	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
+	// ⛔ D1：字段级更新（todos/goal 这类会话级字段的事件绝不能整对象替换快照）。
+	goalVal := payload.Goal
+	todosVal := payload.Todos
+	a.updateSnapshotFields(progressKey, func(p *protocol.ProgressEvent) {
+		p.Goal = goalVal
+		p.Todos = todosVal
+	})
 	a.clearStreamState(progressKey)
 }
 
@@ -4768,7 +4870,19 @@ func (a *Agent) emitGoalProgress(chName, chatID string) {
 		})
 	}
 	// Update snapshot so GetActiveProgress also returns the goal.
-	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
+	// ⛔ 审计确证（state-final-10 C4）：这里此前**整对象替换**权威快照 —— 与 todos/clear_goal
+	//   已修的两处不同源。后果：①在飞时设目标 ⇒ 快照退化成 `phase:"" / iteration:0`
+	//   （丢 active_tools/iteration_history/流式内容）；②**空闲时**设目标会凭空造出一个
+	//   `phase:""` 的空快照 ⇒ 客户端探针把空 phase 当"有在飞"、本地却 idle ⇒ 每次回前台都
+	//   白拉一次全量 history。⇒ 与 todos 同款：字段级更新，无快照不写。
+	goalVal2 := payload.Goal
+	todosVal2 := payload.Todos
+	a.updateSnapshotFields(progressKey, func(p *protocol.ProgressEvent) {
+		p.Goal = goalVal2
+		if todosVal2 != nil {
+			p.Todos = todosVal2
+		}
+	})
 }
 
 // emitBuiltinProgressDone sends a PhaseDone progress event and cleans up the snapshot.
@@ -4787,6 +4901,9 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 		Phase:            string(PhaseDone),
 		Seq:              seq,
 		TurnID:           a.getActiveTurnID(progressKey),
+		// ⛔ 审计：本帧发出后快照就被删（下方 Delete），而合成 done 分支不带 todos/cwd
+		//   ⇒ `/compress` 之后重连的客户端拿不到权威 todo 列表与工作目录。这里一并带上。
+		Todos:            a.GetTodos(chName, chatID),
 		TokenUsage:       tokenUsage,
 		HistoryCompacted: historyCompacted,
 	}
@@ -4794,7 +4911,11 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 	if a.channelRange != nil {
 		a.channelRange(func(_ string, ch channel.Channel) bool {
 			if sender, ok := ch.(channel.ProgressSender); ok {
-				sender.SendProgress(chatID, payload)
+				// ⛔ 审计确证（be-state-1 §2，唯一确定的 fan-out 别名单点）：本处是**唯一**不 clone
+				//   的发送点（其余 5 处都 `cloneProgressEvent`），而 CLI channel 的 `SendProgress`
+				//   会**就地改写** payload（`payload.StreamContent = …`、`IterationHistory = merge…`）
+				//   ⇒ 同一指针随后还会被塞进 Web hub 的 `WSMessage.Progress` ⇒ 数据竞争 + 跨渠道污染。
+				sender.SendProgress(chatID, cloneProgressEvent(payload))
 			}
 			return true
 		})
