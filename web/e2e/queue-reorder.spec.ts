@@ -588,7 +588,9 @@ test.describe('staging tray drag-to-reorder — long queue edge auto-scroll', ()
     expect(samples[samples.length - 1]).toBeGreaterThan(geo.clientHeight)
     // ← 未修复时预览顺序恒为 0（这一条是"松手前实时重排"在自动滚动场景的红灯）
     for (let i = 1; i < positions.length; i++) expect(positions[i]).toBeGreaterThanOrEqual(positions[i - 1])
-    expect(positions[positions.length - 1]).toBeGreaterThan(positions[0])
+    // 首个采样可能已被「指针移到边缘」这次 move 推进（positions[0] 不是 0），
+    // 不能拿 positions[0] 当基线 —— 用拖拽前的初始位置 0；下一条仍要求越过初始窗口。
+    expect(positions[positions.length - 1]).toBeGreaterThan(0)
     expect(positions[positions.length - 1]).toBeGreaterThan(initiallyVisible.length)
 
     // 松手：落到「此刻可见的最后一张卡」的下半 ⇒ 落点在**初始可见窗口之外**
