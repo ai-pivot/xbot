@@ -571,7 +571,19 @@ func setupPipes(cmd *exec.Cmd) (stdoutPipe, stderrPipe io.ReadCloser, err error)
 		stdoutPipe.Close()
 		return nil, nil, fmt.Errorf("stderr pipe: %w", err)
 	}
-	return stdoutPipe, stderrPipe, cmd.Start()
+	if err := cmd.Start(); err != nil {
+		stdoutPipe.Close()
+		stderrPipe.Close()
+		// os/exec reports a failed chdir as "fork/exec <shell>: <err>", hiding
+		// the working directory. Keep the cwd in the message so the agent knows
+		// the real cause (issue #457). cmdbuilder.Build pre-validates Dir; this
+		// covers races and permission failures that stat cannot detect.
+		if cmd.Dir != "" {
+			return nil, nil, fmt.Errorf("failed to start %q in working directory %q: %w; use the Cd tool to change to an existing directory", cmd.Args[0], cmd.Dir, err)
+		}
+		return nil, nil, err
+	}
+	return stdoutPipe, stderrPipe, nil
 }
 
 // extractExitCodeFromState returns the exit code from an os.ProcessState.

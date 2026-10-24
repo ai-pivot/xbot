@@ -27,3 +27,11 @@
 - ⛔ **名字不承担唯一性**：key 形如 `agent/<uuid>/<name>`，uuid 是**每次发布新铸**的 ⇒ 不同会话分享同名文件天然各自独立（守护测试断言两次分享 key 不同）。❌ 不要为了"可读"把原始空格/任意字符塞回 key；用户可见的名字由 markdown 标签（display name）承载。
 - **存量链接**：2026-09-19 之前发布的 key **确实含空格**（磁盘名如此，不可回写）—— 在解码正确的客户端仍可下载；用**修好的代码重新分享一次**即得到干净 key。
 - 守护：`serverapp/file_sharer_test.go` 的 `TestWebFileSharer_KeyIsURLSafeAndEncodingAgnostic`（URL 不得含 `+`/空白 + **`+` 语义与 `%20` 语义必须解出同一个 key**（本 bug 的判别点）+ 同名两次分享 key 不同）；既有 `TestWebFileSharer_LocalCopiesFileAndReturnsURL` 的口径随之更新为"key 名必须 URL 安全（空格 → `_`）"。
+
+## 工作目录丢失绝不能伪装成 shell 缺失（2026-10-24 issue #457 根治）
+
+- **现象**：会话 cwd 被删除/移走（开发机迁移、git worktree 清理、临时目录回收）后，**所有** Shell 调用都报 `sandbox exec: fork/exec /usr/bin/zsh: no such file or directory` —— 把原因指向 shell 二进制，真实原因是 `cmd.Dir` 已不存在；agent 无法通过 Shell 自恢复（`pwd`/`ls` 全失败），只能先 `Cd` 到存在目录。
+- **根因**：`os/exec` 在**子进程里**做 chdir，失败时只返回 `fork/exec <shell>: <err>`（`*os.PathError` 的 Op 是 `fork/exec`，Path 是 shell 路径），**不含 cwd**；`internal/cmdbuilder.Build` 直接 `cmd.Dir = dir`，本地 `none` sandbox 没有存在性校验（远程 runner 有 `resolveWorkDir`，两端行为此前不一致）。
+- **契约**：① `internal/cmdbuilder.Build` 在赋值 `cmd.Dir` 前 `os.Stat` 校验；缺失/非目录 ⇒ 返回 `working directory %q is not accessible: ...; use the Cd tool to change to an existing directory`（**明确 cwd + 恢复路径**，绝不再出现 `fork/exec`）；② `tools/none_sandbox.go` 的 `setupPipes` 在 `cmd.Start()` 失败且 `cmd.Dir != ""` 时，把 cwd 与可执行文件都写进错误 —— 兜住 stat 与 start 之间的竞态/权限类 chdir 失败（stat 看不出的那种），保留底层原因。
+- **不选 fallback**：本地 none sandbox **不**静默退到 home/祖先目录 —— 在错误的目录里跑 `git`/`rm` 比明确失败危险得多；`Cd` 是设计好的恢复路径。
+- 守护：`tools/none_sandbox_missing_dir_test.go`（`Exec` 与 `noneSandboxExecAsync` 都必须报 cwd 错误、含 `Cd`、不含 `fork/exec`；已存在目录的正常执行不受影响）。
