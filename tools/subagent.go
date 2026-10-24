@@ -268,7 +268,7 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			if params.Task == "" {
 				return nil, fmt.Errorf("task is required for action=\"send\"")
 			}
-			result, err := im.SendInteractive(ctx, params.Task, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
+			result, err := im.SendInteractive(ctx, params.Task, params.Role, appendRoleRules(ctx, role), role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
 			if err != nil {
 				return nil, fmt.Errorf("interactive send failed: %w", err)
 			}
@@ -307,7 +307,7 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			// SpawnInteractiveSession.
 			ctx.Metadata["fork"] = params.Fork
 			// action="" + interactive=true → spawn/reuse
-			result, err := im.SpawnInteractive(ctx, params.Task, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
+			result, err := im.SpawnInteractive(ctx, params.Task, params.Role, appendRoleRules(ctx, role), role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
 			if err != nil {
 				return nil, fmt.Errorf("interactive spawn failed: %w", err)
 			}
@@ -321,7 +321,7 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 					oldCtx := ctx.Ctx
 					ctx.Ctx = sendCtx
 					defer func() { ctx.Ctx = oldCtx }()
-					return im.SendInteractive(ctx, task, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
+					return im.SendInteractive(ctx, task, params.Role, appendRoleRules(ctx, role), role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
 				}
 				if regErr := ctx.RegisterAgentChannel(agentChName, sendFn); regErr != nil {
 					// Non-fatal: SubAgent works, but SendMessage routing won't work

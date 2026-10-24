@@ -1,11 +1,13 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +34,7 @@ import (
 type DB struct {
 	conn         *sql.DB
 	path         string
+	closed       atomic.Bool // Close 幂等（D-01）
 	mu           sync.RWMutex
 	historyLocks [historyLockStripes]sync.Mutex
 
@@ -62,10 +65,95 @@ type DB struct {
 	walMu       sync.Mutex
 	lastWALInfo os.FileInfo
 	lastWALSize int64
+
+	// lockFile 持有 <db>.lock 上的 flock(LOCK_EX)。进程存活期间一直持有，
+	// Close 或进程退出（含崩溃）时由 OS 释放。
+	//
+	// 存在理由（2026-10-21 主库损坏事故）：SQLite 的 WAL 多进程共享只在
+	// 各进程都通过 SQLite 加锁时才安全；一旦有两个 xbot 实例（例如从
+	// /tmp/xbot-team 误启动、没设 XBOT_HOME 而落到生产库的那个）打开同一个
+	// 文件，先退出的实例会 checkpoint 并 unlink 掉 -wal，正在写的实例随即
+	// 读到结构损坏的页 —— `database disk image is malformed (11)`，
+	// page 248/247/4 全坏，只能从备份恢复。
+	//
+	// 独占锁把这种事故变成「第二个实例启动失败」，生产实例不受影响。
+	lockFile *os.File
 }
 
-const schemaVersion = 75
+const schemaVersion = 79
 const historyLockStripes = 64
+
+// dbLockEntry 是进程内对某个数据库文件持有的 flock，带引用计数。
+//
+// 为什么需要引用计数：本进程内有多处独立 `sqlite.Open()` 同一个主库
+// （serverapp 的 sharedDB / tokenDB、storage.MigrateMemoryToFiles、
+// session.MultiTenant），而 Linux 的 flock 是 **open file description** 级 ——
+// 同一个进程再次 open + flock(LOCK_EX) 会失败（EWOULDBLOCK）。所以锁必须按
+// 路径复用：第一次真正 flock，后续 Open 只增加引用计数，最后一个 Close 才释放。
+type dbLockEntry struct {
+	f    *os.File
+	refs int
+}
+
+var dbLocks = struct {
+	mu sync.Mutex
+	m  map[string]*dbLockEntry
+}{m: make(map[string]*dbLockEntry)}
+
+// acquireDBLock 取得（必要时创建）该路径的进程级独占锁。
+//
+// 为什么不用 SQLite 自己的锁：SQLite 的多进程锁只在**所有参与者都通过 SQLite
+// 访问**时成立。它能防止同时写，但**无法阻止**第二个进程在退出时 checkpoint
+// 并 unlink 掉 -wal —— 那正是 2026-10-21 主库被写坏的原因（page 248/247/4
+// 全部 malformed，只能从 pre-v75 备份恢复）。flock 是内核级的「同一时刻只有
+// 一个进程持有」，第二个进程在打开数据库之前就被拦住，生产实例不受影响。
+func acquireDBLock(path string) (*os.File, error) {
+	dbLocks.mu.Lock()
+	defer dbLocks.mu.Unlock()
+
+	if e, ok := dbLocks.m[path]; ok {
+		e.refs++
+		return e.f, nil
+	}
+
+	lockPath := path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open database lock file %s: %w", lockPath, err)
+	}
+	if err := flockExclusive(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("database %s is already in use by another xbot process (flock %s: %w) "+
+			"— refusing to open it: two processes sharing one WAL database can corrupt it",
+			path, lockPath, err)
+	}
+	// 记录持锁者 PID，便于排查「谁占着这个库」。
+	_ = f.Truncate(0)
+	if _, werr := f.WriteAt([]byte(strconv.Itoa(os.Getpid())+"\n"), 0); werr != nil {
+		log.WithError(werr).WithField("path", lockPath).Warn("Failed to record database lock owner pid")
+	}
+	dbLocks.m[path] = &dbLockEntry{f: f, refs: 1}
+	return f, nil
+}
+
+// releaseDBLock 减少引用计数，归零时才真正释放 flock 并关闭锁文件（幂等）。
+// 进程崩溃时 OS 也会释放锁。
+func releaseDBLock(path string) {
+	dbLocks.mu.Lock()
+	defer dbLocks.mu.Unlock()
+
+	e, ok := dbLocks.m[path]
+	if !ok {
+		return
+	}
+	e.refs--
+	if e.refs > 0 {
+		return
+	}
+	delete(dbLocks.m, path)
+	_ = funlock(e.f)
+	_ = e.f.Close()
+}
 
 // Open opens or creates a SQLite database at the given path
 // If the database doesn't exist, it will be created with the required schema
@@ -111,17 +199,41 @@ func Open(path string) (*DB, error) {
 		}
 	}
 
+	// 进程级独占锁：在打开数据库**之前**取 flock。第二个实例在这里就失败，
+	// 绝不会走到「共享同一个 WAL 文件」那一步。
+	var lockFile *os.File
+	if path != ":memory:" {
+		lf, lockErr := acquireDBLock(path)
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		lockFile = lf
+	}
+
 	// 主库连接池：MaxIdleConns(4)（常驻热连接，主库是全局单点）；会话库走
 	// openSQLite 的会话参数（MaxIdleConns(1) + ConnMaxIdleTime，见 OpenSessionDB）。
 	db, err := openSQLite(path, 4, 0)
 	if err != nil {
+		releaseDBLock(path)
 		return nil, err
 	}
+	db.lockFile = lockFile
 
 	// Initialize schema
 	if err := db.initSchema(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize schema: %w", err)
+	}
+
+	// 启动兜底（幂等）：补建「不在迁移链里、可能整库都没有」的表 —— oauth_tokens 与
+	// agent 记忆表（xbot_short_term_memories / xbot_long_term_memories）。本地/生产库
+	// 都已是当前版本，initSchema 在 version == schemaVersion 时直接 return，不会补这类表，
+	// 所以必须在这里补；否则 OAuth 登录/记忆功能会撞 no such table。
+	// 铁律：ensureStartupSchema **不返回错误**，只打 WARN —— 启动路径永不阻塞。
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ensureStartupSchema(ctx, db)
+		cancel()
 	}
 
 	log.WithFields(log.Fields{"path": path, "caller": callerTag(1)}).Info("SQLite database opened")
@@ -145,15 +257,34 @@ func (db *DB) historyLock(tenantID int64) *sync.Mutex {
 // enough to reset the WAL of a connection that is still writing — exactly the
 // class of event that lost ~2 minutes of committed writes on 2026-09-17.
 func (db *DB) Close() error {
+	// 幂等：同一 handle 被 Close 两次时，不得再减一次引用计数。
+	// 2026-10-22 审计 D-01 实证：Open 两次 → a.Close() 两次 → b 还活着，
+	// 但锁已 LOCK_UN，子进程成功开库（正是 10-21 事故要拦的那一步）。
+	if !db.closed.CompareAndSwap(false, true) {
+		return nil
+	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	// D-02（2026-10-22 审计）：conn.Close() 失败时也必须释放锁并清空 conn。
+	// 旧实现错误路径直接 return，而 closed 已置 true ⇒ 再次 Close 直接返回 nil，
+	// 引用计数永久泄漏、锁永不释放（比不修更糟）。
+	var closeErr error
 	if db.conn != nil {
-		if err := db.conn.Close(); err != nil {
-			return fmt.Errorf("close database: %w", err)
-		}
+		closeErr = db.conn.Close()
 		db.conn = nil
-		log.WithFields(log.Fields{"path": db.path, "caller": callerTag(1)}).Info("SQLite database closed")
+		if closeErr != nil {
+			log.WithFields(log.Fields{"path": db.path, "error": closeErr.Error()}).Warn("SQLite close returned error")
+		} else {
+			log.WithFields(log.Fields{"path": db.path, "caller": callerTag(1)}).Info("SQLite database closed")
+		}
 		db.logWALState("close")
+	}
+	// 释放进程级独占锁：必须在 conn.Close() 之后（checkpoint 已做完），
+	// 且无论 Close 成败都要释放。
+	releaseDBLock(db.path)
+	db.lockFile = nil
+	if closeErr != nil {
+		return fmt.Errorf("close database: %w", closeErr)
 	}
 	return nil
 }

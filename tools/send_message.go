@@ -12,6 +12,7 @@ import (
 	"xbot/bus"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/protocol"
 )
 
 // SendMessageTool sends a message to any addressable target.
@@ -64,12 +65,24 @@ Sends message immediately (fire-and-forget).`
 type SendMessageParams struct {
 	To      string `json:"to" jsonschema:"required,description=Target address (agent:xxx, group:xxx, feishu:xxx)"`
 	Message string `json:"message" jsonschema:"required,description=Message content to send"`
+
+	// 结构化消息（可选）。kind 缺省即普通文本，行为与旧版完全一致。
+	// kind != text 时走 StructureAppend：落库 + CAS（批复/回答），不做普通投递。
+	Kind           string `json:"kind,omitempty"`
+	Payload        string `json:"payload,omitempty"`
+	ReplyTo        string `json:"reply_to,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 func (t *SendMessageTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{Name: "to", Type: "string", Description: "Target address (agent:xxx, group:xxx, peer:xxx, session:xxx, feishu:xxx)", Required: true},
 		{Name: "message", Type: "string", Description: "Message content to send. For groups, use @agent:role/instance to trigger specific agents.", Required: true},
+		{Name: "kind", Type: "string", Description: "Optional structured kind: report | ask_user | answer | decision. Omit or 'text' for a plain message. Use kind=decision to approve/reject (批复) an existing report/ask_user — then payload must contain {\"verdict\":\"approve|reject|modify\"} and reply_to must be the target message_id. " +
+			"When kind=ask_user, the `message` field MUST carry the FULL context the user needs to decide — the user sees ONLY this message and the questions, nothing else (no chat history, no tool output). Write it as a self-contained briefing: (a) what triggered this question, (b) the concrete facts/numbers/paths involved, (c) what each option will cause, (d) what happens if the user picks nothing. Example: 'backend盘库发现 b300-9 根盘 97%（剩 6.6G），/tmp 下有 4 个 9 月实验副本共 77G 已导出 patch。A=立即删实验副本释放 77G；B=等今晚低峰再做。不做则明早可能写满触发告警。' A bare question without this context is a defect — the user will not be able to answer it."},
+		{Name: "payload", Type: "string", Description: "Optional JSON object string carrying the structured body, e.g. {\"summary\":\"...\"} for report, {\"questions\":[...]} for ask_user, {\"verdict\":\"approve\",\"comment\":\"...\"} for decision."},
+		{Name: "reply_to", Type: "string", Description: "Required for kind=decision: the message_id being approved/rejected."},
+		{Name: "idempotency_key", Type: "string", Description: "Optional. Same key twice = only one row (safe against double-clicks / retries)."},
 	}
 }
 
@@ -82,6 +95,11 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 	addr := params.To
 	if addr == "" {
 		return nil, fmt.Errorf("invalid address format: empty")
+	}
+
+	// 结构化分支：kind 缺省/为 text 时完全走旧路径（零回归）。
+	if kind := strings.ToLower(strings.TrimSpace(params.Kind)); kind != "" && kind != "text" {
+		return t.sendStructured(ctx, addr, kind, params)
 	}
 
 	// Dispatch by address prefix using HasPrefix for robustness.
@@ -115,6 +133,116 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 		return NewResult(result), nil
 	}
 	return NewResult(fmt.Sprintf("Message sent to %s", params.To)), nil
+}
+
+// sendStructured 提交一条结构化消息（report / ask_user / answer / decision）。
+//
+// 语义与 web 的 POST /api/message 完全一致——共用同一份落地实现（落库 + CAS），
+// 不做普通文本投递。三处硬约束：
+//  1. kind=decision 必须带 reply_to（要批的目标 message_id）；
+//  2. **禁止落到自身会话**：decision 是可投递（deliverable）的，落回自己会话会
+//     把发起者再触发一轮，形成自激循环。主会话批复必须打到目标会话。
+//  3. sender 记 ctx.OriginUserID（终端用户），用于审计"谁批的"。
+func (t *SendMessageTool) sendStructured(ctx *ToolContext, addr, kind string, p SendMessageParams) (*ToolResult, error) {
+	fn := structuredAppend()
+	if fn == nil {
+		return nil, fmt.Errorf("structured messages (kind=%s) are not available in this context", kind)
+	}
+	channel, chatID, err := structuredTarget(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload map[string]any
+	if s := strings.TrimSpace(p.Payload); s != "" {
+		if err := json.Unmarshal([]byte(s), &payload); err != nil {
+			return nil, fmt.Errorf("payload must be a JSON object string: %w", err)
+		}
+	}
+	replyTo := strings.TrimSpace(p.ReplyTo)
+	if kind == "decision" && replyTo == "" {
+		return nil, fmt.Errorf("reply_to (target message_id) is required for kind=decision")
+	}
+
+	// 身份：子代理记成 "agent:<role>:<instance>"，主会话记成终端用户。
+	//
+	// 判据用 SessionKey 而不是 ctx.AgentID —— 安全审计（2026-10-22）指出
+	// AgentID 在 interactive 会话里来自 msg.ParentAgentID，只有 spawn 那一次
+	// 赋值，后续 SendMessage 进来时大概率是空串，于是 sender 回落成 web-4，
+	// 导致「顶层会话在网页批复」被自批规则误杀、而「顶层会话走工具批复」却能过。
+	// SessionKey 形如 "agent:web:web-4/team.ops:main"，角色段总是存在。
+	sender := ""
+	if ctx != nil {
+		sender = ctx.OriginUserID
+		if sk := strings.TrimSpace(ctx.SessionKey); sk != "" {
+			if i := strings.LastIndex(sk, "/"); i > 0 && i < len(sk)-1 && strings.Contains(sk, ":") {
+				roleInst := sk[i+1:] // "team.ops:main"
+				sender = "agent:" + strings.Replace(roleInst, ":", "/", 1)
+			}
+		}
+		if sender == "" {
+			sender = ctx.SenderID
+		}
+	}
+	idempotency := strings.TrimSpace(p.IdempotencyKey)
+
+	caller := CallerScope{}
+	if ctx != nil {
+		caller = CallerScope{Channel: ctx.Channel, ChatID: ctx.ChatID, SessionKey: ctx.CallerSessionKey}
+	}
+	id, dup, err := fn(sender, caller, channel, chatID, protocol.StructuredMessageInput{
+		Kind:           kind,
+		Payload:        payload,
+		CorrelationID:  idempotency,
+		ReplyTo:        replyTo,
+		IdempotencyKey: idempotency,
+		Text:           p.Message,
+		Channel:        channel,
+		ChatID:         chatID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("structured send (kind=%s → %s:%s) failed: %w", kind, channel, chatID, err)
+	}
+
+	note := ""
+	if dup {
+		note = "（幂等命中：该消息此前已提交，未重复生效）"
+	}
+	switch kind {
+	case "decision":
+		return NewResult(fmt.Sprintf("批复已提交：decision #%d → 目标 #%s（%s:%s）%s", id, replyTo, channel, chatID, note)), nil
+	case "answer":
+		return NewResult(fmt.Sprintf("回答已提交：answer #%d（%s:%s）%s", id, channel, chatID, note)), nil
+	default:
+		return NewResult(fmt.Sprintf("%s 已提交：message #%d（%s:%s）%s", kind, id, channel, chatID, note)), nil
+	}
+}
+
+// structuredTarget 把 SendMessage 的地址解析成 (channel, chatID)。
+// 结构化消息只能打到**具体会话**：group:/peer: 是广播地址，没有单一的落库目标。
+func structuredTarget(addr string) (channel, chatID string, err error) {
+	switch {
+	case strings.HasPrefix(addr, "agent:"):
+		rest := strings.TrimPrefix(addr, "agent:")
+		if rest == "" {
+			return "", "", fmt.Errorf("invalid address %q: missing role/instance", addr)
+		}
+		return "agent", rest, nil
+	case strings.HasPrefix(addr, "session:"):
+		key := strings.TrimPrefix(addr, "session:")
+		i := strings.Index(key, ":")
+		if i <= 0 || i == len(key)-1 {
+			return "", "", fmt.Errorf("invalid session address %q: want session:<channel>:<chatID>", addr)
+		}
+		return key[:i], key[i+1:], nil
+	case strings.HasPrefix(addr, "group:"), strings.HasPrefix(addr, "peer:"):
+		return "", "", fmt.Errorf("kind != text cannot target %q: structured messages need one concrete session (agent:role/instance or session:<channel>:<chatID>)", addr)
+	}
+	ch, chat := parseAddress(addr)
+	if chat == "" {
+		return "", "", fmt.Errorf("invalid address %q: structured messages need a concrete session, e.g. agent:backend/main or session:web:chat_X", addr)
+	}
+	return ch, chat, nil
 }
 
 // sendToAgent sends a message to a single agent via Dispatcher.

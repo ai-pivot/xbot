@@ -472,6 +472,11 @@ type Agent struct {
 	// SubAgent 深度控制
 	maxSubAgentDepth int
 
+	// interactiveSessionTTLValue 是 interactive SubAgent 会话的空闲 TTL
+	// （agent.interactive_session_ttl）。0 = 用 defaultInteractiveSessionTTL。
+	// 读路径统一走 (*Agent).interactiveSessionTTL()。
+	interactiveSessionTTLValue time.Duration
+
 	// Cron service and scheduler
 	cronSvc storage.CronStore
 	cronSch *cron.Scheduler
@@ -498,6 +503,18 @@ type Agent struct {
 	// key: "channel:chatID" -> chan struct{} (buffered, cap=1)
 	cancelStateMu sync.Mutex
 	chatCancelCh  sync.Map
+
+	// runDoneChs: key: "channel:chatID" -> chan struct{}，在该会话**当前轮**的收尾
+	// （processMessage 已返回、cancel 注册已摘除）时 close。
+	//
+	// ⛔ 存在的唯一理由（用户 2026-10-22：「cancel 只要 api 返回了一定必须已经取消
+	// 成功，它是阻塞的」）：旧实现里 interceptCancel 只把信号塞进 chatCancelCh 就
+	// 立刻 return，HTTP 已经回了 "已取消"，而 turn 还在跑当前工具 —— 客户端看到的是
+	// "取消了但没停"。⇒ 需要一个"这一轮真的结束了"的**权威信号**，让取消方阻塞到
+	// 它关闭（见 ActiveRunDone）。
+	// 与 chatCancelCh 同生共死：registerActiveCancelState 建，finishActiveCancelState
+	// / cleanupStaleCancelState 摘除并 close。
+	runDoneChs sync.Map
 
 	// runGen：每个 chat 最近一次 Run 的**轮次代号**（单调递增）。
 	// ⛔ 存在的唯一理由（用户 2026-10-17 P0「后端乱发 session_idle」）：回合收尾的 defer 会在
@@ -556,7 +573,19 @@ type Agent struct {
 	// （用户症状：迭代不再更新 / 内容回退）。改为 per-session 持久计数器，
 	// 首次以 UnixMilli 播种（跨进程重启也单调），此后只增不减。
 	// key: "channel:chatID" -> *atomic.Uint64
+	// progressSeq sync.Map
 	progressSeq sync.Map
+
+	// toolIDs assigns the STABLE server-side call id of every tool call before
+	// it first appears in any frame (STATE-MODEL P2 / P3′ / C-8). Tool identity
+	// is never the provider's id (which arrives late / in fragments) — that one
+	// travels as protocol.ToolProgress.ProviderCallID.
+	toolIDs *toolIdentity
+
+	// turnFrames enforces "exactly one done per iteration, exactly one final per
+	// turn" (STATE-MODEL C-6 / C-7). Every exit path reports through it; duplicate
+	// reports are dropped instead of double-sent.
+	turnFrames *turnFrameTracker
 
 	// interactiveSubAgents stores interactive SubAgent sessions
 	// key: "channel:chatID/roleName" -> *interactiveAgent
@@ -664,6 +693,11 @@ type Agent struct {
 	// bgNotifyLoop always buffers notifications, then signals the session's state channel.
 	// chatWorker registers on entry and deregisters on exit.
 	bgSessionStates sync.Map
+
+	// structuredQueues maps chatKey → *StructuredQueue：插队优先队列（结构化消息）。
+	// 运行中的 turn 在 iteration 边界消费；空闲时 DeliverStructuredMessage 直接
+	// 开启新 turn。见 structured_queue.go。
+	structuredQueues sync.Map
 
 	// agentCtx is the Agent-level context, set when Run() starts and cancelled when Run() exits.
 	// Background interactive subagents derive their context from this (not from per-request ctx)
@@ -1600,7 +1634,7 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		//
 		// ss.busy 仍显式复位（幂等）以覆盖旧版残留 busy=true 的窗口；worktree 的
 		// busy 标记同理。SenderID: session owner —— 漏填时对 web 渠道走无过滤
-		// fan-out 分支（广播给所有用户，多用户部署下暴露会话元数据）。取消者 = 会话 owner。
+		// fan-out 分支（广播给所有用户，多用data署下暴露会话元数据）。取消者 = 会话 owner。
 		if state, ok := a.bgSessionStates.Load(cancelKey); ok {
 			state.(*bgSessionState).busy.Store(false)
 		}
@@ -1697,6 +1731,9 @@ func (a *Agent) emitSessionIdleIfCurrent(chatKey, channel, chatID, senderID stri
 func (a *Agent) registerActiveCancelState(cancelKey string, cancelCh chan struct{}, reqCancel context.CancelFunc) bool {
 	a.cancelStateMu.Lock()
 	defer a.cancelStateMu.Unlock()
+	// 新一轮 = 新的 run-done 通道。绝不复用上一轮的（那条已经 close，等待方会
+	// 立刻返回并谎报"已取消"）。
+	a.runDoneChs.Store(cancelKey, make(chan struct{}))
 	a.chatCancelCh.Store(cancelKey, cancelCh)
 	_, pending := a.pendingCancel.LoadAndDelete(cancelKey)
 	if pending {
@@ -1714,7 +1751,43 @@ func (a *Agent) finishActiveCancelState(cancelKey string, reqCtx context.Context
 	wasCancelled := reqCtx.Err() == context.Canceled
 	a.chatCancelCh.Delete(cancelKey)
 	reqCancel()
+	a.closeRunDone(cancelKey)
 	return wasCancelled
+}
+
+// closeRunDone 关闭该会话当前轮的 run-done 通道（幂等：重复 close 会 panic，
+// 所以必须先 LoadAndDelete 拿到"这一次"的独占所有权）。
+// 调用方必须持有 cancelStateMu（与 chatCancelCh 的摘除保持同一临界区）。
+func (a *Agent) closeRunDone(cancelKey string) {
+	if v, ok := a.runDoneChs.LoadAndDelete(cancelKey); ok {
+		if done, ok := v.(chan struct{}); ok {
+			close(done)
+		}
+	}
+}
+
+// ActiveRunDone 返回该会话**当前轮**的完成信号：通道关闭 ⇒ 这一轮真的跑完了
+// （processMessage 返回、cancel 注册已摘除）。ok=false ⇒ 当前没有活跃轮次，
+// 此时 /cancel 是无操作，调用方必须立即返回成功（不等待）。
+//
+// 这是唯一被授权回答"取消是否已经生效"的接口：chatCancelCh 的存在只说明
+// "有活跃轮次"，不代表取消已经生效 —— 生效点在这里关闭的那一刻。
+func (a *Agent) ActiveRunDone(ch, chatID string) (<-chan struct{}, bool) {
+	if ch == "" || chatID == "" {
+		return nil, false
+	}
+	cancelKey := ch + ":" + chatID
+	a.cancelStateMu.Lock()
+	defer a.cancelStateMu.Unlock()
+	if _, active := a.chatCancelCh.Load(cancelKey); !active {
+		return nil, false
+	}
+	if v, ok := a.runDoneChs.Load(cancelKey); ok {
+		if done, ok := v.(chan struct{}); ok {
+			return done, true
+		}
+	}
+	return nil, false
 }
 
 // cleanupStaleCancelState —— chatProcessLoop 的「最后防线」兜底（2026-10-01 cancel 无效事故）。
@@ -1735,10 +1808,13 @@ func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, last
 	a.cancelStateMu.Lock()
 	chVal, stillRegistered := a.chatCancelCh.LoadAndDelete(chatKey)
 	a.pendingCancel.Delete(chatKey)
-	a.cancelStateMu.Unlock()
 	if !stillRegistered {
+		a.cancelStateMu.Unlock()
 		return // 正常路径：keepRunning 收尾已清 —— 零副作用
 	}
+	// Run 无声消失也要释放 run-done 等待方，否则 /api/cancel 只能等满超时。
+	a.closeRunDone(chatKey)
+	a.cancelStateMu.Unlock()
 	log.WithField("cancel_key", chatKey).Warn(
 		"Stale cancel state after chatProcessLoop exit — self-healing (Run vanished without teardown)")
 	if ch, ok := chVal.(chan struct{}); ok {
@@ -1889,6 +1965,11 @@ type Config struct {
 	MCPInactivityTimeout time.Duration // MCP 不活跃超时时间
 	MCPCleanupInterval   time.Duration // MCP 清理扫描间隔
 	SessionCacheTimeout  time.Duration // 会话缓存超时
+
+	// InteractiveSessionTTL 是 interactive SubAgent 会话的空闲 TTL
+	// （config: agent.interactive_session_ttl，默认 defaultInteractiveSessionTTL=30m）。
+	// 0 = 用默认值 —— 保持与硬编码时代完全一致的行为。
+	InteractiveSessionTTL time.Duration
 
 	// 上下文管理模式
 	// 优先级：ContextMode > EnableAutoCompress 旧字段
@@ -2249,6 +2330,9 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.SessionCacheTimeout == 0 {
 		cfg.SessionCacheTimeout = 24 * time.Hour
 	}
+	if cfg.InteractiveSessionTTL <= 0 {
+		cfg.InteractiveSessionTTL = defaultInteractiveSessionTTL
+	}
 	if cfg.MaxContextTokens == 0 {
 		cfg.MaxContextTokens = 100000 // 默认 100k token
 	}
@@ -2281,6 +2365,8 @@ func New(cfg Config) (*Agent, error) {
 		maxConcurrency:         cfg.MaxConcurrency,
 		deltaPush:              cfg.DeltaPush,
 		iterationLoopDetection: cfg.IterationLoopDetection,
+		toolIDs:                newToolIdentity(),
+		turnFrames:             newTurnFrameTracker(),
 
 		skills:             skillStore,
 		agents:             agentStore,
@@ -2297,6 +2383,8 @@ func New(cfg Config) (*Agent, error) {
 		directWorkspace:  cfg.DirectWorkspace,
 		globalSkillDirs:  resolveGlobalSkillsDirs(cfg.SkillsDir),
 		maxSubAgentDepth: cfg.MaxSubAgentDepth,
+		// interactive SubAgent 空闲 TTL（agent.interactive_session_ttl）。
+		interactiveSessionTTLValue: cfg.InteractiveSessionTTL,
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 		agentsDir: filepath.Join(cfg.WorkDir, ".xbot", "agents"),
 		xbotHome:  cfg.XbotHome,
@@ -3696,6 +3784,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 						Channel: msg.Channel,
 						ChatID:  msg.ChatID,
 						Content: content,
+						// 兜底也要带回合身份（否则客户端无法把这条错误收尾到本轮）
+						TurnID: a.outboundTurnID(msg.Channel, msg.ChatID, msg.Metadata, 0),
 					}
 				}
 				// Synthetic notification pairs are acknowledged only after their DB
@@ -3810,6 +3900,11 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	userCtx := a.ResolveUserContext(msg.Channel, msg.ChatID, msg.SenderID, msg.Metadata)
 	ctx = WithUserContext(ctx, userCtx)
 
+	// 重启恢复（2026-10-21）：把本会话在重启前存在的整棵子代理树重建回内存，
+	// 让 SendMessage/SubAgent send 重新可寻址。幂等（已在内存的跳过）、深度受限、
+	// 单个失败不影响本次消息处理。
+	a.restoreInteractiveTree(ctx, msg.Channel, msg.ChatID, 0)
+
 	preview := msg.Content
 	if r := []rune(preview); len(r) > 80 {
 		preview = string(r[:80]) + "..."
@@ -3918,6 +4013,13 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			if out != nil {
 				out.Metadata = markCommandReply(out.Metadata)
 			}
+			// 命令是 turn-less 的（这里直接 return，从不进入 Run 循环），而 goal 的
+			// 「干到完为止」续跑只存在于 Run 内部（PreTurnEnd 钩子 → maybeContinueTurn）。
+			// 有 active goal 时执行任何命令（/compress、/settings…）都会把会话留在
+			// idle，用户看到「活儿干到一半就停了」——2026-10-21 用户亲报「压缩后会话
+			// 没自动继续」。把控制权交还给 Run：注入一个 resume turn（与 /continue
+			// 同一机制，空 user 消息，DB 已有锚点）。
+			a.resumeRunAfterCommand(msg.Channel, msg.ChatID, msg.SenderID)
 			return out, nil
 		}
 	}
@@ -4002,7 +4104,12 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// the original Run() started). InjectInboundResume sends an empty message
 	// with resume_turn metadata — Assemble skips appending a user message
 	// entirely (UserMessage is empty), so no duplicate to remove.
-	resumeTurn := msg.Metadata != nil && msg.Metadata["resume_turn"] == "true"
+	//
+	// structured_delivery: an answer/decision/text was already persisted as a
+	// structured row by the API before delivery. The turn must not persist a
+	// second user row for it — same skip semantics as resume_turn (empty content).
+	resumeTurn := msg.Metadata != nil &&
+		(msg.Metadata["resume_turn"] == "true" || msg.Metadata["structured_delivery"] == "true")
 
 	// 运行 Agent 循环（统一 Run）
 	// Eager-save user message BEFORE Run() so incrementally persisted assistant/tool
@@ -4396,7 +4503,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	)
 
 	// Resume turn: skip user message synthesis (already in DB history)
-	if msg.Metadata != nil && msg.Metadata["resume_turn"] == "true" {
+	if msg.Metadata != nil && (msg.Metadata["resume_turn"] == "true" || msg.Metadata["structured_delivery"] == "true") {
 		mc.ResumeTurn = true
 	}
 
@@ -4642,7 +4749,7 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	// are atomic). The turn_started SSE event is emitted AFTER this Delete,
 	// so the frontend's reload (triggered by turn_started) sees the clean
 	// state.
-	if msg.Metadata == nil || msg.Metadata["resume_turn"] != "true" {
+	if msg.Metadata == nil || (msg.Metadata["resume_turn"] != "true" && msg.Metadata["structured_delivery"] != "true") {
 		a.iterationHistories.Delete(progressKey)
 	}
 
@@ -4857,6 +4964,38 @@ func (a *Agent) persistCommandRow(channel, chatID, role, content string) {
 	}
 }
 
+// outboundTurnID resolves the TurnID of a **turn-scoped** outbound message.
+// ONE implementation for every path that puts a turn-scoped message on the
+// wire — `sendMessage` and the callers that build `channel.OutboundMsg`
+// themselves (cancel ack, final-reply/error fallbacks). Precedence:
+//
+//	① explicit > 0   — the caller already knows the turn (cancel ack's
+//	                   cancelTurnID, card response's turn): authoritative even
+//	                   after the turn ended and activeTurnID was cleared.
+//	② meta["turn_id"] — RunConfig.TurnID, stamped by the normal reply path.
+//	③ getActiveTurnID — callers without either (tool-initiated send mid-turn).
+//	④ command_reply=true ⇒ **always 0**: commands are dispatched without a turn
+//	   (no turn_started / turn_id), so falling back to getActiveTurnID would
+//	   stamp the command output with whatever turn happens to be running — the
+//	   frontend then commits it as that turn's final reply, which the real reply
+//	   overwrites ⇒ command output silently vanishes ("!pwd 没有输出").
+func (a *Agent) outboundTurnID(chName, chatID string, meta map[string]string, explicit uint64) uint64 {
+	if explicit > 0 {
+		return explicit
+	}
+	if meta != nil {
+		if meta["command_reply"] == "true" {
+			return 0
+		}
+		if tidStr := meta["turn_id"]; tidStr != "" {
+			if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
+				return tid
+			}
+		}
+	}
+	return a.getActiveTurnID(qualifyChatID(chName, chatID))
+}
+
 // 通过 directSend 直连或 bus.Outbound 广播。
 func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[string]string) error {
 	key := qualifyChatID(chName, chatID)
@@ -4879,26 +5018,10 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 	}
 
 	// Stamp the TurnID so the frontend can associate this reply with the correct
-	// user message. Prefer the caller-supplied turn_id (authoritative, parsed
-	// from RunConfig.TurnID in handleRunOutput); fall back to getActiveTurnID
-	// for callers that don't pass one (e.g. tool-initiated sends mid-turn).
-	if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
-		if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
-			msg.TurnID = tid
-		}
-	}
-	if msg.TurnID == 0 {
-		// ⚠️ 命令回复（`!cmd` bang / slash 命令）**没有 turn** —— 后端命令分发按设计
-		// 不分配 turn（无 turn_started/turn_id），绝不能回落到 getActiveTurnID：
-		// 否则当该会话里正有 turn 在跑时（例如用户等 agent 输出时插了条 `!pwd`），
-		// 命令输出会被打上那个 turn 的 id，前端 M4 状态机把它当作该 turn 的最终
-		// 回复提交 → 随后被该 turn 的真回复覆盖 → **命令输出静默消失**
-		// （用户报告："!pwd 没有输出"；探针实证：turn 进行中发 !echo 的 text 事件
-		// 带上了 "turn_id":1）。命令回复由 sendCommandReply 打上 command_reply 标记。
-		if msg.Metadata["command_reply"] != "true" {
-			msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
-		}
-	}
+	// user message. The rule lives in ONE place (`outboundTurnID`) so every
+	// turn-scoped outbound path — sendMessage **and** the paths that build a
+	// `channel.OutboundMsg` themselves (cancel ack / fallbacks) — cannot drift.
+	msg.TurnID = a.outboundTurnID(chName, chatID, msg.Metadata, 0)
 
 	isFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
 

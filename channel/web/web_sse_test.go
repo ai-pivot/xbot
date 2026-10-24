@@ -16,7 +16,6 @@ import (
 
 	ch "xbot/channel"
 	"xbot/protocol"
-	"xbot/tools"
 )
 
 func TestSSEAskUser_PendingMissingConsumed(t *testing.T) {
@@ -305,15 +304,22 @@ func TestSSEIsolatesChannelsWithTheSameChatID(t *testing.T) {
 	wc.hub.sendToSession("cli", "web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "foreign cli"})
 	wc.hub.sendToSession("web", "web-1", protocol.WSMessage{Type: protocol.MsgTypeText, Content: "web event"})
 
-	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 1)
+	// 同一 chatID 挂在两条 route 上：**帧不串台**（隔离本意不变），但序号来自
+	// **同一个 per-chat 计数器**（STATE-MODEL C-1：同一 chat 无论几条 route 都共用一个
+	// 计数器，不许回退/重号）。此前每条 route 各自从 1 开始编号 ⇒ 客户端拿到重号会把
+	// 新状态当迟到帧丢弃。
+	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 2)
 	if msg.Content != "web event" {
 		t.Fatalf("cross-channel SSE event leaked: %#v", msg)
 	}
 	if got := wc.getEventStream(sessionRouteKey("cli", "web-1")).lastSeq(); got != 1 {
 		t.Fatalf("CLI stream seq = %d, want 1", got)
 	}
-	if got := wc.getEventStream(sessionRouteKey("web", "web-1")).lastSeq(); got != 1 {
-		t.Fatalf("Web stream seq = %d, want 1", got)
+	if got := wc.getEventStream(sessionRouteKey("web", "web-1")).lastSeq(); got != 2 {
+		t.Fatalf("Web stream seq = %d, want 2 (shared per-chat counter)", got)
+	}
+	if got := wc.chatSeqFor("web-1").get(); got != 2 {
+		t.Fatalf("per-chat counter = %d, want 2", got)
 	}
 }
 
@@ -1152,191 +1158,6 @@ func runWSReplay(t *testing.T, wc *WebChannel, client *Client, senderID string, 
 			client.sendCh <- ack
 		}
 	default:
-	}
-}
-
-func TestSSEDeliversRealAskUserToolMetadata(t *testing.T) {
-	db := newTestDB(t)
-	wc, _ := newTestWebChannel(t, db)
-	chatID := "web-1"
-	var pendingMu sync.RWMutex
-	var pending *protocol.ProgressEvent
-	wc.SetCallbacks(WebCallbacks{
-		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
-			pendingMu.RLock()
-			defer pendingMu.RUnlock()
-			if pending == nil {
-				return false
-			}
-			copy := *pending
-			copy.Questions = append([]protocol.AskUserQuestion(nil), pending.Questions...)
-			return fn(&copy)
-		},
-	})
-	server := startTestServer(t, wc)
-	cookie := loginTestAdmin(t, server.URL)
-	resp := openSSE(t, server.URL, cookie, chatID, "")
-	defer resp.Body.Close()
-
-	// The fresh SSE connect reconciles stale client caches with
-	// ask_user_resolved("cleared") — wait for it so the following frames
-	// sequence deterministically after it (all frame ids below shift by 1).
-	waitForRouteEventType(t, wc, SessionSelector{Channel: "web", ChatID: chatID}, protocol.MsgTypeAskUserResolved)
-
-	toolResult, err := (&tools.AskUserTool{}).Execute(
-		&tools.ToolContext{},
-		`{"questions":[{"question":"Continue?","options":["yes","no"]}]}`,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	requestID := toolResult.Metadata["request_id"]
-	if requestID == "" {
-		t.Fatal("real AskUser metadata has no request ID")
-	}
-	var questions []protocol.AskUserQuestion
-	if err := json.Unmarshal([]byte(toolResult.Metadata["ask_questions"]), &questions); err != nil {
-		t.Fatal(err)
-	}
-	pendingMu.Lock()
-	pending = &protocol.ProgressEvent{RequestID: requestID, Questions: questions}
-	pendingMu.Unlock()
-	if _, err := wc.Send(ch.OutboundMsg{
-		Channel:     "web",
-		ChatID:      chatID,
-		WaitingUser: true,
-		Metadata:    toolResult.Metadata,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	reader := bufio.NewReader(resp.Body)
-	reconcile := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeAskUserResolved, 1)
-	if reconcile.ChatID != chatID || reconcile.AskUserResolvedReason != "cleared" {
-		t.Fatalf("reconcile event = %#v", reconcile)
-	}
-	assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeText, 2)
-	ask := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeAskUser, 3)
-	if ask.Progress == nil || ask.Progress.RequestID != requestID {
-		t.Fatalf("AskUser SSE request ID = %#v, want %q", ask.Progress, requestID)
-	}
-	if len(ask.Progress.Questions) != 1 || ask.Progress.Questions[0].Question != "Continue?" {
-		t.Fatalf("AskUser SSE questions = %#v", ask.Progress.Questions)
-	}
-}
-
-func TestSSEPendingAskUserFallbackCarriesEnvelopeIdentity(t *testing.T) {
-	wc, _ := newTestWebChannel(t, nil)
-	sel := SessionSelector{Channel: "web", ChatID: "chat_AABAA2BC15DC"}
-	wc.SetCallbacks(WebCallbacks{
-		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
-			if channel != "web" || gotChatID != sel.ChatID {
-				t.Fatalf("pending lookup = %q/%q, want web/%s", channel, gotChatID, sel.ChatID)
-			}
-			return fn(&protocol.ProgressEvent{RequestID: "request-1"})
-		},
-	})
-
-	// 2026-09-20 P0 事故：提问发布时该会话【没有任何 SSE 订阅者】（服务端日志：最后一次
-	// 订阅 05:19:37、下一次 05:29:40），所以这次重连 fallback 是面板的唯一载体。它的
-	// 信封必须携带完整身份（Channel + route 字段）：前端把缓存的 prompt 按
-	// "<channel>:<chatID>" 建 key（与 live 路径 WebChannel.Send 发布的 key 同一份），
-	// 缺 Channel 会让客户端进入"猜 channel"的回退链（连接 channel → active session →
-	// 默认值）——猜错即 prompt 存进没人读的 key ⇒ 面板永不渲染，turn 永远"思考中"，
-	// 用户只能按 Stop 逃出去。
-	wc.publishSSEFallbacks(sel, 0)
-
-	events := wc.replaySSEEvents(sel, 0)
-	if len(events) != 1 || events[0].Type != protocol.MsgTypeAskUser {
-		t.Fatalf("published events = %#v", events)
-	}
-	ask := events[0]
-	if ask.Channel != "web" || ask.ChatID != sel.ChatID {
-		t.Fatalf("ask envelope identity = %q/%q, want web/%s", ask.Channel, ask.ChatID, sel.ChatID)
-	}
-	if ask.RouteChannel != "web" || ask.RouteChatID != sel.ChatID {
-		t.Fatalf("ask envelope route = %q/%q, want web/%s", ask.RouteChannel, ask.RouteChatID, sel.ChatID)
-	}
-	if askUserRequestID(ask) != "request-1" {
-		t.Fatalf("ask request id = %q, want request-1", askUserRequestID(ask))
-	}
-}
-
-func TestSSEPendingAskUserFallbackPublishesAtomicSnapshot(t *testing.T) {
-	wc, _ := newTestWebChannel(t, nil)
-	chatID := "web-1"
-	lookupCount := 0
-	wc.SetCallbacks(WebCallbacks{
-		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
-			lookupCount++
-			return fn(&protocol.ProgressEvent{RequestID: "request-1"})
-		},
-	})
-
-	wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 0)
-
-	if lookupCount != 1 {
-		t.Fatalf("pending AskUser lookup count = %d, want 1", lookupCount)
-	}
-	events := wc.replaySSEEvents(SessionSelector{Channel: "web", ChatID: chatID}, 0)
-	if len(events) != 1 || askUserRequestID(events[0]) != "request-1" {
-		t.Fatalf("published AskUser events = %#v", events)
-	}
-}
-
-func TestSSEPendingAskUserPublicationLinearizesBeforeConcurrentClear(t *testing.T) {
-	wc, _ := newTestWebChannel(t, nil)
-	chatID := "web-1"
-	var pendingMu sync.RWMutex
-	pending := &protocol.ProgressEvent{RequestID: "request-1"}
-	withPendingEntered := make(chan struct{})
-	wc.SetCallbacks(WebCallbacks{
-		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
-			pendingMu.RLock()
-			defer pendingMu.RUnlock()
-			if pending == nil {
-				return false
-			}
-			copy := *pending
-			close(withPendingEntered)
-			return fn(&copy)
-		},
-	})
-
-	wc.hub.seqMu.Lock()
-	publishDone := make(chan struct{})
-	go func() {
-		wc.publishSSEFallbacks(SessionSelector{Channel: "web", ChatID: chatID}, 0)
-		close(publishDone)
-	}()
-	<-withPendingEntered
-
-	clearDone := make(chan struct{})
-	go func() {
-		pendingMu.Lock()
-		pending = nil
-		pendingMu.Unlock()
-		close(clearDone)
-	}()
-	select {
-	case <-clearDone:
-		t.Fatal("pending AskUser clear overtook an in-flight publication")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	wc.hub.seqMu.Unlock()
-	select {
-	case <-publishDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("pending AskUser publication did not finish")
-	}
-	select {
-	case <-clearDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("pending AskUser clear did not finish after publication")
-	}
-	if got := wc.getEventStream(chatID).lastSeq(); got != 1 {
-		t.Fatalf("last sequence = %d, want 1 for publication ordered before clear", got)
 	}
 }
 

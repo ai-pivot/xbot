@@ -766,8 +766,15 @@ func relocateIncompleteTurnUsers(history []HistoryMessage) []HistoryMessage {
 }
 
 // windowTurnIterations 折叠视图（D2 区域窗口 + D3 工具轻字段化）的装配：
-// 取该 turn 尾部 HistoryRegionWindow 个区域，窗口内每条经 MapIterationRecord(rec, true)
+// 取该 turn 尾部 HistoryRegionWindow 个区域，窗口内每条经 MapIterationRecord(rec, **true**)
 // 轻字段化（ToolsFolded 标记，GenUI 工具豁免）。返回 (窗口迭代, 更早未下发区域数)。
+//
+// ⛔ 折叠参数这里是**薄/厚开关**（`true` = 省略详情大字段以守住载荷预算，实测 6.2%），
+//
+//	**不是**"工具多到要折叠 pill"的策略阈值：`FoldToolsForRecord`（>8 才折叠）是**前端 pill
+//	展示**口径（web `PILL_INLINE_MAX = 8`），套到这里会让 1~8 枚工具的迭代全带详情 ⇒
+//	REST 历史体积回潮到 42%（`TestConvert_ViewTrue_PayloadBudget`）、并让折叠标记消失
+//	（`TestConvert_ViewTrue_FoldsToolDetails` / `TestView_RestoresLegacySyntheticPair_Folded`）。
 //
 // 区域原子性由 RegionWindow 保证：窗口 = 连续迭代号区间 [a..N]，起点必是某个
 // 区域的 head ⇒ 工具组永不劈开，窗口内迭代号连续（前端 assertIterationContinuity

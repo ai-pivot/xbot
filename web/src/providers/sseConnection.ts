@@ -63,6 +63,9 @@ export const SSE_EVENT_TYPES = [
   'web_plugin_push',
   'web_plugin_rpc',
   'queue_state',
+  // 结构化消息（ask_user/report/decision/answer/event）——跨端同步依赖它。
+  // ⚠️ 必须与后端 isSSEEventType 同时包含：缺任一侧都会「编译通过但收不到」。
+  'structured_message',
 ] as const
 
 type Handler<T> = (payload: T) => void

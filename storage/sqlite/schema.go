@@ -1,13 +1,14 @@
 package sqlite
 
 import (
+	"context"
 	"fmt"
 
 	log "xbot/logger"
 )
 
 // createSchema creates the initial database schema at the current schemaVersion.
-// The DDL includes ALL tables/columns/indexes that migrations v1→v69 would add,
+// The DDL includes ALL tables/columns/indexes that migrations v1→v77 would add,
 // so fresh databases skip the migration chain entirely. This is critical on
 // Windows where running every migration per test DB causes CI timeouts (600s+).
 //
@@ -57,6 +58,22 @@ CREATE TABLE session_messages (
     record_type TEXT NOT NULL DEFAULT 'message',
     target_history_id INTEGER,
     record_data TEXT,
+    -- v74: 群组消息信封（Agent 通信指挥室）。群发 = 遍历成员各发一份，
+    -- 每个成员会话库里的副本都带同一 group_id 与发送者身份。
+    group_id TEXT NOT NULL DEFAULT '',
+    sender_type TEXT NOT NULL DEFAULT '',
+    sender_id TEXT NOT NULL DEFAULT '',
+    sender_name TEXT NOT NULL DEFAULT '',
+    -- v75: 结构化消息列（与会话库 v5 同一列清单；主库仅遗留迁移期使用）。
+    chat_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    reply_to TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    structured_json TEXT NOT NULL DEFAULT '',
+    direction TEXT NOT NULL DEFAULT '',
+    answered INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
 );
@@ -72,6 +89,8 @@ CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, r
 -- message per tenant). WHERE role IN ('user','assistant') keeps tool/assistant-tool rows
 -- out of the index.
 CREATE INDEX IF NOT EXISTS idx_sm_tenant_role_id ON session_messages(tenant_id, role, id) WHERE role IN ('user','assistant');
+-- v74: 群组展示的游标分页索引（按群取一页，id DESC 直接走索引）。
+CREATE INDEX IF NOT EXISTS ix_sm_group_cursor ON session_messages(group_id, id DESC);
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,
@@ -138,7 +157,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (75);
+INSERT INTO schema_version (version) VALUES (79);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -353,9 +372,104 @@ CREATE TABLE IF NOT EXISTS shared_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_shared_artifacts_creator ON shared_artifacts(created_by);
 
--- OAuth credentials. Lives in the main schema (not created by the OAuth package)
--- because token storage now goes through the storage backend: on PG there is no
--- SQLite file to open, so the table must exist wherever the backend points.
+-- 注意：oauth_tokens 不在上面/下面这段 DDL 里 —— 它的建表语句单点定义在文件尾部的
+-- oauthTokensSchema 常量（createSchema 与 ensureStartupSchema 共用同一份，避免两份
+-- DDL 漂移）；列清单与 oauth/storage.go 的 initSchema 逐字一致（同一个库文件）。
+-- v74: 群组元数据（Agent 通信指挥室）。只有两张小表，没有群级消息表：
+-- 群发 = 遍历 alive 成员各发一份，消息落在各自会话库。
+CREATE TABLE IF NOT EXISTS groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL,
+    member_addr TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'alive',
+    joined_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, member_addr)
+);
+CREATE INDEX IF NOT EXISTS ix_group_members_addr ON group_members(member_addr, status);
+
+-- v76: interactive SubAgent 注册表（重启后递归重建子代理树）。
+-- 只存重建所需的最小事实；messages 在各子代理自己的 TenantSession 里。
+CREATE TABLE IF NOT EXISTS interactive_agents (
+    agent_key       TEXT PRIMARY KEY,
+    parent_channel  TEXT NOT NULL,
+    parent_chat_id  TEXT NOT NULL,
+    role_name       TEXT NOT NULL,
+    instance        TEXT NOT NULL DEFAULT '',
+    group_id        TEXT NOT NULL DEFAULT '',
+    task            TEXT NOT NULL DEFAULT '',
+    background      INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'idle',
+    turn_id         INTEGER NOT NULL DEFAULT 0,
+    model_name      TEXT NOT NULL DEFAULT '',
+    sub_id          TEXT NOT NULL DEFAULT '',
+    origin_user_id  TEXT NOT NULL DEFAULT '',
+    workspace_root  TEXT NOT NULL DEFAULT '',
+    parent_agent_id TEXT NOT NULL DEFAULT '',
+    last_error      TEXT NOT NULL DEFAULT '',
+    last_reply      TEXT NOT NULL DEFAULT '',
+    -- v77: 最近一次「回复文本发生变化」的时刻（空 = 从未回复）。活动视图按它显示
+    -- 「这个子代理最后一次真正说话是什么时候」。
+    last_reply_at   TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_ia_parent ON interactive_agents(parent_channel, parent_chat_id);
+CREATE INDEX IF NOT EXISTS ix_ia_status ON interactive_agents(status);
+CREATE INDEX IF NOT EXISTS ix_ia_updated ON interactive_agents(updated_at DESC);
+-- v77: 跨会话「活动流」索引（通信视图性能重构）。
+--
+-- 铁律：结构化消息本体只落会话分库（one session one DB）。跨会话看消息若逐库
+-- 打开，代价随会话数线性恶化（40 会话 ≈ 40 次 open + 8000 行）。这张表在主库
+-- 冗余一份「可展示的最小摘要」，视图只打主库一张表，与会话数无关。
+--
+-- 只收结构化 kind（report/ask_user/answer/decision/command/event），普通 text
+-- 不入索引 —— 否则索引会被聊天文本撑成第二个消息库。
+-- created_at 固定宽度 UTC（2006-01-02T15:04:05.000000000Z）：字符串序 == 时间序，
+-- 因此 ORDER BY created_at DESC 可以直走索引（不用函数索引/解析）。
+CREATE TABLE IF NOT EXISTS activity_index (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id   INTEGER NOT NULL,
+    chat_id     TEXT    NOT NULL,
+    channel     TEXT    NOT NULL,
+    message_id  INTEGER NOT NULL,
+    kind        TEXT    NOT NULL,
+    sender_id   TEXT    NOT NULL DEFAULT '',
+    sender_name TEXT    NOT NULL DEFAULT '',
+    summary     TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,
+    UNIQUE(tenant_id, chat_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_index(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_chat   ON activity_index(chat_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_kind   ON activity_index(kind, created_at DESC);
+
+`
+	if _, err := db.Conn().Exec(schema); err != nil {
+		return fmt.Errorf("create schema: %w", err)
+	}
+	// oauth_tokens 的 DDL 只在这里定义一次（oauthTokensSchema），fresh DB 必须建出来，
+	// 否则 OAuth 登录路径会撞 no such table。既有库缺表由 ensureStartupSchema 补。
+	if _, err := db.Conn().Exec(oauthTokensSchema); err != nil {
+		return fmt.Errorf("create oauth schema: %w", err)
+	}
+	log.WithField("version", schemaVersion).Info("Database schema initialized")
+	return nil
+}
+
+// oauthTokensSchema is the OAuth token table + expiry index.
+//
+// Single source of truth for this DDL inside storage/sqlite: it is executed both by
+// createSchema (fresh databases) and by ensureStartupSchema (databases created
+// before the table existed). The column list MUST stay identical to
+// oauth.SQLiteStorage.initSchema — that path runs against this very database
+// (shared DB, not a separate file), and a mismatch would make one initializer
+// silently fail against the other's table.
+const oauthTokensSchema = `
 CREATE TABLE IF NOT EXISTS oauth_tokens (
     provider TEXT NOT NULL,
     channel TEXT NOT NULL,
@@ -397,9 +511,24 @@ CREATE TABLE IF NOT EXISTS push_settings (
     updated_at INTEGER NOT NULL DEFAULT 0
 );
 `
-	if _, err := db.Conn().Exec(schema); err != nil {
-		return fmt.Errorf("create schema: %w", err)
+
+// ensureStartupSchema creates the tables that a database may legitimately lack
+// even though its schema_version is already current — either because the table
+// shipped after that version was introduced, or because it was created outside
+// the migration chain entirely:
+//
+//   - oauth_tokens        (only ever created by the oauth storage/service path)
+//   - xbot_*_memories     (agent memory: created by the memory provider on first use)
+//
+// Every statement is IF NOT EXISTS, so this is idempotent and cheap on each start.
+//
+// 启动路径铁律：xbot-server 由 supervisor 托管，Open() 返回错误就会「启动失败 → 自动
+// 重启 → 再失败」崩溃循环。所以这里**只告警、不返回错误**，绝不阻断启动。
+func ensureStartupSchema(ctx context.Context, db *DB) {
+	if _, err := db.Conn().ExecContext(ctx, oauthTokensSchema); err != nil {
+		log.WithError(err).Warn("Ensure oauth_tokens schema failed; continuing without it")
 	}
-	log.WithField("version", schemaVersion).Info("Database schema initialized")
-	return nil
+	if err := NewAgentMemoryService(db).EnsureAgentMemorySchema(ctx); err != nil {
+		log.WithError(err).Warn("Ensure agent memory schema failed; continuing without it")
+	}
 }

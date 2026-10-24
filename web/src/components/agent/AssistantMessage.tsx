@@ -12,6 +12,7 @@ import { memo } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { HumanErrorNotice, classifyError } from './HumanError'
 import { CopyTarget } from './MessageActions'
 import { RegionsDivider } from './RegionsDivider'
 import { TurnBody } from './TurnBody'
@@ -90,6 +91,9 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
   const finalContent = !emptyResponse && !hasIterations && !liveHasContent
     ? message.content
     : ''
+  // 后端/模型服务的原始报错（`dial tcp … connection refused #1…#5`）不能直接印给
+  // 用户：翻成「发生了什么 + 重试 + 默认折叠的技术详情」。只有整段就是报错时才拦。
+  const humanError = finalContent ? classifyError(finalContent) : null
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
 
   // ── 展示区域窗口（D1）：`regions_before > 0` ⇒ 行顶渲染分隔条 + IO 哨兵 ──
@@ -140,9 +144,13 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
           heightScope={heightScope}
         />
         {(!isStreaming || isFrozenLive) && finalContent && (
-          <div data-annotation-body={!isStreaming && !message.displayOnly ? '' : undefined}>
-            <MarkdownRenderer content={finalContent} noDebounce />
-          </div>
+          humanError ? (
+            <HumanErrorNotice error={humanError} />
+          ) : (
+            <div data-annotation-body={!isStreaming && !message.displayOnly ? '' : undefined}>
+              <MarkdownRenderer content={finalContent} noDebounce />
+            </div>
+          )
         )}
         {!isStreaming && emptyResponseWarning && (
           <LLMEmptyResponseWarning text={emptyResponseWarning} />

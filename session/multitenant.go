@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,6 +164,64 @@ type MultiTenantSession struct {
 	sessionDBs   map[int64]*sessionDBEntry // tenantID → open session DB
 	sessionDBMu  sync.Mutex                // guards sessionDBs（锁序：m.mu → sessionDBMu，绝不反向）
 	sessionDBDir string                    // 会话库根目录（= 主库所在目录；db_path 相对此解析）
+
+	// destroyedTenants 是**已销毁租户的墓碑**（tenantID 集合，独立锁，绝不与
+	// sessionDBMu / m.mu 嵌套获取）。
+	//
+	// 为什么需要（2026-10-22 05:26 生产 panic 的铁证日志）：
+	//   DestroySession → deleteSessionDBFile 关掉会话库、删掉 <db>.db/-wal/-shm，
+	//   同一秒里并发路径（消息投递 / restore / 通知）又 GetOrCreateSession 把**同一个
+	//   文件路径**重新 open 出来 —— 日志签名 "SQLite database closed" 紧跟
+	//   "WAL state ... where=open"。那一代会话库已经在 close 语义之后被复用
+	//   （use-after-close），最终把进程打成 exit status 2。
+	//
+	// 墓碑把这条路堵死：租户一旦销毁就**永不复用**（tenantID 是 AUTOINCREMENT，
+	// 不会回收），sessionDB() 对墓碑租户直接返回明确错误，绝不重新 open 文件。
+	// stale 引用因此拿到 "tenant ... was destroyed" 而不是一个半开的库。
+	destroyedMu      sync.RWMutex
+	destroyedTenants map[int64]struct{}
+	destroyedOrder   []int64 // FIFO 淘汰顺序（墓碑只防"秒级并发"，不需要永久保留）
+}
+
+// maxDestroyedTenants 是墓碑集合的软上限。超出后按 FIFO 淘汰最旧的 id ——
+// 正确性论证：能观察到某个 tenantID 的引用只存在于销毁瞬间前后（秒级），而
+// 淘汰发生在其后又积累了 65536 次销毁之后，实际不可能再命中。
+const maxDestroyedTenants = 65536
+
+// errSessionDestroyed 表示目标租户的会话库已被销毁（或正在销毁）。
+var errSessionDestroyed = errors.New("session was destroyed")
+
+// markTenantDestroyed 记录"该租户已销毁"。必须在关闭/删除其会话库**之前**调用。
+func (m *MultiTenantSession) markTenantDestroyed(tenantID int64) {
+	if m == nil || tenantID == 0 {
+		return
+	}
+	m.destroyedMu.Lock()
+	defer m.destroyedMu.Unlock()
+	if m.destroyedTenants == nil {
+		m.destroyedTenants = make(map[int64]struct{})
+	}
+	if _, ok := m.destroyedTenants[tenantID]; ok {
+		return
+	}
+	m.destroyedTenants[tenantID] = struct{}{}
+	m.destroyedOrder = append(m.destroyedOrder, tenantID)
+	if len(m.destroyedOrder) > maxDestroyedTenants {
+		drop := m.destroyedOrder[0]
+		m.destroyedOrder = m.destroyedOrder[1:]
+		delete(m.destroyedTenants, drop)
+	}
+}
+
+// isTenantDestroyed 报告该租户的会话库是否已被销毁。
+func (m *MultiTenantSession) isTenantDestroyed(tenantID int64) bool {
+	if m == nil {
+		return false
+	}
+	m.destroyedMu.RLock()
+	defer m.destroyedMu.RUnlock()
+	_, ok := m.destroyedTenants[tenantID]
+	return ok
 }
 
 // NewMultiTenant creates a new multi-tenant session manager

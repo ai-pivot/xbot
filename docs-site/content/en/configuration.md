@@ -214,7 +214,8 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
     "llm_retry_timeout": "120s",
     "mcp_inactivity_timeout": "30m",
     "mcp_cleanup_interval": "5m",
-    "session_cache_timeout": "24h"
+    "session_cache_timeout": "24h",
+    "interactive_session_ttl": "30m"
   }
 }
 ```
@@ -238,6 +239,7 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 | `mcp_inactivity_timeout` | duration | `"30m"` | MCP server inactivity timeout |
 | `mcp_cleanup_interval` | duration | `"5m"` | MCP cleanup interval |
 | `session_cache_timeout` | duration | `"24h"` | Session cache timeout |
+| `interactive_session_ttl` | duration | `"30m"` | Idle TTL for interactive SubAgent sessions; on expiry the session and its session DB are destroyed. Env: `INTERACTIVE_SESSION_TTL`. `0`/omitted = 30m default |
 
 `0` or an omitted retry count uses 5 total attempts (including the first call), never unlimited retries. Zero initial/max delay uses 1s/30s. An explicit server `--config` file uses the same defaults and environment overrides as the default config. Provider error code `unsupported_country_region_territory` stops immediately; other errors retain bounded exponential backoff.
 

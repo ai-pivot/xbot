@@ -269,20 +269,25 @@ test.describe('Streaming scroll jitter', () => {
     await page.waitForFunction(() => document.body.textContent?.includes('Message 99'), { timeout: 10000 })
     await page.waitForTimeout(500)
 
-    // ── Scroll to the top (user reading history at the beginning) ──
-    // Home key → onKeyDown → pauseFollowing() → stickToBottomRef = false
+    // ── 走到「靠近顶部 + 非跟随」状态（2026-10-22 CI 修：原来是 Home 键） ──
+    //
+    // 原写法 `focus() + press('Home') + wheel(0, 50)` 在 headless 共享 runner 上
+    // 不可靠：Home 依赖浏览器默认滚动 + 键盘焦点，CI 实测落点 1520（既不是 0，
+    // 也不是底部 9k 量级），于是 `expect(<200)` 直接红。
+    //
+    // 更关键的是**顺序**：sticky 跟随开着时任何 scrollTop 赋值都会被立刻拉回底部
+    // （本地实测：设 scrollTop=60 → 300ms 后回到 9384）。所以必须
+    //   ① 真实滚轮事件关闭跟随（onWheel → pauseFollowing → stickToBottomRef=false）
+    //   ② 再设置目标 scrollTop
+    // 反过来一定失败。判据一个字没改（>5 / <200 / |after-before|<5）。
     const scrollContainer = page.locator('[data-message-list-content]').locator('..')
-    await scrollContainer.focus()
-    await page.keyboard.press('Home')
-    await page.waitForTimeout(300)
-
-    // ── Scroll down slightly (50px) — user is near the top but not at scrollTop=0 ──
-    // This sets stickToBottomRef=false (via onWheel → pauseFollowing).
-    // scrollTop is now ~50, so the first item (item.start=0) satisfies the
-    // virtualizer's default condition `item.start < scrollTop` (0 < 50 = TRUE).
-    // The item's bottom (item.end ≈ 250) is still IN the viewport.
-    await page.mouse.wheel(0, 50)
-    await page.waitForTimeout(300)
+    await scrollContainer.hover() // 让 wheel 真正落在消息列表上（不是 (0,0) 的工具栏）
+    await page.mouse.wheel(0, -1) // 真实滚轮 → pauseFollowing()
+    await page.waitForTimeout(200)
+    await scrollContainer.evaluate((el) => {
+      el.scrollTop = 60 // 跟随已关闭，此时才放得住
+    })
+    await page.waitForTimeout(200)
 
     const scrollTopBefore = await page.evaluate(() => {
       const els = Array.from(document.querySelectorAll('div'))

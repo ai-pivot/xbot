@@ -103,7 +103,7 @@ func TestExtractRoleName(t *testing.T) {
 		path []string
 		want string
 	}{
-		{[]string{"main/crown-prince"}, "crown-prince"},
+		{[]string{"main/lead"}, "lead"},
 		{[]string{"a/b", "a/b/c"}, "c"},
 		{[]string{"simple"}, "simple"},
 		{[]string{"deep/nested/path"}, "path"},
@@ -128,20 +128,20 @@ func TestIsSubAgentLine(t *testing.T) {
 		want bool
 	}{
 		// 树状格式
-		{"├─ 🔄 ministry-works: ⏳ Shell(ls)", true},
-		{"└─ ✅ 刑部:", true},
-		{"│ 🔄 工部: running", true},
+		{"├─ 🔄 backend: ⏳ Shell(ls)", true},
+		{"└─ ✅ qa:", true},
+		{"│ 🔄 backend: running", true},
 		// 引用格式（实际运行时子 Agent 穿透上来的格式化行）
-		{"> 🔄 crown-prince: 💭 思考中...", true},
-		{"> ✅ ministry-works:", true},
-		{"> ❌ ministry-justice: Error: test failed", true},
-		{"> 　🔄 department-state: 分派三部", true},
+		{"> 🔄 lead: 💭 思考中...", true},
+		{"> ✅ backend:", true},
+		{"> ❌ qa: Error: test failed", true},
+		{"> 　🔄 coordinator: 分派三个子代理", true},
 		// 带全角缩进（子 Agent 格式化输出）
-		{"　🔄 ministry-works: ⏳ Shell(ls)", true},
-		{"　✅ ministry-justice:", true},
+		{"　🔄 backend: ⏳ Shell(ls)", true},
+		{"　✅ qa:", true},
 		// SubAgent 占位行格式
-		{"> ⏳ SubAgent [ministry-works]: ...", true},
-		{"> ⏳ SubAgent [department-state]: ...", true},
+		{"> ⏳ SubAgent [backend]: ...", true},
+		{"> ⏳ SubAgent [coordinator]: ...", true},
 		{"⏳ SubAgent [test-role]: ...", true},
 
 		// 不是子 Agent 行
@@ -185,12 +185,12 @@ func TestIsStatusEmojiLine(t *testing.T) {
 		{"❌ SubAgent: task", false},
 		{"✅ Grep: pattern", false},
 		// Chinese role names accepted
-		{"🔄 刑部: 审查中", true},
-		{"✅ 工部:", true},
-		{"❌ 中书省: 方案有问题", true},
+		{"🔄 qa: 审查中", true},
+		{"✅ backend:", true},
+		{"❌ planner: 方案有问题", true},
 		// Real agent roles accepted
-		{"🔄 crown-prince: 调度中", true},
-		{"✅ ministry-works:", true},
+		{"🔄 lead: 调度中", true},
+		{"✅ backend:", true},
 		{"❌ explore: 分析失败", true},
 	}
 	for _, tt := range tests {
@@ -209,13 +209,13 @@ func TestIsPlausibleAgentRole(t *testing.T) {
 		want bool
 	}{
 		// Agent roles → true
-		{"crown-prince", true},
-		{"ministry-works", true},
+		{"lead", true},
+		{"backend", true},
 		{"explore", true},
-		{"department-state", true},
-		{"刑部", true},
-		{"工部", true},
-		{"中书省", true},
+		{"coordinator", true},
+		{"qa", true},
+		{"backend", true},
+		{"planner", true},
 		{"role", true},
 		{"test-agent_v2", true},
 		// Tool names → false (PascalCase)
@@ -258,23 +258,23 @@ func TestParseSubAgentLine(t *testing.T) {
 		wantDesc     string
 	}{
 		// 树状格式
-		{"├─ 🔄 ministry-works: ⏳ Shell(ls) ...", true, "ministry-works", "", "🔄", "⏳ Shell(ls) ..."},
-		{"└─ ✅ 刑部:", true, "刑部", "", "✅", ""},
-		{"│ 🔄 工部: running", true, "工部", "", "🔄", "running"},
+		{"├─ 🔄 backend: ⏳ Shell(ls) ...", true, "backend", "", "🔄", "⏳ Shell(ls) ..."},
+		{"└─ ✅ qa:", true, "qa", "", "✅", ""},
+		{"│ 🔄 backend: running", true, "backend", "", "🔄", "running"},
 		// 引用格式
 		// 占位行格式
-		{"> ⏳ SubAgent [ministry-works]: ...", true, "ministry-works", "", "⏳", "..."},
-		{"⏳ SubAgent [department-state]: some desc", true, "department-state", "", "⏳", "some desc"},
+		{"> ⏳ SubAgent [backend]: ...", true, "backend", "", "⏳", "..."},
+		{"⏳ SubAgent [coordinator]: some desc", true, "coordinator", "", "⏳", "some desc"},
 
-		{"> 🔄 crown-prince: 💭 思考中...", true, "crown-prince", "", "🔄", "💭 思考中..."},
-		{"> ✅ ministry-works:", true, "ministry-works", "", "✅", ""},
-		{"> 　🔄 department-state: 分派三部", true, "department-state", "", "🔄", "分派三部"},
-		{"　🔄 ministry-works: ⏳ Shell(ls)", true, "ministry-works", "", "🔄", "⏳ Shell(ls)"},
+		{"> 🔄 lead: 💭 思考中...", true, "lead", "", "🔄", "💭 思考中..."},
+		{"> ✅ backend:", true, "backend", "", "✅", ""},
+		{"> 　🔄 coordinator: 分派三个子代理", true, "coordinator", "", "🔄", "分派三个子代理"},
+		{"　🔄 backend: ⏳ Shell(ls)", true, "backend", "", "🔄", "⏳ Shell(ls)"},
 		// 实例格式：同 role 不同 instance 的 SubAgent
 		{"> 🔄 explore [mem-1]: reading files", true, "explore", "mem-1", "🔄", "reading files"},
 		{"> 🔄 explore [hooks-1]: reading hooks", true, "explore", "hooks-1", "🔄", "reading hooks"},
 		{"> ✅ explore [mem-1]:", true, "explore", "mem-1", "✅", ""},
-		{"> 🔄 crown-prince [audit]: thinking", true, "crown-prince", "audit", "🔄", "thinking"},
+		{"> 🔄 lead [audit]: thinking", true, "lead", "audit", "🔄", "thinking"},
 		// 实例格式：no-colon completion
 		{"✅ explore [mem-1]", true, "explore", "mem-1", "✅", ""},
 		// 失败场景
@@ -315,45 +315,45 @@ func TestFormatChildAgentsSummary(t *testing.T) {
 		},
 		{
 			"single running",
-			[]childAgentStatus{{Role: "工部", Status: "🔄", Desc: "⏳ Shell(ls)"}},
-			100, "🔄 工部(⏳ Shell(ls))",
+			[]childAgentStatus{{Role: "backend", Status: "🔄", Desc: "⏳ Shell(ls)"}},
+			100, "🔄 backend(⏳ Shell(ls))",
 		},
 		{
 			"single completed no desc",
-			[]childAgentStatus{{Role: "刑部", Status: "✅"}},
-			100, "✅ 刑部",
+			[]childAgentStatus{{Role: "qa", Status: "✅"}},
+			100, "✅ qa",
 		},
 		{
 			"3 mixed",
 			[]childAgentStatus{
-				{Role: "工部", Status: "🔄", Desc: "⏳ Shell(go version)"},
-				{Role: "刑部", Status: "✅"},
-				{Role: "礼部", Status: "🔄", Desc: "💭 思考中"},
+				{Role: "backend", Status: "🔄", Desc: "⏳ Shell(go version)"},
+				{Role: "qa", Status: "✅"},
+				{Role: "docs", Status: "🔄", Desc: "💭 思考中"},
 			},
-			100, "🔄 工部(⏳ Shell(go version)) · ✅ 刑部 · 🔄 礼部(💭 思考中)",
+			100, "🔄 backend(⏳ Shell(go version)) · ✅ qa · 🔄 docs(💭 思考中)",
 		},
 		{
 			"all completed",
 			[]childAgentStatus{
-				{Role: "工部", Status: "✅"},
-				{Role: "刑部", Status: "✅"},
-				{Role: "礼部", Status: "✅"},
+				{Role: "backend", Status: "✅"},
+				{Role: "qa", Status: "✅"},
+				{Role: "docs", Status: "✅"},
 			},
-			100, "✅ 工部 · ✅ 刑部 · ✅ 礼部",
+			100, "✅ backend · ✅ qa · ✅ docs",
 		},
 		{
 			"with failure",
 			[]childAgentStatus{
-				{Role: "工部", Status: "✅"},
-				{Role: "刑部", Status: "❌", Desc: "Error: test failed"},
-				{Role: "礼部", Status: "🔄", Desc: "⏳ running"},
+				{Role: "backend", Status: "✅"},
+				{Role: "qa", Status: "❌", Desc: "Error: test failed"},
+				{Role: "docs", Status: "🔄", Desc: "⏳ running"},
 			},
-			100, "✅ 工部 · ❌ 刑部(Error: test failed) · 🔄 礼部(⏳ running)",
+			100, "✅ backend · ❌ qa(Error: test failed) · 🔄 docs(⏳ running)",
 		},
 		{
 			"desc truncated",
-			[]childAgentStatus{{Role: "工部", Status: "🔄", Desc: "this is a very long description that should be truncated"}},
-			100, "🔄 工部(this is a very long…)",
+			[]childAgentStatus{{Role: "backend", Status: "🔄", Desc: "this is a very long description that should be truncated"}},
+			100, "🔄 backend(this is a very long…)",
 		},
 		{
 			"total truncated",
@@ -408,33 +408,33 @@ func TestExtractOwnAndChildProgress(t *testing.T) {
 		},
 		{
 			"tree lines only",
-			[]string{"├─ 🔄 工部: ⏳ ls", "├─ ✅ 刑部:"},
-			"", 2, "工部",
+			[]string{"├─ 🔄 backend: ⏳ ls", "├─ ✅ qa:"},
+			"", 2, "backend",
 		},
 		{
 			"quoted child lines (actual runtime format, with indent)",
-			[]string{"> 🔄 ministry-works: ⏳ Shell(go version)", "> ✅ ministry-justice:"},
-			"", 2, "ministry-works",
+			[]string{"> 🔄 backend: ⏳ Shell(go version)", "> ✅ qa:"},
+			"", 2, "backend",
 		},
 		{
 			"own + tree children",
-			[]string{"分派三部", "├─ 🔄 工部: ⏳ ls", "├─ ✅ 刑部:"},
-			"分派三部", 2, "工部",
+			[]string{"分派三个子代理", "├─ 🔄 backend: ⏳ ls", "├─ ✅ qa:"},
+			"分派三个子代理", 2, "backend",
 		},
 		{
 			"own + quoted children (actual runtime format, with indent)",
-			[]string{"分派三部并行执行", "> 🔄 ministry-works: ⏳ Shell(go version)", "> ✅ ministry-justice:"},
-			"分派三部并行执行", 2, "ministry-works",
+			[]string{"分派三个子代理并行执行", "> 🔄 backend: ⏳ Shell(go version)", "> ✅ qa:"},
+			"分派三个子代理并行执行", 2, "backend",
 		},
 		{
 			"mixed: own + quoted children + deep quoted lines",
 			[]string{
 				"三部执行中",
-				"> 🔄 ministry-works: ⏳ Shell(go version)",
-				"> ✅ ministry-justice:",
+				"> 🔄 backend: ⏳ Shell(go version)",
+				"> ✅ qa:",
 				"> 💭 思考中...", // emoji status line without colon → filtered out
 			},
-			"三部执行中", 2, "ministry-works",
+			"三部执行中", 2, "backend",
 		},
 		{
 			"quoted progress status filtered out (no role:colon format)",
@@ -443,16 +443,16 @@ func TestExtractOwnAndChildProgress(t *testing.T) {
 		},
 		{
 			"multiline own content",
-			[]string{"【奏报】判定：🟢 直接执行\n理由：任务清晰\n→ 尚书省"},
-			"→ 尚书省", 0, "",
+			[]string{"【状态回报】判定：🟢 直接执行\n理由：任务清晰\n→ coordinator"},
+			"→ coordinator", 0, "",
 		},
 		{
 			"multiline with children mixed in",
 			[]string{
-				"【奏报】判定：🟢 直接执行\n理由：任务清晰\n→ 尚书省",
-				"> 🔄 department-state: 分派三部",
+				"【状态回报】判定：🟢 直接执行\n理由：任务清晰\n→ coordinator",
+				"> 🔄 coordinator: 分派三个子代理",
 			},
-			"→ 尚书省", 1, "department-state",
+			"→ coordinator", 1, "coordinator",
 		},
 		{
 			"tool completion lines ignored (no indent, looks like sub-agent but is tool)",
@@ -468,10 +468,10 @@ func TestExtractOwnAndChildProgress(t *testing.T) {
 			[]string{
 				"分派中",
 				"> ✅ Shell: go version (508ms)",
-				"> 🔄 department-state: 分派三部",
-				"> 　　🔄 工部: ⏳ Shell(ls)",
+				"> 🔄 coordinator: 分派三个子代理",
+				"> 　　🔄 backend: ⏳ Shell(ls)",
 			},
-			"分派中", 1, "department-state",
+			"分派中", 1, "coordinator",
 		},
 	}
 	for _, tt := range tests {
@@ -503,38 +503,38 @@ func TestFormatSubAgentProgress(t *testing.T) {
 		{
 			name: "single line thinking",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince"},
+				Path:  []string{"main/lead"},
 				Lines: []string{"💭 思考中..."},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: 💭 思考中...",
+			want: "> 🔄 lead: 💭 思考中...",
 		},
 		{
 			name: "single line tool progress",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince"},
+				Path:  []string{"main/lead"},
 				Lines: []string{"⏳ Shell(ls) ..."},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: ⏳ Shell(ls) ...",
+			want: "> 🔄 lead: ⏳ Shell(ls) ...",
 		},
 		{
 			name: "no content (empty lines) — should show running, not done",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince"},
+				Path:  []string{"main/lead"},
 				Lines: []string{""},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince:",
+			want: "> 🔄 lead:",
 		},
 		{
 			name: "no content (nil lines) — should show running, not done",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince"},
+				Path:  []string{"main/lead"},
 				Lines: nil,
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince:",
+			want: "> 🔄 lead:",
 		},
 		{
 			name: "empty path with content",
@@ -567,48 +567,48 @@ func TestFormatSubAgentProgress(t *testing.T) {
 		{
 			name: "multi line content - takes last non-empty",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince"},
+				Path:  []string{"main/lead"},
 				Lines: []string{"💭 思考中...", "⏳ Shell(ls) ...", "⏳ Shell(go test) ..."},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: ⏳ Shell(go test) ...",
+			want: "> 🔄 lead: ⏳ Shell(go test) ...",
 		},
 		{
 			name: "multiline content with newlines in single element",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince"},
-				Lines: []string{"【奏报】圣旨：启动三层测试\n判定：🟢 直接执行\n→ 尚书省"},
+				Path:  []string{"main/lead"},
+				Lines: []string{"【状态回报】指令：启动三层测试\n判定：🟢 直接执行\n→ coordinator"},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: → 尚书省",
+			want: "> 🔄 lead: → coordinator",
 		},
 		{
 			name: "double quote prefix cleanup — no own content after cleanup",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince"},
+				Path:  []string{"main/lead"},
 				Lines: []string{"> > ⏳ Shell(go test) ..."},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince:",
+			want: "> 🔄 lead:",
 		},
 		// === 深度缩进 ===
 		{
 			name: "depth 3 multi line with indent",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince", "main/crown-prince/ministry-works"},
+				Path:  []string{"main/lead", "main/lead/backend"},
 				Lines: []string{"💭 审计中...", "⏳ Shell(go test) ..."},
 				Depth: 3,
 			},
-			want: "> 　🔄 ministry-works: ⏳ Shell(go test) ...",
+			want: "> 　🔄 backend: ⏳ Shell(go test) ...",
 		},
 		{
 			name: "depth 3 no content — should show running, not done",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince", "main/crown-prince/ministry-works"},
+				Path:  []string{"main/lead", "main/lead/backend"},
 				Lines: []string{""},
 				Depth: 3,
 			},
-			want: "> 　🔄 ministry-works:",
+			want: "> 　🔄 backend:",
 		},
 		{
 			name: "depth 4 multi line",
@@ -623,136 +623,136 @@ func TestFormatSubAgentProgress(t *testing.T) {
 		{
 			name: "own + 3 child agents tree format",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/crown-prince"},
+				Path: []string{"main/lead"},
 				Lines: []string{
-					"→ 尚书省并发派发三部",
-					"├─ 🔄 工部: ⏳ Shell(go version)",
-					"├─ ✅ 刑部:",
-					"├─ 🔄 礼部: 💭 思考中",
+					"→ coordinator并发派发三部",
+					"├─ 🔄 backend: ⏳ Shell(go version)",
+					"├─ ✅ qa:",
+					"├─ 🔄 docs: 💭 思考中",
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: → 尚书省并发派发三部\n" +
-				"> 　🔄 工部: ⏳ Shell(go version)\n" +
-				"> 　✅ 刑部:\n" +
-				"> 　🔄 礼部: 💭 思考中",
+			want: "> 🔄 lead: → coordinator并发派发三部\n" +
+				"> 　🔄 backend: ⏳ Shell(go version)\n" +
+				"> 　✅ qa:\n" +
+				"> 　🔄 docs: 💭 思考中",
 		},
 		{
 			name: "own + all children completed tree format",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/department-state"},
+				Path: []string{"main/coordinator"},
 				Lines: []string{
 					"三部任务已分派完毕",
-					"├─ ✅ 工部:",
-					"├─ ✅ 刑部:",
-					"├─ ✅ 礼部:",
+					"├─ ✅ backend:",
+					"├─ ✅ qa:",
+					"├─ ✅ docs:",
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 department-state: 三部任务已分派完毕\n" +
-				"> 　✅ 工部:\n" +
-				"> 　✅ 刑部:\n" +
-				"> 　✅ 礼部:",
+			want: "> 🔄 coordinator: 三部任务已分派完毕\n" +
+				"> 　✅ backend:\n" +
+				"> 　✅ qa:\n" +
+				"> 　✅ docs:",
 		},
 		{
 			name: "only child progress no own tree format",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/department-state"},
+				Path: []string{"main/coordinator"},
 				Lines: []string{
-					"├─ 🔄 工部: ⏳ Shell(ls)",
-					"├─ ✅ 刑部:",
+					"├─ 🔄 backend: ⏳ Shell(ls)",
+					"├─ ✅ qa:",
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 department-state:\n" +
-				"> 　🔄 工部: ⏳ Shell(ls)\n" +
-				"> 　✅ 刑部:",
+			want: "> 🔄 coordinator:\n" +
+				"> 　🔄 backend: ⏳ Shell(ls)\n" +
+				"> 　✅ qa:",
 		},
 		{
 			name: "child with failure tree format",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/department-state"},
+				Path: []string{"main/coordinator"},
 				Lines: []string{
 					"三部执行中",
-					"├─ ✅ 工部:",
-					"├─ ❌ 刑部: Error: test failed",
-					"├─ 🔄 礼部: ⏳ running",
+					"├─ ✅ backend:",
+					"├─ ❌ qa: Error: test failed",
+					"├─ 🔄 docs: ⏳ running",
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 department-state: 三部执行中\n" +
-				"> 　✅ 工部:\n" +
-				"> 　❌ 刑部: Error: test failed\n" +
-				"> 　🔄 礼部: ⏳ running",
+			want: "> 🔄 coordinator: 三部执行中\n" +
+				"> 　✅ backend:\n" +
+				"> 　❌ qa: Error: test failed\n" +
+				"> 　🔄 docs: ⏳ running",
 		},
 		// === 子 Agent（引用格式 - 实际运行时穿透）===
 		{
 			name: "own + quoted child agents (actual runtime format)",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/crown-prince"},
+				Path: []string{"main/lead"},
 				Lines: []string{
-					"→ 尚书省并发派发三部",
-					"> 🔄 department-state: ⏳ SubAgent [ministry-works]...",
-					"> 🔄 department-state: ⏳ SubAgent [ministry-justice]...",
+					"→ coordinator并发派发三部",
+					"> 🔄 coordinator: ⏳ SubAgent [backend]...",
+					"> 🔄 coordinator: ⏳ SubAgent [qa]...",
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: → 尚书省并发派发三部\n" +
-				"> 　🔄 department-state: ⏳ SubAgent [ministry-works]...\n" +
-				"> 　🔄 department-state: ⏳ SubAgent [ministry-justice]...",
+			want: "> 🔄 lead: → coordinator并发派发三部\n" +
+				"> 　🔄 coordinator: ⏳ SubAgent [backend]...\n" +
+				"> 　🔄 coordinator: ⏳ SubAgent [qa]...",
 		},
 		{
 			name: "quoted children completed (actual runtime format)",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/department-state"},
+				Path: []string{"main/coordinator"},
 				Lines: []string{
 					"三部全部完成",
-					"> ✅ ministry-works:",
-					"> ✅ ministry-justice:",
-					"> ✅ ministry-rites:",
+					"> ✅ backend:",
+					"> ✅ qa:",
+					"> ✅ docs:",
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 department-state: 三部全部完成\n" +
-				"> 　✅ ministry-works:\n" +
-				"> 　✅ ministry-justice:\n" +
-				"> 　✅ ministry-rites:",
+			want: "> 🔄 coordinator: 三部全部完成\n" +
+				"> 　✅ backend:\n" +
+				"> 　✅ qa:\n" +
+				"> 　✅ docs:",
 		},
 		{
 			name: "quoted children mixed (actual runtime format)",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/department-state"},
+				Path: []string{"main/coordinator"},
 				Lines: []string{
-					"分派三部并行执行",
-					"> 　🔄 ministry-works: ⏳ Shell(go version) ...",
-					"> 　✅ ministry-justice: ✅ Shell(go version) (4.66s)",
-					"> 　🔄 ministry-rites: 💭 思考中...",
+					"分派三个子代理并行执行",
+					"> 　🔄 backend: ⏳ Shell(go version) ...",
+					"> 　✅ qa: ✅ Shell(go version) (4.66s)",
+					"> 　🔄 docs: 💭 思考中...",
 				},
 				Depth: 3,
 			},
-			want: "> 　🔄 department-state: 分派三部并行执行\n" +
-				"> 　　🔄 ministry-works: ⏳ Shell(go version) ...\n" +
-				"> 　　✅ ministry-justice: ✅ Shell(go version) (4.66s)\n" +
-				"> 　　🔄 ministry-rites: 💭 思考中...",
+			want: "> 　🔄 coordinator: 分派三个子代理并行执行\n" +
+				"> 　　🔄 backend: ⏳ Shell(go version) ...\n" +
+				"> 　　✅ qa: ✅ Shell(go version) (4.66s)\n" +
+				"> 　　🔄 docs: 💭 思考中...",
 		},
 		// === 实际运行时场景：SubAgent 占位行 + emoji 状态行 ===
 		{
 			name: "SubAgent placeholder lines recognized as children",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/crown-prince"},
+				Path: []string{"main/lead"},
 				Lines: []string{
-					"臣即刻将任务派发给尚书省",
-					"> ⏳ SubAgent [department-state]: 【尚书省·接旨】三层并发测试",
+					"臣即刻将任务派发给coordinator",
+					"> ⏳ SubAgent [coordinator]: 【coordinator·接旨】三层并发测试",
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: 臣即刻将任务派发给尚书省\n" +
-				"> 　⏳ department-state: 【尚书省·接旨】三层并发测试",
+			want: "> 🔄 lead: 臣即刻将任务派发给coordinator\n" +
+				"> 　⏳ coordinator: 【coordinator·接旨】三层并发测试",
 		},
 		{
 			name: "SubAgent placeholder with progress status lines (filtered)",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/crown-prince"},
+				Path: []string{"main/lead"},
 				Lines: []string{
 					"分析任务中",
 					"> 💭 思考中...",
@@ -761,66 +761,66 @@ func TestFormatSubAgentProgress(t *testing.T) {
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: 分析任务中",
+			want: "> 🔄 lead: 分析任务中",
 		},
 		{
 			name: "mixed: own text + SubAgent placeholders + emoji status",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/department-state"},
+				Path: []string{"main/coordinator"},
 				Lines: []string{
-					"分派三部",
-					"> ⏳ SubAgent [ministry-works]: 工部",
-					"> ⏳ SubAgent [ministry-justice]: 刑部",
-					"> ⏳ SubAgent [ministry-rites]: 礼部",
+					"分派三个子代理",
+					"> ⏳ SubAgent [backend]: backend",
+					"> ⏳ SubAgent [qa]: qa",
+					"> ⏳ SubAgent [docs]: docs",
 					"> 💭 思考中...",
 				},
 				Depth: 3,
 			},
-			want: "> 　🔄 department-state: 分派三部\n" +
-				"> 　　⏳ ministry-works: 工部\n" +
-				"> 　　⏳ ministry-justice: 刑部\n" +
-				"> 　　⏳ ministry-rites: 礼部",
+			want: "> 　🔄 coordinator: 分派三个子代理\n" +
+				"> 　　⏳ backend: backend\n" +
+				"> 　　⏳ qa: qa\n" +
+				"> 　　⏳ docs: docs",
 		},
-		// === 太子多层穿透场景 ===
+		// === lead多层穿透场景 ===
 		{
-			name: "太子多层穿透 - 有子Agent (quoted format)",
+			name: "lead多层穿透 - 有子Agent (quoted format)",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/crown-prince"},
+				Path: []string{"main/lead"},
 				Lines: []string{
-					"【奏报】判定：🟢 直接执行 → 尚书省\n理由：明确的调度测试任务\n臣这就调度尚书省",
-					"> 🔄 department-state: → 🔄 工部(⏳ls) · ✅ 刑部",
+					"【状态回报】判定：🟢 直接执行 → coordinator\n理由：明确的调度测试任务\n臣这就调度coordinator",
+					"> 🔄 coordinator: → 🔄 backend(⏳ls) · ✅ qa",
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: 臣这就调度尚书省\n" +
-				"> 　🔄 department-state: → 🔄 工部(⏳ls) · ✅ 刑部",
+			want: "> 🔄 lead: 臣这就调度coordinator\n" +
+				"> 　🔄 coordinator: → 🔄 backend(⏳ls) · ✅ qa",
 		},
 		// === 混合引用前缀 + 树状行 ===
 		{
 			name: "quoted lines kept as children, own + tree kept",
 			detail: SubAgentProgressDetail{
-				Path: []string{"main/crown-prince"},
+				Path: []string{"main/lead"},
 				Lines: []string{
-					"> 💭 思考中...",    // emoji status line → kept as child
-					"> ⏳ Shell(ls)", // emoji status line → kept as child
-					"├─ 🔄 工部: ⏳ ls", // 树状行 → 子Agent
-					"├─ ✅ 刑部:",      // 树状行 → 子Agent
+					"> 💭 思考中...",         // emoji status line → kept as child
+					"> ⏳ Shell(ls)",      // emoji status line → kept as child
+					"├─ 🔄 backend: ⏳ ls", // 树状行 → 子Agent
+					"├─ ✅ qa:",           // 树状行 → 子Agent
 				},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince:\n" +
-				"> 　🔄 工部: ⏳ ls\n" +
-				"> 　✅ 刑部:",
+			want: "> 🔄 lead:\n" +
+				"> 　🔄 backend: ⏳ ls\n" +
+				"> 　✅ qa:",
 		},
 		// === 长文本截断 ===
 		{
 			name: "long content truncated",
 			detail: SubAgentProgressDetail{
-				Path:  []string{"main/crown-prince"},
+				Path:  []string{"main/lead"},
 				Lines: []string{"这是一段非常非常非常非常非常非常非常非常非常非常长的进度文本用来测试截断功能是否正常工作"},
 				Depth: 2,
 			},
-			want: "> 🔄 crown-prince: 这是一段非常非常非常非常非常非常非常非常非常非常长的进度文本用来测试截断功能是否正常工作",
+			want: "> 🔄 lead: 这是一段非常非常非常非常非常非常非常非常非常非常长的进度文本用来测试截断功能是否正常工作",
 		},
 	}
 	for _, tt := range tests {
@@ -866,12 +866,12 @@ func TestSubAgentSessionKeyConversion(t *testing.T) {
 func TestFormatSubAgentProgress_LeafIsSingleLine(t *testing.T) {
 	leafDetails := []SubAgentProgressDetail{
 		{
-			Path:  []string{"main/crown-prince"},
+			Path:  []string{"main/lead"},
 			Lines: []string{"💭 thinking", "⏳ Shell(ls)", "done"},
 			Depth: 2,
 		},
 		{
-			Path:  []string{"main/crown-prince"},
+			Path:  []string{"main/lead"},
 			Lines: nil,
 			Depth: 2,
 		},
@@ -894,19 +894,19 @@ func TestFormatSubAgentProgress_LeafIsSingleLine(t *testing.T) {
 func TestFormatSubAgentProgress_TreeAllLinesQuoted(t *testing.T) {
 	treeDetails := []SubAgentProgressDetail{
 		{
-			Path: []string{"main/department-state"},
+			Path: []string{"main/coordinator"},
 			Lines: []string{
-				"分派三部",
-				"├─ 🔄 工部: ⏳ Shell(go version)",
-				"├─ ✅ 刑部:",
+				"分派三个子代理",
+				"├─ 🔄 backend: ⏳ Shell(go version)",
+				"├─ ✅ qa:",
 			},
 			Depth: 2,
 		},
 		{
-			Path: []string{"main/department-state"},
+			Path: []string{"main/coordinator"},
 			Lines: []string{
-				"> 🔄 ministry-works: ⏳ Shell(go version)",
-				"> ✅ ministry-justice:",
+				"> 🔄 backend: ⏳ Shell(go version)",
+				"> ✅ qa:",
 			},
 			Depth: 3,
 		},
@@ -948,19 +948,19 @@ func TestFormatSubAgentProgress_StartsWithQuote(t *testing.T) {
 
 func TestFormatSubAgentProgress_ThreeLayerScenario(t *testing.T) {
 	// 模拟三层并发场景的实际数据流：
-	// L1: 主Agent (上柱国)
-	// L2: 太子 (crown-prince) → 调度尚书省
-	// L3: 尚书省 (department-state) → 并发派发三部
+	// L1: 主Agent (owner)
+	// L2: lead (lead) → 调度coordinator
+	// L3: coordinator (coordinator) → 并发派发三部
 
-	// 场景1: 尚书省正在并发执行三部（实际运行时引用格式穿透）→ 多行树
-	t.Run("department-state concurrent execution", func(t *testing.T) {
+	// 场景1: coordinator正在并发执行三部（实际运行时引用格式穿透）→ 多行树
+	t.Run("coordinator concurrent execution", func(t *testing.T) {
 		detail := SubAgentProgressDetail{
-			Path: []string{"main/crown-prince", "main/crown-prince/department-state"},
+			Path: []string{"main/lead", "main/lead/coordinator"},
 			Lines: []string{
-				"分派三部并行执行",
-				"> 　🔄 ministry-works: ⏳ Shell(go version) ...",
-				"> 　✅ ministry-justice:",
-				"> 　🔄 ministry-rites: 💭 思考中...",
+				"分派三个子代理并行执行",
+				"> 　🔄 backend: ⏳ Shell(go version) ...",
+				"> 　✅ qa:",
+				"> 　🔄 docs: 💭 思考中...",
 			},
 			Depth: 3,
 		}
@@ -969,7 +969,7 @@ func TestFormatSubAgentProgress_ThreeLayerScenario(t *testing.T) {
 		if !strings.Contains(got, "　") {
 			t.Errorf("should have fullwidth indent for depth=3: %q", got)
 		}
-		for _, agent := range []string{"ministry-works", "ministry-justice", "ministry-rites"} {
+		for _, agent := range []string{"backend", "qa", "docs"} {
 			if !strings.Contains(got, agent) {
 				t.Errorf("should contain child agent %q: %q", agent, got)
 			}
@@ -982,39 +982,39 @@ func TestFormatSubAgentProgress_ThreeLayerScenario(t *testing.T) {
 		}
 	})
 
-	// 场景2: 太子收到尚书省的穿透进度（含内联子Agent描述）→ 多行树
-	t.Run("crown-prince receives department-state penetration", func(t *testing.T) {
+	// 场景2: lead收到coordinator的穿透进度（含内联子Agent描述）→ 多行树
+	t.Run("lead receives coordinator penetration", func(t *testing.T) {
 		detail := SubAgentProgressDetail{
-			Path: []string{"main/crown-prince"},
+			Path: []string{"main/lead"},
 			Lines: []string{
-				"【奏报】判定：🟢 直接执行 → 尚书省",
-				"> 🔄 department-state: 分派三部并行执行 → 🔄 ministry-works(⏳ Shell(go…) · ✅ ministry-justice · 🔄 ministry-rites(💭)",
+				"【状态回报】判定：🟢 直接执行 → coordinator",
+				"> 🔄 coordinator: 分派三个子代理并行执行 → 🔄 backend(⏳ Shell(go…) · ✅ qa · 🔄 docs(💭)",
 			},
 			Depth: 2,
 		}
 		got := formatSubAgentProgress(detail)
-		if !strings.Contains(got, "department-state") {
-			t.Errorf("should identify department-state as child agent: %q", got)
+		if !strings.Contains(got, "coordinator") {
+			t.Errorf("should identify coordinator as child agent: %q", got)
 		}
 		if !strings.HasPrefix(got, "> ") {
 			t.Errorf("should start with '> ': %q", got)
 		}
 	})
 
-	// 场景3: 尚书省所有子Agent完成 → 多行树展示完成状态
-	t.Run("department-state all children done", func(t *testing.T) {
+	// 场景3: coordinator所有子Agent完成 → 多行树展示完成状态
+	t.Run("coordinator all children done", func(t *testing.T) {
 		detail := SubAgentProgressDetail{
-			Path: []string{"main/crown-prince", "main/crown-prince/department-state"},
+			Path: []string{"main/lead", "main/lead/coordinator"},
 			Lines: []string{
 				"三部全部完成，汇总结果",
-				"> 　✅ ministry-works:",
-				"> 　✅ ministry-justice:",
-				"> 　✅ ministry-rites:",
+				"> 　✅ backend:",
+				"> 　✅ qa:",
+				"> 　✅ docs:",
 			},
 			Depth: 3,
 		}
 		got := formatSubAgentProgress(detail)
-		for _, agent := range []string{"ministry-works", "ministry-justice", "ministry-rites"} {
+		for _, agent := range []string{"backend", "qa", "docs"} {
 			if !strings.Contains(got, "✅ "+agent) {
 				t.Errorf("should show completed %q: %q", agent, got)
 			}
@@ -1027,28 +1027,28 @@ func TestFormatSubAgentProgress_ThreeLayerScenario(t *testing.T) {
 func TestRenderChildrenTree(t *testing.T) {
 	t.Run("single leaf child", func(t *testing.T) {
 		children := []childAgentStatus{
-			{Role: "工部", Status: "🔄", Desc: "⚡ Shell(ls)"},
+			{Role: "backend", Status: "🔄", Desc: "⚡ Shell(ls)"},
 		}
 		lines := renderChildrenTree(children, "", 0)
 		if len(lines) != 1 {
 			t.Fatalf("expected 1 line, got %d: %v", len(lines), lines)
 		}
-		if lines[0] != "> 　🔄 工部: ⚡ Shell(ls)" {
+		if lines[0] != "> 　🔄 backend: ⚡ Shell(ls)" {
 			t.Errorf("got %q", lines[0])
 		}
 	})
 
 	t.Run("multiple leaf children", func(t *testing.T) {
 		children := []childAgentStatus{
-			{Role: "工部", Status: "🔄", Desc: "⚡ Shell(ls)"},
-			{Role: "刑部", Status: "✅"},
-			{Role: "礼部", Status: "🔄", Desc: "💭 思考中"},
+			{Role: "backend", Status: "🔄", Desc: "⚡ Shell(ls)"},
+			{Role: "qa", Status: "✅"},
+			{Role: "docs", Status: "🔄", Desc: "💭 思考中"},
 		}
 		lines := renderChildrenTree(children, "", 0)
 		if len(lines) != 3 {
 			t.Fatalf("expected 3 lines, got %d: %v", len(lines), lines)
 		}
-		if lines[1] != "> 　✅ 刑部:" {
+		if lines[1] != "> 　✅ qa:" {
 			t.Errorf("completed child got %q", lines[1])
 		}
 	})
@@ -1056,10 +1056,10 @@ func TestRenderChildrenTree(t *testing.T) {
 	t.Run("child with nested children", func(t *testing.T) {
 		children := []childAgentStatus{
 			{
-				Role: "尚书", Status: "🔄", Desc: "分派两部",
+				Role: "coordinator", Status: "🔄", Desc: "分派两个子代理",
 				Children: []childAgentStatus{
-					{Role: "工部", Status: "🔄", Desc: "⚡ Shell(ls)"},
-					{Role: "刑部", Status: "✅"},
+					{Role: "backend", Status: "🔄", Desc: "⚡ Shell(ls)"},
+					{Role: "qa", Status: "✅"},
 				},
 			},
 		}
@@ -1067,12 +1067,12 @@ func TestRenderChildrenTree(t *testing.T) {
 		if len(lines) != 3 {
 			t.Fatalf("expected 3 lines, got %d: %v", len(lines), lines)
 		}
-		// 尚书 indent:
-		if !strings.HasPrefix(lines[0], "> 　🔄 尚书:") {
+		// coordinator indent:
+		if !strings.HasPrefix(lines[0], "> 　🔄 coordinator:") {
 			t.Errorf("parent line: %q", lines[0])
 		}
-		// 工部 indent:
-		if !strings.HasPrefix(lines[1], "> 　　🔄 工部:") {
+		// backend indent:
+		if !strings.HasPrefix(lines[1], "> 　　🔄 backend:") {
 			t.Errorf("child line: %q", lines[1])
 		}
 	})
@@ -1128,17 +1128,17 @@ func TestBuildChildTree(t *testing.T) {
 
 	t.Run("three levels", func(t *testing.T) {
 		items := []indexedChild{
-			{depth: 0, child: childAgentStatus{Role: "太子", Status: "🔄"}},
-			{depth: 1, child: childAgentStatus{Role: "尚书", Status: "🔄"}},
-			{depth: 2, child: childAgentStatus{Role: "工部", Status: "🔄"}},
-			{depth: 2, child: childAgentStatus{Role: "刑部", Status: "✅"}},
+			{depth: 0, child: childAgentStatus{Role: "lead", Status: "🔄"}},
+			{depth: 1, child: childAgentStatus{Role: "coordinator", Status: "🔄"}},
+			{depth: 2, child: childAgentStatus{Role: "backend", Status: "🔄"}},
+			{depth: 2, child: childAgentStatus{Role: "qa", Status: "✅"}},
 		}
 		tree := buildChildTree(items)
 		if len(tree) != 1 {
 			t.Fatalf("expected 1 top-level, got %d", len(tree))
 		}
 		if len(tree[0].Children) != 1 {
-			t.Fatalf("太子 should have 1 child, got %d", len(tree[0].Children))
+			t.Fatalf("lead should have 1 child, got %d", len(tree[0].Children))
 		}
 		if len(tree[0].Children[0].Children) != 2 {
 			t.Fatalf("尚書 should have 2 children, got %d", len(tree[0].Children[0].Children))
@@ -1174,9 +1174,9 @@ func TestExtractOwnAndChildProgress_Nested(t *testing.T) {
 		flat := flattenLines([]string{
 			"调度中",
 			"> 　🔄 中书: 💭 思考中",
-			"> 　🔄 尚书: 分派两部",
-			"> 　　🔄 工部: ⚡ Shell(ls)",
-			"> 　　✅ 刑部:",
+			"> 　🔄 coordinator: 分派两个子代理",
+			"> 　　🔄 backend: ⚡ Shell(ls)",
+			"> 　　✅ qa:",
 		})
 		own, children := extractOwnAndChildProgress(flat)
 		if own != "调度中" {
@@ -1188,39 +1188,39 @@ func TestExtractOwnAndChildProgress_Nested(t *testing.T) {
 		if children[0].Role != "中书" || len(children[0].Children) != 0 {
 			t.Errorf("中书 should be leaf: %+v", children[0])
 		}
-		if children[1].Role != "尚书" || len(children[1].Children) != 2 {
+		if children[1].Role != "coordinator" || len(children[1].Children) != 2 {
 			t.Errorf("尚書 should have 2 children: %+v", children[1])
 		}
-		if children[1].Children[0].Role != "工部" {
-			t.Errorf("first grandchild should be 工部: %+v", children[1].Children[0])
+		if children[1].Children[0].Role != "backend" {
+			t.Errorf("first grandchild should be backend: %+v", children[1].Children[0])
 		}
 	})
 }
 
 func TestFormatSubAgentProgress_FullTreeScenario(t *testing.T) {
 	// 子 Agent 穿透行带有全角空格缩进（renderChildrenTree 的 childIndent）
-	// 模拟完整三层场景: 主Agent → 太子 → 中书(leaf) + 尚书 → 工部 + 刑部
-	// 太子的进度文本（从太子的 notifyProgress 输出）
+	// 模拟完整三层场景: 主Agent → lead → 中书(leaf) + coordinator → backend + qa
+	// lead的进度文本（从lead的 notifyProgress 输出）
 	detail := SubAgentProgressDetail{
-		Path: []string{"main/crown-prince"},
+		Path: []string{"main/lead"},
 		Lines: []string{
-			"臣调度尚书省",
+			"臣调度coordinator",
 			"> 　🔄 中书: 💭 思考中",
-			"> 　🔄 尚书: 分派两部",
-			"> 　　🔄 工部: ⚡ Shell(ls)",
-			"> 　　✅ 刑部:",
+			"> 　🔄 coordinator: 分派两个子代理",
+			"> 　　🔄 backend: ⚡ Shell(ls)",
+			"> 　　✅ qa:",
 		},
 		Depth: 2,
 	}
 	got := formatSubAgentProgress(detail)
 
 	// 根行
-	if !strings.HasPrefix(got, "> 🔄 crown-prince: 臣调度尚书省\n") {
+	if !strings.HasPrefix(got, "> 🔄 lead: 臣调度coordinator\n") {
 		t.Errorf("root line wrong: %q", got)
 	}
 
 	lines := strings.Split(got, "\n")
-	// 应有 5 行: root + 中书 + 尚书 + 工部 + 刑部
+	// 应有 5 行: root + 中书 + coordinator + backend + qa
 	if len(lines) != 5 {
 		t.Fatalf("expected 5 lines, got %d:\n%s", len(lines), got)
 	}
@@ -1229,17 +1229,17 @@ func TestFormatSubAgentProgress_FullTreeScenario(t *testing.T) {
 	if !strings.Contains(lines[1], "　🔄 中书:") {
 		t.Errorf("line 1 (中书): %q", lines[1])
 	}
-	// 尚书 (depth 1: 　)
-	if !strings.Contains(lines[2], "　🔄 尚书:") {
+	// coordinator (depth 1: 　)
+	if !strings.Contains(lines[2], "　🔄 coordinator:") {
 		t.Errorf("line 2 (尚書): %q", lines[2])
 	}
-	// 工部 (depth 2: 　　)
-	if !strings.Contains(lines[3], "　　🔄 工部:") {
-		t.Errorf("line 3 (工部): %q", lines[3])
+	// backend (depth 2: 　　)
+	if !strings.Contains(lines[3], "　　🔄 backend:") {
+		t.Errorf("line 3 (backend): %q", lines[3])
 	}
-	// 刑部 (depth 2: 　　)
-	if !strings.Contains(lines[4], "　　✅ 刑部:") {
-		t.Errorf("line 4 (刑部): %q", lines[4])
+	// qa (depth 2: 　　)
+	if !strings.Contains(lines[4], "　　✅ qa:") {
+		t.Errorf("line 4 (qa): %q", lines[4])
 	}
 }
 

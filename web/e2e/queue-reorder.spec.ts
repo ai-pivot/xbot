@@ -517,7 +517,11 @@ test.describe('staging tray drag-to-reorder — live preview while still holding
 
     const { heights } = await pressAndDragInSteps(page, 'm6', toX, toY)
 
-    await expect.poll(() => domOrder(page)).toEqual(['m6', 'm1', 'm2', 'm3', 'm4', 'm5'])
+    // 2026-10-22 CI：拖拽后的 DOM 重排可能慢于 poll 默认 5s（CI runner 慢 +
+    // pointer 事件分步派发）。放宽等待，不断言放宽：顺序必须完全一致。
+    await expect
+      .poll(() => domOrder(page), { timeout: 20000, intervals: [200, 500, 1000] })
+      .toEqual(['m6', 'm1', 'm2', 'm3', 'm4', 'm5'])
     const order = await domOrder(page)
     expect(order.indexOf('m6')).toBeLessThan(order.indexOf('m1'))
     expect(order[0]).toBe('m6')

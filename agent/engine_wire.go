@@ -295,6 +295,18 @@ func (a *Agent) buildMainRunConfig(
 		}
 	}
 
+	// Turn-level wire identity (STATE-MODEL P2/P3′ + C-6): the tool call id is
+	// assigned BEFORE the tool first appears in any frame (so the generating
+	// entry and the executing entry share one identity), and every finished
+	// iteration reports its complete block as a `done` frame through the tracker
+	// that guarantees "exactly one per iteration".
+	cfg.ToolCallID = func(iteration, index int, providerID string) string {
+		return a.toolCallID(sessionKey, cfg.TurnID, iteration, index)
+	}
+	cfg.OnIterationDone = func(block protocol.IterationBlock) {
+		a.emitIterationDone(channel, chatID, block)
+	}
+
 	// 可观测性：把 session / user / turn 标识传给 Run，使每次 LLM HTTP 请求
 	// 携带 X-Session-Id / X-User-Id / X-Turn-Id（X-Request-Id 在 generateResponse
 	// 每次调用生成），对标 Codex / Claude Code，便于在 LLM 提供商侧按会话追踪
@@ -701,7 +713,14 @@ func (a *Agent) buildSubAgentRunConfig(
 	cwd, workDir, isWorktreeIsolated := resolveSubAgentCWD(parentCtx, workDir)
 	cwdPart := "\n- 当前目录：" + cwd
 
-	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）
+	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）。
+	//
+	// 兜底注入 role rules（roles frontmatter 的 `rules:`，如 roles/RULES.md）：
+	// 这是子代理 system prompt 的**唯一汇聚点**，而 spawn 入口有三类（SubAgent 工具 /
+	// CreateChat 的 agent 与 group 两种 / 重启恢复）。任何入口漏注入都只会表现为
+	// "子代理静默不带规矩"，不会编译失败也不会红测试 —— 所以在这里按 roleName 再补一次。
+	// 幂等语义见 tools.RolePromptForName（只在调用方没注入过时才补）。
+	systemPrompt = tools.RolePromptForName(roleName, systemPrompt)
 	rolePrompt := strings.TrimSpace(systemPrompt)
 	if rolePrompt == "" {
 		rolePrompt = "You are a helpful assistant. Complete the given task using the available tools."
@@ -1047,6 +1066,30 @@ func (a *Agent) buildSubAgentRunConfig(
 		},
 		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
 			return a.InspectInteractiveSession(ctx, roleName, parentCtx.Channel, parentCtx.ChatID, instance, tail)
+		},
+		ListActiveFn: func(ch, cid string) []SubAgentStatus {
+			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
+		},
+	}
+
+	// 分层 spawn（2026-10-22 用户架构要求）：让子代理也能管自己的下属。
+	// 原来这里刻意不配 InteractiveCallbacks（注释：Nil for SubAgents, they don't
+	// manage children），导致调度方 spawn 子代理组时报
+	// "interactive SubAgent not supported in this context"。
+	// 关键：闭包必须用**子代理自己的** channel/chatID，这样孙代理的 parentKey
+	// 指向子代理而非主会话，完成通知才是"只回父级"。
+	childChannel, childChatID := parentCtx.Channel, parentCtx.ChatID
+	cfg.InteractiveCallbacks = &InteractiveCallbacks{
+		SpawnFn: a.SpawnInteractiveSession,
+		SendFn:  a.SendToInteractiveSession,
+		UnloadFn: func(ctx context.Context, roleName, instance string) error {
+			return a.UnloadInteractiveSession(ctx, roleName, childChannel, childChatID, instance)
+		},
+		InterruptFn: func(ctx context.Context, roleName, instance string) error {
+			return a.InterruptInteractiveSession(ctx, roleName, childChannel, childChatID, instance)
+		},
+		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
+			return a.InspectInteractiveSession(ctx, roleName, childChannel, childChatID, instance, tail)
 		},
 		ListActiveFn: func(ch, cid string) []SubAgentStatus {
 			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
@@ -2002,6 +2045,11 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 			CallID: t.CallID,
 		})
 	}
+	// Normalized single tool array (STATE-MODEL P3): ONLY the current
+	// iteration's tools, each with a stable call_id + iteration + status.
+	// The legacy three arrays below stay untouched (dual-write) so existing
+	// web/mobile clients keep working.
+	payload.Tools = normalizeIterationTools(s.ActiveTools, s.CompletedTools, s.Iteration, false)
 	payload.SubAgents = resolveSubAgents(event)
 	payload.Todos = make([]protocol.TodoItem, len(s.Todos))
 	for i, td := range s.Todos {
@@ -2417,6 +2465,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		noteFirstChunk()
 		toolProgs := make([]protocol.ToolProgress, 0, len(toolCalls))
 		var genuiContent string
+		iter := a.getActiveIteration(progressKey)
 		for _, tc := range toolCalls {
 			if tc.Name != "" {
 				// Look up UI metadata once per tool name — populates both the
@@ -2438,7 +2487,14 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 					// the frontend cannot filter it from the current iteration's live
 					// rendering (user report: "过去的 generating 状态错误的在最新
 					// 迭代上渲染，直到最新迭代真正的 tool 出现").
-					Iteration: a.getActiveIteration(progressKey),
+					Iteration: iter,
+					// P2/P3′: identity is assigned BEFORE the tool first appears in
+					// any frame and never changes — a generating entry therefore has
+					// a real call_id even though the provider's id arrives in
+					// fragments (or not at all). The provider id travels as a FIELD
+					// (provider_call_id) and is never used as identity.
+					CallID:         a.toolCallID(progressKey, turnID, iter, tc.Index),
+					ProviderCallID: tc.ID,
 				}
 				if ui != nil {
 					tp.UIMode = ui.Mode

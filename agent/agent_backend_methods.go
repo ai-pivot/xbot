@@ -139,7 +139,7 @@ func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 	// running state instead so the web sidebar shows running sub-agents reliably.
 	if ch == "agent" {
 		if value, ok := a.interactiveSubAgents.Load(chatID); ok {
-			if ia, ok := value.(*interactiveAgent); ok && ia != nil {
+			if ia, ok := value.(*interactiveAgent); ok && ia != nil && !ia.isDestroyed() {
 				ia.mu.Lock()
 				running := ia.running
 				ia.mu.Unlock()
@@ -238,7 +238,7 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	// so we look up with chatID directly. When running=true but Phase="done"
 	// (between iterations), correct Phase from iteration history.
 	if ch == "agent" {
-		if entry, loaded := a.interactiveSubAgents.Load(chatID); loaded {
+		if entry, loaded := a.interactiveSubAgents.Load(chatID); loaded && !isDestroyedEntry(entry) {
 			ia := entry.(*interactiveAgent)
 			ia.mu.Lock()
 			isRunning := ia.running
@@ -681,4 +681,14 @@ func (a *Agent) GetExportIterations(ch, chatID string) []protocol.ExportedIterat
 	}
 
 	return iterations
+}
+
+// isDestroyedEntry reports whether an interactiveSubAgents map value is a session
+// that has already entered the destroy path (tombstone set). The tombstone is
+// set BEFORE any resource teardown (and the entry is removed right after), so
+// the only observers of a destroyed entry are those racing inside that window —
+// they must treat the session as gone instead of reading its state.
+func isDestroyedEntry(v any) bool {
+	ia, ok := v.(*interactiveAgent)
+	return ok && ia != nil && ia.isDestroyed()
 }

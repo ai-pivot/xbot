@@ -134,7 +134,7 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 	}
 	ctx.Metadata["background"] = "true"
 
-	result, err := im.SpawnInteractive(ctx, task, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
+	result, err := im.SpawnInteractive(ctx, task, params.Role, appendRoleRules(ctx, role), role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
 	if err != nil {
 		return nil, fmt.Errorf("failed to spawn SubAgent %q (%s): %w", params.Role, params.Instance, err)
 	}
@@ -151,7 +151,7 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 			// or hang on subsequent SendMessage calls.
 			sendToolCtx := *ctx
 			sendToolCtx.Ctx = sendCtx
-			return im.SendInteractive(&sendToolCtx, msg, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
+			return im.SendInteractive(&sendToolCtx, msg, params.Role, appendRoleRules(ctx, role), role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
 		}
 		if regErr := ctx.RegisterAgentChannel(addr, sendFn); regErr != nil {
 			result += fmt.Sprintf("\n\nWarning: AgentChannel registration failed: %v", regErr)
@@ -213,7 +213,7 @@ func (t *CreateChatTool) createGroupChat(ctx *ToolContext, params *CreateChatPar
 			effectiveModel = "balance"
 		}
 		task := "Ready. Waiting for group discussion."
-		_, err := im.SpawnInteractive(ctx, task, role, roleDef.SystemPrompt, roleDef.AllowedTools, roleDef.Capabilities, instance, effectiveModel)
+		_, err := im.SpawnInteractive(ctx, task, role, appendRoleRules(ctx, roleDef), roleDef.AllowedTools, roleDef.Capabilities, instance, effectiveModel)
 		if err != nil {
 			spawnWarnings = append(spawnWarnings, fmt.Sprintf("[WARN] spawn %s: %v", memberAddr, err))
 			continue
@@ -230,7 +230,7 @@ func (t *CreateChatTool) createGroupChat(ctx *ToolContext, params *CreateChatPar
 				// SendMessage → Dispatcher → AgentChannel.
 				localCtx := *ctx
 				localCtx.Ctx = sendCtx
-				return im.SendInteractive(&localCtx, msg, role, roleDef.SystemPrompt, roleDef.AllowedTools, roleDef.Capabilities, instance, effectiveModel)
+				return im.SendInteractive(&localCtx, msg, role, appendRoleRules(ctx, roleDef), roleDef.AllowedTools, roleDef.Capabilities, instance, effectiveModel)
 			}
 			if regErr := ctx.RegisterAgentChannel(memberAddr, sendFn); regErr != nil {
 				spawnWarnings = append(spawnWarnings, fmt.Sprintf("[WARN] register %s: %v", memberAddr, regErr))

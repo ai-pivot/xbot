@@ -160,6 +160,18 @@ func (w lockedWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p)
 }
 
+// waitForPipeCapture waits for the pipe-capture goroutines to drain, with a
+// HARD upper bound.
+//
+// ⛔ 2026-10-22（用户：「shell 要 100ms 内被杀」的真根因）：采集 goroutine 只在
+// read 返回 EOF 时退出，而 EOF 取决于**管道写端全部关闭**。一个脱离了进程组的
+// 孙进程（daemonize / setsid）如果继承了 stdout/stderr，父进程被杀之后它仍握着
+// 写端 ⇒ 永远没有 EOF ⇒ 这里永久阻塞 ⇒ sandboxExecAsync 不返回 ⇒
+// ShellTool.executeForeground 的 `<-execDone` 不返回 ⇒ **cancel 之后 turn 永远
+// 结束不了**（goroutine dump 证据：none_sandbox.go:532 wg.Wait）。
+//
+// 因此：先给 50ms 正常排空窗口；超时即强关管道（解除 Read 阻塞），再给 200ms
+// 上限；仍未退出就放弃采集 —— 工具调用/取消绝不允许被"读管道"无限期拖住。
 func waitForPipeCapture(wg *sync.WaitGroup, stdoutPipe, stderrPipe io.Closer) {
 	done := make(chan struct{})
 	go func() {
@@ -169,10 +181,16 @@ func waitForPipeCapture(wg *sync.WaitGroup, stdoutPipe, stderrPipe io.Closer) {
 
 	select {
 	case <-done:
+		return
 	case <-time.After(50 * time.Millisecond):
-		stdoutPipe.Close()
-		stderrPipe.Close()
-		<-done
+	}
+
+	stdoutPipe.Close()
+	stderrPipe.Close()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		log.Warn("sandbox: pipe capture still blocked after force-close — abandoning capture (escaped pipe holder)")
 	}
 }
 
@@ -261,9 +279,11 @@ func (s *NoneSandbox) execKeepAlive(ctx context.Context, cmd *exec.Cmd, timeout 
 		if err == nil && state != nil {
 			code = extractExitCodeFromState(state)
 		}
-		// Close pipes to unblock IO goroutines (even if grandchildren hold FDs)
+		// Close pipes to unblock IO goroutines (even if grandchildren hold FDs).
+		// Bounded: waitForPipeCapture force-closes again and gives up after a
+		// hard cap, so a keepalive command can never wedge its waiter forever.
 		closePipes()
-		wg.Wait()
+		waitForPipeCapture(&wg, stdoutPipe, stderrPipe)
 		waitCh <- code
 	}()
 
@@ -528,10 +548,12 @@ func noneSandboxExecAsync(ctx context.Context, spec ExecSpec, outputBuf func(str
 	// profile sourcing spawns background children that inherit pipe FDs,
 	// io.Copy never gets EOF and cmd.Wait() hangs forever.
 	state, _ := cmd.Process.Wait()
-	// Wait for stream goroutines to finish reading before closing pipes
-	wg.Wait()
-	stdoutPipe.Close()
-	stderrPipe.Close()
+	// Kill the process TREE (group + escaped descendants) BEFORE draining: a
+	// `setsid`-ed grandchild keeps the pipe write ends open, so without this the
+	// capture goroutines never see EOF and this call hangs forever after a
+	// cancel (see waitForPipeCapture).
+	killProcessTree(cmd.Process)
+	waitForPipeCapture(&wg, stdoutPipe, stderrPipe)
 
 	exitCode := extractExitCodeFromState(state)
 

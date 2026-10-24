@@ -244,3 +244,25 @@ func TestBuildSystemReminder_SubAgentStatus(t *testing.T) {
 		t.Errorf("expected idle subagent with role, got:\n%s", result)
 	}
 }
+
+// TestShouldInsertSystemReminder —— 只有 iteration % 10 == 0 才插入 fake tool pair。
+func TestShouldInsertSystemReminder(t *testing.T) {
+	cases := []struct {
+		iter int
+		want bool
+	}{
+		{1, false}, {2, false}, {9, false},
+		{10, true},
+		{11, false}, {19, false},
+		{20, true},
+		{21, false},
+		{30, true},
+		{40, true},
+		{100, true},
+	}
+	for _, c := range cases {
+		if got := shouldInsertSystemReminder(c.iter); got != c.want {
+			t.Errorf("shouldInsertSystemReminder(%d) = %v, want %v", c.iter, got, c.want)
+		}
+	}
+}

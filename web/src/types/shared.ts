@@ -152,6 +152,9 @@ export type WSMessageType =
   // AskUser 解除广播（answered/cancelled/rewound/cleared）——收到后客户端必须
   // 删除本地缓存的 prompt（服务端是唯一权威，多 channel/tab 同步）。
   | 'ask_user_resolved'
+  // 结构化消息（ask_user/report/decision/answer/event）——跨端同步依赖它：
+  // 后端 isSSEEventType 与这里的运行时白名单必须同时包含，否则编译通过但永远收不到。
+  | 'structured_message'
   | 'session'
   | 'user_echo'
   | 'inject_user'

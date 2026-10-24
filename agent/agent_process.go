@@ -238,20 +238,27 @@ func userCancelledSyntheticTool() (llm.ChatMessage, llm.ChatMessage, IterationTo
 // that returns only notifications matching the given session key.
 func (a *Agent) wireBgNotificationDrain(sessionKey string) func() []tools.BgNotification {
 	return func() []tools.BgNotification {
+		// 插队优先队列优先：结构化消息（answer/decision/普通插话）在同一个
+		// iteration 边界被消费，且排在后台通知之前（设计 §9.2 严格优先）。
+		structured := a.drainStructuredQueue(sessionKey)
 		mine := a.takePendingBgNotifications(sessionKey)
 		// Track drained notifications so cancel can persist them explicitly. If the
 		// Run is cancelled after draining, these notifications were consumed from
 		// bgRunPending and must be recorded in the interrupted turn instead of
 		// delivered as a fresh user message after Ctrl+C.
-		if len(mine) > 0 {
+		if len(mine) > 0 || len(structured) > 0 {
 			if state, ok := a.bgSessionStates.Load(sessionKey); ok {
 				ss := state.(*bgSessionState)
 				ss.drainedThisRunMu.Lock()
+				ss.drainedThisRun = append(ss.drainedThisRun, structured...)
 				ss.drainedThisRun = append(ss.drainedThisRun, mine...)
 				ss.drainedThisRunMu.Unlock()
 			}
 		}
-		return mine
+		if len(structured) == 0 {
+			return mine
+		}
+		return append(structured, mine...)
 	}
 }
 
@@ -434,6 +441,29 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 // when a Run is cancelled, then returns a minimal OutboundMessage so the
 // channel knows processing ended.
 func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, out *RunOutput, tenantSession *session.TenantSession) (*channel.OutboundMsg, error) {
+	// Cancel path completeness (STATE-MODEL C-6 / C-7).
+	//
+	// Cancellation can land mid-iteration, BEFORE snapshotCompletedIteration
+	// ran, so the in-flight iteration would otherwise have no `done` and the
+	// turn would never be closed — the client then keeps rendering a live block
+	// that never commits (contract violation visible to the user as "the
+	// iteration disappeared"). Reconstruct the block from the live progress
+	// snapshot (interrupted tools → failed) and close the turn. Both emissions
+	// are idempotent: the tracker drops a duplicate already sent by the
+	// snapshot path.
+	progressKey := qualifyChatID(msg.Channel, msg.ChatID)
+	cancelTurnID := turnIDFromMetadata(msg.Metadata)
+	if cancelTurnID == 0 {
+		cancelTurnID = a.getActiveTurnID(progressKey)
+	}
+	if block := a.cancelledIterationBlock(progressKey, cancelTurnID); block != nil {
+		a.emitIterationDone(msg.Channel, msg.ChatID, *block)
+	}
+	a.emitTurnFinal(msg.Channel, msg.ChatID, protocol.TurnFinalFrame{
+		TurnID:    cancelTurnID,
+		Cancelled: true,
+	})
+
 	// Persist pending notifications for this session into the interrupted turn.
 	// Ctrl+C should not start a fresh bg-notification turn, but completed work
 	// should remain visible to the next model call as tool observations.
@@ -538,11 +568,23 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	// 获取：前端 detect 迭代 gap → get_active_progress RPC 请求增量迭代数据
 	// （后端 lastProgressSnapshot 保留进行中迭代的 ActiveTools）。
 	meta := map[string]string{"cancelled": "true", channel.MetaFinalReply: "true"}
+	// ⛔ TurnID **必须**打上（2026-10-22 用户 P0）：这条 ack 是**被取消那一轮**的
+	// 权威收尾帧。旧实现直接返回 `&channel.OutboundMsg{}`（绕过 sendMessage 的
+	// turn_id 盖章）⇒ SSE 载荷里 `turn_id` 缺省（`omitempty`）⇒ 前端拿到
+	// `text_final{turn_id:null, cancelled:true}`：
+	//   · web/`reduce.ts` 回落到 activeTurn（碰巧对上，所以 web 看不出问题）；
+	//   · 原生模型链路**没有兜底 turn**，只能丢弃 ⇒ 该回合永远没有 `final`
+	//     ⇒ 行恒 `turn-N-live`（`isLive`）⇒ cancel 后发新消息时那条 assistant
+	//     被当成"在飞尾项"搬到列表末尾且一直 busy（用户现场：
+	//     「历史变成 user1 user2 + iter1-20 busy」）。
+	// `cancelTurnID` 是对这一轮的权威身份（即使 activeTurnID 已清也不会错），
+	// 所以走 ① 优先级（explicit），**不能**只依赖 getActiveTurnID。
 	return &channel.OutboundMsg{
 		Channel:  msg.Channel,
 		ChatID:   msg.ChatID,
 		Content:  "",
 		Metadata: meta,
+		TurnID:   a.outboundTurnID(msg.Channel, msg.ChatID, meta, cancelTurnID),
 	}, nil
 }
 
@@ -608,6 +650,21 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	finalContent := out.Content
 	waitingUser := out.WaitingUser
 
+	// Turn closing frame (STATE-MODEL C-7): exactly ONE `final` per turn,
+	// including EMPTY turns. Emitted before the empty-content early returns —
+	// a turn that produced nothing must still be closed, otherwise the client
+	// has no legal way to stop treating it as running.
+	if !waitingUser {
+		doneTurnID := turnIDFromMetadata(msg.Metadata)
+		if doneTurnID == 0 {
+			doneTurnID = a.getActiveTurnID(qualifyChatID(msg.Channel, msg.ChatID))
+		}
+		a.emitTurnFinal(msg.Channel, msg.ChatID, protocol.TurnFinalFrame{
+			TurnID:  doneTurnID,
+			Content: out.Content,
+		})
+	}
+
 	// If a tool is waiting for user response, send WaitingUser outbound
 	if waitingUser {
 		outbound := buildWaitingUserOutbound(ctx, msg, out, tenantSession)
@@ -634,11 +691,15 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 			"reply_policy": replyPolicy,
 		}).Info("Optional reply policy: no final response generated, skipping outbound")
 		// Send an empty outbound to clear TUI progress state.
+		// ⛔ 这是**该回合的收尾信号**（TurnID 必须带上，见 outboundTurnID）；
+		//   旧实现无 TurnID ⇒ 前端只能靠"无 turn 的 text"猜归属（原生侧 2026-10-22
+		//   才补的兜底），且 CLI 之外的渠道无法把它挂回该轮。
 		if ch, ok := a.channelFinder(msg.Channel); ok {
 			ch.Send(channel.OutboundMsg{
 				Channel: msg.Channel,
 				ChatID:  msg.ChatID,
 				Content: "",
+				TurnID:  a.outboundTurnID(msg.Channel, msg.ChatID, msg.Metadata, 0),
 			})
 		}
 		return nil, nil
@@ -698,10 +759,14 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	}
 	if err := a.sendMessage(msg.Channel, msg.ChatID, finalContent, sendMeta); err != nil {
 		log.Ctx(ctx).WithError(err).Error("Failed to send final response via sendMessage")
+		// ⛔ 兜底回包同样必须带 TurnID（turn 域消息的同一规则）：否则 sendMessage
+		//   失败时这一轮的最终回复在客户端无法归属，回合永不收尾（行停在 live）。
 		return &channel.OutboundMsg{
-			Channel: msg.Channel,
-			ChatID:  msg.ChatID,
-			Content: finalContent,
+			Channel:  msg.Channel,
+			ChatID:   msg.ChatID,
+			Content:  finalContent,
+			Metadata: sendMeta,
+			TurnID:   a.outboundTurnID(msg.Channel, msg.ChatID, sendMeta, 0),
 		}, nil
 	}
 

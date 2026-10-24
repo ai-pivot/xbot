@@ -527,6 +527,24 @@ func Run(args []string) error {
 		"timeout":   time.Duration(cfg.Agent.LLMRetryTimeout),
 	}).Info("LLM retry policy configured")
 
+	// 同一份配置（同一个 XBOT_HOME）只允许一个 serve 进程。
+	//
+	// 2026-10-21 主库损坏事故：/tmp/xbot-worktree 下误启动的 serve 没有设置
+	// XBOT_HOME，于是落到 HOME=/home/smith，与 supervisord 管理的生产进程
+	// 共用 /home/smith/.xbot/xbot.db，但两边 schema 版本不同（v75 / v76）。
+	// 先退出的进程在 Close 时 checkpoint 并 unlink 了 -wal，另一方正在写的
+	// 事务随即读到结构损坏的页 —— `database disk image is malformed (11)`。
+	//
+	// 锁在这里而不是 sqlite.Open()：CLI、测试、seed 脚本都可能合法地打开
+	// 同一个库，真正危险的是「两个 serve 争一份配置」。
+	serverLock, lockErr := AcquireServerLock(config.XbotHome())
+	if lockErr != nil {
+		log.WithError(lockErr).Error("Refusing to start a second xbot server for this home")
+		return lockErr
+	}
+	defer serverLock.Release()
+	log.WithField("lock", serverLock.Path()).Info("Acquired server lock for xbot home")
+
 	llmClient, err := setupLLM(cfg)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to create LLM client")
@@ -987,6 +1005,31 @@ func Run(args []string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Dispatcher.Run() is already started by InitServer.
+
+	// 启动前对一次 interactive 子代理注册表（P3 僵尸行根治的收尾）。
+	//
+	// 把上一个进程留下的「僵尸 idle 行」（注册行还在、会话已被 destroy 删掉）标记
+	// unloaded —— 否则 ListActive / ListChildAgents / 组织树会把死会话当活的列出来
+	// （生产实测：81 行里 75 行 idle 全是空壳，其中 explore 61 条）。
+	//
+	// 位置：必须在渠道 Start() 之前 —— 第一屏组织树就该是干净的；此时 agent 与主库
+	// 都已由 InitServer 装配完毕（下面的 resumePendingTurns 只是把待续 turn 投递出去，
+	// 不保证在本函数内跑完）。
+	//
+	// 关于「与 interactive 会话恢复的先后」（reviewer 要求的硬约束）：本进程**不存在
+	// 启动期恢复** —— restoreInteractiveTree 在每次 processMessage 开头按父会话懒执行
+	// （agent/agent.go 的 processMessage），即恢复随时可能发生、没有「完成」这一刻，
+	// 所以「restore 之后、开始服务之前」这个窗口物理上不存在。顺序也不影响正确性：
+	// 一行能否被恢复救活，等价于「它的会话租户还在不在」（restore 走 GetOrCreateSession，
+	// 无租户就会被新建出一个空会话 —— 正是要根治的复活死会话），而这恰好就是对账判据
+	// 本身。判据与证明见 agent.ReconcileInteractiveAgentsOnStartup。
+	//
+	// 失败只 WARN：僵尸行清理绝不能阻断启动。
+	if ag != nil {
+		if err := ag.ReconcileInteractiveAgentsOnStartup(); err != nil {
+			log.WithError(err).Warn("Startup reconcile of interactive sub-agent registry failed (zombie rows may linger; boot continues)")
+		}
+	}
 
 	// 启动所有渠道
 	for name, ch := range getChannels(disp) {

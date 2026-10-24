@@ -13,7 +13,10 @@ import (
 	"time"
 
 	"xbot/agent"
+	"xbot/llm"
 	"xbot/protocol"
+
+	"github.com/google/uuid"
 
 	"xbot/channel"
 	cli "xbot/channel/cli"
@@ -27,6 +30,28 @@ import (
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
+
+// newGroupUUID 生成群组 id 的随机部分（grp_<12 hex>）。
+// groupMessageStore 是本分支新增的「群组消息信封」能力（主库 v74 / 会话库 v5）。
+//
+// master #444 把会话存储抽象成 storage.SessionStore，但该接口没有群组消息方法
+// （PG 后端未实现该特性 ⇒ **未覆盖项**）。这里按能力取用，拿不到就明确报错，
+// 绝不静默降级 —— 静默降级会让群发写进不存在的表，消息凭空蒸发。
+type groupMessageStore interface {
+	AppendGroupMessage(tenantID int64, msg llm.ChatMessage, env sqlite.GroupMessageEnvelope) (int64, error)
+	ListGroupMessages(tenantID int64, groupID string, beforeID int64, limit int) ([]sqlite.GroupMessageRow, bool, int64, error)
+}
+
+// groupMessagesOf 取出群组消息能力；后端不支持时返回可读错误。
+func groupMessagesOf(sess *session.TenantSession) (groupMessageStore, error) {
+	gm, ok := sess.SessionService().(groupMessageStore)
+	if !ok {
+		return nil, fmt.Errorf("group messages are not supported by this storage backend")
+	}
+	return gm, nil
+}
+
+func newGroupUUID() string { return uuid.NewString() }
 
 // runnerCallbacks builds the shared Runner callback closures.
 // Used by both WebCallbacks and SettingsCallbacks to avoid duplication.
@@ -285,10 +310,140 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		}
 	}
 
-	// Wire IsProcessing
-	callbacks.IsProcessing = func(senderID string) bool {
-		return ag.IsProcessing(senderID)
+	// ─── Agent 通信指挥室（群组可视化）────────────────────────────────────
+	// 群元数据在主库两张小表；消息仍读调用者自己的会话库（不跨库聚合）。
+	if webDB := ag.MultiSession().DB(); webDB != nil {
+		groupSvc := sqlite.NewGroupService(webDB.Conn())
+		callbacks.GroupList = func(memberAddr string) ([]protocol.Group, error) {
+			rows, err := groupSvc.ListGroupsFor(context.Background(), memberAddr)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]protocol.Group, 0, len(rows))
+			for _, g := range rows {
+				out = append(out, protocol.Group{
+					ID: g.ID, Name: g.Name, Owner: g.Owner,
+					CreatedAt: g.CreatedAt, MemberCount: g.MemberCount,
+				})
+			}
+			return out, nil
+		}
+		callbacks.GroupMembers = func(memberAddr, groupID string) ([]protocol.GroupMember, error) {
+			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
+				return nil, err
+			} else if !ok {
+				return nil, sqlite.ErrNotGroupMember
+			}
+			rows, err := groupSvc.ListMembers(context.Background(), groupID)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]protocol.GroupMember, 0, len(rows))
+			for _, m := range rows {
+				out = append(out, protocol.GroupMember{
+					GroupID: m.GroupID, MemberAddr: m.MemberAddr, Status: m.Status,
+					JoinedAt: m.JoinedAt, Name: m.Name, Role: m.Role, Instance: m.Instance,
+				})
+			}
+			return out, nil
+		}
+		callbacks.GroupMessages = func(memberAddr, groupID, channelName, chatID string, cursor int64, limit int) ([]protocol.GroupMessage, int64, bool, error) {
+			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
+				return nil, 0, false, err
+			} else if !ok {
+				return nil, 0, false, sqlite.ErrNotGroupMember
+			}
+			if channelName == "" || chatID == "" {
+				return nil, 0, false, fmt.Errorf("session selector is required")
+			}
+			sess, err := ag.MultiSession().GetOrCreateSession(channelName, chatID)
+			if err != nil {
+				return nil, 0, false, err
+			}
+			gm, gerr := groupMessagesOf(sess)
+			if gerr != nil {
+				return nil, 0, false, gerr
+			}
+			rows, hasMore, next, err := gm.ListGroupMessages(sess.TenantID(), groupID, cursor, limit)
+			if err != nil {
+				return nil, 0, false, err
+			}
+			out := make([]protocol.GroupMessage, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, protocol.GroupMessage{
+					ID: r.ID, GroupID: r.GroupID, Kind: r.Kind, CorrelationID: r.CorrelationID,
+					SenderType: r.SenderType, SenderID: r.SenderID, SenderName: r.SenderName,
+					Role: r.Role, Content: r.Content, To: r.To, Payload: r.Payload, CreatedAt: r.CreatedAt,
+				})
+			}
+			return out, next, hasMore, nil
+		}
+		callbacks.GroupCreate = func(memberAddr, name string, members []string) (*protocol.Group, error) {
+			id := "grp_" + strings.ReplaceAll(newGroupUUID(), "-", "")[:12]
+			g, err := groupSvc.CreateGroup(context.Background(), id, name, memberAddr, members)
+			if err != nil {
+				return nil, err
+			}
+			return &protocol.Group{ID: g.ID, Name: g.Name, Owner: g.Owner, CreatedAt: g.CreatedAt, MemberCount: g.MemberCount}, nil
+		}
+		callbacks.GroupAddMember = func(memberAddr, groupID, addr string) (*protocol.GroupMember, error) {
+			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
+				return nil, err
+			} else if !ok {
+				return nil, sqlite.ErrNotGroupMember
+			}
+			m, err := groupSvc.AddMember(context.Background(), groupID, addr)
+			if err != nil {
+				return nil, err
+			}
+			return &protocol.GroupMember{
+				GroupID: m.GroupID, MemberAddr: m.MemberAddr, Status: m.Status,
+				JoinedAt: m.JoinedAt, Name: m.Name, Role: m.Role, Instance: m.Instance,
+			}, nil
+		}
+		callbacks.GroupAppendMessage = func(memberAddr, groupID, channelName, chatID string, input protocol.GroupMessageInput) (*protocol.GroupMessage, error) {
+			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
+				return nil, err
+			} else if !ok {
+				return nil, sqlite.ErrNotGroupMember
+			}
+			if channelName == "" || chatID == "" {
+				return nil, fmt.Errorf("session selector is required")
+			}
+			sess, err := ag.MultiSession().GetOrCreateSession(channelName, chatID)
+			if err != nil {
+				return nil, err
+			}
+			role := "assistant"
+			if input.SenderType == "user" {
+				role = "user"
+			}
+			now := time.Now()
+			env := sqlite.GroupMessageEnvelope{
+				GroupID: groupID, Kind: input.Kind, CorrelationID: input.CorrelationID,
+				To: input.To, Payload: input.Payload,
+				SenderType: input.SenderType, SenderID: input.SenderID, SenderName: input.SenderName,
+			}
+			gm, gerr := groupMessagesOf(sess)
+			if gerr != nil {
+				return nil, gerr
+			}
+			id, err := gm.AppendGroupMessage(sess.TenantID(), llm.ChatMessage{
+				Role: role, Content: input.Content, SenderType: input.SenderType,
+				SenderID: input.SenderID, SenderName: input.SenderName, Timestamp: now,
+			}, env)
+			if err != nil {
+				return nil, err
+			}
+			return &protocol.GroupMessage{
+				ID: id, GroupID: groupID, Kind: input.Kind, CorrelationID: input.CorrelationID,
+				SenderType: input.SenderType, SenderID: input.SenderID, SenderName: input.SenderName,
+				Role: role, Content: input.Content, To: input.To, Payload: input.Payload,
+				CreatedAt: now.UTC().Format(time.RFC3339),
+			}, nil
+		}
 	}
+
 	// Wire GetActiveProgress
 	// 折叠视图（2026-09-30 收尾）：本回调的**全部消费方都是 Web SSE/WS 推送**（web_sse.go:266
 	// SSE fallback 发布 / :756 心跳快照入 ring（断线重连重放）/ web.go:1477 重连 replay 补发）——
@@ -299,6 +454,20 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	// （rpc_table.go:1662 直接调 Ag.GetActiveProgress 原方法，不经此回调）。
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetActiveProgressFolded(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
+	}
+	// Blocking cancel (2026-10-22): POST /api/cancel must not answer "cancelled"
+	// while the turn is still running a tool — it waits on this channel.
+	callbacks.ActiveRunDone = ag.ActiveRunDone
+	// 状态机权威读取（STATE-MODEL §2.4/§3.5）：按对象拉权威，替代帧重放。
+	// 三个端点共用同一批只读访问器；属主校验在 web 层（resolveAPISession）。
+	callbacks.IterationBlock = func(channel, chatID string, turnID uint64, iteration int) (*protocol.IterationBlock, error) {
+		return ag.IterationBlock(channel, chatID, turnID, iteration)
+	}
+	callbacks.TurnSnapshot = func(channel, chatID string, turnID uint64) (*protocol.TurnSnapshot, error) {
+		return ag.TurnSnapshot(channel, chatID, turnID)
+	}
+	callbacks.SessionState = func(channel, chatID string) (*protocol.SessionStateSnapshot, error) {
+		return ag.SessionState(channel, chatID)
 	}
 	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetPendingAskUser(channel, chatID)
@@ -967,6 +1136,60 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	}
 	callbacks.ReorderQueued = func(channel, chatID string, msgIDs []string) bool {
 		return ag.ReorderQueue(channel, chatID, msgIDs)
+	}
+
+	// ─── 结构化消息（sendmessage-structured）───
+	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList := structuredCallbacks(ag)
+	callbacks.StructuredAppend = structuredAppend
+	callbacks.StructuredAnswer = structuredAnswer
+	callbacks.StructuredInbox = structuredInbox
+	callbacks.StructuredCount = structuredCount
+	callbacks.StructuredMessages = structuredList
+
+	// ─── 跨会话活动流（通信视图性能重构）───
+	// 只绑主库连接（webSQL）。PG 后端没有 activity_index/interactive_agents 的
+	// 兼容实现 ⇒ 两个回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
+	if webSQL != nil {
+		activityIdx := sqlite.NewActivityIndex(webSQL)
+		agentSvc := sqlite.NewInteractiveAgentService(webSQL)
+		callbacks.ActivityList = func(limit int, within time.Duration, kinds []string) ([]web.ActivityEntry, bool, error) {
+			rows, hasMore, err := activityIdx.List(limit, within, kinds)
+			if err != nil {
+				return nil, false, err
+			}
+			out := make([]web.ActivityEntry, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, web.ActivityEntry{
+					ChatID:     r.ChatID,
+					Channel:    r.Channel,
+					MessageID:  r.MessageID,
+					Kind:       r.Kind,
+					SenderName: r.SenderName,
+					Summary:    r.Summary,
+					CreatedAt:  r.CreatedAt,
+				})
+			}
+			return out, hasMore, nil
+		}
+		callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
+			cutoff := time.Now().Add(-sqlite.NormalizeActivityWindow(within))
+			rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]web.AgentActivityEntry, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, web.AgentActivityEntry{
+					AgentKey:    r.AgentKey,
+					RoleName:    r.RoleName,
+					Instance:    r.Instance,
+					Status:      r.Status,
+					UpdatedAt:   r.UpdatedAt,
+					LastReplyAt: r.LastReplyAt,
+				})
+			}
+			return out, nil
+		}
 	}
 
 	// ─── Unified push (system notifications) ───
@@ -2314,7 +2537,7 @@ func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID 
 //
 // 区域原子：切分按**区域覆盖的迭代个数之和**取下标（与 channel.RegionWindow 同一
 // 手法），任何输入下都严格落在区域边界上 —— 绝不从折叠工具组中间切开。
-// 段内迭代为**轻字段形态**（MapIterationRecord(rec, true)，ToolsFolded 标记），
+// 段内迭代为**轻字段形态**（MapIterationRecord(rec, channel.FoldToolsForRecord(rec))，ToolsFolded 标记），
 // 详情由 /api/iteration_detail 按需补齐。
 //
 // regionLimit <= 0 ⇒ DefaultHistoryRegionRequest；> MaxHistoryRegionRequest ⇒ 钳到上限。
@@ -2344,7 +2567,7 @@ func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]pro
 func foldHistoryIterations(recs []sqlite.IterationRecord) []protocol.HistoryIteration {
 	out := make([]protocol.HistoryIteration, 0, len(recs))
 	for _, rec := range recs {
-		out = append(out, channel.MapIterationRecord(rec, true))
+		out = append(out, channel.MapIterationRecord(rec, channel.FoldToolsForRecord(rec)))
 	}
 	return out
 }

@@ -400,11 +400,12 @@ func uploadKeyReferenced(content, key string) bool {
 		strings.Contains(content, prefix+strings.ReplaceAll(escaped, "+", "%20"))
 }
 
-func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdentity, channelName, chatID string) (SessionSelector, error) {
-	sel, err := wc.resolveInboundSession(ctx, identity, channelName, chatID)
-	if err != nil {
-		return SessionSelector{}, err
-	}
+// dispatchCancelResolved pushes the "/cancel" message for an ALREADY resolved
+// session (the caller resolves first so it can snapshot the turn's run-done
+// channel — ActiveRunDone — BEFORE the cancel is dispatched; the channel it
+// waits on must belong to the turn it cancelled, not to a later turn that may
+// start in between).
+func (wc *WebChannel) dispatchCancelResolved(ctx context.Context, identity inboundIdentity, sel SessionSelector) error {
 	msgSenderID := identity.SenderID
 	msgSenderName := identity.SenderName
 	if identity.IsCLI {
@@ -426,7 +427,7 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 	// cancelled=true) consistent with the WebSocket transport.
 	cancelMeta["ask_user_cancel"] = "true"
 	withPhysicalChannel(cancelMeta, identity.IsCLI)
-	_, err = wc.enqueueInbound(ctx, bus.InboundMessage{
+	_, err := wc.enqueueInbound(ctx, bus.InboundMessage{
 		Channel:    sel.Channel,
 		SenderID:   msgSenderID,
 		SenderName: msgSenderName,
@@ -438,41 +439,7 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 		From:       bus.NewIMAddress(sel.Channel, msgSenderID),
 		Metadata:   cancelMeta,
 	})
-	return sel, err
-}
-
-func (wc *WebChannel) dispatchAskUserResponse(ctx context.Context, identity inboundIdentity, channelName, chatID string, response protocol.AskUserResponse) (SessionSelector, error) {
-	sel, err := wc.resolveInboundSession(ctx, identity, channelName, chatID)
-	if err != nil {
-		return SessionSelector{}, err
-	}
-	if response.Cancelled {
-		return wc.dispatchCancel(ctx, identity, sel.Channel, sel.ChatID)
-	}
-	if len(response.Answers) == 0 {
-		return SessionSelector{}, fmt.Errorf("answer is required")
-	}
-	parts := make([]string, 0, len(response.Answers))
-	for questionID, answer := range response.Answers {
-		parts = append(parts, fmt.Sprintf("Q%s: %s", questionID, answer))
-	}
-	_, err = wc.enqueueInbound(ctx, bus.InboundMessage{
-		Channel:    sel.Channel,
-		SenderID:   identity.SenderID,
-		SenderName: identity.SenderName,
-		ChatID:     sel.ChatID,
-		ChatType:   "p2p",
-		Content:    strings.Join(parts, "\n\n"),
-		Time:       time.Now(),
-		RequestID:  strings.ReplaceAll(uuid.New().String(), "-", ""),
-		From:       bus.NewIMAddress(sel.Channel, identity.SenderID),
-		Metadata: func() map[string]string {
-			m := map[string]string{"ask_user_answered": "true"}
-			withPhysicalChannel(m, identity.IsCLI)
-			return m
-		}(),
-	})
-	return sel, err
+	return err
 }
 
 func (wc *WebChannel) enqueueInbound(ctx context.Context, message bus.InboundMessage) (bus.DeliveryResult, error) {

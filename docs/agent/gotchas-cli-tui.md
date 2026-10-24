@@ -223,3 +223,43 @@
   现象：`xbot-cli --version` **启动 xbot**（打印 banner 后照常拉起 TUI / 恢复上次会话），而不是打印版本。根因：`cmd/xbot-cli/main.go` 的 flag 循环 `default` 只把**非 `-` 前缀**参数当 prompt，其余**一律静默吞掉** ⇒ 没有对应 `case` 的 flag（含拼错的）被"当没看见"，随后照常走默认路径。
   契约（三件）：① `--version` / `-v` / `-V` ⇒ `fmt.Println(version.Version)` 后 **return**（stdout 恰好一行版本号，绝不进入会话）；② `--help` / `-h` ⇒ 打印用法后 return；③ **任何 `-` 前缀的未知 flag ⇒ stderr `unknown flag %q` + 打印用法 + `os.Exit(2)`**。另：机器可读调用（`setup` / `--version` / `--help`）**不得打印 banner**（`xbot CLI <ver>`），否则脚本拿不到干净载荷。
   守护：`cmd/xbot-cli/flags_test.go` —— 把「打印即退出」抽成**纯函数** `cliEarlyExitFlag(args, stdout)` 直接单测（含「未知 flag / 位置参数 / `setup --help` 不得被吞掉」），`main()` 在**任何会话初始化之前**调用它并退出 ⇒ 结构上不可能出现「`--version` 起了 xbot」。⚠️ **不要**改回「构建真实二进制再 exec」：CI 冷缓存下首次 exec 一个刚写完的 ~100MB 二进制会超时（实测 67s 未退出 ⇒ 假红，2026-10-12）。
+
+## ⛔ 交互子代理会话的两条铁律：销毁必须幂等（墓碑），恢复必须重建 systemPrompt（2026-10-22）
+
+**事故一（进程 panic / exit status 2）**：TTL 清理销毁交互子代理会话库时，并发投递路径仍持有
+stale 引用，继续在已 `close` 的库上跑 turn；同一秒里 `sessionDB()` 又把刚删掉的库文件重新
+`open` 出来（日志签名：`SQLite database closed` → `WAL file DISAPPEARED ... where=close` →
+`WAL state ... where=open` → `exited (exit status 2)`）。而 `logs/cli-panic.log` **从未生成**
+—— `clipanic.EnableFileLogging` 当时只记路径、没注册 `debug.SetCrashOutput`，且服务入口
+`main.go` 根本没调用它，非 main goroutine 的堆栈只写（被 supervisor 丢弃的）stderr。
+
+契约（四件，缺一条就回到事故现场）：
+1. `clipanic.EnableFileLogging` 必须 `debug.SetCrashOutput`（文件 `O_CREATE|O_APPEND|O_WRONLY|0600`，
+   进程内**只开一次**、句柄常驻不关），且**服务入口与 CLI 入口都要调用**。
+   注意 Go 1.24+ 的 API 已变成 `SetCrashOutput(f, debug.CrashOptions{})`（`CrashOnPanic` flag 已并入默认行为）。
+2. `interactiveAgent.destroyed` 墓碑 + `markDestroyed()` CAS：**先夺权、立刻摘除注册项、再释放资源**；
+   输家直接 no-op（幂等），`!registered` 也 no-op（绝不盲目 `DestroySession`，否则会关掉同一 key 上刚重建的活会话）。
+3. 所有取用路径都查墓碑：send（Load 后 / 取锁后 / 等 operation gate 后各一次）、Run 收尾
+   （`destroyedDuringRun` + 写回前）、bg/fg spawn 写回、Continue/Inspect/Interrupt/List/matcher、
+   rewind 同步、运行状态读取。TTL 清理用 `destroyInteractiveSessionIfCurrent` 只销毁"观察到的那一代"。
+4. session 层 `markTenantDestroyed` + `sessionDB()` 拒绝为墓碑租户重开库（返回 `errSessionDestroyed`）：
+   关库删文件**之前**立墓碑，杜绝"close → where=open"。
+
+**事故二（`got 0` system message，会话不可用只能 unload 重建）**：重启恢复路径
+`restoreOneAgent` 建 `interactiveAgent` 时**漏了 `systemPrompt`** ⇒ 零值消息被
+`[ia.systemPrompt] + ia.messages + [user]` 拼进最前面 ⇒ 一条 system 都没有 ⇒ engine 断言判死。
+同一个函数还用了 `("agent", "<role>/<instance>")` 作为历史会话 key —— 与 spawn 的
+`interactiveKey(...)` 不是同一个库，恢复出来历史恒为空。
+
+契约：① 恢复必须与 spawn 同构（`systemPrompt = cfg.Messages[0]`，历史从 `mapKey` 恢复）；
+② `SendToInteractiveSession` 拼装前 `ensureSystemPromptLocked()` 自愈（从 RunConfig 找回 + WARN，
+找不回给可读错误：点名 role/instance + unload→spawn）；③ engine 的 `assertSystemMessages`
+0 条时给"点名 agent/channel/chat/roles + 处置动作"的可读错误，>1 条时保留第一条并降级
+（与 `middleware.Assemble` 同策略），不再一句话判死整个 turn。
+
+守护用例（拆掉任一修复必红）：
+`agent/interactive_destroy_race_test.go`（send×destroy 竞态、destroy 幂等）、
+`agent/interactive_system_prompt_test.go`（恢复保持 systemPrompt/历史、自愈、可读错误）、
+`session/sessiondb_destroy_guard_test.go`（已销毁租户禁止重开）、
+`clipanic/clipanic_test.go`（非 main goroutine panic 落盘，子进程验证）。
+TTL 现在可配：`agent.interactive_session_ttl`（env `INTERACTIVE_SESSION_TTL`，默认 30m）。

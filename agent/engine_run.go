@@ -140,6 +140,14 @@ type runState struct {
 	iterationSnapshots []IterationSnapshot
 	progressFinalizer  func()
 	compressWarning    string
+	// toolCallID returns the STABLE server-assigned identity of the tool at
+	// (iteration, index), matching the id the streaming phase already published
+	// (STATE-MODEL P2/P3′). nil = fall back to the provider id.
+	toolCallID func(iteration, index int, providerID string) string
+	// runCtx is the Run's context. Kept so iteration snapshots can tell a
+	// cancelled iteration from a normal one (interrupted tools become `failed`
+	// in the committed block — contract C-6).
+	runCtx context.Context
 
 	// Iteration-loop detection: records the content+tool_calls "signature" of
 	// the previous iteration. When two consecutive iterations produce the
@@ -216,6 +224,7 @@ func newRunState(cfg RunConfig) *runState {
 		persistence:              NewPersistenceBridgeWithTurnID(cfg.Session, len(messages), cfg.TurnID),
 		tokenTracker:             NewTokenTracker(cfg.LastPromptTokens, cfg.LastCompletionTokens),
 		loopDetectionEnabled:     cfg.IterationLoopDetection,
+		toolCallID:               cfg.ToolCallID,
 	}
 	if cfg.ContextEditor != nil {
 		cfg.ContextEditor.BindSession(cfg.Session)
@@ -630,8 +639,25 @@ func (s *runState) notifyThinking(iteration int) {
 	}
 }
 
-// assertSystemMessages checks that messages have exactly one system message.
-// Returns a RunOutput error if the assertion fails, nil otherwise.
+// assertSystemMessages enforces the "exactly one system message" invariant and,
+// when it can be satisfied, REPAIRS the message list instead of failing the turn.
+//
+// 2026-10-22 P0（"Error: assert: LLM messages must have exactly one system
+// message; got 0" —— 子代理会话因此整条不可用，只能 unload 重建）：
+// 旧实现是纯断言：system 条数 != 1 直接把 Run 判死，用户拿到的只有一句
+//
+//	"内部错误：system 消息数量异常" + 一条 assert 错误串
+//
+// —— 既没说是哪个会话、为什么缺，也没告诉用户怎么办。
+//
+// 现在分三档：
+//  1. 恰好 1 条 → 通过。
+//  2. >1 条 → 保留第一条，丢掉其余（与 middleware.Assemble 的安全降级同策略：
+//     历史里混进 system 只可能是上游 bug，不该让整个 turn 失败）。
+//  3. 0 条 → 无法凭空造出正确的 system prompt（session 从不持久化 system），
+//     给出**点名会话 + 说明最可能原因 + 给出处置动作**的可读错误。
+//
+// Returns a RunOutput error if the invariant cannot be satisfied, nil otherwise.
 func (s *runState) assertSystemMessages(ctx context.Context) *RunOutput {
 	var systemCount int
 	for _, m := range s.messages {
@@ -639,16 +665,60 @@ func (s *runState) assertSystemMessages(ctx context.Context) *RunOutput {
 			systemCount++
 		}
 	}
-	if systemCount != 1 {
-		log.Ctx(ctx).WithField("system_count", systemCount).Error("assert: LLM messages must have exactly one system message")
-		return s.buildOutput(&channel.OutboundMsg{
-			Channel: s.cfg.Channel,
-			ChatID:  s.cfg.ChatID,
-			Content: "内部错误：system 消息数量异常",
-			Error:   fmt.Errorf("assert: LLM messages must have exactly one system message; got %d", systemCount),
-		})
+	if systemCount == 1 {
+		return nil
 	}
-	return nil
+
+	if systemCount > 1 {
+		filtered := make([]llm.ChatMessage, 0, len(s.messages))
+		kept := false
+		for _, m := range s.messages {
+			if m.Role == "system" {
+				if kept {
+					continue
+				}
+				kept = true
+			}
+			filtered = append(filtered, m)
+		}
+		s.messages = filtered
+		log.Ctx(ctx).WithFields(log.Fields{
+			"system_count": systemCount,
+			"agent":        s.cfg.AgentID,
+			"chat_id":      s.cfg.ChatID,
+			"channel":      s.cfg.Channel,
+		}).Warn("Run: more than one system message in the message list — kept the first, dropped the rest")
+		return nil
+	}
+
+	// systemCount == 0
+	roles := make([]string, 0, len(s.messages))
+	for i, m := range s.messages {
+		if i >= 5 {
+			roles = append(roles, "...")
+			break
+		}
+		roles = append(roles, m.Role)
+	}
+	log.Ctx(ctx).WithFields(log.Fields{
+		"system_count": 0,
+		"agent":        s.cfg.AgentID,
+		"chat_id":      s.cfg.ChatID,
+		"channel":      s.cfg.Channel,
+		"messages":     len(s.messages),
+		"first_roles":  strings.Join(roles, ","),
+	}).Error("assert: LLM messages must have exactly one system message")
+	return s.buildOutput(&channel.OutboundMsg{
+		Channel: s.cfg.Channel,
+		ChatID:  s.cfg.ChatID,
+		Content: fmt.Sprintf("内部错误：会话 %s 的系统提示词（system message）丢失，本次调用已中止。"+
+			"常见原因：恢复出来的子代理会话没有重建 system prompt。处置：unload 该子代理后重新 spawn（或重启该会话）。",
+			s.cfg.ChatID),
+		Error: fmt.Errorf("system message missing: LLM messages must have exactly one system message, got 0 "+
+			"(agent=%q channel=%q chat=%q messages=%d roles=[%s]) — the session lost its system prompt; "+
+			"if this is a sub-agent, unload and re-spawn it",
+			s.cfg.AgentID, s.cfg.Channel, s.cfg.ChatID, len(s.messages), strings.Join(roles, ",")),
+	})
 }
 
 // updateTokenUsage syncs the current tokenTracker state into
@@ -720,11 +790,16 @@ func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 }
 
 // llmMessages returns the messages to send to the LLM: s.messages plus the
-// transient system_reminder fake tool pair (if any). The reminder is appended
-// to a fresh copy — it never mutates s.messages, so persistence watermark and
-// the ContextEditor view stay clean.
-func (s *runState) llmMessages() []llm.ChatMessage {
-	if s.systemReminder == "" {
+// transient system_reminder fake tool pair, but ONLY on insertion iterations
+// (every systemReminderInsertEvery-th). The reminder is appended to a fresh
+// copy — it never mutates s.messages, so persistence watermark and the
+// ContextEditor view stay clean.
+//
+// 关键：是否拼接由 iteration 决定，不取决于 s.systemReminder 是否为空。
+// s.systemReminder 是跨迭代保留的内存字段，只要它非空就会每轮被拼进去
+// （模型每轮都看到一个「凭空出现的 tool_call」，正是用户 2026-10-20 报的问题）。
+func (s *runState) llmMessages(iteration int) []llm.ChatMessage {
+	if s.systemReminder == "" || !shouldInsertSystemReminder(iteration) {
 		return s.messages
 	}
 	assistantMsg, toolMsg := newSyntheticToolPair(systemReminderToolName, systemReminderToolName, s.systemReminder)
@@ -737,7 +812,7 @@ func (s *runState) llmMessages() []llm.ChatMessage {
 
 // callLLM invokes the LLM with the current messages, handling per-tenant
 // concurrency semaphore and input-too-long errors with forced compression.
-func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) (*llm.LLMResponse, error) {
+func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context, iteration int) (*llm.LLMResponse, error) {
 	toolDefs := visibleToolDefs(s.cfg.Tools.AsDefinitionsForSession(s.sessionKey, s.cfg.TenantID), s.cfg.PermUsers, s.cfg.Channel)
 	s.messages = s.syncMessages(llm.SanitizeMessages(s.messages))
 
@@ -759,7 +834,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		s.cfg.ResetStreamTiming()
 	}
 
-	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
+	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(iteration), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 
 	s.localLLMCalls++
 	if response != nil {
@@ -829,7 +904,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 	}
 
 	if err != nil && llm.IsInputTooLongError(err) && len(s.messages) > 3 {
-		response, err = s.handleInputTooLong(ctx, retryNotifyCtx, toolDefs)
+		response, err = s.handleInputTooLong(ctx, retryNotifyCtx, toolDefs, iteration)
 	}
 
 	if releaseLLMSem != nil {
@@ -841,7 +916,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 
 // handleInputTooLong forces context compression when input exceeds model limits,
 // then retries the LLM call.
-func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx context.Context, toolDefs []llm.ToolDefinition) (*llm.LLMResponse, error) {
+func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx context.Context, toolDefs []llm.ToolDefinition, iteration int) (*llm.LLMResponse, error) {
 	log.Ctx(ctx).WithError(fmt.Errorf("input too long")).Warn("Input too long for LLM, forcing context compression and retrying")
 	if s.autoNotify {
 		s.progressLines = append(s.progressLines, "> ⚠️ 输入超限，正在强制压缩上下文...")
@@ -940,7 +1015,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		s.cfg.ResetStreamTiming()
 	}
 
-	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
+	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(iteration), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 	s.localLLMCalls++
 	if response != nil {
 		if response.Usage.PromptTokens > 0 {
@@ -2341,6 +2416,20 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 	}
 }
 
+// systemReminderInsertEvery 是 transient system_reminder fake tool pair 的插入周期。
+const systemReminderInsertEvery = 10
+
+// shouldInsertSystemReminder 决定本轮（iteration）是否把 system_reminder 这个
+// fake tool pair 拼进 LLM 上下文：只有 iteration 能被 systemReminderInsertEvery
+// 整除时才拼（10、20、30…），其余轮次完全不出现。
+//
+// 为什么不是每轮插入：fake tool pair 会让对话里凭空多出一组
+// assistant(tool_call) + tool(result) 记录，模型连续看到同一工具反复"被调用"
+// 容易困惑（误以为要反复调用它，或把它当成真实工具）。
+func shouldInsertSystemReminder(iteration int) bool {
+	return iteration%systemReminderInsertEvery == 0
+}
+
 // postToolProcessing handles dynamic context injection, system reminder,
 // session persistence, background task draining, and waiting user check.
 // Returns a RunOutput if the loop should terminate, nil otherwise.
@@ -2362,7 +2451,13 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	// commitPending 用 len(messages) 推进 watermark，把被跳过的 reminder 也
 	// 算进「已持久化」），下一轮删除 reminder 后真实消息索引前移、落到虚高
 	// watermark 之下被当作已持久化跳过 —— AskUser 报 "no pending messages"。
-	if len(response.ToolCalls) > 0 {
+	//
+	// 刷新节奏：每 10 个 iteration 重建一次（首轮必建）。逐轮重建有两个代价：
+	//   1) 每轮都要重新拉 todo / 子代理状态并拼字符串；
+	//   2) reminder 是 prompt 尾部的一段固定结构，内容逐轮抖动会让 KV cache
+	//      前缀失配。reminder 承载的是 cwd/todo/subagent 的摘要，本来就不需要
+	//      逐轮精确 —— 10 轮的粒度足够新鲜，且把重建开销摊薄到 1/10。
+	if shouldInsertSystemReminder(iteration) {
 		var todoItems []TodoProgressItem
 		if s.cfg.TodoManager != nil && s.todoKey() != "" {
 			todoItems = s.cfg.TodoManager.GetTodoItems(s.todoKey())
@@ -2397,6 +2492,11 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		}
 
 		s.systemReminder = BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
+	} else {
+		// 非插入轮：清空，让 llmMessages() 完全不拼这个 fake tool pair。
+		// 连续多轮出现同一组「凭空冒出的工具调用 + 结果」会让模型困惑
+		// （误以为要反复调用它，或把它当成真实存在的工具）。
+		s.systemReminder = ""
 	}
 
 	// --- Incremental session persistence ---
@@ -2516,6 +2616,8 @@ func (s *runState) drainAndInjectBgNotifications(ctx context.Context, iteration 
 			err = s.injectCronFiredNotification(ctx, iteration, n)
 		case *tools.QueuedUserMessage:
 			err = s.injectQueuedUserMessage(ctx, iteration, n)
+		case *tools.StructuredNotice:
+			err = s.injectStructuredNotice(ctx, iteration, n)
 		case *tools.AsyncMessageNotification:
 			// Async messages (peer/webhook/UI-action) were previously silently
 			// consumed here (no case → err=nil → acknowledged + dropped) —
@@ -2907,6 +3009,46 @@ func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m
 		m.ReplyFn(err)
 	}
 	return err
+}
+
+// injectStructuredNotice injects a structured message (answer/decision/plain
+// interject) that was queued in the session priority queue while a turn was
+// running. Injected at an iteration boundary as a synthetic tool result so the
+// current tool call is never interrupted (sendmessage-structured §9.1/§9.2).
+func (s *runState) injectStructuredNotice(ctx context.Context, iteration int, n *tools.StructuredNotice) error {
+	toolName := "structured_message"
+	toolID := fmt.Sprintf("structured_%d_%d", iteration, time.Now().UnixNano())
+	label := "结构化消息（" + n.Kind + "）"
+	switch n.Kind {
+	case "answer":
+		label = "用户回答了你的问题"
+	case "decision":
+		label = "用户已批复"
+	}
+	content := fmt.Sprintf("📨 [%s]%s\n\n%s", label, correlationSuffix(n.CorrelationID), n.Content)
+
+	err := s.injectSyntheticToolPair(ctx, iteration,
+		toolName, toolID,
+		content, toolName,
+		label,
+		tools.EncodeSyntheticToolHints(tools.MessageHints("structured", n.Kind)),
+		0,
+	)
+	if err == nil {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"kind":        n.Kind,
+			"content_len": len(n.Content),
+			"iteration":   iteration,
+		}).Info("Injected structured message at iteration boundary")
+	}
+	return err
+}
+
+func correlationSuffix(id string) string {
+	if id == "" {
+		return ""
+	}
+	return " correlation=" + id
 }
 
 // (buildMaxIterOutput removed with max_iterations: the main loop has no iteration cap.)

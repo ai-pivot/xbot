@@ -107,6 +107,26 @@ type WebCallbacks struct {
 	// GetActiveProgress returns the latest progress snapshot for an active turn.
 	// Used by Web history API to restore progress state on page refresh.
 	GetActiveProgress func(channel, chatID string) *protocol.ProgressEvent
+	// ActiveRunDone returns a channel that is CLOSED once the session's currently
+	// active turn has fully finished (processMessage returned, cancel state
+	// unregistered). ok=false means there is NO active turn.
+	//
+	// POST /api/cancel uses it to be BLOCKING: the HTTP response must never claim
+	// "cancelled" while the turn is still running a tool (user requirement
+	// 2026-10-22: "cancel 只要 api 返回了一定必须已经取消成功，它是阻塞的").
+	ActiveRunDone func(channel, chatID string) (<-chan struct{}, bool)
+	// ─── Authoritative state reads (STATE-MODEL §14, endpoints /api/iteration,
+	// /api/turn, /api/session-state). All are read-only and never mutate state.
+	// IterationBlock returns one iteration's authoritative block.
+	// (nil, nil) = the iteration does not exist ("absent", the only legal
+	// answer for a skipped iteration number).
+	IterationBlock func(channel, chatID string, turnID uint64, iteration int) (*protocol.IterationBlock, error)
+	// TurnSnapshot returns a turn's committed blocks + closing record.
+	// (nil, nil) = the turn does not exist.
+	TurnSnapshot func(channel, chatID string, turnID uint64) (*protocol.TurnSnapshot, error)
+	// SessionState returns the full session snapshot (turns + live + session
+	// fields). The web layer stamps epoch/seq around it (two-phase read).
+	SessionState func(channel, chatID string) (*protocol.SessionStateSnapshot, error)
 	// ─── Shared artifacts (generic, plugin-facing) ───────────────────────
 	// Shareable content produced by plugins. The host is deliberately
 	// content-agnostic: ContentType is named by the producing plugin and
@@ -154,6 +174,19 @@ type WebCallbacks struct {
 	SetCWD func(senderID string, sel SessionSelector, dir string) error
 	// BackgroundTasks returns background shell tasks for a Web-accessible session.
 	BackgroundTasks func(senderID string, sel SessionSelector) (any, error)
+	// ─── Agent 通信指挥室（群组可视化最小后端）────────────────────────────
+	// GroupList 返回调用者可见的群（owner 或 alive 成员）。
+	GroupList func(memberAddr string) ([]protocol.Group, error)
+	// GroupMembers 返回群成员（含 left）。
+	GroupMembers func(memberAddr, groupID string) ([]protocol.GroupMember, error)
+	// GroupMessages 读取调用者会话库中该群的消息（channel/chatID 为空 = 当前会话）。
+	GroupMessages func(memberAddr, groupID, channelName, chatID string, cursor int64, limit int) ([]protocol.GroupMessage, int64, bool, error)
+	// GroupCreate 创建群（演示用；owner = memberAddr）。
+	GroupCreate func(memberAddr, name string, members []string) (*protocol.Group, error)
+	// GroupAddMember 添加成员。
+	GroupAddMember func(memberAddr, groupID, addr string) (*protocol.GroupMember, error)
+	// GroupAppendMessage 向会话库追加一条群消息（演示写入 + 事件验证）。
+	GroupAppendMessage func(memberAddr, groupID, channelName, chatID string, input protocol.GroupMessageInput) (*protocol.GroupMessage, error)
 	// CronTasks returns scheduled tasks for a Web-accessible session.
 	CronTasks func(senderID string, sel SessionSelector) (any, error)
 	// CronRemove deletes a scheduled task owned by the given session. Session
@@ -266,6 +299,33 @@ type WebCallbacks struct {
 	// unchanged (no broadcast then).
 	ReorderQueued func(channel, chatID string, msgIDs []string) bool
 
+	// ── 结构化消息（sendmessage-structured）────────────────────────────────
+	// StructuredAppend persists a structured message for the caller's session
+	// and delivers it (busy → priority queue, idle → new turn). Returns
+	// (message, duplicate, error).
+	StructuredAppend func(senderID string, sel SessionSelector, input protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error)
+	// StructuredAnswer answers an ask_user question idempotently.
+	StructuredAnswer func(senderID string, sel SessionSelector, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error)
+	// StructuredInbox lists unanswered ask_user rows (keyset cursor = row id).
+	StructuredInbox func(sel SessionSelector, cursor int64, limit int) ([]protocol.StructuredMessage, bool, int64, error)
+	// StructuredCount returns the unanswered ask_user count for the badge.
+	StructuredCount func(sel SessionSelector) (int, error)
+	// StructuredMessages lists structured messages filtered by kind.
+	StructuredMessages func(sel SessionSelector, kind string, cursor, afterID int64, limit int) ([]protocol.StructuredMessage, bool, int64, error)
+
+	// ── 跨会话活动流（通信视图性能重构）────────────────────────────────────
+	//
+	// 这两个回调**只打主库**：会话按 chat 分库（one session one DB）之后，跨会话
+	// 读消息必须逐库打开，会话数一涨就线性恶化。活动索引（activity_index）与
+	// 子代理注册表（interactive_agents）都在主库，视图因此与会话数无关。
+	// 实现里**禁止**出现 GetOrCreateSession / OpenSessionDB / sessionDB()。
+	//
+	// ActivityList 返回最近的结构化活动（新→旧），within 为活跃窗口（如 72h），
+	// kinds 为空表示全部结构化 kind。has_more 由多取一行判定。
+	ActivityList func(limit int, within time.Duration, kinds []string) ([]ActivityEntry, bool, error)
+	// AgentActivityList 返回活跃子代理（默认排除 unloaded），按 updated_at 倒序。
+	AgentActivityList func(within time.Duration, includeUnloaded bool) ([]AgentActivityEntry, error)
+
 	// ─── Unified push (system notifications) ───
 	//
 	// PushNotify publishes a semantic event for background delivery. It MUST be
@@ -291,6 +351,30 @@ type WebCallbacks struct {
 	// PushSaveSettings validates/persists the settings and hot-swaps the push
 	// layer; raw is the JSON body from the UI.
 	PushSaveSettings func(raw json.RawMessage) error
+}
+
+// ActivityEntry 是 /api/activity 的 items 元素。
+//
+// 刻意不引用 storage 包的类型：channel 层只认这个对外契约（与
+// UserChatWithPreview 同样的处理方式），字段名即 JSON 名。
+type ActivityEntry struct {
+	ChatID     string `json:"chat_id"`
+	Channel    string `json:"channel"`
+	MessageID  int64  `json:"message_id"`
+	Kind       string `json:"kind"`
+	SenderName string `json:"sender_name"`
+	Summary    string `json:"summary"`
+	CreatedAt  string `json:"created_at"`
+}
+
+// AgentActivityEntry 是 /api/agents 的 items 元素。
+type AgentActivityEntry struct {
+	AgentKey    string `json:"agent_key"`
+	RoleName    string `json:"role_name"`
+	Instance    string `json:"instance"`
+	Status      string `json:"status"`
+	UpdatedAt   string `json:"updated_at"`
+	LastReplyAt string `json:"last_reply_at"`
 }
 
 // PushEvent is a transport-independent notification request. The push package
@@ -441,6 +525,11 @@ type WebChannel struct {
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 
+	// cancelWait overrides the POST /api/cancel blocking bound (0 = the
+	// production default cancelWaitTimeout). Tests shrink it so the timeout
+	// path can be exercised without waiting 5 real seconds.
+	cancelWait time.Duration
+
 	// PTY manager for web terminals
 	ptyMgr *ptyManager
 
@@ -461,6 +550,13 @@ type WebChannel struct {
 	// Event stream buffer — per chatID monotonic seq + ring buffer for replay
 	evtBuf   map[string]*eventStream
 	evtBufMu sync.Mutex
+
+	// chatSeqs holds the SINGLE per-chat frame counter shared by every route of
+	// the same chat (STATE-MODEL C-1). Key: bare chat id (channel prefix
+	// stripped) — a chat mounted on both `web\0X` and `agent\0X` shares one
+	// numbering instead of two independently advancing counters.
+	chatSeqs  map[string]*chatSeqCounter
+	chatSeqMu sync.Mutex
 
 	// Per-user current session (multi-chatroom + cross-channel support).
 	// Key: senderID, Value: SessionSelector (channel + chatID).
@@ -961,7 +1057,16 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/queue/list", wc.authenticatedPOST(wc.handleQueueList))
 	mux.HandleFunc("/api/queue/cancel", wc.authenticatedPOST(wc.handleQueueCancel))
 	mux.HandleFunc("/api/queue/reorder", wc.authenticatedPOST(wc.handleQueueReorder))
-	mux.HandleFunc("/api/ask_user/respond", wc.authenticatedPOST(wc.handleAskUserRespond))
+	// 结构化消息（sendmessage-structured）：/api/message 已在上方注册（kind/payload
+	// 分支由 handleMessage 转发）；这里补回答、收件箱、按 kind 查询。
+	mux.HandleFunc("/api/answer", wc.authenticatedPOST(wc.handleStructuredAnswer))
+	mux.HandleFunc("/api/inbox", wc.authMiddleware(wc.handleInbox))
+	// 跨会话活动流（通信视图性能重构）：只读主库索引表，绝不打开会话分库。
+	//   /api/activity —— 最近的 report/decision/answer/... 摘要流
+	//   /api/agents   —— 活跃子代理（默认不含 unloaded）
+	mux.HandleFunc("/api/activity", wc.authMiddleware(wc.handleActivity))
+	mux.HandleFunc("/api/agents", wc.authMiddleware(wc.handleAgentActivity))
+	mux.HandleFunc("/api/messages", wc.authMiddleware(wc.handleStructuredMessages))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
 	// Unified push (system notifications): one generic surface for every
 	// provider (FCM / WebPush / APNs / Feishu).
@@ -994,6 +1099,13 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/settings", wc.authenticatedPOST(wc.handleSettingsPOST))
 	mux.HandleFunc("/api/llm-config", wc.authenticatedPOST(wc.handleLLMConfigPOST))
 	mux.HandleFunc("/api/session/status", wc.authenticatedPOST(wc.handleSessionStatus))
+	// 状态机权威读取（STATE-MODEL §2.4/§3.5）：按对象取权威，替代帧重放。
+	//   /api/iteration  —— 单迭代权威块（pullIter）
+	//   /api/turn       —— 单回合权威块 + 收尾（pullTurn）
+	//   /api/session-state —— 整会话快照 + (epoch, seq)（snapshot）
+	mux.HandleFunc("/api/iteration", wc.authMiddleware(wc.handleStateIteration))
+	mux.HandleFunc("/api/turn", wc.authMiddleware(wc.handleStateTurn))
+	mux.HandleFunc("/api/session-state", wc.authMiddleware(wc.handleSessionState))
 
 	mux.HandleFunc("/api/runners/list", wc.authenticatedPOST(wc.handleRunnersListPOST))
 	mux.HandleFunc("/api/runners/create", wc.authenticatedPOST(wc.handleRunnersCreatePOST))
@@ -1024,6 +1136,9 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/chats/{chatID}/rename", wc.authenticatedPOST(wc.handleChatRename))
 	mux.HandleFunc("/api/chats/{chatID}/delete", wc.authenticatedPOST(wc.handleChatDeletePOST))
 	mux.HandleFunc("/api/session-tree", wc.authenticatedPOST(wc.handleSessionTreePOST))
+
+	// Agent 通信指挥室（群组可视化）：真实 REST + group.message 事件。
+	wc.registerGroupRoutes(mux)
 
 	// Channel discovery — the surviving piece of the removed account-identity
 	// endpoints. The frontend ActivityBar uses the discovered channel list to
@@ -1216,8 +1331,9 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 	return msgID, nil
 }
 
-// stampAndBuffer assigns a monotonic seq to the message and appends it to the
-// per-chatID event stream buffer. Returns the stamped message (ready to send).
+// stampAndBuffer assigns the chat's monotonic seq (per CHAT, shared by every
+// route — C-1) plus the process epoch (C-3), and appends the message to the
+// route's replay ring. Returns the stamped message (ready to send).
 func (wc *WebChannel) stampAndBuffer(chatID string, msg protocol.WSMessage) protocol.WSMessage {
 	if channelName, routeChatID, ok := parseSessionRouteKey(chatID); ok {
 		msg.RouteChannel = channelName
@@ -1225,6 +1341,12 @@ func (wc *WebChannel) stampAndBuffer(chatID string, msg protocol.WSMessage) prot
 	}
 	es := wc.getEventStream(chatID)
 	msg.Seq = es.nextSeq()
+	msg.Epoch = serverEpoch
+	// The chat_id must be present on every frame (P1): the route key already
+	// carries it; keep the business chat id on the envelope too.
+	if msg.ChatID == "" {
+		msg.ChatID = chatIDForSeq(chatID)
+	}
 	es.push(msg)
 	return msg
 }

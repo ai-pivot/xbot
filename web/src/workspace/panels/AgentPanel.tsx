@@ -16,7 +16,6 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, u
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
-import { useAskUser } from '@/hooks/useAskUser'
 import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
 import { sameSession } from "@/lib/session-grouping"
 import { useAgentChatState } from '@/chat/useAgentChatState'
@@ -25,17 +24,18 @@ import { usePendingEdit, goalEqual, todosListEqual } from '@/hooks/usePendingEdi
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { subscribeLLMConfigChanged, useLLMSettings } from '@/hooks/useLLMSettings'
-import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos, getPendingAskUser, fetchRegions, fetchIterationDetail } from '@/components/agent/api'
+import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos, fetchRegions, fetchIterationDetail } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 import { postAPI } from '@/lib/api'
 import { sendStartsTurn } from '@/lib/sendTurn'
 import type { QueueItemPayload } from '@/types/shared'
 
-import { AskUserPanel } from '@/components/agent/AskUserPanel'
 import { ContextRing } from '@/components/agent/ContextRing'
 import { ToolSessionContext } from '@/components/agent/ToolSessionContext'
 import { RegionActionsContext, type IterationsLoadedEvent, type RegionActions } from '@/components/agent/RegionActionsContext'
 import { MessageInput } from '@/components/agent/MessageInput'
+import { AskUserFooter } from '@/components/agent/AskUserFooter'
+import { RetryLastTurnContext } from '@/components/agent/retryContext'
 import { MessageAnnotationsProvider } from '@/components/agent/MessageAnnotations'
 import { AuthContext } from '@/providers/AuthProvider'
 import { MessageList } from '@/components/agent/MessageList'
@@ -46,7 +46,6 @@ import { StagingTray } from '@/components/agent/StagingTray'
 import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
-import { parseAskUserPrompt } from '@/hooks/useSessionStore'
 import { gateGapReload, type GapReloadSeen } from '@/workspace/panels/gapReloadGate'
 import type { PanelProps } from '@/workspace/panels/types'
 import type { PanelParams } from '@/types/tab'
@@ -81,6 +80,17 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const [followResetToken, setFollowResetToken] = useState(0)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [interruptMode, setInterruptMode] = useState(false)
+
+  // 面板是否是该 group 的**激活 tab**：dockview 会把多个 panel 同时挂载
+  // （隐藏 tab / split view），而"待答提问"是全页唯一入口 —— 若每个挂载实例都
+  // 渲染一条横幅，就会出现同一问题叠 2–3 条（实测）。只让激活面板渲染入口。
+  const [isActive, setIsActive] = useState(api?.isActive ?? true)
+  useEffect(() => {
+    if (!api?.onDidActiveChange) return
+    const disp = api.onDidActiveChange((e: { isActive: boolean }) => setIsActive(e.isActive))
+    setIsActive(api.isActive ?? true)
+    return () => disp.dispose()
+  }, [api])
 
   // Track dockview panel visibility — only visible panels subscribe to SSE
   // (split view: both panels are visible → both subscribe; tab switch: only
@@ -142,6 +152,9 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const subscribeChatID = params.agentChatID ?? liveSubAgentChatID ?? chatID
   const messageChannel = params.agentChatID ? 'agent' : isSubAgent ? (params.parentChannel ?? 'web') : (params.channel ?? activeSession?.channel ?? 'web')
   const progressChannel = params.agentChatID || liveSubAgentChatID ? 'agent' : messageChannel
+  // 待回答的 ask_user：只认当前会话（`channel:chatID`）。key 变化时组件整个重挂，
+  // 保证展开态/收件箱行都不会跨会话残留（用户实测：换会话还会弹上一个会话的问题）。
+  const askSessionKey = chatID && !isSubAgent ? `${messageChannel}:${chatID}` : ''
   // SSE subscription follows panel visibility — invisible tabs (behind another
   // tab in the same group) disconnect SSE to save bandwidth. Visible panels
   // (active tab + split-view siblings) keep their SSE alive.
@@ -356,32 +369,6 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       .catch(() => {})
     return () => { cancelled = true }
   }, [chatID, messageChannel])
-
-  // AskUser 面板的 DB 权威水合（与上面的 get_goal 同模式）。
-  // 面板过去唯一载体是实时 ask_user 事件：会话在提问时刻没有 SSE 订阅（用户正在看别的
-  // 会话 / 事件被 ring 淘汰 / 信封 key 推导失败）⇒ 没有任何路径重新推导 pending 状态
-  // ⇒ 面板永不渲染、turn 永远"思考中"，用户只能用 Stop 逃出去（2026-09-20 事故：
-  // 提问 05:22:53 时该会话无任何 SSE 订阅者，用户 05:29:40 才切回）。
-  // get_pending_ask_user 走服务器同一份持久化 ask_question/ask_answer 记录（DB 单一
-  // 权威）⇒ 在「会话加载 / tab 重新可见」两个时机水合，漏事件必然自愈。
-  // 缺失时不做删除：响应可能早于提问登记（服务端 WithPendingAskUser 文档同一竞态）。
-  // 载荷不含任何问题时 `parseAskUserPrompt` 返回 null ⇒ 不水合（真实提问必然 ≥1 题；
-  // 伪造空 prompt 会让面板以 `questions: []` 渲染并抛异常，整块面板被崩溃边界替换 ——
-  // 2026-09-20 CI 的 9 个 spec 正是这样红的：通用 `/api/rpc` mock 对
-  // `get_pending_ask_user` 回了 `{ok:true}`）。
-  useEffect(() => {
-    if (!chatID || !messageChannel || !isVisible) return
-    let cancelled = false
-    getPendingAskUser({ channel: messageChannel, chatID })
-      .then((pending) => {
-        if (cancelled || !pending) return
-        const prompt = parseAskUserPrompt(pending)
-        if (!prompt) return
-        store.hydrateAskUserPrompt(messageChannel, chatID, prompt)
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [chatID, messageChannel, isVisible, store])
 
   useEffect(() => {
     if (!isSubAgent) return
@@ -679,8 +666,6 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // authoritative during reload; buildMessageRows merges the live row into the
   // refreshed committed rows when history lands. NEVER gate live on loading.
   // 方案 A：live 行由 store.toRows() 输出（liveMessage=null），渲染永不 gate。
-  const askUser = useAskUser({ chatID, channel: messageChannel })
-
   // 会话级字段（goal / todos）的**用户编辑乐观覆盖**：RPC 成功后立刻显示用户提交的
   // 值；服务端快照相对"提交前的值"发生变化（push 收敛 / agent 第三方改动）时让位 —
   // 服务端始终是权威。修复"编辑后恢复旧内容、刷新才生效"（2026-09-12 用户报告，
@@ -721,12 +706,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   //    采纳/stream 事件建立，session(busy) 尚未到达）
   const busy = ((currentSession?.running ?? false) ||
     progressSnapshot.streaming ||
-    agentChat.busyFallback) &&
-    !askUser.prompt &&
-    // waiting_input (AskUser pending) is mutually exclusive with busy/running:
-    // the turn is PAUSED, so the input must not show the generating/stop state.
-    // Covers the window where a stale backend running flag still says busy.
-    currentSession?.status !== 'waiting_input'
+    agentChat.busyFallback)
 
   // Turn 结束（busy→idle 边沿）时重取 get_goal —— goal 状态变化的事件兜底：
   // set_goal_complete 后端 emitGoalProgress 会推 goal 事件（TDSM 实时更新），
@@ -829,6 +809,19 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     }
     return sendMessageRef.current(content, attachments, rid, interrupt)
   }, [])
+
+  // 「重试上一轮」：错误气泡里的按钮调用它 —— 重新发送最后一条用户消息。
+  // 取最后一条 user 行（排除 displayOnly 的通知行），不新造后端接口。
+  const lastUserContentRef = useRef('')
+  useEffect(() => {
+    const last = [...agentChat.messages].reverse().find((m) => m.role === 'user' && !m.displayOnly)
+    lastUserContentRef.current = last?.content ?? ''
+  }, [agentChat.messages])
+  const retryLastTurn = useCallback(() => {
+    const content = lastUserContentRef.current
+    if (!content) return
+    sendMessage(content)
+  }, [sendMessage])
 
   // Goal handlers — direct RPC (does not trigger a Run, just updates the goal text)
   // 并发编辑用 begin() 的单调序号：RPC 乱序返回时落后的提交不得回写（CR 缺陷 2）。
@@ -1002,29 +995,6 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     setEditingMessageId(null)
   }, [])
 
-  // footer（AskUserPanel）：useMemo 保持引用稳定 —— AgentPanel 每帧 re-render
-  // （AgentPanel 是状态机订阅点，busy/draft/context 等任何变化都触发整树
-  // re-render）时，footer JSX 若每帧新对象会击穿 MessageList 的 React.memo
-  // （props 浅比较失败）。deps 全部为稳定引用：prompt（store 稳定对象，
-  // 变化时新引用）、respond/cancel（useAskUser 的 useCallback）、isSubAgent
-  // （boolean）。chat.reload 走 chatRef（闭包读最新，不进 deps）。
-  const askUserFooter = useMemo(() => {
-    if (!askUser.prompt || isSubAgent) return null
-    return (
-      <AskUserPanel
-        prompt={askUser.prompt}
-        onRespond={(answers) => {
-          askUser.respond(answers)
-          // Deterministic: the backend persists the answer as a user
-          // message; reload history so it renders with its authoritative
-          // turn_id (NO optimistic rendering).
-          void chatRef.current.reload()
-        }}
-        onCancel={askUser.cancel}
-      />
-    )
-  }, [askUser.prompt, askUser.respond, askUser.cancel, isSubAgent])
-
   // ⛔ 幽灵面板（2026-09-18 用户截图「切换会话闪烁一瞬间错误布局」根因之一）：
   // 占位 tab（无 sessionId）在**已有别的 agent 面板承载 activeSession** 时 chatID=null
   // （不镜像，避免同一会话两个面板渲染两份）。但它此前**仍然渲染整块面板 UI**（欢迎
@@ -1077,7 +1047,21 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           })}
         />
       )}
+      {/* 待答提问：**消息区顶部**的唯一入口（2026-10-22 用户实测：放输入框上方
+          时中间全是空白、横幅在最底下，根本看不到）。收起态只有一条带摘要的横幅，
+          点击才展开完整问题卡（绝不自动展开）。放在滚动容器外面 = 天然 sticky。 */}
+      {!isSubAgent && isVisible && isActive && !(sessionLoading || switchSplash) && chatID ? (
+        <div data-testid="ask-user-top-slot" className="shrink-0 bg-bg-primary">
+          <AskUserFooter
+            key={askSessionKey}
+            store={store}
+            channel={messageChannel}
+            chatID={chatID}
+          />
+        </div>
+      ) : null}
       {!(showLoadingScreen || switchSplash) && isVisible ? (
+      <RetryLastTurnContext.Provider value={retryLastTurn}>
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
@@ -1093,8 +1077,8 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         editingMessageId={editingMessageId}
         onStartEdit={handleStartEdit}
         onEndEdit={handleEndEdit}
-        footer={askUserFooter}
       />
+      </RetryLastTurnContext.Provider>
       ) : null}
       {!isSubAgent && isVisible && !(sessionLoading || switchSplash) && (
         <StagingTray
@@ -1123,7 +1107,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           busy={busy}
           cancelling={chat.cancelling}
           onSend={sendMessage}
-          onCancel={askUser.prompt ? askUser.cancel : chat.cancel}
+          onCancel={chat.cancel}
           onRewindLatest={rewindLatest}
           onOpenTasks={() => rightSidebar.openPanel('tasks')}
           onUpload={chat.upload}
@@ -1179,7 +1163,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-bg-primary text-text-muted"
         >
           <Loader2 className="size-5 animate-spin" />
-          <span className="text-xs">Loading…</span>
+          <span className="text-xs">正在加载…</span>
         </div>
       )}
     </MessageAnnotationsProvider>

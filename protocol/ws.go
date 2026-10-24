@@ -33,7 +33,18 @@ const (
 	MsgTypeResyncRequired  = "resync_required"
 	MsgTypeBgTaskOutput    = "bg_task_output"
 	MsgTypeQueueState      = "queue_state"
-	MsgTypePong            = "__pong__"
+	MsgTypeGroupMessage    = "group.message"
+	// MsgTypeDone carries one COMPLETE iteration block (IterationBlock) — one
+	// frame per started iteration, including cancelled/interrupted iterations.
+	// Additive: the legacy progress_structured fields are still sent.
+	MsgTypeDone = "done"
+	// MsgTypeFinal closes a turn (TurnFinalFrame) — exactly one frame per turn,
+	// including empty and cancelled turns.
+	MsgTypeFinal = "final"
+	// MsgTypeStructuredMessage carries a structured message (ask_user/answer/
+	// report/decision/...) to the session. Clients dedupe by Structured.MessageID.
+	MsgTypeStructuredMessage = "structured_message"
+	MsgTypePong              = "__pong__"
 
 	// Channel Plugin → xbot: tool declaration
 	MsgTypeChannelTools = "channel_tools"
@@ -93,9 +104,14 @@ type AskUserResponse struct {
 // WSMessage is the unified server→client WebSocket message envelope.
 // Replaces the former wsMessage (channel/web.go) and wsIncomingMessage (agent/transport_remote.go).
 type WSMessage struct {
-	Type            string             `json:"type"`
-	ID              string             `json:"id,omitempty"`
-	Seq             uint64             `json:"seq,omitempty"`
+	Type string `json:"type"`
+	ID   string `json:"id,omitempty"`
+	Seq  uint64 `json:"seq,omitempty"`
+	// Epoch identifies the server process instance that stamped this frame
+	// (P1 / C-3: every frame carries (epoch, seq, chat_id)). It changes on
+	// restart, which lets clients detect "seq restarted from zero" without
+	// guessing (C-13). Stamped by WebChannel.stampAndBuffer for every SSE frame.
+	Epoch           string             `json:"epoch,omitempty"`
 	Content         string             `json:"content,omitempty"`
 	OriginalContent string             `json:"original_content,omitempty"`
 	TS              int64              `json:"ts,omitempty"`
@@ -119,6 +135,12 @@ type WSMessage struct {
 	TUIControl      *TUIControlPayload `json:"tui_control,omitempty"`
 	Session         *SessionEvent      `json:"session,omitempty"`
 	QueueState      *QueueStatePayload `json:"queue_state,omitempty"`
+	// Done carries the `done` frame payload (Type == MsgTypeDone): the complete
+	// block of one iteration. Additive frame type — legacy progress fields stay.
+	Done *IterationBlock `json:"done,omitempty"`
+	// Final carries the `final` frame payload (Type == MsgTypeFinal): the turn
+	// closing record. Exactly one per turn.
+	Final *TurnFinalFrame `json:"final,omitempty"`
 	// AskUserResolved (MsgTypeAskUserResolved): the prompt that stopped being
 	// pending. Channel/ChatID identify the session, RequestID is the client's
 	// idempotency key, Reason is "answered" | "cancelled" | "rewound" |
@@ -126,6 +148,9 @@ type WSMessage struct {
 	// type — the front-end reads msg.reason / msg.chat_id directly).
 	AskUserResolvedRequestID string `json:"request_id,omitempty"`
 	AskUserResolvedReason    string `json:"reason,omitempty"`
+	// Structured carries a structured-message event (kind=ask_user/answer/...)
+	// when Type == MsgTypeStructuredMessage. Clients dedupe by MessageID.
+	Structured *StructuredMessage `json:"structured,omitempty"`
 }
 
 // QueueItemPayload describes a single queued message in the session queue
@@ -171,4 +196,17 @@ type WSClientMessage struct {
 	Method     string             `json:"method,omitempty"`
 	Params     json.RawMessage    `json:"params,omitempty"`
 	TUIControl *TUIControlPayload `json:"tui_control,omitempty"`
+
+	// ── 结构化消息（POST /api/message）──────────────────────────────────
+	// 只要出现 Kind 或 Payload，handleMessage 就转入结构化分支（见
+	// channel/web/web_structured.go）；旧客户端不带这些字段，走原有文本路径。
+	Kind           string         `json:"kind,omitempty"`
+	Payload        map[string]any `json:"payload,omitempty"`
+	CorrelationID  string         `json:"correlation_id,omitempty"`
+	ReplyTo        string         `json:"reply_to,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	To             string         `json:"to,omitempty"`
+	Text           string         `json:"text,omitempty"`
+	// CreatedAt 可选（RFC3339）：导入/回填/演示数据用；缺省由服务端取 now。
+	CreatedAt string `json:"created_at,omitempty"`
 }

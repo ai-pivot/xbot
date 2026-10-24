@@ -98,6 +98,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		MCPInactivityTimeout:   time.Duration(cfg.Agent.MCPInactivityTimeout),
 		MCPCleanupInterval:     time.Duration(cfg.Agent.MCPCleanupInterval),
 		SessionCacheTimeout:    time.Duration(cfg.Agent.SessionCacheTimeout),
+		InteractiveSessionTTL:  time.Duration(cfg.Agent.InteractiveSessionTTL),
 		EnableAutoCompress:     cfg.Agent.EffectiveEnableAutoCompress(),
 		MaxContextTokens:       cfg.Agent.MaxContextTokens,
 		CompressionThreshold:   cfg.Agent.CompressionThreshold,
