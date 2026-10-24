@@ -30,6 +30,7 @@ var compressibleContentTypes = map[string]bool{
 	"text/html":               true,
 	"text/plain":              true,
 	"text/css":                true,
+	"text/javascript":         true,
 	"application/javascript":  true,
 	"application/x-jsonlines": true,
 }
