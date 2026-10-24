@@ -92,7 +92,7 @@ func payloadBypassesReportCooldown(payload map[string]any) bool {
 // 语义是**延迟**而不是丢弃。2026-10-22 review 发现：原实现冷却期内只把
 // deliver 置 false 就返回，而全仓没有任何补投者（ListInbox 只服务 Web 角标），
 // 于是被压掉的 report 永远不会自己醒来；而真实拓扑是 6 个部门上报同一个
-// 物理 chatID（CHARTER §2 的 agent:court.sili/main），最坏情况只唤醒第一条。
+// 物理 chatID（CHARTER §2 的 agent:team.sili/main），最坏情况只唤醒第一条。
 // 现在改由调用方 time.AfterFunc 在窗口结束时补投**原消息**。
 func reportDeliverDelay(channel, chatID string, payload map[string]any) time.Duration {
 	key := reportDeliverKey(channel, chatID)

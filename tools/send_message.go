@@ -170,13 +170,13 @@ func (t *SendMessageTool) sendStructured(ctx *ToolContext, addr, kind string, p 
 	// AgentID 在 interactive 会话里来自 msg.ParentAgentID，只有 spawn 那一次
 	// 赋值，后续 SendMessage 进来时大概率是空串，于是 sender 回落成 web-4，
 	// 导致「首辅在网页批红」被自批规则误杀、而「首辅走工具批红」却能过。
-	// SessionKey 形如 "agent:web:web-4/court.hubu:main"，角色段总是存在。
+	// SessionKey 形如 "agent:web:web-4/team.ops:main"，角色段总是存在。
 	sender := ""
 	if ctx != nil {
 		sender = ctx.OriginUserID
 		if sk := strings.TrimSpace(ctx.SessionKey); sk != "" {
 			if i := strings.LastIndex(sk, "/"); i > 0 && i < len(sk)-1 && strings.Contains(sk, ":") {
-				roleInst := sk[i+1:] // "court.hubu:main"
+				roleInst := sk[i+1:] // "team.ops:main"
 				sender = "agent:" + strings.Replace(roleInst, ":", "/", 1)
 			}
 		}

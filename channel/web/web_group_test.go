@@ -47,10 +47,10 @@ func TestHandleGroupMessages_SeedShapedData(t *testing.T) {
 	}
 
 	wc := &WebChannel{
-		userCurrentSession: map[string]SessionSelector{"web-1": {Channel: "web", ChatID: "court-demo"}},
+		userCurrentSession: map[string]SessionSelector{"web-1": {Channel: "web", ChatID: "team-demo"}},
 		callbacks: WebCallbacks{
 			GroupMessages: func(memberAddr, groupID, channelName, chatID string, cursor int64, limit int) ([]protocol.GroupMessage, int64, bool, error) {
-				if memberAddr != "web-1" || groupID != "grp_demo" || channelName != "web" || chatID != "court-demo" {
+				if memberAddr != "web-1" || groupID != "grp_demo" || channelName != "web" || chatID != "team-demo" {
 					t.Fatalf("unexpected args: %s %s %s %s", memberAddr, groupID, channelName, chatID)
 				}
 				rows, hasMore, next, err := svc.ListGroupMessages(tenantID, groupID, cursor, limit)
@@ -114,7 +114,7 @@ func TestGroupRoutes_PostGroupsCreates(t *testing.T) {
 	wc.registerGroupRoutes(mux)
 
 	post := httptest.NewRecorder()
-	mux.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/api/groups", strings.NewReader(`{"name":"朝廷"}`)))
+	mux.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/api/groups", strings.NewReader(`{"name":"团队"}`)))
 	if post.Code == http.StatusMethodNotAllowed {
 		t.Fatalf("POST /api/groups 仍被路由到只允许 GET 的 handleGroups（405）")
 	}

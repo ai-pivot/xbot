@@ -21,7 +21,7 @@ func TestAppendDecisionRejectsCrossChatTarget(t *testing.T) {
 
 	rid, _, err := svc.AppendStructuredMessage(tenant, StructuredMessage{
 		ChatID: "chat-1", Kind: StructuredKindReport, CorrelationID: "cross-1",
-		Direction: "in", Content: "chat-1 的 report", SenderType: "agent", SenderID: "web-4/court.hubu",
+		Direction: "in", Content: "chat-1 的 report", SenderType: "agent", SenderID: "web-4/team.hubu",
 	})
 	if err != nil {
 		t.Fatalf("append report: %v", err)

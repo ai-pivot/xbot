@@ -15,7 +15,7 @@ func TestGroupService_CreateListMembers(t *testing.T) {
 	svc := NewGroupService(db.Conn())
 	ctx := context.Background()
 
-	g, err := svc.CreateGroup(ctx, "grp_test_1", "朝廷晨会", "web-1",
+	g, err := svc.CreateGroup(ctx, "grp_test_1", "团队晨会", "web-1",
 		[]string{"agent:hubu/main", "agent:gongbu/main", "agent:hubu/main"})
 	if err != nil {
 		t.Fatalf("CreateGroup: %v", err)

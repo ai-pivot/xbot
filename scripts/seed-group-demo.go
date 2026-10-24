@@ -3,11 +3,11 @@
 // 用法：
 //
 //	go run ./scripts/seed-group-demo.go -home ~/.xbot
-//	go run ./scripts/seed-group-demo.go -home /tmp/xbot-court-demo -force
+//	go run ./scripts/seed-group-demo.go -home /tmp/xbot-team-demo -force
 //
 // 产物：
-//   - 主库 groups / group_members：1 个群「朝廷晨会」，4 个成员（首辅 + 三部）
-//   - 会话库 sessions/web/xx/<court-demo>.db：80 条跨天群消息，含
+//   - 主库 groups / group_members：1 个群「团队晨会」，4 个成员（首辅 + 三部）
+//   - 会话库 sessions/web/xx/<team-demo>.db：80 条跨天群消息，含
 //     ask_user/answer/report/decision/action/text 六种 kind 与真实 correlation_id 线程
 //
 // 该脚本幂等：默认已存在同 id 群/消息则跳过；-force 先清空再重建。
@@ -27,10 +27,10 @@ import (
 )
 
 const (
-	demoGroupID   = "grp_court_demo"
-	demoGroupName = "朝廷晨会"
+	demoGroupID   = "grp_team_demo"
+	demoGroupName = "团队晨会"
 	demoChannel   = "web"
-	demoChatID    = "court-demo"
+	demoChatID    = "team-demo"
 	demoOwner     = "web-1"
 )
 

@@ -527,7 +527,7 @@ func Run(args []string) error {
 
 	// 同一份配置（同一个 XBOT_HOME）只允许一个 serve 进程。
 	//
-	// 2026-10-21 主库损坏事故：/tmp/xbot-court 下误启动的 serve 没有设置
+	// 2026-10-21 主库损坏事故：/tmp/xbot-worktree 下误启动的 serve 没有设置
 	// XBOT_HOME，于是落到 HOME=/home/smith，与 supervisord 管理的生产进程
 	// 共用 /home/smith/.xbot/xbot.db，但两边 schema 版本不同（v75 / v76）。
 	// 先退出的进程在 Close 时 checkpoint 并 unlink 了 -wal，另一方正在写的

@@ -71,7 +71,7 @@ type DB struct {
 	//
 	// 存在理由（2026-10-21 主库损坏事故）：SQLite 的 WAL 多进程共享只在
 	// 各进程都通过 SQLite 加锁时才安全；一旦有两个 xbot 实例（例如从
-	// /tmp/xbot-court 误启动、没设 XBOT_HOME 而落到生产库的那个）打开同一个
+	// /tmp/xbot-team 误启动、没设 XBOT_HOME 而落到生产库的那个）打开同一个
 	// 文件，先退出的实例会 checkpoint 并 unlink 掉 -wal，正在写的实例随即
 	// 读到结构损坏的页 —— `database disk image is malformed (11)`，
 	// page 248/247/4 全坏，只能从备份恢复。

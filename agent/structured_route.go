@@ -8,12 +8,12 @@ import (
 
 // structured_route.go —— 结构化消息的**地址解析**（逻辑地址 → 物理会话 key）。
 //
-// 背景（2026-10-22 实测事故）：SendMessage 的地址 `agent:tester/court-verify` 是
+// 背景（2026-10-22 实测事故）：SendMessage 的地址 `agent:tester/task-verify` 是
 // **逻辑地址**（Dispatcher 用），而子代理真正的会话 key 是
 // interactiveKey(父channel, 父chatID, role, instance) =
-// `web:web-4/tester:court-verify`。之前直接把逻辑地址当 chatID 传给
+// `web:web-4/tester:task-verify`。之前直接把逻辑地址当 chatID 传给
 // GetOrCreateSession，于是每次批红都会**新建一个空壳会话**把消息写进去——
-// 实测：`agent:1a/tester_court-verify-*.db` 里躺着 report+decision 两行，
+// 实测：`agent:1a/tester_task-verify-*.db` 里躺着 report+decision 两行，
 // 而工部真实的会话一条都收不到。批红等于凭空蒸发。
 //
 // 因此这里做严格解析：内存注册表 → 持久化注册表（parent_channel/parent_chat_id
@@ -32,10 +32,10 @@ import (
 //
 //	① 顶层会话        (web, web-4)                       → "web:web-4"（qualifyChatID）
 //	② interactive 子代理：物理 key 就是它的 chatID
-//	                  (web, "web:web-4/court.hubu:main") → "web:web-4/court.hubu:main"
+//	                  (web, "web:web-4/team.ops:main") → "web:web-4/team.ops:main"
 //
 // 而 ② 作为**父**出现在子代理的 key 里时，父段被写成「agent 通道 + 自己那段 key 当
-// chatID」：`agent:web:web-4/court.hubu:main`。两种写法来自 bgParentKey 的两条来源
+// chatID」：`agent:web:web-4/team.ops:main`。两种写法来自 bgParentKey 的两条来源
 // （嵌套 spawn 直接存自己的 key；顶层 spawn 用 origin 回落，见
 // SpawnInteractiveSession / parseInteractiveKeyParent / splitParentKey），
 // 因此候选父键与调用方作用域都可能以任一种形态出现，求交才安全。
@@ -123,12 +123,12 @@ func candidateScopeForms(physicalKey, parentKey string) map[string]struct{} {
 //
 // 为什么必须有它（2026-10-22 用户拍板，这是阻断性缺陷而不是"边界"）：
 // 分层改造后由司礼监 spawn 六部，六部的物理 key 是
-// `agent:web:web-4/court.sili:main/court.gongbu:main` —— 它既不是首辅的直接子级，
+// `agent:web:web-4/team.lead:main/team.backend:main` —— 它既不是首辅的直接子级，
 // 也不在"首辅的直接上级那一层"（首辅根本没有上级，rootForms 为空）里。
 // 只靠 callerScope+rootForms 的话，首辅给六部发批红/催办会被**全部挡住**，
 // 批红链路直接断。
 //
-// 语义：调用方是顶层会话（首辅）时，**整棵子树都可寻址**（整棵树都属于同一个朝廷）；
+// 语义：调用方是顶层会话（首辅）时，**整棵子树都可寻址**（整棵树都属于同一个团队）；
 // 仍然禁止跨顶层会话（web:web-5、别的用户 一律拒）。
 // interactive 调用方（channel=="agent"）不启用前缀判定：它自己的子树已由
 // callerScope + 直接上级那一层（rootForms）精确覆盖，放开前缀会把"兄弟会话名下的

@@ -17,7 +17,7 @@ import (
 // 所有会话。正确做法是挂在**角色**上：role frontmatter 里写
 //
 //	rules:
-//	  - court/CHARTER.md      # 相对 $XBOT_HOME，也可写绝对路径
+//	  - roles/CHARTER.md      # 相对 $XBOT_HOME，也可写绝对路径
 //
 // 只有声明了 rules 的角色在 spawn 时加载这些文件。没声明的角色
 // （tester / explore / 其它项目的子代理）**一个字都不会多读**。

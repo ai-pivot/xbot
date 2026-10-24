@@ -104,21 +104,21 @@ func TestResolveStructuredTarget_NestedParentForms(t *testing.T) {
 // CHARTCHECK 纪律 + 都察院抽查，不靠地址校验。所以下面对"兄弟会话可互发"是
 // 预期行为，不是漏洞。
 func TestResolveStructuredTarget_SameTopLevelSessionScope(t *testing.T) {
-	const gongbu = "web:web-4/court.gongbu:main"
+	const gongbu = "web:web-4/team.gongbu:main"
 	a := newRouteTestAgent(
 		// web:web-4 这一棵树（首辅 spawn 的六部 + 工部自己的子代理）
-		routeEntry{"web:web-4/court.gongbu:main", "web:web-4", "court.gongbu", "main"},
-		routeEntry{"web:web-4/court.sili:main", "web:web-4", "court.sili", "main"},
+		routeEntry{"web:web-4/team.gongbu:main", "web:web-4", "team.gongbu", "main"},
+		routeEntry{"web:web-4/team.sili:main", "web:web-4", "team.sili", "main"},
 		routeEntry{"agent:" + gongbu + "/tester:verify", gongbu, "tester", "verify"},
 		// 另一棵顶层会话树：web:web-5
-		routeEntry{"web:web-5/court.hanlin:main", "web:web-5", "court.hanlin", "main"},
-		routeEntry{"web:web-5/court.sili:main", "web:web-5", "court.sili", "main"},
+		routeEntry{"web:web-5/team.hanlin:main", "web:web-5", "team.hanlin", "main"},
+		routeEntry{"web:web-5/team.sili:main", "web:web-5", "team.sili", "main"},
 	)
 
 	// ① 六部 → 司礼监（兄弟会话，同一顶层会话）：必须成功，否则批红通道断掉。
-	got, err := a.ResolveStructuredTarget("agent", gongbu, "agent", "court.sili/main")
-	if err != nil || got != "web:web-4/court.sili:main" {
-		t.Fatalf("gongbu → sili/main = (%q,%v), want web:web-4/court.sili:main (same top-level session)", got, err)
+	got, err := a.ResolveStructuredTarget("agent", gongbu, "agent", "team.sili/main")
+	if err != nil || got != "web:web-4/team.sili:main" {
+		t.Fatalf("gongbu → sili/main = (%q,%v), want web:web-4/team.sili:main (same top-level session)", got, err)
 	}
 
 	// ② 工部 → 自己名下的子代理：必须成功。
@@ -128,29 +128,29 @@ func TestResolveStructuredTarget_SameTopLevelSessionScope(t *testing.T) {
 	}
 
 	// ③ 工部 → web:web-5 下的会话（跨顶层会话）：逻辑地址与物理 key 都必须报错 + 空串。
-	got, err = a.ResolveStructuredTarget("agent", gongbu, "agent", "court.hanlin/main")
+	got, err = a.ResolveStructuredTarget("agent", gongbu, "agent", "team.hanlin/main")
 	if err == nil || got != "" {
 		t.Fatalf("gongbu → web-5's hanlin = (%q,%v), want error + empty (cross top-level session)", got, err)
 	}
 	if !strings.Contains(err.Error(), "other parent session") {
 		t.Fatalf("cross-root error must explain the target belongs to another session tree, got %v", err)
 	}
-	if got, err = a.ResolveStructuredTarget("agent", gongbu, "agent", "web:web-5/court.hanlin:main"); err == nil || got != "" {
+	if got, err = a.ResolveStructuredTarget("agent", gongbu, "agent", "web:web-5/team.hanlin:main"); err == nil || got != "" {
 		t.Fatalf("gongbu → web-5 physical key = (%q,%v), want error + empty", got, err)
 	}
 
-	// 反向不串台：web-5 的顶层会话眼里 court.sili/main 是**它自己那棵树里的**司礼监，
+	// 反向不串台：web-5 的顶层会话眼里 team.sili/main 是**它自己那棵树里的**司礼监，
 	// 同名 role/instance 绝不能解析到 web-4 名下那个。
-	if got, err = a.ResolveStructuredTarget("web", "web-5", "agent", "court.sili/main"); err != nil || got != "web:web-5/court.sili:main" {
-		t.Fatalf("web-5 → court.sili/main = (%q,%v), want its OWN sili (web:web-5/court.sili:main)", got, err)
+	if got, err = a.ResolveStructuredTarget("web", "web-5", "agent", "team.sili/main"); err != nil || got != "web:web-5/team.sili:main" {
+		t.Fatalf("web-5 → team.sili/main = (%q,%v), want its OWN sili (web:web-5/team.sili:main)", got, err)
 	}
 	// 就算拿着 web-4 那棵树的物理 key 也不行：跨 root 一律拒。
-	if got, err = a.ResolveStructuredTarget("web", "web-5", "agent", "web:web-4/court.sili:main"); err == nil || got != "" {
+	if got, err = a.ResolveStructuredTarget("web", "web-5", "agent", "web:web-4/team.sili:main"); err == nil || got != "" {
 		t.Fatalf("web-5 → web-4's sili（物理 key）= (%q,%v), want error + empty (cross root)", got, err)
 	}
 
 	// 顶层会话（首辅 web:web-4）→ 直接子级部门：照常可达。
-	if got, err = a.ResolveStructuredTarget("web", "web-4", "agent", "court.sili/main"); err != nil || got != "web:web-4/court.sili:main" {
+	if got, err = a.ResolveStructuredTarget("web", "web-4", "agent", "team.sili/main"); err != nil || got != "web:web-4/team.sili:main" {
 		t.Fatalf("web-4 → sili/main = (%q,%v), want direct child", got, err)
 	}
 }
@@ -158,28 +158,28 @@ func TestResolveStructuredTarget_SameTopLevelSessionScope(t *testing.T) {
 // TestResolveStructuredTarget_TopLevelSubtree —— 顶层调用方覆盖**整棵子树**的验收
 // （2026-10-22 用户拍板：这是阻断性缺陷，不是边界）。
 //
-// 分层改造后的拓扑：首辅(web:web-4) → 司礼监(web:web-4/court.sili:main) → 六部
-// (agent:web:web-4/court.sili:main/court.gongbu:main)。六部**不是**首辅的直接子级，
+// 分层改造后的拓扑：首辅(web:web-4) → 司礼监(web:web-4/team.sili:main) → 六部
+// (agent:web:web-4/team.sili:main/team.gongbu:main)。六部**不是**首辅的直接子级，
 // 若只认 callerScope+rootForms，首辅给六部发批红/催办会全部被挡。
 func TestResolveStructuredTarget_TopLevelSubtree(t *testing.T) {
 	const (
-		sili   = "web:web-4/court.sili:main"
-		gongbu = "agent:web:web-4/court.sili:main/court.gongbu:main" // 两级深：挂在司礼监下面
+		sili   = "web:web-4/team.sili:main"
+		gongbu = "agent:web:web-4/team.sili:main/team.gongbu:main" // 两级深：挂在司礼监下面
 	)
 	a := newRouteTestAgent(
-		routeEntry{sili, "web:web-4", "court.sili", "main"},
-		routeEntry{gongbu, sili, "court.gongbu", "main"},
-		routeEntry{"web:web-5/court.hanlin:main", "web:web-5", "court.hanlin", "main"},
+		routeEntry{sili, "web:web-4", "team.sili", "main"},
+		routeEntry{gongbu, sili, "team.gongbu", "main"},
+		routeEntry{"web:web-5/team.hanlin:main", "web:web-5", "team.hanlin", "main"},
 	)
 
 	// ① 首辅 → 直接子级（司礼监）：成功。
-	got, err := a.ResolveStructuredTarget("web", "web-4", "agent", "court.sili/main")
+	got, err := a.ResolveStructuredTarget("web", "web-4", "agent", "team.sili/main")
 	if err != nil || got != sili {
 		t.Fatalf("首辅 → 司礼监 = (%q,%v), want %q", got, err, sili)
 	}
 
 	// ② 首辅 → 司礼监名下的六部（两级深）：**必须成功**，否则批红链路断。
-	got, err = a.ResolveStructuredTarget("web", "web-4", "agent", "court.gongbu/main")
+	got, err = a.ResolveStructuredTarget("web", "web-4", "agent", "team.gongbu/main")
 	if err != nil || got != gongbu {
 		t.Fatalf("首辅 → 司礼监的子代理(两级深) = (%q,%v), want %q (whole subtree addressable)", got, err, gongbu)
 	}
@@ -188,26 +188,26 @@ func TestResolveStructuredTarget_TopLevelSubtree(t *testing.T) {
 		t.Fatalf("首辅 → 六部(物理 key) = (%q,%v), want unchanged", got, err)
 	}
 	// 司礼监 → 自己名下的六部：成功（新拓扑下的直接子级）。
-	if got, err = a.ResolveStructuredTarget("agent", sili, "agent", "court.gongbu/main"); err != nil || got != gongbu {
+	if got, err = a.ResolveStructuredTarget("agent", sili, "agent", "team.gongbu/main"); err != nil || got != gongbu {
 		t.Fatalf("司礼监 → 六部 = (%q,%v), want %q", got, err, gongbu)
 	}
 
 	// ③ 首辅 → 另一个顶层会话（web:web-5）名下的会话：报错 + 空串。
-	if got, err = a.ResolveStructuredTarget("web", "web-4", "agent", "court.hanlin/main"); err == nil || got != "" {
+	if got, err = a.ResolveStructuredTarget("web", "web-4", "agent", "team.hanlin/main"); err == nil || got != "" {
 		t.Fatalf("首辅 → web-5 的会话 = (%q,%v), want error + empty (cross top-level session)", got, err)
 	}
-	if got, err = a.ResolveStructuredTarget("web", "web-4", "agent", "web:web-5/court.hanlin:main"); err == nil || got != "" {
+	if got, err = a.ResolveStructuredTarget("web", "web-4", "agent", "web:web-5/team.hanlin:main"); err == nil || got != "" {
 		t.Fatalf("首辅 → web-5 的物理 key = (%q,%v), want error + empty", got, err)
 	}
 
 	// ③bis 安全边界（用户点名要能回答的那条）：**web-5 的部门打不到 web-4 的司礼监**。
 	// 反方向也不行 —— 子树前缀只对"自己的顶层会话"生效，跨 root 一律拒。
-	if got, err = a.ResolveStructuredTarget("agent", "web:web-5/court.hanlin:main", "agent", "court.sili/main"); err == nil || got != "" {
+	if got, err = a.ResolveStructuredTarget("agent", "web:web-5/team.hanlin:main", "agent", "team.sili/main"); err == nil || got != "" {
 		t.Fatalf("web-5 的部门 → web-4 的司礼监 = (%q,%v), want error + empty (cross root)", got, err)
 	}
 	// 同一 root 内则允许：web-5 的部门 → 同一棵树里的兄弟会话。
-	if got, err = a.ResolveStructuredTarget("agent", "web:web-5/court.sili:main", "agent", "court.hanlin/main"); err != nil || got != "web:web-5/court.hanlin:main" {
-		t.Fatalf("web-5 的部门 → 同 root 兄弟 = (%q,%v), want %q", got, err, "web:web-5/court.hanlin:main")
+	if got, err = a.ResolveStructuredTarget("agent", "web:web-5/team.sili:main", "agent", "team.hanlin/main"); err != nil || got != "web:web-5/team.hanlin:main" {
+		t.Fatalf("web-5 的部门 → 同 root 兄弟 = (%q,%v), want %q", got, err, "web:web-5/team.hanlin:main")
 	}
 
 	// ④ 首辅 → 完全无关的野会话（别的渠道/别的根，不在任何子树里）：报错 + 空串。
@@ -292,7 +292,7 @@ func TestResolveStructuredTarget_NonAgentPassthrough(t *testing.T) {
 func TestResolveStructuredTarget_AgentAddressWithoutInstance(t *testing.T) {
 	a := newRouteTestAgent(routeEntry{"web:web-4/tester:main", "web:web-4", "tester", "main"})
 
-	for _, addr := range []string{"tester", "web:web-4", "court.hubu"} {
+	for _, addr := range []string{"tester", "web:web-4", "team.hubu"} {
 		got, err := a.ResolveStructuredTarget("web", "web-4", "agent", addr)
 		if err == nil {
 			t.Fatalf("bare agent chatID %q must be rejected, got %q", addr, got)
@@ -308,11 +308,11 @@ func TestResolveStructuredTarget_AgentAddressWithoutInstance(t *testing.T) {
 // engine 不填 → caller.SessionKey 恒为空 → serverapp 的自激守卫永不触发 = D-07 没修）。
 func TestBuildToolContextCarriesCallerSessionKey(t *testing.T) {
 	cfg := &RunConfig{
-		AgentID:          "court.hubu",
+		AgentID:          "team.hubu",
 		Channel:          "agent",
-		ChatID:           "web:web-4/court.hubu:main", // interactive 子代理：物理 key 就是 ChatID
-		SessionKey:       "web-4/court.hubu",          // 工具激活键（与物理 key 毫不相干）
-		CallerSessionKey: "web:web-4/court.hubu:main",
+		ChatID:           "web:web-4/team.hubu:main", // interactive 子代理：物理 key 就是 ChatID
+		SessionKey:       "web-4/team.hubu",          // 工具激活键（与物理 key 毫不相干）
+		CallerSessionKey: "web:web-4/team.hubu:main",
 	}
 	tc := buildToolContext(context.Background(), cfg)
 	if tc.CallerSessionKey != cfg.CallerSessionKey {

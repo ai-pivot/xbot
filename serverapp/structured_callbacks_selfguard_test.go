@@ -29,7 +29,7 @@ func TestStructuredAppendRejectsSelfDelivery(t *testing.T) {
 	structuredCallbacks(ag) // 注册真实实现（副作用），返回值这里用不到
 
 	// 调用方自己的物理会话 key（interactive 子代理：chatID 就是这段 key）。
-	const ownSession = "web:web-4/court.hubu:main"
+	const ownSession = "web:web-4/team.hubu:main"
 	ask := func(target string) string {
 		return `{"to":"` + target + `","message":"汇总","kind":"ask_user","payload":"{\"questions\":[{\"id\":\"q\",\"text\":\"继续?\"}]}","correlation_id":"selfguard-1"}`
 	}
@@ -67,7 +67,7 @@ func TestStructuredAppendRejectsSelfDelivery(t *testing.T) {
 	other := &tools.ToolContext{
 		Channel:          "web",
 		ChatID:           "web-4",
-		CallerSessionKey: "web:web-4/court.gongbu:main",
+		CallerSessionKey: "web:web-4/team.gongbu:main",
 		OriginUserID:     "web-4",
 	}
 	res, err = tool.Execute(other, ask("agent:"+ownSession))

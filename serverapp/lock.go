@@ -3,7 +3,7 @@ package serverapp
 // serverapp/lock.go —— serve 进程对 XBOT_HOME 的独占锁。
 //
 // 背景（2026-10-21 主库损坏事故）：
-//   服务器上同时存在两个 xbot serve 进程，其中一个从 /tmp/xbot-court 启动、
+//   服务器上同时存在两个 xbot serve 进程，其中一个从 /tmp/xbot-team 启动、
 //   没有设置 XBOT_HOME，于是落到 HOME=/home/smith，用的主库与 supervisord
 //   管理的生产进程完全相同（/home/smith/.xbot/xbot.db），但**代码版本不同**
 //   （一个 schema v75，一个 v76）。SQLite 的多进程锁只在所有参与者都通过

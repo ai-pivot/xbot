@@ -45,10 +45,6 @@ const DiffPanel = lazy(() =>
   import('@/workspace/panels/DiffPanel').then(m => ({ default: m.DiffPanel })))
 const BackgroundPanel = lazy(() =>
   import('@/workspace/panels/BackgroundPanel').then(m => ({ default: m.BackgroundPanel })))
-// 通信视图：整页三栏（组织树 / 时间轴 / 线程），只作为主视图 tab 打开 ——
-// 塞进 300px 侧栏会挤成竖排（2026-10-20 用户截图）。
-const CourtConsole = lazy(() =>
-  import('@/components/court/CourtConsole').then(m => ({ default: m.CourtConsole })))
 import { TabHeader } from '@/workspace/TabHeader'
 import {
   DockviewContext,
@@ -121,8 +117,6 @@ function PanelTabHost({ params }: { params: PanelParams }) {
       return <TasksPanel tabManager={tabManager} />
     case 'terminal':
       return <LeftTerminalPanel tabManager={tabManager} />
-    case 'court':
-      return <Suspense fallback={<div className="p-4 text-xs text-text-muted">加载通信视图…</div>}><CourtConsole /></Suspense>
     default:
       return <div className="p-4 text-xs text-text-muted">{t('panel.unknown', { id: panelId })}</div>
   }

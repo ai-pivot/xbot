@@ -40,8 +40,6 @@ const zhCN = {
     structuredEntry: '结构化消息',
     structuredEntryDesc: '汇报 / 提问 / 批红 · 收件箱',
     structuredEntryTitle: '结构化消息 + 收件箱（/structured）',
-    courtEntry: '通信视图',
-    courtEntryDesc: '群组通信 · 组织树 · 时间轴',
     openEntry: '打开 →',
     cronSchedule: '调度',
     cronNext: '下次运行',

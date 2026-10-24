@@ -23,7 +23,7 @@ import (
 // duplicate（幂等命中已有行）与错误。
 //
 // callerSession 是**调用方自己的会话物理 key**（ToolContext.SessionKey，形如
-// "agent:web:web-4/court.hubu:main"）。落地实现 resolve 出目标物理 key 后，
+// "agent:web:web-4/team.ops:main"）。落地实现 resolve 出目标物理 key 后，
 // 若与 callerSession 相同即"向自身会话投递" —— 必须在解析之后比较，拿逻辑
 // 地址比是永不成立的（都察院 D-07 实证：自激拦截失效）。
 // CallerScope 是发起方的身份作用域。三者分开传，**禁止从 SessionKey 字符串反解**

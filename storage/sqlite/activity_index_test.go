@@ -230,7 +230,7 @@ func seedActivityScale(t *testing.T, idx *ActivityIndex, svc *InteractiveAgentSe
 	// 同一种宽度，否则比较口径就错了）。
 	rf := func(ts time.Time) string { return ts.UTC().Format(time.RFC3339) }
 	add := func(key string, status string, updated time.Time) {
-		if _, err := astmt.Exec(key, "web", "web-1", "court.gongbu", key,
+		if _, err := astmt.Exec(key, "web", "web-1", "team.gongbu", key,
 			status, "回执", rf(updated), rf(now.Add(-200*24*time.Hour)), rf(updated)); err != nil {
 			t.Fatalf("seed agent %s: %v", key, err)
 		}

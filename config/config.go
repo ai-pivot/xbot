@@ -308,7 +308,7 @@ type AgentConfig struct {
 	// 子代理）会话的空闲存活时间：超过它没有收到 send 就被 TTL 清理，连带
 	// 销毁其会话库。默认 30m（与历史硬编码一致）。
 	//
-	// 之所以要可配：硬编码 30m 让"长时间挂着的子代理"（court 部门代理、需要
+	// 之所以要可配：硬编码 30m 让"长时间挂着的子代理"（team 部门代理、需要
 	// 人工隔很久回话的会话）每次都要重建上下文；也让复现/压测无法把 TTL
 	// 压到秒级（>0，0 = 用默认值；环境变量 INTERACTIVE_SESSION_TTL）。
 	InteractiveSessionTTL Duration `json:"interactive_session_ttl,omitempty"`

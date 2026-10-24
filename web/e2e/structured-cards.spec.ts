@@ -87,7 +87,7 @@ test.describe('结构化消息卡片', () => {
     await expect(card).toBeVisible()
     // 行头：HH:mm:ss + kind 徽标 + 发送者。
     // 徽标文案以 web/src/structured/StructuredCards.tsx 的 KIND_META 为准 ——
-    // 81663b9f「去掉朝廷定制化文案」把 请旨→提问 / 奏折→汇报 / 批红→准·驳·改 之后，
+    // 81663b9f「去掉团队定制化文案」把 请旨→提问 / 奏折→汇报 / 批红→准·驳·改 之后，
     // 这里原先的 '请旨' 断言就成了过时口径（CI 实测 2026-10-22：Expected "请旨", Received "提问"）。
     await expect(card.getByTestId('row-time')).toHaveText(/^\d{2}:\d{2}:\d{2}$/)
     await expect(card.getByTestId('kind-badge')).toHaveText('提问')
@@ -115,11 +115,11 @@ test.describe('结构化消息卡片', () => {
         report_id: `rep_${RUN}`,
         department: 'gongbu',
         summary,
-        state_ref: 'court/state/departments/gongbu.yaml',
+        state_ref: 'ops/state/services/gateway.yaml',
         state_sha256: 'deadbeef',
         evidence: [
-          { path: 'court/evidence/gongbu-ppu.log', kind: 'log' },
-          { path: 'court/reports/2026-10-19/gongbu.yaml', kind: 'file' },
+          { path: 'ops/evidence/gateway-health.log', kind: 'log' },
+          { path: 'ops/reports/2026-10-19/gateway.yaml', kind: 'file' },
         ],
       },
     })
@@ -127,10 +127,10 @@ test.describe('结构化消息卡片', () => {
     await gotoStructured(page, chatID)
     const card = page.getByTestId('report-card').filter({ hasText: summary }).first()
     await expect(card).toBeVisible()
-    await expect(card.getByText('court/evidence/gongbu-ppu.log')).toBeVisible()
+    await expect(card.getByText('ops/evidence/gateway-health.log')).toBeVisible()
     // 次要文字（证据路径）≥13px，深色主题可读。
     const evidenceFont = await card
-      .getByText('court/evidence/gongbu-ppu.log')
+      .getByText('ops/evidence/gateway-health.log')
       .evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize))
     expect(evidenceFont, `证据字号 ${evidenceFont}px，应 ≥ 13px`).toBeGreaterThanOrEqual(13)
     await expect(card.getByTestId('kind-badge')).toHaveText('汇报')
@@ -200,7 +200,7 @@ test.describe('结构化消息卡片', () => {
               report_id: `rep_bulk_${i}`,
               department: 'gongbu',
               summary: `#${i} 第 ${i} 份奏折：批量状态汇总`,
-              evidence: [{ path: `court/evidence/bulk-${i}.log`, kind: 'log' }],
+              evidence: [{ path: `ops/evidence/bulk-${i}.log`, kind: 'log' }],
             }
           : kind === 'ask_user'
             ? {
@@ -341,9 +341,9 @@ test.describe('结构化消息卡片', () => {
         text: summary,
         payload: {
           summary,
-          state_ref: 'court/state/x.yaml',
+          state_ref: 'ops/state/x.yaml',
           state_sha256: 'deadbeef',
-          evidence: [{ path: 'court/evidence/x.log', kind: 'log' }],
+          evidence: [{ path: 'ops/evidence/x.log', kind: 'log' }],
         },
       })
 

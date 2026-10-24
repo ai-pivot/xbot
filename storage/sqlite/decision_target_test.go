@@ -101,7 +101,7 @@ func TestAppendDecisionRejectsSelfApproval(t *testing.T) {
 
 	rid, _, err := svc.AppendStructuredMessage(tenant, StructuredMessage{
 		ChatID: "chat-1", Kind: StructuredKindReport, CorrelationID: "self-1",
-		Direction: "in", Content: "我自己报的", SenderType: "agent", SenderID: "agent:court.hubu/main",
+		Direction: "in", Content: "我自己报的", SenderType: "agent", SenderID: "agent:team.hubu/main",
 	})
 	if err != nil {
 		t.Fatalf("append report: %v", err)
@@ -109,7 +109,7 @@ func TestAppendDecisionRejectsSelfApproval(t *testing.T) {
 
 	_, _, err = svc.AppendDecision(tenant, StructuredMessage{
 		ChatID: "chat-1", Kind: StructuredKindDecision, ReplyTo: itoa(rid),
-		Direction: "in", Content: "准", SenderType: "agent", SenderID: "agent:court.hubu/main",
+		Direction: "in", Content: "准", SenderType: "agent", SenderID: "agent:team.hubu/main",
 	})
 	if !errors.Is(err, ErrDecisionSelfApproval) {
 		t.Fatalf("self approval: got %v, want ErrDecisionSelfApproval", err)

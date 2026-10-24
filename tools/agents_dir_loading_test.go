@@ -27,7 +27,7 @@ func writeMD(t *testing.T, path, content string) {
 func TestLoadAgentRoles_Namespaced(t *testing.T) {
 	root := t.TempDir()
 	writeMD(t, filepath.Join(root, "flat.md"), "---\nname: flat\ndescription: d\n---\nbody")
-	writeMD(t, filepath.Join(root, "court", "gongbu.md"), "---\nname: gongbu\ndescription: d\n---\nbody")
+	writeMD(t, filepath.Join(root, "team", "gongbu.md"), "---\nname: gongbu\ndescription: d\n---\nbody")
 	writeMD(t, filepath.Join(root, "proj", "xbot", "dev.md"), "---\nname: dev\ndescription: d\n---\nbody")
 
 	roles, err := LoadAgentRoles(root)
@@ -38,7 +38,7 @@ func TestLoadAgentRoles_Namespaced(t *testing.T) {
 	for _, r := range roles {
 		got[r.Name] = true
 	}
-	for _, want := range []string{"flat", "court.gongbu", "proj.xbot.dev"} {
+	for _, want := range []string{"flat", "team.gongbu", "proj.xbot.dev"} {
 		if !got[want] {
 			t.Fatalf("missing role %q; got %v", want, got)
 		}
@@ -53,14 +53,14 @@ func TestLoadAgentRoles_Namespaced(t *testing.T) {
 
 func TestLoadAgentRoles_ParsesRules(t *testing.T) {
 	root := t.TempDir()
-	writeMD(t, filepath.Join(root, "court", "x.md"), `---
+	writeMD(t, filepath.Join(root, "team", "x.md"), `---
 name: x
 description: d
 tools:
   - Read
 model: balance
 rules:
-  - court/CHARTER.md
+  - team/CHARTER.md
   - /abs/extra.md
 ---
 body`)
@@ -73,10 +73,10 @@ body`)
 		t.Fatalf("want 1 role, got %d", len(roles))
 	}
 	r := roles[0]
-	if r.Name != "court.x" {
+	if r.Name != "team.x" {
 		t.Fatalf("name = %q", r.Name)
 	}
-	if len(r.Rules) != 2 || r.Rules[0] != "court/CHARTER.md" || r.Rules[1] != "/abs/extra.md" {
+	if len(r.Rules) != 2 || r.Rules[0] != "team/CHARTER.md" || r.Rules[1] != "/abs/extra.md" {
 		t.Fatalf("rules = %#v", r.Rules)
 	}
 	if len(r.AllowedTools) != 1 || r.AllowedTools[0] != "Read" {
@@ -90,9 +90,9 @@ func TestAppendRoleRules(t *testing.T) {
 	xbotHomeDir = home
 	t.Cleanup(func() { xbotHomeDir = old })
 
-	writeMD(t, filepath.Join(home, "court", "CHARTER.md"), "# 条例\n不许重启服务。")
+	writeMD(t, filepath.Join(home, "team", "CHARTER.md"), "# 条例\n不许重启服务。")
 
-	role := &SubAgentRole{Name: "court.x", SystemPrompt: "我是X", Rules: []string{"court/CHARTER.md", "court/missing.md"}}
+	role := &SubAgentRole{Name: "team.x", SystemPrompt: "我是X", Rules: []string{"team/CHARTER.md", "team/missing.md"}}
 	out := appendRoleRules(nil, role)
 	if !strings.Contains(out, "我是X") || !strings.Contains(out, "不许重启服务") {
 		t.Fatalf("rules not injected: %q", out)
@@ -150,20 +150,20 @@ func TestAllSpawnCallSitesInjectRoleRules(t *testing.T) {
 // TestResolveRoleRulePath — 2026-10-22 兵部审计：rules 不能越界读任意文件。
 func TestResolveRoleRulePath(t *testing.T) {
 	home := t.TempDir()
-	writeMD(t, filepath.Join(home, "court", "CHARTER.md"), "# ok")
+	writeMD(t, filepath.Join(home, "team", "CHARTER.md"), "# ok")
 
-	if _, err := resolveRoleRulePath(home, "court/CHARTER.md"); err != nil {
+	if _, err := resolveRoleRulePath(home, "team/CHARTER.md"); err != nil {
 		t.Fatalf("legal rule rejected: %v", err)
 	}
-	for _, bad := range []string{"../.ssh/id_rsa", "/etc/passwd", "court/../../../etc/shadow", ""} {
+	for _, bad := range []string{"../.ssh/id_rsa", "/etc/passwd", "team/../../../etc/shadow", ""} {
 		if _, err := resolveRoleRulePath(home, bad); err == nil {
 			t.Fatalf("must reject %q", bad)
 		}
 	}
 	// symlink 必须被拒
-	link := filepath.Join(home, "court", "link.md")
+	link := filepath.Join(home, "team", "link.md")
 	if err := os.Symlink("/etc/hostname", link); err == nil {
-		if _, err := resolveRoleRulePath(home, "court/link.md"); err == nil {
+		if _, err := resolveRoleRulePath(home, "team/link.md"); err == nil {
 			t.Fatal("symlink rule must be rejected")
 		}
 	}
@@ -172,16 +172,16 @@ func TestResolveRoleRulePath(t *testing.T) {
 // TestLoadAgentRolesSandbox_Namespaced —— sandbox 版加载器必须与本地版同语义。
 //
 // 首版只改了 LoadAgentRoles（本地 os.*），LoadAgentRolesSandbox 里
-// `entry.IsDir → continue`：远程/容器 sandbox 用户看不到 agents/court/*.md，
+// `entry.IsDir → continue`：远程/容器 sandbox 用户看不到 agents/team/*.md，
 // 同一份 agents 目录在两类用户下解析出不同的 role 集（且静默，不报错）。
 func TestLoadAgentRolesSandbox_Namespaced(t *testing.T) {
 	root := t.TempDir()
 	writeMD(t, filepath.Join(root, "flat.md"), "---\nname: flat\ndescription: d\n---\nbody")
-	writeMD(t, filepath.Join(root, "court", "gongbu.md"), `---
+	writeMD(t, filepath.Join(root, "team", "gongbu.md"), `---
 name: gongbu
 description: d
 rules:
-  - court/CHARTER.md
+  - team/CHARTER.md
 ---
 body`)
 
@@ -193,12 +193,12 @@ body`)
 	for _, role := range roles {
 		got[role.Name] = role
 	}
-	for _, want := range []string{"flat", "court.gongbu"} {
+	for _, want := range []string{"flat", "team.gongbu"} {
 		if _, ok := got[want]; !ok {
 			t.Fatalf("missing role %q from sandbox loader; got %v", want, got)
 		}
 	}
-	if rules := got["court.gongbu"].Rules; len(rules) != 1 || rules[0] != "court/CHARTER.md" {
+	if rules := got["team.gongbu"].Rules; len(rules) != 1 || rules[0] != "team/CHARTER.md" {
 		t.Fatalf("sandbox-loaded rules = %#v", rules)
 	}
 	if _, ok := got["gongbu"]; ok {
@@ -214,11 +214,11 @@ body`)
 func TestLoadAgentRoles_SkipsHiddenDirs(t *testing.T) {
 	root := t.TempDir()
 	writeMD(t, filepath.Join(root, "flat.md"), "---\nname: flat\ndescription: d\n---\nbody")
-	writeMD(t, filepath.Join(root, "court", "gongbu.md"), "---\nname: gongbu\ndescription: d\n---\nbody")
+	writeMD(t, filepath.Join(root, "team", "gongbu.md"), "---\nname: gongbu\ndescription: d\n---\nbody")
 	// 顶层隐藏目录（模拟 .git）
 	writeMD(t, filepath.Join(root, ".git", "objects", "ab", "cdef.md"), "---\nname: evil\ndescription: d\n---\nbody")
 	// 命名空间内部的隐藏子目录
-	writeMD(t, filepath.Join(root, "court", ".cache", "sneaky.md"), "---\nname: sneaky\ndescription: d\n---\nbody")
+	writeMD(t, filepath.Join(root, "team", ".cache", "sneaky.md"), "---\nname: sneaky\ndescription: d\n---\nbody")
 
 	for _, tc := range []struct {
 		name string
@@ -237,10 +237,10 @@ func TestLoadAgentRoles_SkipsHiddenDirs(t *testing.T) {
 		for _, r := range roles {
 			got[r.Name] = true
 		}
-		if !got["flat"] || !got["court.gongbu"] {
+		if !got["flat"] || !got["team.gongbu"] {
 			t.Fatalf("%s: 正常 role 丢失: %v", tc.name, got)
 		}
-		for _, bad := range []string{"evil", ".git.evil", "sneaky", "court..cache.sneaky"} {
+		for _, bad := range []string{"evil", ".git.evil", "sneaky", "team..cache.sneaky"} {
 			if got[bad] {
 				t.Fatalf("%s: 隐藏目录被当成命名空间，产生了 role %q: %v", tc.name, bad, got)
 			}

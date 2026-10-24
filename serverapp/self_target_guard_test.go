@@ -13,7 +13,7 @@ import (
 // 上一版修复又把守卫整段删掉，导致「主会话向自己会话发 report」从被拒变放行。
 // 现在守卫收敛到 refuseSelfTarget 单点，这里钉死四种必拒 + 四种必放行的组合。
 func TestRefuseSelfTarget(t *testing.T) {
-	subagentKey := "web:web-4/court.hubu:main"
+	subagentKey := "web:web-4/team.hubu:main"
 
 	cases := []struct {
 		name      string
@@ -44,7 +44,7 @@ func TestRefuseSelfTarget(t *testing.T) {
 			kind:      "report",
 			caller:    tools.CallerScope{Channel: "agent", ChatID: subagentKey, SessionKey: subagentKey},
 			channel:   "agent",
-			realChat:  "web:web-4/court.sili:main",
+			realChat:  "web:web-4/team.sili:main",
 			wantError: false,
 		},
 		{
@@ -84,7 +84,7 @@ func TestRefuseSelfTarget(t *testing.T) {
 			kind:      "report",
 			caller:    tools.CallerScope{Channel: "agent", ChatID: subagentKey, SessionKey: subagentKey},
 			channel:   "agent",
-			realChat:  "web:web-4/court.hubu:main2",
+			realChat:  "web:web-4/team.hubu:main2",
 			wantError: false,
 		},
 	}

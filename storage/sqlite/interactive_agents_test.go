@@ -142,10 +142,10 @@ func TestMarkOrphanedIdleUnloaded(t *testing.T) {
 		t.Fatalf("upsert zombie: %v", err)
 	}
 	// B：可恢复 —— 会话租户还在，重启后 restoreInteractiveTree 会重建它。
-	if err := svc.Upsert(rec("agent:court.sili/main", "chat_1", "court.sili", "main", InteractiveAgentIdle)); err != nil {
+	if err := svc.Upsert(rec("agent:team.sili/main", "chat_1", "team.sili", "main", InteractiveAgentIdle)); err != nil {
 		t.Fatalf("upsert restorable: %v", err)
 	}
-	if _, err := tenants.GetOrCreateTenantID("agent", "web:chat_1/court.sili:main"); err != nil {
+	if _, err := tenants.GetOrCreateTenantID("agent", "web:chat_1/team.sili:main"); err != nil {
 		t.Fatalf("create tenant for restorable: %v", err)
 	}
 	// C：running 行（上一个进程遗留）—— 不归本函数管。
@@ -175,7 +175,7 @@ func TestMarkOrphanedIdleUnloaded(t *testing.T) {
 
 	want := map[string]string{
 		"agent:explore/zombie-1":   InteractiveAgentUnloaded,
-		"agent:court.sili/main":    InteractiveAgentIdle, // 会话还在：必须保留
+		"agent:team.sili/main":    InteractiveAgentIdle, // 会话还在：必须保留
 		"agent:explore/legacy-run": InteractiveAgentRunning,
 		"agent:simple/":            InteractiveAgentIdle, // 会话还在：必须保留
 		"agent:explore/live-1":     InteractiveAgentUnloaded,

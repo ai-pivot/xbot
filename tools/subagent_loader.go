@@ -18,7 +18,7 @@ import (
 // "role 不应该全局可用"）：
 //
 //	agents/tester.md            → role "tester"        （顶层，保持向后兼容）
-//	agents/court/gongbu.md      → role "court.gongbu"
+//	agents/team/gongbu.md      → role "team.backend"
 //	agents/proj/xbot/dev.md     → role "proj.xbot.dev"
 //
 // 子目录用 "." 连接成名字空间。**刻意不用 "/"**：interactiveKey 形如
@@ -119,8 +119,8 @@ func loadAgentRolesNamespaced(dir, prefix string) ([]SubAgentRole, error) {
 // LoadAgentRolesSandbox loads agent roles from a directory using Sandbox for file access.
 //
 // 与 LoadAgentRoles 保持**同一套**命名空间语义（子目录 = role 名前缀，用 "." 拼接）。
-// 此前这里 `entry.IsDir` 直接 continue：本地用户能看到 agents/court/*.md 解析出的
-// court.gongbu，而远程/容器 sandbox 用户一个都看不到 —— 两类用户的 role 可见集不同，
+// 此前这里 `entry.IsDir` 直接 continue：本地用户能看到 agents/team/*.md 解析出的
+// team.backend，而远程/容器 sandbox 用户一个都看不到 —— 两类用户的 role 可见集不同，
 // 既影响 agent/agents.go 的 catalog（system prompt 里的 <available_agents>），
 // 也影响 spawn 时的 role 解析（同一份 agents 目录，行为却随 sandbox 变化）。
 func LoadAgentRolesSandbox(ctx context.Context, dir string, sb Sandbox, userID string) ([]SubAgentRole, error) {
@@ -128,7 +128,7 @@ func LoadAgentRolesSandbox(ctx context.Context, dir string, sb Sandbox, userID s
 }
 
 // loadAgentRolesSandboxDir 递归加载一个命名空间目录（sandbox 版）。
-// prefix 形如 "" / "court." / "proj.xbot."（含结尾点），叶子角色名 = prefix + name。
+// prefix 形如 "" / "team." / "proj.xbot."（含结尾点），叶子角色名 = prefix + name。
 func loadAgentRolesSandboxDir(ctx context.Context, dir, prefix string, sb Sandbox, userID string) ([]SubAgentRole, error) {
 	entries, err := sb.ReadDir(ctx, dir, userID)
 	if err != nil {

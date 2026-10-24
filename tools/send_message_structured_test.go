@@ -83,7 +83,7 @@ func TestSendMessage_KindText_DoesNotTouchStructured(t *testing.T) {
 
 // TestSendMessage_Structured_PassesCallerSession 取代原来的"自激就地拦截"测试。
 //
-// 都察院 D-07：自激判定以前在 tools 层比**逻辑地址**（agent:court.hubu/main）
+// 都察院 D-07：自激判定以前在 tools 层比**逻辑地址**（agent:team.hubu/main）
 // 与 ctx 的**物理 key**，永不相等，等于没拦。修复方式是把判定下沉到落地点：
 // tools 只负责把调用方 SessionKey 原样透传（callerSession），由 serverapp 在
 // resolve 出物理 key 之后比较。所以这里断言的是"透传"，不是"拦截"。
@@ -97,14 +97,14 @@ func TestSendMessage_Structured_PassesCallerSession(t *testing.T) {
 
 	tool := &SendMessageTool{}
 	ctx := &ToolContext{
-		Channel: "agent", ChatID: "web:web-4/court.hubu:main",
-		CallerSessionKey: "web:web-4/court.hubu:main",
+		Channel: "agent", ChatID: "web:web-4/team.hubu:main",
+		CallerSessionKey: "web:web-4/team.hubu:main",
 		OriginUserID:     "web-4",
 	}
-	if _, err := tool.Execute(ctx, `{"to":"agent:court.sili/main","message":"汇总","kind":"report","payload":"{\"summary\":\"s\"}"}`); err != nil {
+	if _, err := tool.Execute(ctx, `{"to":"agent:team.sili/main","message":"汇总","kind":"report","payload":"{\"summary\":\"s\"}"}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if gotCaller.SessionKey != "web:web-4/court.hubu:main" || gotCaller.Channel != "agent" {
+	if gotCaller.SessionKey != "web:web-4/team.hubu:main" || gotCaller.Channel != "agent" {
 		t.Fatalf("caller scope = %+v, want the caller's physical session key + channel", gotCaller)
 	}
 }

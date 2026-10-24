@@ -43,8 +43,6 @@ const ja: Translations = {
     structuredEntry: '構造化メッセージ',
     structuredEntryDesc: '報告 / 質問 / 決裁 · 受信箱',
     structuredEntryTitle: '構造化メッセージ + 受信箱（/structured）',
-    courtEntry: '通信ビュー',
-    courtEntryDesc: 'グループ通信 · 組織ツリー · タイムライン',
     openEntry: '開く →',
     cronSchedule: 'スケジュール',
     cronNext: '次回実行',

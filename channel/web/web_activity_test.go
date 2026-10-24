@@ -124,7 +124,7 @@ func (e *activityTestEnv) seedActivityScale(t *testing.T) {
 			(agent_key, parent_channel, parent_chat_id, role_name, instance, status,
 			 last_reply, last_reply_at, created_at, updated_at)
 			VALUES (?,?,?,?,?,?,?,?,?,?)`,
-			key, "web", "web-1", "court.gongbu", key, status, "回执",
+			key, "web", "web-1", "team.backend", key, status, "回执",
 			rf(updated), rf(e.now.Add(-200*24*time.Hour)), rf(updated)); err != nil {
 			t.Fatalf("seed agent %s: %v", key, err)
 		}

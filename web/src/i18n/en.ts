@@ -43,8 +43,6 @@ const en: Translations = {
     structuredEntry: 'Structured messages',
     structuredEntryDesc: 'Reports / questions / verdicts · inbox',
     structuredEntryTitle: 'Structured messages + inbox (/structured)',
-    courtEntry: 'Comms view',
-    courtEntryDesc: 'Group comms · org tree · timeline',
     openEntry: 'Open →',
     cronSchedule: 'Schedule',
     cronNext: 'Next run',

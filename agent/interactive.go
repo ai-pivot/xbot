@@ -1301,7 +1301,7 @@ func (a *Agent) SpawnInteractiveSession(
 		// 此时父就是发起这次 spawn 的会话本身。以前这里什么都不填，于是注册表里
 		// parent_channel/parent_chat_id 留空，restoreInteractiveTree(父) 永远查不到
 		// 这条记录 ⇒ 进程重启后子代理全部丢失（2026-10-21 实测：入库行是
-		// ('agent:tester/court-probe-1','','',...)）。origin* 已在本函数开头解析，
+		// ('agent:tester/probe-1','','',...)）。origin* 已在本函数开头解析，
 		// 与 interactiveKey 用的是同一对值，语义一致。
 		if originChannel != "" && originChatID != "" {
 			placeholder.parentKey = originChannel + ":" + originChatID
