@@ -10,7 +10,7 @@
  * 需要 hooks 的 render 主体在模块级组件里实现（render 回调只返回元素，
  * 不在回调里调 hooks——组件身份稳定，状态不随重渲染丢失）。
  */
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 import { panelRegistry, type PanelDefinition, type PanelRenderContext } from '@/plugin-runtime/panelRegistry'
@@ -23,7 +23,8 @@ import { useTerminal } from '@/hooks/useTerminal'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
 import { ChannelPicker } from '@/components/session/ChannelPicker'
-import { SessionSearch, SessionSearchToggle } from '@/components/session/SessionSearch'
+import { SessionSearchToggle } from '@/components/session/SessionSearch'
+import { openSessionSearch } from '@/components/session/SessionSearchDialog'
 import { SessionViewBar } from '@/components/session/SessionViewBar'
 import { useSessionSelection } from '@/hooks/useSessionSelection'
 import { SessionBatchActions, SessionMultiSelectButton } from '@/components/session/SessionBatchActions'
@@ -46,28 +47,8 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   const { t } = useI18n()
   const store = useSessionStore()
   const tabManager = ctx.tabManager
-  const [search, setSearch] = useState('')
-  const [searchOpen, setSearchOpen] = useState(false)
+  const search = ''
   const [newOpen, setNewOpen] = useState(false)
-  /** 搜索输入框 ref：开关按钮点击手势内同步 focus（手机软键盘要手势同任务）。 */
-  const searchInputRef = useRef<HTMLInputElement | null>(null)
-
-  // 会话搜索默认隐藏（低频操作，常驻输入框白占一行）；收起时一并清空查询——
-  // 隐藏着的过滤条件会让列表"莫名其妙变短"。按钮与「新建会话」同排。
-  const closeSearch = useCallback(() => {
-    setSearchOpen(false)
-    setSearch('')
-  }, [])
-  const toggleSearch = useCallback(() => {
-    if (searchOpen) {
-      closeSearch()
-      return
-    }
-    // ⚠️ 必须在手势内同步 focus：手机浏览器只在用户手势的同一次任务里打开软键盘，
-    // SessionSearch 的 useEffect 异步 focus 只会拿到光标、拿不到键盘。
-    searchInputRef.current?.focus()
-    setSearchOpen(true)
-  }, [searchOpen, closeSearch])
 
   const filteredSessions = useMemo(() => {
     if (!store.activeChannel) return store.sessions
@@ -150,36 +131,17 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
           title={t('session.newSession')}
           className={cn(
             'flex min-w-10 items-center justify-center overflow-hidden rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-[flex-grow] duration-200 ease-out hover:opacity-90',
-            searchOpen ? 'grow-0' : 'grow',
+            'grow',
           )}
           style={{ background: 'var(--accent)', flexBasis: 0 }}
         >
           <svg className="size-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-          {/* 标签用 max-width 收到 0（不是 flex-shrink——那只会缩到"刚好填满"，
-              图标被挤到左边缘不居中）；间距放在被裁切的内层 margin 上，随收起
-              一起消失，图标才真正居中。 */}
-          <span
-            aria-hidden={searchOpen}
-            className={cn(
-              'overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-out',
-              searchOpen ? 'max-w-0 opacity-0' : 'max-w-40 opacity-100',
-            )}
-          >
+          <span className="overflow-hidden whitespace-nowrap">
             <span className="ml-1.5">{t('session.newSession')}</span>
           </span>
         </button>
-        <div
-          aria-hidden={!searchOpen}
-          className={cn(
-            'flex min-w-0 overflow-hidden transition-[flex-grow,opacity] duration-200 ease-out',
-            searchOpen ? 'grow opacity-100' : 'grow-0 opacity-0',
-          )}
-          style={{ flexBasis: 0 }}
-        >
-          <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} inputRef={searchInputRef} className="ml-1.5" />
-        </div>
         <SessionMultiSelectButton selection={selection} />
-        <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} className="ml-1.5" />
+        <SessionSearchToggle open={false} onToggle={openSessionSearch} className="ml-1.5" />
       </div>
       {/* 分类切换 + 全部折叠/展开：与手机抽屉共用（桌面曾整体缺失，切不到按项目） */}
       <SessionViewBar groupKeys={filteredGroups.map((g) => g.key)} />
