@@ -175,7 +175,7 @@ func TestMarkOrphanedIdleUnloaded(t *testing.T) {
 
 	want := map[string]string{
 		"agent:explore/zombie-1":   InteractiveAgentUnloaded,
-		"agent:team.sili/main":    InteractiveAgentIdle, // 会话还在：必须保留
+		"agent:team.sili/main":     InteractiveAgentIdle, // 会话还在：必须保留
 		"agent:explore/legacy-run": InteractiveAgentRunning,
 		"agent:simple/":            InteractiveAgentIdle, // 会话还在：必须保留
 		"agent:explore/live-1":     InteractiveAgentUnloaded,

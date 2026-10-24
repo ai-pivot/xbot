@@ -7,7 +7,7 @@
  * Icons: ⏰ cron task, ▶ running bg command, ✓ completed, ✗ failed.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { AlarmClock, Bot, Check, Inbox, Loader2, Network, Play, Square, Trash2, X } from 'lucide-react'
+import { AlarmClock, Bot, Check, Inbox, Loader2, Play, Square, Trash2, X } from 'lucide-react'
 import { useI18n } from '@/providers/i18n'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useSessionStore } from '@/hooks/useSessionStore'
