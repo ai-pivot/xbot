@@ -137,7 +137,7 @@ func TestInboxReturnsItemsAndCount(t *testing.T) {
 	}
 }
 
-// P1：批红失败必须映射为 409/404，而不是 200。
+// P1：批复失败必须映射为 409/404，而不是 200。
 func TestDecisionRepeatVerdictMapsTo409(t *testing.T) {
 	wc := newStructuredTestChannel(t)
 	wc.callbacks.StructuredAppend = func(string, SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {

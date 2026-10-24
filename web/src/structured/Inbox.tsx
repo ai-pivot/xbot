@@ -1,12 +1,13 @@
 /**
- * Inbox —— 收件箱（未回答的 ask_user）。
+ * Inbox —— 收件箱（待人工处理的结构化消息：ask_user 待回答 + report 待批复）。
  *
- * 列表：谁问的 / 问题 / 相对时间（「3 分钟前」）；点击展开直接回答（复用 AskUserCard）。
+ * 列表：谁发来的 / 摘要 / 相对时间（「3 分钟前」）；点击展开直接处理
+ * （复用 StructuredCard：ask_user 给回答表单，report 给「准 / 驳 / 改」）。
  * 空态/加载态/错误态完整。
  */
 import { useState } from 'react'
 
-import { AskUserCard, formatClock, formatSender, messageSummary, type AnswerFn } from './StructuredCards'
+import { StructuredCard, formatClock, formatSender, messageSummary, type AnswerFn, type DecideFn } from './StructuredCards'
 import type { InboxResult } from './types'
 
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / M月D日 HH:mm。 */
@@ -35,12 +36,14 @@ export function Inbox({
   loading,
   error,
   onAnswer,
+  onDecide,
   onRefresh,
 }: {
   inbox: InboxResult | null
   loading: boolean
   error: string | null
   onAnswer: AnswerFn
+  onDecide: DecideFn
   onRefresh: () => void
 }) {
   const [expanded, setExpanded] = useState<number | null>(null)
@@ -49,7 +52,9 @@ export function Inbox({
   return (
     <aside
       data-testid="inbox"
-      className="flex h-full min-h-0 w-[340px] shrink-0 flex-col border-l border-border bg-bg-secondary"
+      // 窄屏（<768px）改成上下堆叠：340px 固定宽度会把消息流挤到 230px 并裁字
+      // （2026-10-24 390×844 实测）。桌面仍是右侧固定宽栏。
+      className="flex min-h-0 w-full shrink-0 basis-[45%] flex-col border-t border-border bg-bg-secondary md:h-full md:basis-auto md:w-[340px] md:border-l md:border-t-0"
     >
       <header className="flex items-center justify-between border-b border-border px-3 py-2">
         <div className="flex items-center gap-2">
@@ -80,7 +85,7 @@ export function Inbox({
           </p>
         ) : items.length === 0 ? (
           <p data-testid="inbox-empty" className="p-3 text-xs text-text-secondary">
-            没有待处理的问题。部门 ask_user 之后会出现在这里。
+            没有待处理的消息。子代理的提问（ask_user）和汇报（report）会出现在这里。
           </p>
         ) : (
           <ul className="space-y-1.5">
@@ -107,7 +112,7 @@ export function Inbox({
                 </button>
                 {expanded === m.message_id ? (
                   <div className="mt-1.5">
-                    <AskUserCard message={m} onAnswer={onAnswer} />
+                    <StructuredCard message={m} onAnswer={onAnswer} onDecide={onDecide} />
                   </div>
                 ) : null}
               </li>

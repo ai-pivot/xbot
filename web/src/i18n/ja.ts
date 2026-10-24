@@ -40,6 +40,8 @@ const ja: Translations = {
     tasksCron: 'スケジュールタスク',
     tasksBg: 'バックグラウンドコマンド',
     tasksSubAgents: 'サブエージェント',
+    inboxEntry: '受信箱',
+    inboxTitle: '受信箱：未回答の質問 / 決裁待ちの報告（/structured）',
     structuredEntry: '構造化メッセージ',
     structuredEntryDesc: '報告 / 質問 / 決裁 · 受信箱',
     structuredEntryTitle: '構造化メッセージ + 受信箱（/structured）',

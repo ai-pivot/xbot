@@ -1297,7 +1297,7 @@ func (a *Agent) SpawnInteractiveSession(
 	if parentKey, ok := ctx.Value(bgParentKey{}).(string); ok && parentKey != "" {
 		placeholder.parentKey = parentKey
 	} else {
-		// 顶层会话（用户/首辅会话）直接 spawn 子代理时，ctx 里没有 bgParentKey ——
+		// 顶层会话（用户/顶层会话会话）直接 spawn 子代理时，ctx 里没有 bgParentKey ——
 		// 此时父就是发起这次 spawn 的会话本身。以前这里什么都不填，于是注册表里
 		// parent_channel/parent_chat_id 留空，restoreInteractiveTree(父) 永远查不到
 		// 这条记录 ⇒ 进程重启后子代理全部丢失（2026-10-21 实测：入库行是

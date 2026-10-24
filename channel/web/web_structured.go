@@ -254,7 +254,7 @@ func validateStructuredPayload(input protocol.StructuredMessageInput) error {
 			return errors.New("payload.answers is required for kind=answer")
 		}
 	case "decision":
-		// 批红必须闭环到具体目标（reply_to 优先，兼容 payload.target_message_id）。
+		// 批复必须闭环到具体目标（reply_to 优先，兼容 payload.target_message_id）。
 		if strings.TrimSpace(input.ReplyTo) == "" && payloadString(input.Payload, "target_message_id") == "" {
 			return errors.New("reply_to is required for kind=decision")
 		}

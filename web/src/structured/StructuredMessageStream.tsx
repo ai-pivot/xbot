@@ -140,7 +140,7 @@ export function StructuredMessageStream({
     )
 
   return (
-    <section className="flex h-full min-h-0 flex-1 flex-col">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-slate-300/40 px-3 py-2 dark:border-slate-700/50">
         <div className="flex items-baseline gap-2">
           <h2 className="text-sm font-semibold">消息流</h2>

@@ -3023,7 +3023,7 @@ func (s *runState) injectStructuredNotice(ctx context.Context, iteration int, n 
 	case "answer":
 		label = "用户回答了你的问题"
 	case "decision":
-		label = "用户已批红"
+		label = "用户已批复"
 	}
 	content := fmt.Sprintf("📨 [%s]%s\n\n%s", label, correlationSuffix(n.CorrelationID), n.Content)
 

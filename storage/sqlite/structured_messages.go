@@ -28,9 +28,9 @@ const (
 	StructuredKindAskUser = "ask_user"
 	// StructuredKindAnswer 对 ask_user 的回答。
 	StructuredKindAnswer = "answer"
-	// StructuredKindReport 奏折/汇报。
+	// StructuredKindReport 报告/汇报。
 	StructuredKindReport = "report"
-	// StructuredKindDecision 批红（准/驳/改）。
+	// StructuredKindDecision 批复（准/驳/改）。
 	StructuredKindDecision = "decision"
 	// StructuredKindCommand 控制指令。
 	StructuredKindCommand = "command"
@@ -58,11 +58,11 @@ var (
 	ErrStructuredNotFound = errors.New("structured message not found")
 	ErrAskUserAnswered    = errors.New("target already answered")
 	ErrAskUserCancelled   = errors.New("target already cancelled")
-	// ErrDecisionTargetNotDecidable：批红目标不是可批对象。
-	// 2026-10-22 实测漏洞：reply_to 指向一条 assistant 空行（kind=""）也能"批红成功"，
-	// 因为 CAS 只校验 answered/cancelled，从不校验 kind。批红必须落在 report/ask_user 上。
+	// ErrDecisionTargetNotDecidable：批复目标不是可批对象。
+	// 2026-10-22 实测漏洞：reply_to 指向一条 assistant 空行（kind=""）也能"批复成功"，
+	// 因为 CAS 只校验 answered/cancelled，从不校验 kind。批复必须落在 report/ask_user 上。
 	ErrDecisionTargetNotDecidable = errors.New("decision target is not a report or ask_user")
-	// ErrDecisionSelfApproval：不能批自己提交的 report（CHARTER §3）。
+	// ErrDecisionSelfApproval：不能批自己提交的 report（安全约束）。
 	ErrDecisionSelfApproval = errors.New("a department must not approve its own report")
 	ErrIdempotencyConflict  = errors.New("idempotency key conflict")
 )
@@ -89,7 +89,7 @@ type StructuredMessage struct {
 	CreatedAt time.Time
 }
 
-// structuredRole 按 kind 决定行的 role：提问/汇报是 assistant 产出；回答/批红是
+// structuredRole 按 kind 决定行的 role：提问/汇报是 assistant 产出；回答/批复是
 // 用户输入；command/event/text 由调用方显式指定（缺省 user）。
 func structuredRole(m StructuredMessage) string {
 	if m.Role != "" {
@@ -180,7 +180,7 @@ func (s *SessionService) AppendStructuredMessage(tenantID int64, m StructuredMes
 	return id, created, err
 }
 
-// AppendDecision 原子地写入一条批红（kind=decision）并把目标行置 answered。
+// AppendDecision 原子地写入一条批复（kind=decision）并把目标行置 answered。
 //
 // 与 AnswerAskUser 共用同一套 CAS 闭环，语义逐条对齐：
 //   - 目标行（m.ReplyTo 指向的 message_id）不存在 → ErrStructuredNotFound（HTTP 404）
@@ -236,8 +236,8 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 		var answered, cancelledCol int
 		var targetKind, targetSender, targetChat string
 		// chat_id 也要取出来：id 只在会话库内自增、跨会话不唯一，只按
-		// (tenant_id,id) 会让 A 会话的批红关掉 B 会话的同号 report
-		// （decision 写进 A，B 的收件箱却被静默收敛）—— P0 批红错位的一半根因。
+		// (tenant_id,id) 会让 A 会话的批复关掉 B 会话的同号 report
+		// （decision 写进 A，B 的收件箱却被静默收敛）—— P0 批复错位的一半根因。
 		qerr := store.QueryRow(`
 			SELECT COALESCE(answered, 0), COALESCE(cancelled, 0), COALESCE(kind, ''), COALESCE(sender_id, ''), COALESCE(chat_id, '')
 			  FROM session_messages WHERE tenant_id = ? AND id = ?`,
@@ -252,15 +252,15 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 			return fmt.Errorf("%w (target %d has kind=%q)", ErrDecisionTargetNotDecidable, targetID, targetKind)
 		}
 		// 跨会话保护：两侧都有 chat_id 时必须一致。历史行（2026-10-22 之前写入、
-		// chat_id 为空）放行以保持兼容，否则会误杀既有批红数据。
+		// chat_id 为空）放行以保持兼容，否则会误杀既有批复数据。
 		if targetChat != "" && m.ChatID != "" && targetChat != m.ChatID {
 			return ErrStructuredNotFound
 		}
-		// 自批禁止：CHARTER §3「部门不能批自己的 report」。
-		// 2026-10-22 兵部审计可复现：部门 A 发 report 拿到 id 后自己发 decision，
+		// 自批禁止：安全约束「发送方不能批复自己发出的 report」。
+		// 2026-10-22 安全审计可复现：子代理 A 发 report 拿到 id 后自己发 decision，
 		// 因租户相同、目标不是"自身会话"，以前会通过 —— 等于自己盖章。
 		// 只在发送者身份可辨（agent: 前缀）时判自批。2026-10-21 之前的历史行
-		// 一律记成 "web-4"，无法区分"部门自批"与"首辅代批"，故不触发。
+		// 一律记成 "web-4"，无法区分"子代理自批"与"主会话代批"，故不触发。
 		if strings.HasPrefix(targetSender, "agent:") && targetSender == m.SenderID {
 			return fmt.Errorf("%w (target %d was submitted by %q)", ErrDecisionSelfApproval, targetID, targetSender)
 		}
@@ -271,7 +271,7 @@ func (s *SessionService) AppendDecision(tenantID int64, m StructuredMessage) (id
 			return ErrAskUserAnswered
 		}
 
-		// 3. CAS：只有未批红未取消才推进（并发批红只有一次成功）。
+		// 3. CAS：只有未批复未取消才推进（并发批复只有一次成功）。
 		res, uerr := store.Exec(`
 			UPDATE session_messages SET answered = 1
 			 WHERE tenant_id = ? AND id = ? AND (chat_id = ? OR chat_id = '')
@@ -528,8 +528,8 @@ func (s *SessionService) ListStructuredMessages(tenantID int64, kind string, cur
 //
 // 供 SSE 断线重连做增量补齐：客户端带上已加载的最大 id，精确拉取缺口。
 // 「只拉最新一页」在深历史下会丢掉中间的 answer/decision 行，而派生状态
-// （answered 由消息流投影得出）依赖这些行 —— 丢一条 decision 就会让已批红
-// 的卡片在重连后回退成「待批红」，破坏跨端一致性。所以这里按 id 单调补齐。
+// （answered 由消息流投影得出）依赖这些行 —— 丢一条 decision 就会让已批复
+// 的卡片在重连后回退成「待批复」，破坏跨端一致性。所以这里按 id 单调补齐。
 func (s *SessionService) ListStructuredMessagesAfter(tenantID int64, kind string, afterID int64, limit int) ([]StructuredMessage, bool, int64, error) {
 	if limit <= 0 {
 		limit = 200
@@ -584,7 +584,8 @@ func (s *SessionService) ListStructuredMessagesAfter(tenantID int64, kind string
 	return out, hasMore, next, nil
 }
 
-// ListInbox 返回当前会话未回答、未取消的 ask_user（收件箱）。
+// ListInbox 返回当前会话待人工处理的结构化消息（收件箱）：
+// ask_user（等你回答）+ report（等你批复）。两者都靠 answered/cancelled 出库。
 // 按 id DESC（最新在前），cursor = 上一页最后一条 id。
 func (s *SessionService) ListInbox(tenantID int64, cursor int64, limit int) ([]StructuredMessage, bool, int64, error) {
 	if limit <= 0 {
@@ -603,7 +604,9 @@ func (s *SessionService) ListInbox(tenantID int64, cursor int64, limit int) ([]S
 	             role, content, COALESCE(sender_type,''), COALESCE(sender_id,''),
 	             COALESCE(sender_name,''), created_at
 	        FROM session_messages
-	       WHERE tenant_id = ? AND kind = 'ask_user' AND answered = 0 AND cancelled = 0`
+	       WHERE tenant_id = ?
+	         AND kind IN ('ask_user', 'report')
+	         AND answered = 0 AND cancelled = 0`
 	args := []any{tenantID}
 	if cursor > 0 {
 		q += ` AND id < ?`
@@ -640,7 +643,7 @@ func (s *SessionService) ListInbox(tenantID int64, cursor int64, limit int) ([]S
 	return out, hasMore, next, nil
 }
 
-// CountInbox 返回未回答 ask_user 数量（未读徽标）。
+// CountInbox 返回待处理结构化消息数量（未读徽标）：ask_user + report。
 func (s *SessionService) CountInbox(tenantID int64) (int, error) {
 	conn, err := s.conn()
 	if err != nil {
@@ -649,7 +652,9 @@ func (s *SessionService) CountInbox(tenantID int64) (int, error) {
 	var n int
 	if err := conn.QueryRow(`
 		SELECT COUNT(1) FROM session_messages
-		 WHERE tenant_id = ? AND kind = 'ask_user' AND answered = 0 AND cancelled = 0`,
+		 WHERE tenant_id = ?
+		   AND kind IN ('ask_user', 'report')
+		   AND answered = 0 AND cancelled = 0`,
 		tenantID).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count inbox: %w", err)
 	}

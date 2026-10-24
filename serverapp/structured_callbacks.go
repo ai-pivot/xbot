@@ -53,7 +53,7 @@ func structuredDeliverable(kind string) bool {
 	}
 }
 
-// reportDeliverCooldown 是同一目标会话的 report 唤醒冷却时间：部门连发多条
+// reportDeliverCooldown 是同一目标会话的 report 唤醒冷却时间：子代理连发多条
 // report 时不必每条都拉起一个新 turn（落库不受影响，一条都不会丢）。
 const reportDeliverCooldown = 60 * time.Second
 
@@ -67,7 +67,7 @@ var (
 func reportDeliverKey(channel, chatID string) string { return channel + "/" + chatID }
 
 // payloadBypassesReportCooldown 判断这条 report 是否必须绕过冷却。
-// CHARTER §6：needs_approval / urgent 必须「立刻」处理，不能被普通奏折压掉。
+// 上报规范：needs_approval / urgent 必须「立刻」处理，不能被普通报告压掉。
 func payloadBypassesReportCooldown(payload map[string]any) bool {
 	if payload == nil {
 		return false
@@ -91,8 +91,8 @@ func payloadBypassesReportCooldown(payload map[string]any) bool {
 //
 // 语义是**延迟**而不是丢弃。2026-10-22 review 发现：原实现冷却期内只把
 // deliver 置 false 就返回，而全仓没有任何补投者（ListInbox 只服务 Web 角标），
-// 于是被压掉的 report 永远不会自己醒来；而真实拓扑是 6 个部门上报同一个
-// 物理 chatID（CHARTER §2 的 agent:team.sili/main），最坏情况只唤醒第一条。
+// 于是被压掉的 report 永远不会自己醒来；而真实拓扑是 6 个子代理上报同一个
+// 物理 chatID（分层下真实存在的物理 chatID（如 agent:team.ops/main）），最坏情况只唤醒第一条。
 // 现在改由调用方 time.AfterFunc 在窗口结束时补投**原消息**。
 func reportDeliverDelay(channel, chatID string, payload map[string]any) time.Duration {
 	key := reportDeliverKey(channel, chatID)
@@ -111,7 +111,7 @@ func reportDeliverDelay(channel, chatID string, payload map[string]any) time.Dur
 
 	if payloadBypassesReportCooldown(payload) {
 		reportDeliverSeen[key] = now
-		return 0 // 紧急奏折永不延迟
+		return 0 // 紧急报告永不延迟
 	}
 	if t, ok := reportDeliverSeen[key]; ok {
 		if elapsed := now.Sub(t); elapsed < reportDeliverCooldown {
@@ -161,7 +161,7 @@ func structuredContent(kind string, payload map[string]any, explicit string) str
 		}
 	case "decision":
 		verdict, _ := payload["verdict"].(string)
-		// 兼容两种拼写：工具描述与 CHARTER 用 "comment"，历史实现读 "comments"。
+		// 兼容两种拼写：工具描述与文档用 "comment"，历史实现读 "comments"。
 		comments, _ := payload["comment"].(string)
 		if comments == "" {
 			comments, _ = payload["comments"].(string)
@@ -236,7 +236,7 @@ func toProtocolStructured(m sqlite.StructuredMessage) *protocol.StructuredMessag
 // refuseSelfTarget 是 D-07 的**自激守卫**：结构化消息若投给调用方自己的会话，
 // 会立刻把调用方再唤醒一次（自激 / 死循环），必须拒绝。
 //
-// 分两支，且**禁止从 SessionKey 做字符串切割**（那不是可靠前提，2026-10-22 门下省）：
+// 分两支，且**禁止从 SessionKey 做字符串切割**（那不是可靠前提，2026-10-22 审计）：
 //   - agent 目标：目标是子代理会话，只有 interactive 子代理才有物理会话 key
 //     （CallerScope.SessionKey 非空），拿它与解析后的目标物理 key 比。
 //     主会话（SessionKey 为空）发往 agent 目标天然不是"自己"，直接放行。
@@ -267,7 +267,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		// master #444 起 SessionService() 返回存储抽象的 storage.SessionStore：
 		// 结构化消息（report/ask_user/decision/inbox）目前只有 SQLite 后端实现，
 		// PG 后端尚未落地该特性（**未覆盖项**，不是静默降级）—— 显式断言并给出
-		// 可读错误，避免批红写进一张不存在的表、消息凭空蒸发。
+		// 可读错误，避免批复写进一张不存在的表、消息凭空蒸发。
 		svc, ok := sess.SessionService().(*sqlite.SessionService)
 		if !ok {
 			return nil, 0, fmt.Errorf("structured messages are not supported by this storage backend (channel=%s)", sel.Channel)
@@ -354,7 +354,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		var id int64
 		var created bool
 		if input.Kind == "decision" {
-			// 批红闭环：目标行必须存在且未批红/未取消（CAS）。
+			// 批复闭环：目标行必须存在且未批复/未取消（CAS）。
 			// reply_to 是权威目标；兼容老客户端只用 payload.target_message_id。
 			stored.ReplyTo = structuredFirstNonEmpty(input.ReplyTo, structuredPayloadString(input.Payload, "target_message_id"))
 			id, created, err = svc.AppendDecision(tenantID, stored)
@@ -454,19 +454,19 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 
 	// ── 把同一份落地实现注入给工具层 ─────────────────────────────────────
 	// SendMessage(kind = report/ask_user/answer/decision) 走的就是这个 appendFn：
-	// agent 在自己会话里说"批了"→ 工具层调它 → 落到目标（部门）会话 + CAS。
-	// 共用闭包而不是另写一份，是为了让"web 点按钮"和"自然语言批红"永远同一语义。
+	// agent 在自己会话里说"批了"→ 工具层调它 → 落到目标（子代理）会话 + CAS。
+	// 共用闭包而不是另写一份，是为了让"web 点按钮"和"自然语言批复"永远同一语义。
 	tools.SetStructuredAppend(func(senderID string, caller tools.CallerScope, channel, chatID string, in protocol.StructuredMessageInput) (int64, bool, error) {
 		// 逻辑地址（agent:role/instance）→ 物理会话 key（web:web-4/role:instance）。
-		// 不做这一步就会把批红写进一个新建的空壳会话：2026-10-22 实测事故。
+		// 不做这一步就会把批复写进一个新建的空壳会话：2026-10-22 实测事故。
 		//
 		// D-10：解析必须带**调用方作用域**（caller.Channel/caller.ChatID）——
-		// 目标必须在调用方作用域内（同一顶层会话的子树：六部 ↔ 司礼监可互发，
+		// 目标必须在调用方作用域内（同一顶层会话的子树：子代理组 ↔ 调度方可互发，
 		// 跨顶层会话一律拒），否则任意会话都能凭逻辑地址把 report/decision 投进
 		// 别人的子代理会话。解析不出来/超出作用域/多命中时
 		// ResolveStructuredTarget 返回 ("", err)，这里直接失败，不建野会话。
 		// 注意它**不校验层级**：地址里没有组织关系，「只向上报、不许平级串」
-		// 靠 CHARTCHECK 纪律 + 都察院抽查。
+		// 靠 CHARTCHECK 纪律 + 审计抽查。
 		realChatID, rerr := ag.ResolveStructuredTarget(caller.Channel, caller.ChatID, channel, chatID)
 		if rerr != nil {
 			return 0, false, rerr

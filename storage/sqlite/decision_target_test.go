@@ -7,11 +7,11 @@ import (
 	"xbot/llm"
 )
 
-// decision_target_test.go — 回归 2026-10-22 的批红越权漏洞。
+// decision_target_test.go — 回归 2026-10-22 的批复越权漏洞。
 //
-// 事故：首辅用 reply_to=<id> 批红，那条 id 实际是会话里的一条 assistant 空行
-// （kind=""）。CAS 只校验 answered/cancelled，于是"批红成功"，把一行普通消息
-// 标成了 answered=1 —— 批红看似成功，实际批错了对象，且没有报错。
+// 事故：顶层会话用 reply_to=<id> 批复，那条 id 实际是会话里的一条 assistant 空行
+// （kind=""）。CAS 只校验 answered/cancelled，于是"批复成功"，把一行普通消息
+// 标成了 answered=1 —— 批复看似成功，实际批错了对象，且没有报错。
 //
 // 修复：目标必须是 report / ask_user（Go 侧校验 + SQL CAS 双保险）。
 
@@ -71,7 +71,7 @@ func TestAppendDecisionAcceptsReport(t *testing.T) {
 		t.Fatalf("report should be answered=1, got %d", answered)
 	}
 
-	// 重复批红必须被拒（CAS）。
+	// 重复批复必须被拒（CAS）。
 	if _, _, err := svc.AppendDecision(tenant, StructuredMessage{
 		ChatID: "chat-1", Kind: StructuredKindDecision, ReplyTo: itoa(rid),
 		Direction: "in", Content: "改判", SenderType: "user", SenderID: "web-4",
@@ -94,14 +94,14 @@ func itoa(n int64) string {
 	return string(buf[i:])
 }
 
-// TestAppendDecisionRejectsSelfApproval — CHARTER §3：部门不能批自己的 report。
-// 2026-10-22 兵部审计可复现：同租户、目标非"自身会话"，旧实现会放行。
+// TestAppendDecisionRejectsSelfApproval — 安全约束：发送方不能批复自己发出的 report。
+// 2026-10-22 安全审计可复现：同租户、目标非"自身会话"，旧实现会放行。
 func TestAppendDecisionRejectsSelfApproval(t *testing.T) {
 	svc, tenant := newStructuredTestService(t)
 
 	rid, _, err := svc.AppendStructuredMessage(tenant, StructuredMessage{
 		ChatID: "chat-1", Kind: StructuredKindReport, CorrelationID: "self-1",
-		Direction: "in", Content: "我自己报的", SenderType: "agent", SenderID: "agent:team.hubu/main",
+		Direction: "in", Content: "我自己报的", SenderType: "agent", SenderID: "agent:team.data/main",
 	})
 	if err != nil {
 		t.Fatalf("append report: %v", err)
@@ -109,13 +109,13 @@ func TestAppendDecisionRejectsSelfApproval(t *testing.T) {
 
 	_, _, err = svc.AppendDecision(tenant, StructuredMessage{
 		ChatID: "chat-1", Kind: StructuredKindDecision, ReplyTo: itoa(rid),
-		Direction: "in", Content: "准", SenderType: "agent", SenderID: "agent:team.hubu/main",
+		Direction: "in", Content: "准", SenderType: "agent", SenderID: "agent:team.data/main",
 	})
 	if !errors.Is(err, ErrDecisionSelfApproval) {
 		t.Fatalf("self approval: got %v, want ErrDecisionSelfApproval", err)
 	}
 
-	// 首辅（不同 sender）可以批
+	// 顶层会话（不同 sender）可以批
 	if _, created, err := svc.AppendDecision(tenant, StructuredMessage{
 		ChatID: "chat-1", Kind: StructuredKindDecision, ReplyTo: itoa(rid),
 		Direction: "in", Content: "准", SenderType: "user", SenderID: "web-4",

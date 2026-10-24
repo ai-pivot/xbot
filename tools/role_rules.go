@@ -17,7 +17,7 @@ import (
 // 所有会话。正确做法是挂在**角色**上：role frontmatter 里写
 //
 //	rules:
-//	  - roles/CHARTER.md      # 相对 $XBOT_HOME，也可写绝对路径
+//	  - roles/RULES.md      # 相对 $XBOT_HOME，也可写绝对路径
 //
 // 只有声明了 rules 的角色在 spawn 时加载这些文件。没声明的角色
 // （tester / explore / 其它项目的子代理）**一个字都不会多读**。
@@ -34,7 +34,7 @@ const maxRoleRuleBytes = 64 * 1024
 //   - 重启恢复：agent/interactive_persist.go 的 restoreOneAgent；
 //   - 兜底：agent/engine_wire.go 的 prompt 汇聚点用 RolePromptForName。
 //
-// 任一文件读不到/被拒绝只告警、不阻断 spawn（规则缺失不该让部门起不来）。
+// 任一文件读不到/被拒绝只告警、不阻断 spawn（规则缺失不该让子代理起不来）。
 func RoleSystemPrompt(role *SubAgentRole) string {
 	if role == nil {
 		return ""
@@ -55,7 +55,7 @@ func RoleSystemPrompt(role *SubAgentRole) string {
 		}
 		path, perr := resolveRoleRulePath(home, rel)
 		if perr != nil {
-			// 2026-10-22 兵部审计：frontmatter 可来自 workspace 里的 role 文件，
+			// 2026-10-22 安全审计：frontmatter 可来自 workspace 里的 role 文件，
 			// 不校验就能写 rules: ["../../.ssh/id_rsa"] 把私钥读进 system prompt
 			// 交给 LLM。这里只允许 $XBOT_HOME 之内的相对路径。
 			log.WithFields(log.Fields{"role": role.Name, "rule": rel, "error": perr.Error()}).

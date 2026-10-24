@@ -10,9 +10,9 @@ import (
 // 2026-10-22 review 发现的两个缺陷（均已修）：
 //  1. report 进入 deliverable 后加了 60s 冷却，但冷却期内只把 deliver 置 false，
 //     没有任何补投者 ⇒ 被压掉的 report 永远不会醒（静默丢弃）。真实拓扑是 6 个
-//     部门上报同一个 chatID，最坏情况只唤醒第一条。
-//  2. 冷却只看 chatID 不看 payload ⇒ needs_approval / urgent 的奏折也被压掉，
-//     违反 CHARTER §6。
+//     子代理上报同一个 chatID，最坏情况只唤醒第一条。
+//  2. 冷却只看 chatID 不看 payload ⇒ needs_approval / urgent 的报告也被压掉，
+//     违反 上报规范。
 
 func TestStructuredDeliverableKinds(t *testing.T) {
 	for _, kind := range []string{"answer", "decision", "command", "text", "report"} {
@@ -87,7 +87,7 @@ func TestReportDeliverDelayPerChannel(t *testing.T) {
 }
 
 // TestReportDeliverDelayUrgentNeverDelayed：冷却窗口内的 urgent / needs_approval
-// 必须立刻唤醒（delay=0），这是 CHARTER §6 的硬要求。
+// 必须立刻唤醒（delay=0），这是 上报规范 的硬要求。
 func TestReportDeliverDelayUrgentNeverDelayed(t *testing.T) {
 	resetReportDeliverSeen()
 	t.Cleanup(resetReportDeliverSeen)

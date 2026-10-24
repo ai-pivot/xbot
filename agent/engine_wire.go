@@ -715,10 +715,10 @@ func (a *Agent) buildSubAgentRunConfig(
 
 	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）。
 	//
-	// 兜底注入 role rules（roles frontmatter 的 `rules:`，如 roles/CHARTER.md）：
+	// 兜底注入 role rules（roles frontmatter 的 `rules:`，如 roles/RULES.md）：
 	// 这是子代理 system prompt 的**唯一汇聚点**，而 spawn 入口有三类（SubAgent 工具 /
 	// CreateChat 的 agent 与 group 两种 / 重启恢复）。任何入口漏注入都只会表现为
-	// "部门静默不带规矩"，不会编译失败也不会红测试 —— 所以在这里按 roleName 再补一次。
+	// "子代理静默不带规矩"，不会编译失败也不会红测试 —— 所以在这里按 roleName 再补一次。
 	// 幂等语义见 tools.RolePromptForName（只在调用方没注入过时才补）。
 	systemPrompt = tools.RolePromptForName(roleName, systemPrompt)
 	rolePrompt := strings.TrimSpace(systemPrompt)
@@ -1074,7 +1074,7 @@ func (a *Agent) buildSubAgentRunConfig(
 
 	// 分层 spawn（2026-10-22 用户架构要求）：让子代理也能管自己的下属。
 	// 原来这里刻意不配 InteractiveCallbacks（注释：Nil for SubAgents, they don't
-	// manage children），导致司礼监 spawn 六部时报
+	// manage children），导致调度方 spawn 子代理组时报
 	// "interactive SubAgent not supported in this context"。
 	// 关键：闭包必须用**子代理自己的** channel/chatID，这样孙代理的 parentKey
 	// 指向子代理而非主会话，完成通知才是"只回父级"。

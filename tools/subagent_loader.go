@@ -18,7 +18,7 @@ import (
 // "role 不应该全局可用"）：
 //
 //	agents/tester.md            → role "tester"        （顶层，保持向后兼容）
-//	agents/team/gongbu.md      → role "team.backend"
+//	agents/team/backend.md      → role "team.backend"
 //	agents/proj/xbot/dev.md     → role "proj.xbot.dev"
 //
 // 子目录用 "." 连接成名字空间。**刻意不用 "/"**：interactiveKey 形如

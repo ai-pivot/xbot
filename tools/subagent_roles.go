@@ -73,7 +73,7 @@ func InitAgentRoles(dir string) error {
 	//
 	// 必须在存在性检查**之前**无条件赋值：agents 目录不存在的部署（以及用户私有
 	// agents 目录里声明了 rules 的场景）若 xbotHomeDir 为空，所有相对 rules 都会被
-	// "XBOT_HOME unknown" 静默拒绝 —— 表现为部门起得来但不带规矩。
+	// "XBOT_HOME unknown" 静默拒绝 —— 表现为子代理起得来但不带规矩。
 	if dir != "" { // 空路径的 filepath.Dir 是 "."，会把 cwd 当成 XBOT_HOME
 		xbotHomeDir = filepath.Dir(dir)
 	}

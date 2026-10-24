@@ -10,7 +10,7 @@ import (
 //
 // 背景（2026-10-22 review）：rules 注入曾经只覆盖 tools/subagent.go 的 3 处调用点，
 // CreateChat 的 4 处与重启恢复（agent/interactive_persist.go）全部裸传 role.SystemPrompt，
-// 表现为"部门起得来但不带 CHARTER"。现在注入收敛到 RoleSystemPrompt 一个实现，
+// 表现为"子代理起得来但不带规则文件"。现在注入收敛到 RoleSystemPrompt 一个实现，
 // 并在 prompt 汇聚点用 RolePromptForName 兜底 —— 两者都必须有单测钉住语义。
 
 func TestRoleSystemPrompt(t *testing.T) {
@@ -19,7 +19,7 @@ func TestRoleSystemPrompt(t *testing.T) {
 	xbotHomeDir = home
 	t.Cleanup(func() { xbotHomeDir = old })
 
-	writeMD(t, filepath.Join(home, "team", "CHARTER.md"), "# 条例\n不许重启服务。")
+	writeMD(t, filepath.Join(home, "team", "RULES.md"), "# 条例\n不许重启服务。")
 
 	// 1) nil role → 空串（调用方会回落到默认 prompt）
 	if got := RoleSystemPrompt(nil); got != "" {
@@ -33,12 +33,12 @@ func TestRoleSystemPrompt(t *testing.T) {
 	}
 
 	// 3) 声明了 rules → 追加，带可读标题
-	role := &SubAgentRole{Name: "team.x", SystemPrompt: "我是X", Rules: []string{"team/CHARTER.md"}}
+	role := &SubAgentRole{Name: "team.x", SystemPrompt: "我是X", Rules: []string{"team/RULES.md"}}
 	got := RoleSystemPrompt(role)
 	if !strings.HasPrefix(got, "我是X") {
 		t.Fatalf("role prompt must be preserved as prefix, got %q", got)
 	}
-	if !strings.Contains(got, "## 规则文件：team/CHARTER.md") || !strings.Contains(got, "不许重启服务") {
+	if !strings.Contains(got, "## 规则文件：team/RULES.md") || !strings.Contains(got, "不许重启服务") {
 		t.Fatalf("rules not injected: %q", got)
 	}
 
@@ -68,10 +68,10 @@ func TestRolePromptForName(t *testing.T) {
 name: x
 description: d
 rules:
-  - team/CHARTER.md
+  - team/RULES.md
 ---
 role body`)
-	writeMD(t, filepath.Join(home, "team", "CHARTER.md"), "# 条例\n不许重启服务。")
+	writeMD(t, filepath.Join(home, "team", "RULES.md"), "# 条例\n不许重启服务。")
 
 	oldAgents, oldHome := agentsDir, xbotHomeDir
 	t.Cleanup(func() { agentsDir, xbotHomeDir = oldAgents, oldHome })
@@ -138,7 +138,7 @@ br body`)
 name: mk
 description: d
 rules:
-  - team/CHARTER.md
+  - team/RULES.md
 ---
 正文里写着 ## 规则文件： 这几个字`)
 	got = RolePromptForName("team.mk", "正文里写着 ## 规则文件： 这几个字")

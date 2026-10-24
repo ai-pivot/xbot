@@ -284,7 +284,7 @@ func TestAppendDecisionClosesReportOnce(t *testing.T) {
 		t.Fatalf("duplicate decision created=%v id1=%d id2=%d", created2, id1, id2)
 	}
 
-	// 不同 key 重复批红 → 必须 409（不能只靠幂等键去重）。
+	// 不同 key 重复批复 → 必须 409（不能只靠幂等键去重）。
 	dec.IdempotencyKey = "k_dec_2"
 	if _, _, err := svc.AppendDecision(tenant, dec); !errors.Is(err, ErrAskUserAnswered) {
 		t.Fatalf("second verdict error = %v, want ErrAskUserAnswered", err)
@@ -315,7 +315,7 @@ func TestAppendDecisionMissingTargetNotFound(t *testing.T) {
 func TestAppendDecisionCancelledTargetRejected(t *testing.T) {
 	svc, tenant := newStructuredTestService(t)
 	reportID := mustAppend(t, svc, tenant, StructuredMessage{
-		Kind: StructuredKindReport, Content: "已撤销的奏折", Cancelled: true,
+		Kind: StructuredKindReport, Content: "已撤销的报告", Cancelled: true,
 	})
 	_, _, err := svc.AppendDecision(tenant, StructuredMessage{
 		ChatID: "chat-1", Kind: StructuredKindDecision,
@@ -336,7 +336,7 @@ func TestAppendDecisionRequiresTarget(t *testing.T) {
 }
 
 // after_id 增量补齐：按 id 升序、可续、不重复不遗漏。
-// 这是 SSE 重连补洞的正确性基础 —— 漏一条 decision 会让已批红状态回退，
+// 这是 SSE 重连补洞的正确性基础 —— 漏一条 decision 会让已批复状态回退，
 // 跨端就永远收敛不到一致视图。
 func TestListStructuredMessagesAfterIsResumable(t *testing.T) {
 	svc, tenant := newStructuredTestService(t)

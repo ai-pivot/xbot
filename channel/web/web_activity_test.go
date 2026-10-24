@@ -101,7 +101,7 @@ func (e *activityTestEnv) seedActivityScale(t *testing.T) {
 	for i := 0; i < 1900; i++ {
 		ts := e.now.Add(-time.Duration(i) * time.Minute)
 		if _, err := stmt.Exec(int64(1+i%40), fmt.Sprintf("chat-%02d", i%40), "web", i+1,
-			kinds[i%len(kinds)], "sender", "工部", fmt.Sprintf("摘要 %d", i),
+			kinds[i%len(kinds)], "sender", "backend", fmt.Sprintf("摘要 %d", i),
 			sqlite.FormatActivityTime(ts)); err != nil {
 			t.Fatalf("seed activity %d: %v", i, err)
 		}
@@ -109,7 +109,7 @@ func (e *activityTestEnv) seedActivityScale(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		ts := e.now.Add(-30 * 24 * time.Hour).Add(time.Duration(i) * time.Minute)
 		if _, err := stmt.Exec(int64(1), "chat-old", "web", 100000+i,
-			"report", "sender", "旧部门", "30 天前的奏折", sqlite.FormatActivityTime(ts)); err != nil {
+			"report", "sender", "旧会话", "30 天前的报告", sqlite.FormatActivityTime(ts)); err != nil {
 			t.Fatalf("seed old activity %d: %v", i, err)
 		}
 	}

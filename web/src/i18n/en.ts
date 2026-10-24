@@ -40,6 +40,8 @@ const en: Translations = {
     tasksCron: 'Cron Jobs',
     tasksBg: 'Background Commands',
     tasksSubAgents: 'Sub-Agents',
+    inboxEntry: 'Inbox',
+    inboxTitle: 'Inbox: pending questions / reports awaiting a verdict (/structured)',
     structuredEntry: 'Structured messages',
     structuredEntryDesc: 'Reports / questions / verdicts · inbox',
     structuredEntryTitle: 'Structured messages + inbox (/structured)',

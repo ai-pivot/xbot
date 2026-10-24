@@ -195,7 +195,7 @@ func seedActivityScale(t *testing.T, idx *ActivityIndex, svc *InteractiveAgentSe
 	for i := 0; i < 1900; i++ {
 		ts := now.Add(-time.Duration(i) * time.Minute)
 		if _, err := stmt.Exec(int64(1+i%40), fmt.Sprintf("chat-%02d", i%40), "web", i+1,
-			kinds[i%len(kinds)], "sender", "部门", fmt.Sprintf("摘要 %d", i), FormatActivityTime(ts)); err != nil {
+			kinds[i%len(kinds)], "sender", "子代理", fmt.Sprintf("摘要 %d", i), FormatActivityTime(ts)); err != nil {
 			t.Fatalf("seed activity row %d: %v", i, err)
 		}
 	}
@@ -203,7 +203,7 @@ func seedActivityScale(t *testing.T, idx *ActivityIndex, svc *InteractiveAgentSe
 	for i := 0; i < 100; i++ {
 		ts := now.Add(-30 * 24 * time.Hour).Add(time.Duration(i) * time.Minute)
 		if _, err := stmt.Exec(int64(1), "chat-old", "web", 100000+i,
-			StructuredKindReport, "sender", "旧部门", "30 天前的奏折", FormatActivityTime(ts)); err != nil {
+			StructuredKindReport, "sender", "旧会话", "30 天前的报告", FormatActivityTime(ts)); err != nil {
 			t.Fatalf("seed old activity row %d: %v", i, err)
 		}
 	}
@@ -230,7 +230,7 @@ func seedActivityScale(t *testing.T, idx *ActivityIndex, svc *InteractiveAgentSe
 	// 同一种宽度，否则比较口径就错了）。
 	rf := func(ts time.Time) string { return ts.UTC().Format(time.RFC3339) }
 	add := func(key string, status string, updated time.Time) {
-		if _, err := astmt.Exec(key, "web", "web-1", "team.gongbu", key,
+		if _, err := astmt.Exec(key, "web", "web-1", "team.backend", key,
 			status, "回执", rf(updated), rf(now.Add(-200*24*time.Hour)), rf(updated)); err != nil {
 			t.Fatalf("seed agent %s: %v", key, err)
 		}
@@ -503,7 +503,7 @@ func TestActivityIndexFootprint(t *testing.T) {
 		}
 		for i := 0; i < 2000; i++ {
 			if _, err := stmt.Exec(int64(1+i%40), fmt.Sprintf("chat-%02d", i%40), "web", i+1,
-				StructuredKindReport, "sender", "工部", TruncateActivitySummary(summaryOf(i)),
+				StructuredKindReport, "sender", "backend", TruncateActivitySummary(summaryOf(i)),
 				FormatActivityTime(now.Add(-time.Duration(i)*time.Minute))); err != nil {
 				t.Fatalf("seed %d: %v", i, err)
 			}
@@ -524,11 +524,11 @@ func TestActivityIndexFootprint(t *testing.T) {
 
 	// 最坏情况：200 个中文字（约 600 字节摘要）。
 	worst := measure(t, "200 个中文字摘要（最坏情况）", func(i int) string {
-		return fmt.Sprintf("第 %d 条部门奏折摘要 %s", i, strings.Repeat("内容", 80))
+		return fmt.Sprintf("第 %d 条子代理报告摘要 %s", i, strings.Repeat("内容", 80))
 	})
 	// 典型情况：一句话结论（约 30 字）。
 	typical := measure(t, "一句话结论摘要（典型情况）", func(i int) string {
-		return fmt.Sprintf("第 %d 条：六部巡检完成，机器台账无异常。", i)
+		return fmt.Sprintf("第 %d 条：子代理组巡检完成，机器台账无异常。", i)
 	})
 	if worst <= 0 || typical <= 0 {
 		t.Fatalf("footprint measurement failed (worst=%d, typical=%d)", worst, typical)

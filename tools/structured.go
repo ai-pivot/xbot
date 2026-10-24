@@ -8,7 +8,7 @@ import (
 
 // structured.go —— 结构化消息（report / ask_user / answer / decision）的落地通道。
 //
-// 背景（2026-10-21，用户设计）：批红不是新工具，而是"一次特殊的 send"。
+// 背景（2026-10-21，用户设计）：批复不是新工具，而是"一次特殊的 send"。
 // SendMessage 已经能寻址任意会话（agent: / session: / IM），缺的只是把
 // kind=decision/answer 的消息**落库并完成 CAS**，而不是当普通文本投递。
 //
@@ -19,15 +19,15 @@ import (
 // StructuredAppendFunc 提交一条结构化消息。
 //
 // senderID 是**发起人**（通常是终端用户，用于审计：谁批的）；channel/chatID 是
-// 目标会话（批红要落到部门会话，不是首辅自己的会话）。返回 messageID、
+// 目标会话（批复要落到目标会话，不是顶层会话自己的会话）。返回 messageID、
 // duplicate（幂等命中已有行）与错误。
 //
 // callerSession 是**调用方自己的会话物理 key**（ToolContext.SessionKey，形如
 // "agent:web:web-4/team.ops:main"）。落地实现 resolve 出目标物理 key 后，
 // 若与 callerSession 相同即"向自身会话投递" —— 必须在解析之后比较，拿逻辑
-// 地址比是永不成立的（都察院 D-07 实证：自激拦截失效）。
+// 地址比是永不成立的（审计 D-07 实证：自激拦截失效）。
 // CallerScope 是发起方的身份作用域。三者分开传，**禁止从 SessionKey 字符串反解**
-// （2026-10-22 门下省 D-07：字符串手术在真实 ctx 形态下前提就不成立）。
+// （2026-10-22 审计 D-07：字符串手术在真实 ctx 形态下前提就不成立）。
 type CallerScope struct {
 	Channel    string // 调用方渠道（如 "web" / "agent"）
 	ChatID     string // 调用方 chatID

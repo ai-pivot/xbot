@@ -1634,7 +1634,7 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		//
 		// ss.busy 仍显式复位（幂等）以覆盖旧版残留 busy=true 的窗口；worktree 的
 		// busy 标记同理。SenderID: session owner —— 漏填时对 web 渠道走无过滤
-		// fan-out 分支（广播给所有用户，多用户部署下暴露会话元数据）。取消者 = 会话 owner。
+		// fan-out 分支（广播给所有用户，多用data署下暴露会话元数据）。取消者 = 会话 owner。
 		if state, ok := a.bgSessionStates.Load(cancelKey); ok {
 			state.(*bgSessionState).busy.Store(false)
 		}

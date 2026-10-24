@@ -210,7 +210,7 @@ type RunConfig struct {
 	// CallerSessionKey 是**发起本 Run 的会话**的物理 key（interactive 子代理为
 	// interactiveKey 全键，形如 "web:web-4/team.ops:main"；主会话为空）。
 	//
-	// 2026-10-22 门下省 D-07：不能用 SessionKey 代替 —— 那是"工具激活键"，
+	// 2026-10-22 审计 D-07：不能用 SessionKey 代替 —— 那是"工具激活键"，
 	// 主会话为空串、子代理是 "<chatID>/<role>" 形态，都不是物理会话 key，
 	// 拿它做自激判定等于没判（实测：删掉旧守卫后测试仍全绿）。
 	CallerSessionKey string

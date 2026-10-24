@@ -92,10 +92,10 @@ func TestReconcileInteractiveAgentsOnStartup(t *testing.T) {
 		t.Fatalf("upsert zombie: %v", err)
 	}
 	// 2) 可恢复：idle 行 + 会话租户还在 → 不许判死（否则重启恢复失效）。
-	if err := svc.Upsert(registryRec("agent:team.sili/main", "web", "chat_1", "team.sili", "main", sqlite.InteractiveAgentIdle)); err != nil {
+	if err := svc.Upsert(registryRec("agent:team.ops/main", "web", "chat_1", "team.ops", "main", sqlite.InteractiveAgentIdle)); err != nil {
 		t.Fatalf("upsert restorable: %v", err)
 	}
-	if _, err := mt.Store().Tenant().GetOrCreateTenantID("agent", "web:chat_1/team.sili:main"); err != nil {
+	if _, err := mt.Store().Tenant().GetOrCreateTenantID("agent", "web:chat_1/team.ops:main"); err != nil {
 		t.Fatalf("create tenant for restorable: %v", err)
 	}
 	// 3) 上一个进程遗留的 running 行 → interrupted（不是 unloaded）。
@@ -118,7 +118,7 @@ func TestReconcileInteractiveAgentsOnStartup(t *testing.T) {
 
 	cases := []struct{ key, want string }{
 		{"agent:explore/zombie-1", sqlite.InteractiveAgentUnloaded},
-		{"agent:team.sili/main", sqlite.InteractiveAgentIdle},
+		{"agent:team.ops/main", sqlite.InteractiveAgentIdle},
 		{"agent:explore/legacy-run", sqlite.InteractiveAgentInterrupted},
 		{"agent:reviewer/live-1", sqlite.InteractiveAgentIdle},
 	}

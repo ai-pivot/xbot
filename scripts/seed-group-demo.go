@@ -6,7 +6,7 @@
 //	go run ./scripts/seed-group-demo.go -home /tmp/xbot-team-demo -force
 //
 // 产物：
-//   - 主库 groups / group_members：1 个群「团队晨会」，4 个成员（首辅 + 三部）
+//   - 主库 groups / group_members：1 个群「团队晨会」，4 个成员（顶层会话 + 三部）
 //   - 会话库 sessions/web/xx/<team-demo>.db：80 条跨天群消息，含
 //     ask_user/answer/report/decision/action/text 六种 kind 与真实 correlation_id 线程
 //
@@ -41,10 +41,10 @@ type member struct {
 }
 
 var members = []member{
-	{"web-1", "首辅", "owner"},
-	{"agent:hubu/main", "户部", "hubu"},
-	{"agent:gongbu/main", "工部", "gongbu"},
-	{"agent:libu/main", "吏部", "libu"},
+	{"web-1", "顶层会话", "owner"},
+	{"agent:hubu/main", "data", "hubu"},
+	{"agent:backend/main", "backend", "backend"},
+	{"agent:libu/main", "infra", "libu"},
 }
 
 func memberName(addr string) string {
@@ -207,12 +207,12 @@ func buildMessages() []demoMsg {
 		report  string
 		metrics map[string]any
 	}{
-		{"corr_d1_gpu", "B300 集群今日吞吐", "agent:gongbu/main", "agent:gongbu/main",
-			"工部回报：8 卡 B300 集群 2P1D 稳定，TPOT P50 18.2ms，TPM 142k。", map[string]any{"tpm": 142000, "tpot_ms": 18.2}},
-		{"corr_d1_serve", "户部：昨日 token 用量", "agent:hubu/main", "agent:hubu/main",
-			"户部回报：昨日总 token 8.4B，缓存命中率 63%，成本环比 -7%。", map[string]any{"tokens": "8.4B", "cache_hit": 0.63}},
-		{"corr_d1_people", "吏部：值班与技能清单", "agent:libu/main", "agent:libu/main",
-			"吏部回报：三名值守 agent 技能齐备，轮值表已更新。", map[string]any{"agents": 3}},
+		{"corr_d1_gpu", "B300 集群今日吞吐", "agent:backend/main", "agent:backend/main",
+			"backend回报：8 卡 B300 集群 2P1D 稳定，TPOT P50 18.2ms，TPM 142k。", map[string]any{"tpm": 142000, "tpot_ms": 18.2}},
+		{"corr_d1_serve", "data：昨日 token 用量", "agent:hubu/main", "agent:hubu/main",
+			"data回报：昨日总 token 8.4B，缓存命中率 63%，成本环比 -7%。", map[string]any{"tokens": "8.4B", "cache_hit": 0.63}},
+		{"corr_d1_people", "infra：值班与技能清单", "agent:libu/main", "agent:libu/main",
+			"infra回报：三名值守 agent 技能齐备，轮值表已更新。", map[string]any{"agents": 3}},
 	}
 
 	for d := 0; d < 3; d++ {
@@ -220,7 +220,7 @@ func buildMessages() []demoMsg {
 		for ti, t := range topics {
 			base := day.Add(time.Duration(9+ti) * time.Hour)
 			corr := fmt.Sprintf("%s_%d", t.corr, d)
-			// 首辅决策开题
+			// 顶层会话决策开题
 			msgs = append(msgs, demoMsg{
 				ts: base, sender: demoOwner, senderType: "user", kind: "decision", corr: corr,
 				content: fmt.Sprintf("今日议题 %d：%s。请%s核实后回报。", ti+1, t.title, memberName(t.askee)),
@@ -267,10 +267,10 @@ func buildMessages() []demoMsg {
 				content: "收到，散会。",
 			})
 		}
-		// 下午的跨部门协同（无 corr 的即时消息）
+		// 下午的跨角色协同（无 corr 的即时消息）
 		noon := day.Add(14 * time.Hour)
 		msgs = append(msgs, demoMsg{
-			ts: noon, sender: "agent:gongbu/main", senderType: "agent", kind: "text", corr: "",
+			ts: noon, sender: "agent:backend/main", senderType: "agent", kind: "text", corr: "",
 			content: "B300-3 节点网卡抖动，已切流；观察 30 分钟。",
 			to:      []string{"agent:hubu/main", demoOwner},
 			payload: map[string]any{"severity": "warn"},
@@ -278,7 +278,7 @@ func buildMessages() []demoMsg {
 		msgs = append(msgs, demoMsg{
 			ts: noon.Add(9 * time.Minute), sender: "agent:hubu/main", senderType: "agent", kind: "text", corr: "",
 			content: "收到，已把流量切到 B300-4，业务无感。",
-			to:      []string{"agent:gongbu/main"},
+			to:      []string{"agent:backend/main"},
 		})
 	}
 	return msgs

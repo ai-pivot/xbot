@@ -83,7 +83,7 @@ export function matchInboxRow(
   return null
 }
 
-/** 发问方展示名：部门名优先，其次角色名，最后才是会话 id。 */
+/** 发问方展示名：子代理名优先，其次角色名，最后才是会话 id。 */
 export function askerOf(m: StructuredMessage): string {
   const p = (m.payload ?? {}) as Record<string, unknown>
   const dept = typeof p.department === 'string' ? p.department.trim() : ''
@@ -96,8 +96,8 @@ export function askerOf(m: StructuredMessage): string {
     if (typeof v === 'string' && v.trim()) return v.trim()
   }
   const id = (m.sender?.id ?? '').replace('agent:', '')
-  if (!id) return '某个部门'
-  return id.split('/')[0].split(':')[0] || '某个部门'
+  if (!id) return '某个子代理'
+  return id.split('/')[0].split(':')[0] || '某个子代理'
 }
 
 /** 一条提问的「是什么事」摘要：第一个问题 > 正文首行 > 明确说没有背景。 */

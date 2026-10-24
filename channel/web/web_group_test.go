@@ -29,9 +29,9 @@ func TestHandleGroupMessages_SeedShapedData(t *testing.T) {
 	seed := []struct {
 		kind, corr, sender, name, content string
 	}{
-		{"decision", "corr_1", "web-1", "首辅", "今日议题：B300 集群吞吐"},
-		{"ask_user", "corr_1", "web-1", "首辅", "是否需要扩到 16 卡？"},
-		{"answer", "corr_1", "hubu/main", "户部", "暂不扩容"},
+		{"decision", "corr_1", "web-1", "顶层会话", "今日议题：B300 集群吞吐"},
+		{"ask_user", "corr_1", "web-1", "顶层会话", "是否需要扩到 16 卡？"},
+		{"answer", "corr_1", "hubu/main", "data", "暂不扩容"},
 	}
 	for i, s := range seed {
 		_, err := svc.AppendGroupMessage(tenantID, llm.ChatMessage{
@@ -93,7 +93,7 @@ func TestHandleGroupMessages_SeedShapedData(t *testing.T) {
 	}
 	first := resp.Data.Items[0]
 	if first.Kind != "decision" || first.CorrelationID != "corr_1" ||
-		first.SenderName != "首辅" || first.Content != "今日议题：B300 集群吞吐" {
+		first.SenderName != "顶层会话" || first.Content != "今日议题：B300 集群吞吐" {
 		t.Fatalf("first item = %+v", first)
 	}
 	if len(first.To) != 1 || first.To[0] != "agent:hubu/main" {

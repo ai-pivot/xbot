@@ -99,7 +99,7 @@ func TestMemoryDBDoesNotLock(t *testing.T) {
 	_ = b.Close()
 }
 
-// TestDoubleCloseKeepsLockForOtherHandles — D-01 回归（2026-10-22 门下省实证）。
+// TestDoubleCloseKeepsLockForOtherHandles — D-01 回归（2026-10-22 审计实证）。
 //
 // 判据必须看**子进程的错误内容**，只看 exit code 没有判别力：
 // 子进程可能因别的原因失败，那样"删掉 CAS 测试仍绿"。

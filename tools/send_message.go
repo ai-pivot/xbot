@@ -67,7 +67,7 @@ type SendMessageParams struct {
 	Message string `json:"message" jsonschema:"required,description=Message content to send"`
 
 	// 结构化消息（可选）。kind 缺省即普通文本，行为与旧版完全一致。
-	// kind != text 时走 StructureAppend：落库 + CAS（批红/回答），不做普通投递。
+	// kind != text 时走 StructureAppend：落库 + CAS（批复/回答），不做普通投递。
 	Kind           string `json:"kind,omitempty"`
 	Payload        string `json:"payload,omitempty"`
 	ReplyTo        string `json:"reply_to,omitempty"`
@@ -78,8 +78,8 @@ func (t *SendMessageTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{Name: "to", Type: "string", Description: "Target address (agent:xxx, group:xxx, peer:xxx, session:xxx, feishu:xxx)", Required: true},
 		{Name: "message", Type: "string", Description: "Message content to send. For groups, use @agent:role/instance to trigger specific agents.", Required: true},
-		{Name: "kind", Type: "string", Description: "Optional structured kind: report | ask_user | answer | decision. Omit or 'text' for a plain message. Use kind=decision to approve/reject (批红) an existing report/ask_user — then payload must contain {\"verdict\":\"approve|reject|modify\"} and reply_to must be the target message_id. " +
-			"When kind=ask_user, the `message` field MUST carry the FULL context the user needs to decide — the user sees ONLY this message and the questions, nothing else (no chat history, no tool output). Write it as a self-contained briefing: (a) what triggered this question, (b) the concrete facts/numbers/paths involved, (c) what each option will cause, (d) what happens if the user picks nothing. Example: '工部盘库发现 b300-9 根盘 97%（剩 6.6G），/tmp 下有 4 个 9 月实验副本共 77G 已导出 patch。A=立即删实验副本释放 77G；B=等今晚低峰再做。不做则明早可能写满触发告警。' A bare question without this context is a defect — the user will not be able to answer it."},
+		{Name: "kind", Type: "string", Description: "Optional structured kind: report | ask_user | answer | decision. Omit or 'text' for a plain message. Use kind=decision to approve/reject (批复) an existing report/ask_user — then payload must contain {\"verdict\":\"approve|reject|modify\"} and reply_to must be the target message_id. " +
+			"When kind=ask_user, the `message` field MUST carry the FULL context the user needs to decide — the user sees ONLY this message and the questions, nothing else (no chat history, no tool output). Write it as a self-contained briefing: (a) what triggered this question, (b) the concrete facts/numbers/paths involved, (c) what each option will cause, (d) what happens if the user picks nothing. Example: 'backend盘库发现 b300-9 根盘 97%（剩 6.6G），/tmp 下有 4 个 9 月实验副本共 77G 已导出 patch。A=立即删实验副本释放 77G；B=等今晚低峰再做。不做则明早可能写满触发告警。' A bare question without this context is a defect — the user will not be able to answer it."},
 		{Name: "payload", Type: "string", Description: "Optional JSON object string carrying the structured body, e.g. {\"summary\":\"...\"} for report, {\"questions\":[...]} for ask_user, {\"verdict\":\"approve\",\"comment\":\"...\"} for decision."},
 		{Name: "reply_to", Type: "string", Description: "Required for kind=decision: the message_id being approved/rejected."},
 		{Name: "idempotency_key", Type: "string", Description: "Optional. Same key twice = only one row (safe against double-clicks / retries)."},
@@ -141,7 +141,7 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 // 不做普通文本投递。三处硬约束：
 //  1. kind=decision 必须带 reply_to（要批的目标 message_id）；
 //  2. **禁止落到自身会话**：decision 是可投递（deliverable）的，落回自己会话会
-//     把发起者再触发一轮，形成自激循环。首辅批红必须打到部门会话。
+//     把发起者再触发一轮，形成自激循环。主会话批复必须打到目标会话。
 //  3. sender 记 ctx.OriginUserID（终端用户），用于审计"谁批的"。
 func (t *SendMessageTool) sendStructured(ctx *ToolContext, addr, kind string, p SendMessageParams) (*ToolResult, error) {
 	fn := structuredAppend()
@@ -166,10 +166,10 @@ func (t *SendMessageTool) sendStructured(ctx *ToolContext, addr, kind string, p 
 
 	// 身份：子代理记成 "agent:<role>:<instance>"，主会话记成终端用户。
 	//
-	// 判据用 SessionKey 而不是 ctx.AgentID —— 兵部审计（2026-10-22）指出
+	// 判据用 SessionKey 而不是 ctx.AgentID —— 安全审计（2026-10-22）指出
 	// AgentID 在 interactive 会话里来自 msg.ParentAgentID，只有 spawn 那一次
 	// 赋值，后续 SendMessage 进来时大概率是空串，于是 sender 回落成 web-4，
-	// 导致「首辅在网页批红」被自批规则误杀、而「首辅走工具批红」却能过。
+	// 导致「顶层会话在网页批复」被自批规则误杀、而「顶层会话走工具批复」却能过。
 	// SessionKey 形如 "agent:web:web-4/team.ops:main"，角色段总是存在。
 	sender := ""
 	if ctx != nil {
@@ -210,7 +210,7 @@ func (t *SendMessageTool) sendStructured(ctx *ToolContext, addr, kind string, p 
 	}
 	switch kind {
 	case "decision":
-		return NewResult(fmt.Sprintf("批红已提交：decision #%d → 目标 #%s（%s:%s）%s", id, replyTo, channel, chatID, note)), nil
+		return NewResult(fmt.Sprintf("批复已提交：decision #%d → 目标 #%s（%s:%s）%s", id, replyTo, channel, chatID, note)), nil
 	case "answer":
 		return NewResult(fmt.Sprintf("回答已提交：answer #%d（%s:%s）%s", id, channel, chatID, note)), nil
 	default:
@@ -240,7 +240,7 @@ func structuredTarget(addr string) (channel, chatID string, err error) {
 	}
 	ch, chat := parseAddress(addr)
 	if chat == "" {
-		return "", "", fmt.Errorf("invalid address %q: structured messages need a concrete session, e.g. agent:gongbu/main or session:web:chat_X", addr)
+		return "", "", fmt.Errorf("invalid address %q: structured messages need a concrete session, e.g. agent:backend/main or session:web:chat_X", addr)
 	}
 	return ch, chat, nil
 }

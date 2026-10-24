@@ -9,10 +9,10 @@ func TestInteractiveAgentRegistry(t *testing.T) {
 	svc := NewInteractiveAgentService(db.Conn())
 
 	parent := InteractiveAgentRecord{
-		AgentKey:      "agent:gongbu/main",
+		AgentKey:      "agent:backend/main",
 		ParentChannel: "web",
 		ParentChatID:  "chat_1",
-		RoleName:      "gongbu",
+		RoleName:      "backend",
 		Instance:      "main",
 		Task:          "部署 PPU",
 		Background:    true,
@@ -27,7 +27,7 @@ func TestInteractiveAgentRegistry(t *testing.T) {
 	}
 
 	// 幂等：同 key 再写一次不应产生第二行，且 created_at 保留。
-	first, err := svc.Get("agent:gongbu/main")
+	first, err := svc.Get("agent:backend/main")
 	if err != nil {
 		t.Fatalf("get parent: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestInteractiveAgentRegistry(t *testing.T) {
 	if err := svc.Upsert(parent); err != nil {
 		t.Fatalf("re-upsert: %v", err)
 	}
-	second, err := svc.Get("agent:gongbu/main")
+	second, err := svc.Get("agent:backend/main")
 	if err != nil {
 		t.Fatalf("get parent again: %v", err)
 	}
@@ -46,11 +46,11 @@ func TestInteractiveAgentRegistry(t *testing.T) {
 		t.Errorf("status = %q, want running", second.Status)
 	}
 
-	// 孙代理：parent 是 (agent, "gongbu/main")
+	// 孙代理：parent 是 (agent, "backend/main")
 	grand := InteractiveAgentRecord{
 		AgentKey:      "agent:coder/1",
 		ParentChannel: "agent",
-		ParentChatID:  "gongbu/main",
+		ParentChatID:  "backend/main",
 		RoleName:      "coder",
 		Instance:      "1",
 		Status:        InteractiveAgentIdle,
@@ -64,10 +64,10 @@ func TestInteractiveAgentRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list children: %v", err)
 	}
-	if len(children) != 1 || children[0].AgentKey != "agent:gongbu/main" {
-		t.Fatalf("children = %+v, want exactly agent:gongbu/main", children)
+	if len(children) != 1 || children[0].AgentKey != "agent:backend/main" {
+		t.Fatalf("children = %+v, want exactly agent:backend/main", children)
 	}
-	grandChildren, err := svc.ListChildAgents("agent", "gongbu/main")
+	grandChildren, err := svc.ListChildAgents("agent", "backend/main")
 	if err != nil {
 		t.Fatalf("list grandchildren: %v", err)
 	}
@@ -83,25 +83,25 @@ func TestInteractiveAgentRegistry(t *testing.T) {
 	if n != 1 {
 		t.Errorf("marked %d rows, want 1", n)
 	}
-	after, _ := svc.Get("agent:gongbu/main")
+	after, _ := svc.Get("agent:backend/main")
 	if after.Status != InteractiveAgentInterrupted {
 		t.Errorf("status = %q, want interrupted", after.Status)
 	}
 
 	// MarkStatus 只改状态与 turn_id。
-	if err := svc.MarkStatus("agent:gongbu/main", InteractiveAgentRunning, 42); err != nil {
+	if err := svc.MarkStatus("agent:backend/main", InteractiveAgentRunning, 42); err != nil {
 		t.Fatalf("mark status: %v", err)
 	}
-	after, _ = svc.Get("agent:gongbu/main")
+	after, _ = svc.Get("agent:backend/main")
 	if after.Status != InteractiveAgentRunning || after.TurnID != 42 {
 		t.Errorf("status=%q turn=%d, want running/42", after.Status, after.TurnID)
 	}
 
 	// 级联 unload：父 + 孙一起变 unloaded（递归 CTE）。
-	if err := svc.MarkUnloadedCascade("agent:gongbu/main"); err != nil {
+	if err := svc.MarkUnloadedCascade("agent:backend/main"); err != nil {
 		t.Fatalf("cascade unload: %v", err)
 	}
-	for _, key := range []string{"agent:gongbu/main", "agent:coder/1"} {
+	for _, key := range []string{"agent:backend/main", "agent:coder/1"} {
 		rec, err := svc.Get(key)
 		if err != nil {
 			t.Fatalf("get %s: %v", key, err)
@@ -142,10 +142,10 @@ func TestMarkOrphanedIdleUnloaded(t *testing.T) {
 		t.Fatalf("upsert zombie: %v", err)
 	}
 	// B：可恢复 —— 会话租户还在，重启后 restoreInteractiveTree 会重建它。
-	if err := svc.Upsert(rec("agent:team.sili/main", "chat_1", "team.sili", "main", InteractiveAgentIdle)); err != nil {
+	if err := svc.Upsert(rec("agent:team.ops/main", "chat_1", "team.ops", "main", InteractiveAgentIdle)); err != nil {
 		t.Fatalf("upsert restorable: %v", err)
 	}
-	if _, err := tenants.GetOrCreateTenantID("agent", "web:chat_1/team.sili:main"); err != nil {
+	if _, err := tenants.GetOrCreateTenantID("agent", "web:chat_1/team.ops:main"); err != nil {
 		t.Fatalf("create tenant for restorable: %v", err)
 	}
 	// C：running 行（上一个进程遗留）—— 不归本函数管。
@@ -175,7 +175,7 @@ func TestMarkOrphanedIdleUnloaded(t *testing.T) {
 
 	want := map[string]string{
 		"agent:explore/zombie-1":   InteractiveAgentUnloaded,
-		"agent:team.sili/main":     InteractiveAgentIdle, // 会话还在：必须保留
+		"agent:team.ops/main":      InteractiveAgentIdle, // 会话还在：必须保留
 		"agent:explore/legacy-run": InteractiveAgentRunning,
 		"agent:simple/":            InteractiveAgentIdle, // 会话还在：必须保留
 		"agent:explore/live-1":     InteractiveAgentUnloaded,

@@ -258,14 +258,14 @@ func (db *DB) historyLock(tenantID int64) *sync.Mutex {
 // class of event that lost ~2 minutes of committed writes on 2026-09-17.
 func (db *DB) Close() error {
 	// 幂等：同一 handle 被 Close 两次时，不得再减一次引用计数。
-	// 2026-10-22 都察院 D-01 实证：Open 两次 → a.Close() 两次 → b 还活着，
+	// 2026-10-22 审计 D-01 实证：Open 两次 → a.Close() 两次 → b 还活着，
 	// 但锁已 LOCK_UN，子进程成功开库（正是 10-21 事故要拦的那一步）。
 	if !db.closed.CompareAndSwap(false, true) {
 		return nil
 	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	// D-02（2026-10-22 门下省）：conn.Close() 失败时也必须释放锁并清空 conn。
+	// D-02（2026-10-22 审计）：conn.Close() 失败时也必须释放锁并清空 conn。
 	// 旧实现错误路径直接 return，而 closed 已置 true ⇒ 再次 Close 直接返回 nil，
 	// 引用计数永久泄漏、锁永不释放（比不修更糟）。
 	var closeErr error

@@ -16,7 +16,7 @@ func TestGroupService_CreateListMembers(t *testing.T) {
 	ctx := context.Background()
 
 	g, err := svc.CreateGroup(ctx, "grp_test_1", "团队晨会", "web-1",
-		[]string{"agent:hubu/main", "agent:gongbu/main", "agent:hubu/main"})
+		[]string{"agent:hubu/main", "agent:backend/main", "agent:hubu/main"})
 	if err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestGroupService_CreateListMembers(t *testing.T) {
 		t.Fatalf("duplicate create error = %v, want ErrGroupExists", err)
 	}
 
-	groups, err := svc.ListGroupsFor(ctx, "agent:gongbu/main")
+	groups, err := svc.ListGroupsFor(ctx, "agent:backend/main")
 	if err != nil {
 		t.Fatalf("ListGroupsFor: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestGroupMessages_AppendAndCursor(t *testing.T) {
 		}, GroupMessageEnvelope{
 			GroupID: "grp_test_1", Kind: kind, CorrelationID: fmt.Sprintf("corr_%d", i/3),
 			To: []string{"agent:hubu/main"}, Payload: map[string]any{"i": i},
-			SenderType: "agent", SenderID: "hubu/main", SenderName: "户部",
+			SenderType: "agent", SenderID: "hubu/main", SenderName: "data",
 		})
 		if err != nil {
 			t.Fatalf("AppendGroupMessage %d: %v", i, err)
@@ -123,7 +123,7 @@ func TestGroupMessages_AppendAndCursor(t *testing.T) {
 	if rows[0].Kind != "ask_user" || rows[1].Kind != "answer" {
 		t.Fatalf("kinds = %q %q", rows[0].Kind, rows[1].Kind)
 	}
-	if rows[0].SenderName != "户部" || rows[0].Payload["i"] != float64(6) {
+	if rows[0].SenderName != "data" || rows[0].Payload["i"] != float64(6) {
 		t.Fatalf("envelope lost: %+v", rows[0])
 	}
 

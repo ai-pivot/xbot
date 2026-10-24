@@ -35,7 +35,7 @@ export function StructuredWorkspace() {
   }
 
   return (
-    <div data-testid="structured-workspace" className="flex h-full min-h-0">
+    <div data-testid="structured-workspace" className="flex h-full min-h-0 flex-col md:flex-row">
       <StructuredMessageStream
         messages={state.messages}
         loading={state.loading}
@@ -50,6 +50,7 @@ export function StructuredWorkspace() {
         loading={state.inboxLoading}
         error={state.inboxError}
         onAnswer={state.answer}
+        onDecide={state.decide}
         onRefresh={() => void state.refreshInbox()}
       />
     </div>

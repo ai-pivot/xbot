@@ -23,7 +23,7 @@ import (
 // 直接走 inbound 队列开启新 turn。
 
 const (
-	// StructuredPriorityHigh 用户明确回答/批红。
+	// StructuredPriorityHigh 用户明确回答/批复。
 	StructuredPriorityHigh = 100
 	// StructuredPriorityNormal 用户普通插话。
 	StructuredPriorityNormal = 10

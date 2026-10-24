@@ -12,9 +12,9 @@ import (
 // **逻辑地址**（Dispatcher 用），而子代理真正的会话 key 是
 // interactiveKey(父channel, 父chatID, role, instance) =
 // `web:web-4/tester:task-verify`。之前直接把逻辑地址当 chatID 传给
-// GetOrCreateSession，于是每次批红都会**新建一个空壳会话**把消息写进去——
+// GetOrCreateSession，于是每次批复都会**新建一个空壳会话**把消息写进去——
 // 实测：`agent:1a/tester_task-verify-*.db` 里躺着 report+decision 两行，
-// 而工部真实的会话一条都收不到。批红等于凭空蒸发。
+// 而backend真实的会话一条都收不到。批复等于凭空蒸发。
 //
 // 因此这里做严格解析：内存注册表 → 持久化注册表（parent_channel/parent_chat_id
 // + role + instance 重建）；解析不到就返回空串，由调用方**直接报错**，
@@ -22,7 +22,7 @@ import (
 //
 // D-10（2026-10-22）：解析必须带**调用方作用域**。原先无条件按 role/instance
 // 全局解析 —— 任何会话都能凭 `agent:<role>/<instance>` 打到别人的子代理会话
-// （web-5 可以把 report/decision 投进 web-4 名下的部门会话）。现在解析出的目标
+// （web-5 可以把 report/decision 投进 web-4 名下的目标会话）。现在解析出的目标
 // 必须挂在调用方名下（按 parentKey 过滤）；父不匹配、同名多命中、根本解析不出来
 // 一律返回空串 + 错误：宁可失败，不许猜。
 
@@ -95,7 +95,7 @@ func joinScopeForms(forms map[string]struct{}) string {
 //   - 父作用域：物理 key 里字面写着的父段（parseInteractiveKeyParent），
 //     以及 ia.parentKey（bgParentKey / spawn 回落写进去的那份）；
 //   - 自身 key：候选会话自己的 base（scopeForms 传空 channel 即"就用它当 base"），
-//     供子树前缀判定使用（首辅寻址司礼监名下的六部时，六部 key 本身就在前缀里）。
+//     供子树前缀判定使用（顶层会话寻址调度方名下的子代理组时，子代理组 key 本身就在前缀里）。
 //
 // 几种写法都可能不同，任一命中调用方作用域即算「在作用域内」。
 func candidateScopeForms(physicalKey, parentKey string) map[string]struct{} {
@@ -122,13 +122,13 @@ func candidateScopeForms(physicalKey, parentKey string) map[string]struct{} {
 // subtreePrefixes 返回调用方的**整棵子树**前缀；**只在调用方是顶层会话时非空**。
 //
 // 为什么必须有它（2026-10-22 用户拍板，这是阻断性缺陷而不是"边界"）：
-// 分层改造后由司礼监 spawn 六部，六部的物理 key 是
-// `agent:web:web-4/team.lead:main/team.backend:main` —— 它既不是首辅的直接子级，
-// 也不在"首辅的直接上级那一层"（首辅根本没有上级，rootForms 为空）里。
-// 只靠 callerScope+rootForms 的话，首辅给六部发批红/催办会被**全部挡住**，
-// 批红链路直接断。
+// 分层改造后由调度方 spawn 子代理组，子代理组的物理 key 是
+// `agent:web:web-4/team.lead:main/team.backend:main` —— 它既不是顶层会话的直接子级，
+// 也不在"顶层会话的直接上级那一层"（顶层会话没有上级，rootForms 为空）里。
+// 只靠 callerScope+rootForms 的话，顶层会话给子代理组发批复/催办会被**全部挡住**，
+// 批复链路直接断。
 //
-// 语义：调用方是顶层会话（首辅）时，**整棵子树都可寻址**（整棵树都属于同一个团队）；
+// 语义：调用方是顶层会话（顶层会话）时，**整棵子树都可寻址**（整棵树都属于同一个团队）；
 // 仍然禁止跨顶层会话（web:web-5、别的用户 一律拒）。
 // interactive 调用方（channel=="agent"）不启用前缀判定：它自己的子树已由
 // callerScope + 直接上级那一层（rootForms）精确覆盖，放开前缀会把"兄弟会话名下的
@@ -184,13 +184,13 @@ func isPhysicalInteractiveKey(s string) bool {
 //
 // 作用域口径（2026-10-22 用户拍板）：同一顶层会话（如 web:web-4）的子树内可互发；
 // 跨顶层会话（web-5、别的用户）一律拒。具体三种情形：
-//   - 顶层调用方（首辅 web:web-4）：**整棵子树**都可寻址（subtreePrefixes）——
-//     分层改造后六部挂在司礼监下面，不是直接子级，否则批红链路会断；
-//   - interactive 调用方（部门）：自己 + 直接上级那一层（callerScope + rootForms）；
+//   - 顶层调用方（顶层会话 web:web-4）：**整棵子树**都可寻址（subtreePrefixes）——
+//     分层改造后子代理组挂在调度方下面，不是直接子级，否则批复链路会断；
+//   - interactive 调用方（子代理）：自己 + 直接上级那一层（callerScope + rootForms）；
 //   - 一律不许跨顶层会话。
 //
 // **注意：地址里没有组织关系，这里不校验层级** ——「只向上报、不许平级串」靠
-// CHARTCHECK 纪律 + 都察院抽查，不靠这段代码。
+// CHARTCHECK 纪律 + 审计抽查，不靠这段代码。
 func (a *Agent) ResolveStructuredTarget(callerChannel, callerChatID, channel, chatID string) (string, error) {
 	if channel != "agent" {
 		return chatID, nil
@@ -201,19 +201,19 @@ func (a *Agent) ResolveStructuredTarget(callerChannel, callerChatID, channel, ch
 	}
 
 	// 同一顶层会话的子树内可互发（D-10 放宽，2026-10-22 用户拍板）：
-	// CHARTER §10 要求六部 → 司礼监汇报，而结构化消息是唯一可批红的通道 ——
-	// 严格「只认直接父会话」会让分层治理和批红互斥，没有第三条路。
+	// 分层汇报要求子代理把结论上报给上层会话，而结构化消息是唯一可批复的通道 ——
+	// 严格「只认直接父会话」会让分层治理和批复互斥，没有第三条路。
 	// 因此作用域 = 调用方自身 + **它的直接上级所在的那一层**（rootForms）。
 	// 语义定死：同一顶层会话（如 web:web-4）的子树内可互发；跨顶层会话
 	// （web-5、别的用户）一律拒。地址里没有组织关系，所以这里**不校验层级**：
-	// 「只向上报、不许平级串」靠 CHARTCHECK 纪律 + 都察院抽查，不靠地址校验。
-	// 顶层调用方（首辅 web:web-4）没有上级 → rootForms 为空，等价于只到直接子级。
+	// 「只向上报、不许平级串」靠 CHARTCHECK 纪律 + 审计抽查，不靠地址校验。
+	// 顶层调用方（顶层会话 web:web-4）没有上级 → rootForms 为空，等价于只到直接子级。
 	rootForms := map[string]struct{}{}
 	if pch, pchat := parseInteractiveKeyParent(callerChatID); pch != "" && pchat != "" {
 		rootForms = scopeForms(pch, pchat)
 	}
-	// 顶层调用方（首辅）额外覆盖**整棵子树**：分层改造后六部挂在司礼监下面，
-	// 不是首辅的直接子级，只靠 rootForms 会让批红/催办全被挡（见 subtreePrefixes）。
+	// 顶层调用方（顶层会话）额外覆盖**整棵子树**：分层改造后子代理组挂在调度方下面，
+	// 不是顶层会话的直接子级，只靠 rootForms 会让批复/催办全被挡（见 subtreePrefixes）。
 	subtree := subtreePrefixes(callerChannel, callerChatID)
 	inScope := func(forms map[string]struct{}) bool {
 		return scopeIntersects(forms, callerScope) ||

@@ -23,6 +23,7 @@ import { useTerminal } from '@/hooks/useTerminal'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
 import { ChannelPicker } from '@/components/session/ChannelPicker'
+import { InboxEntry } from '@/components/panel/InboxEntry'
 import { SessionSearch, SessionSearchToggle } from '@/components/session/SessionSearch'
 import { SessionViewBar } from '@/components/session/SessionViewBar'
 import { useSessionSelection } from '@/hooks/useSessionSelection'
@@ -278,7 +279,14 @@ const BUILTIN_PANELS: PanelDefinition[] = [
     render: (ctx) => <CoreSessionsPanel ctx={ctx} />,
     // 渠道下拉放**标题行**（用户 2026-09-15：「要放 sessions 那一行，你放下面太挤了」）——
     // 面板主体工具条只留「新建会话 + 搜索」。
-    headerExtra: () => <ChannelPicker className="max-w-[6.5rem]" />,
+    // 收件箱入口也放标题行：/structured 原本只有任务面板里的入口，而任务面板
+    // 默认不展开 ⇒ 默认布局里根本点不到（2026-10-24 验收实测 0 个入口）。
+    headerExtra: () => (
+      <div className="flex items-center gap-1">
+        <InboxEntry />
+        <ChannelPicker className="max-w-[6rem]" />
+      </div>
+    ),
     source: 'core',
   },
   {

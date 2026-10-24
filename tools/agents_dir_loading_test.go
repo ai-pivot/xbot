@@ -27,7 +27,7 @@ func writeMD(t *testing.T, path, content string) {
 func TestLoadAgentRoles_Namespaced(t *testing.T) {
 	root := t.TempDir()
 	writeMD(t, filepath.Join(root, "flat.md"), "---\nname: flat\ndescription: d\n---\nbody")
-	writeMD(t, filepath.Join(root, "team", "gongbu.md"), "---\nname: gongbu\ndescription: d\n---\nbody")
+	writeMD(t, filepath.Join(root, "team", "backend.md"), "---\nname: backend\ndescription: d\n---\nbody")
 	writeMD(t, filepath.Join(root, "proj", "xbot", "dev.md"), "---\nname: dev\ndescription: d\n---\nbody")
 
 	roles, err := LoadAgentRoles(root)
@@ -38,7 +38,7 @@ func TestLoadAgentRoles_Namespaced(t *testing.T) {
 	for _, r := range roles {
 		got[r.Name] = true
 	}
-	for _, want := range []string{"flat", "team.gongbu", "proj.xbot.dev"} {
+	for _, want := range []string{"flat", "team.backend", "proj.xbot.dev"} {
 		if !got[want] {
 			t.Fatalf("missing role %q; got %v", want, got)
 		}
@@ -60,7 +60,7 @@ tools:
   - Read
 model: balance
 rules:
-  - team/CHARTER.md
+  - team/RULES.md
   - /abs/extra.md
 ---
 body`)
@@ -76,7 +76,7 @@ body`)
 	if r.Name != "team.x" {
 		t.Fatalf("name = %q", r.Name)
 	}
-	if len(r.Rules) != 2 || r.Rules[0] != "team/CHARTER.md" || r.Rules[1] != "/abs/extra.md" {
+	if len(r.Rules) != 2 || r.Rules[0] != "team/RULES.md" || r.Rules[1] != "/abs/extra.md" {
 		t.Fatalf("rules = %#v", r.Rules)
 	}
 	if len(r.AllowedTools) != 1 || r.AllowedTools[0] != "Read" {
@@ -90,9 +90,9 @@ func TestAppendRoleRules(t *testing.T) {
 	xbotHomeDir = home
 	t.Cleanup(func() { xbotHomeDir = old })
 
-	writeMD(t, filepath.Join(home, "team", "CHARTER.md"), "# 条例\n不许重启服务。")
+	writeMD(t, filepath.Join(home, "team", "RULES.md"), "# 条例\n不许重启服务。")
 
-	role := &SubAgentRole{Name: "team.x", SystemPrompt: "我是X", Rules: []string{"team/CHARTER.md", "team/missing.md"}}
+	role := &SubAgentRole{Name: "team.x", SystemPrompt: "我是X", Rules: []string{"team/RULES.md", "team/missing.md"}}
 	out := appendRoleRules(nil, role)
 	if !strings.Contains(out, "我是X") || !strings.Contains(out, "不许重启服务") {
 		t.Fatalf("rules not injected: %q", out)
@@ -112,8 +112,8 @@ func TestAppendRoleRules(t *testing.T) {
 // spawn/send 交互子代理的调用点都必须走 appendRoleRules。
 //
 // 背景：首版只改了 tools/subagent.go，漏掉 tools/create_chat.go 的 4 处
-// （CreateChat 的 agent 类型与 group 类型），于是「靠 CreateChat 起的部门
-// 不读 CHARTER」。这种漏改不会编译失败、单测也不会红，只能靠源码级断言兜。
+// （CreateChat 的 agent 类型与 group 类型），于是「靠 CreateChat 起的子代理
+// 不读规则文件」。这种漏改不会编译失败、单测也不会红，只能靠源码级断言兜。
 func TestAllSpawnCallSitesInjectRoleRules(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -147,12 +147,12 @@ func TestAllSpawnCallSitesInjectRoleRules(t *testing.T) {
 	}
 }
 
-// TestResolveRoleRulePath — 2026-10-22 兵部审计：rules 不能越界读任意文件。
+// TestResolveRoleRulePath — 2026-10-22 安全审计：rules 不能越界读任意文件。
 func TestResolveRoleRulePath(t *testing.T) {
 	home := t.TempDir()
-	writeMD(t, filepath.Join(home, "team", "CHARTER.md"), "# ok")
+	writeMD(t, filepath.Join(home, "team", "RULES.md"), "# ok")
 
-	if _, err := resolveRoleRulePath(home, "team/CHARTER.md"); err != nil {
+	if _, err := resolveRoleRulePath(home, "team/RULES.md"); err != nil {
 		t.Fatalf("legal rule rejected: %v", err)
 	}
 	for _, bad := range []string{"../.ssh/id_rsa", "/etc/passwd", "team/../../../etc/shadow", ""} {
@@ -177,11 +177,11 @@ func TestResolveRoleRulePath(t *testing.T) {
 func TestLoadAgentRolesSandbox_Namespaced(t *testing.T) {
 	root := t.TempDir()
 	writeMD(t, filepath.Join(root, "flat.md"), "---\nname: flat\ndescription: d\n---\nbody")
-	writeMD(t, filepath.Join(root, "team", "gongbu.md"), `---
-name: gongbu
+	writeMD(t, filepath.Join(root, "team", "backend.md"), `---
+name: backend
 description: d
 rules:
-  - team/CHARTER.md
+  - team/RULES.md
 ---
 body`)
 
@@ -193,15 +193,15 @@ body`)
 	for _, role := range roles {
 		got[role.Name] = role
 	}
-	for _, want := range []string{"flat", "team.gongbu"} {
+	for _, want := range []string{"flat", "team.backend"} {
 		if _, ok := got[want]; !ok {
 			t.Fatalf("missing role %q from sandbox loader; got %v", want, got)
 		}
 	}
-	if rules := got["team.gongbu"].Rules; len(rules) != 1 || rules[0] != "team/CHARTER.md" {
+	if rules := got["team.backend"].Rules; len(rules) != 1 || rules[0] != "team/RULES.md" {
 		t.Fatalf("sandbox-loaded rules = %#v", rules)
 	}
-	if _, ok := got["gongbu"]; ok {
+	if _, ok := got["backend"]; ok {
 		t.Fatal("namespaced role must not also appear unprefixed")
 	}
 }
@@ -214,7 +214,7 @@ body`)
 func TestLoadAgentRoles_SkipsHiddenDirs(t *testing.T) {
 	root := t.TempDir()
 	writeMD(t, filepath.Join(root, "flat.md"), "---\nname: flat\ndescription: d\n---\nbody")
-	writeMD(t, filepath.Join(root, "team", "gongbu.md"), "---\nname: gongbu\ndescription: d\n---\nbody")
+	writeMD(t, filepath.Join(root, "team", "backend.md"), "---\nname: backend\ndescription: d\n---\nbody")
 	// 顶层隐藏目录（模拟 .git）
 	writeMD(t, filepath.Join(root, ".git", "objects", "ab", "cdef.md"), "---\nname: evil\ndescription: d\n---\nbody")
 	// 命名空间内部的隐藏子目录
@@ -237,7 +237,7 @@ func TestLoadAgentRoles_SkipsHiddenDirs(t *testing.T) {
 		for _, r := range roles {
 			got[r.Name] = true
 		}
-		if !got["flat"] || !got["team.gongbu"] {
+		if !got["flat"] || !got["team.backend"] {
 			t.Fatalf("%s: 正常 role 丢失: %v", tc.name, got)
 		}
 		for _, bad := range []string{"evil", ".git.evil", "sneaky", "team..cache.sneaky"} {

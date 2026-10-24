@@ -63,7 +63,7 @@ type ChatMessage struct {
 	GroupID    string `json:"-"`
 	SenderType string `json:"-"` // agent | user | system
 	SenderID   string `json:"-"` // 例如 hubu/main 或 web-1
-	SenderName string `json:"-"` // 可读名（户部 / 用户）
+	SenderName string `json:"-"` // 可读名（data / 用户）
 	// RecordData 是结构化展示元数据（群消息信封：kind / correlation_id / to /
 	// payload）。沿用 session_messages.record_data 列，普通消息恒为空。
 	RecordData string `json:"-"`

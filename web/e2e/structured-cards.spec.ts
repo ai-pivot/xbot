@@ -64,7 +64,7 @@ test.describe('结构化消息卡片', () => {
       kind: 'ask_user',
       correlation_id: corr,
       idempotency_key: `q_${RUN}`,
-      text: `户部请旨：${question}`,
+      text: `data请旨：${question}`,
       payload: {
         questions: [
           {
@@ -87,7 +87,7 @@ test.describe('结构化消息卡片', () => {
     await expect(card).toBeVisible()
     // 行头：HH:mm:ss + kind 徽标 + 发送者。
     // 徽标文案以 web/src/structured/StructuredCards.tsx 的 KIND_META 为准 ——
-    // 81663b9f「去掉团队定制化文案」把 请旨→提问 / 奏折→汇报 / 批红→准·驳·改 之后，
+    // 81663b9f「去掉团队定制化文案」把 请旨→提问 / 报告→汇报 / 批复→准·驳·改 之后，
     // 这里原先的 '请旨' 断言就成了过时口径（CI 实测 2026-10-22：Expected "请旨", Received "提问"）。
     await expect(card.getByTestId('row-time')).toHaveText(/^\d{2}:\d{2}:\d{2}$/)
     await expect(card.getByTestId('kind-badge')).toHaveText('提问')
@@ -101,7 +101,7 @@ test.describe('结构化消息卡片', () => {
     await expect(card.getByRole('radio').first()).toBeDisabled()
   })
 
-  test('report 卡片渲染 + 批红（决策）流程', async ({ page }) => {
+  test('report 卡片渲染 + 批复（决策）流程', async ({ page }) => {
     await login(page)
     const chatID = await newChat(page, 'report')
     const summary = `PPU 扩容已完成 8 节点（${RUN}）`
@@ -113,7 +113,7 @@ test.describe('结构化消息卡片', () => {
       text: summary,
       payload: {
         report_id: `rep_${RUN}`,
-        department: 'gongbu',
+        department: 'backend',
         summary,
         state_ref: 'ops/state/services/gateway.yaml',
         state_sha256: 'deadbeef',
@@ -192,14 +192,14 @@ test.describe('结构化消息卡片', () => {
         kind === 'event'
           ? `#${i} 状态事件 · ${i % 3 === 0 ? '告警' : '心跳'}${i % 5 === 0 ? ' · 节点 b300-5 已回收' : ''}`
           : kind === 'report'
-            ? `#${i} 第 ${i} 份奏折：批量状态汇总`
+            ? `#${i} 第 ${i} 份报告：批量状态汇总`
             : `#${i} 第 ${i} 次请旨：是否继续扩容？`
       const payload =
         kind === 'report'
           ? {
               report_id: `rep_bulk_${i}`,
-              department: 'gongbu',
-              summary: `#${i} 第 ${i} 份奏折：批量状态汇总`,
+              department: 'backend',
+              summary: `#${i} 第 ${i} 份报告：批量状态汇总`,
               evidence: [{ path: `ops/evidence/bulk-${i}.log`, kind: 'log' }],
             }
           : kind === 'ask_user'
@@ -312,7 +312,7 @@ test.describe('结构化消息卡片', () => {
     console.log(`[perf] 1000 条消息首屏渲染 ${elapsed}ms`)
   })
 
-  test('跨端同步：A 端批红/回答，B 端状态与收件箱立即跟上', async ({ browser }) => {
+  test('跨端同步：A 端批复/回答，B 端状态与收件箱立即跟上', async ({ browser }) => {
     // 两个独立浏览器上下文 = 两台设备（各自 cookie / SSE 连接）。
     const ctxA = await browser.newContext()
     const ctxB = await browser.newContext()
@@ -323,7 +323,7 @@ test.describe('结构化消息卡片', () => {
       await login(pageB)
       const chatID = await newChat(pageA, 'xdev')
       const question = `跨端问题（${RUN}）`
-      const summary = `跨端奏折（${RUN}）`
+      const summary = `跨端报告（${RUN}）`
       await postStructured(pageA, chatID, {
         kind: 'ask_user',
         correlation_id: `cor_xdev_q_${RUN}`,
@@ -355,7 +355,7 @@ test.describe('结构化消息卡片', () => {
       const cardB = pageB.getByTestId('report-card').filter({ hasText: summary }).first()
       await expect(cardB.getByText('待决策')).toBeVisible()
 
-      // A 端批红 —— B 端不刷新、不重连，仅靠广播 + 消息流派生。
+      // A 端批复 —— B 端不刷新、不重连，仅靠广播 + 消息流派生。
       const cardA = pageA.getByTestId('report-card').filter({ hasText: summary }).first()
       await cardA.getByTestId('report-approve').click()
       await expect(cardB.getByText('已决策')).toBeVisible({ timeout: 8000 })

@@ -122,7 +122,7 @@ You are a capable agent.
 }
 
 func TestParseFrontmatter_ChineseName(t *testing.T) {
-	fm := `name: 中书省
+	fm := `name: planner
 description: "规划决策中枢"
 capabilities:
   memory: true
@@ -132,8 +132,8 @@ capabilities:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if name != "中书省" {
-		t.Errorf("name = %q, want %q", name, "中书省")
+	if name != "planner" {
+		t.Errorf("name = %q, want %q", name, "planner")
 	}
 	if desc != "规划决策中枢" {
 		t.Errorf("description = %q", desc)
@@ -144,15 +144,15 @@ capabilities:
 }
 
 func TestParseFrontmatter_MixedName(t *testing.T) {
-	fm := `name: 工部-dev_01
+	fm := `name: backend-dev_01
 description: "Mixed CJK and ASCII name"`
 
 	name, _, _, _, _, _, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if name != "工部-dev_01" {
-		t.Errorf("name = %q, want %q", name, "工部-dev_01")
+	if name != "backend-dev_01" {
+		t.Errorf("name = %q, want %q", name, "backend-dev_01")
 	}
 }
 
