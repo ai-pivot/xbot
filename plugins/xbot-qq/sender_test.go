@@ -41,6 +41,10 @@ func (f *fakeMessageAPI) SendGroupMarkdown(_ context.Context, groupOpenID, md, m
 	return f.record(sentCall{kind: "group-markdown", target: groupOpenID, content: md, msgID: msgID, seq: seq})
 }
 
+func (f *fakeMessageAPI) StreamC2C(_ context.Context, userOpenID string, body streamBody) (*SentMessage, error) {
+	return f.record(sentCall{kind: "c2c-stream", target: userOpenID, content: body.ContentRaw, msgID: body.MsgID, seq: body.MsgSeq})
+}
+
 func (f *fakeMessageAPI) record(c sentCall) (*SentMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

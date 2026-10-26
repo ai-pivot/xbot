@@ -23,9 +23,10 @@ package main
 //	6. 断线 → 指数退避重连；op=9 Invalid Session → 丢 token 重取再重连
 //	                                         （opcode.html：9 = identify/resume 参数错）
 //
-// ⚠️ 已知差异（文档有、未实现）：event-emit.html §恢复登录态 Session 要求重连后
-// 发 op=6 Resume（携带 session_id + seq）以补发断线期间遗漏的事件；本实现选择
-// 重连后重新 Identify（会漏掉断线窗口内的事件）。属未完成项，待联调排期。
+// 7. 重连恢复：若持有 session_id，先发 op=6 Resume（携带 session_id + seq）
+//    以补发断线期间遗漏的事件（event-emit.html §恢复登录态 Session）；
+//    op=9 Invalid Session 时清空 session_id 退回 Identify。
+//    实现在 connectOnce 的「Resume 或 Identify」分支，见下方 opResume 注释。
 //
 // 本文件只做生命周期，不解析业务事件（见 events.go 的 ParseInbound）。
 // 所有外部依赖都是接口（TokenSource / Dialer / gatewayURL 函数），

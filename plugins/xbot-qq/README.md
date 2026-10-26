@@ -341,7 +341,8 @@ access_token、同一台机器、同一出口 IP 202.163.9.244）：
 - 事件「相同 msg_id 可能重复推送」的实际频率与去重键（文档在 `msg_seq` / `msg_idx` 之间自相矛盾）；
 - 被动回复超出次数上限（单聊 4 / 群聊 5）后平台的确切行为；
 - 群全量消息 `GROUP_MESSAGE_CREATE` 的开通条件与运营侧审批口径；
-- 断线重连补发：文档要求 `op=6 Resume`，本实现尚未实现（见 `gateway.go` 文件头「已知差异」）。
+- 断线重连补发：**已实现** `op=6 Resume`（携带 session_id + seq 补发断线窗口事件）；
+  `op=9 Invalid Session` 时清空 session_id 退回 Identify（见 `gateway.go` 的 opResume 分支）。
 
 要完成真机联调，需要在 QQ 开放平台后台：
 

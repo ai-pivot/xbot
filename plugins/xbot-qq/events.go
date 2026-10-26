@@ -103,8 +103,17 @@ func (m Inbound) Identity() Identity {
 }
 
 // Valid 报告这条消息是否齐全到可以进 agent。
+// Valid 报告这条入站消息是否可处理。
+//
+// 2026-10-26 修正：图片/语音/文件消息的 content 是**空的**（正文在图/附件里），
+// 旧实现要求 content 非空，导致「发图完全没反应」（日志表现为
+// inbound dropped: ... incomplete (empty content)，用户侧看起来像卡死）。
+// 现在：只要正文非空 **或** 带附件，就算有效；真正的内容由 attachments 注入。
 func (m Inbound) Valid() bool {
-	return m.MessageID != "" && m.SenderOpenID != "" && strings.TrimSpace(m.Content) != ""
+	if m.MessageID == "" || m.SenderOpenID == "" {
+		return false
+	}
+	return strings.TrimSpace(m.Content) != "" || len(m.Attachments) > 0
 }
 
 // eventEnvelope 是业务事件的 d 结构（官方字段名，出处见文件头）。

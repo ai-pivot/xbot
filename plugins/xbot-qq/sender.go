@@ -82,6 +82,8 @@ type MessageAPI interface {
 	// Markdown 变体（msg_type=2）。官方硬约束：此时 content 必须为空。
 	SendC2CMarkdown(ctx context.Context, userOpenID, markdown, msgID string, msgSeq uint32) (*SentMessage, error)
 	SendGroupMarkdown(ctx context.Context, groupOpenID, markdown, msgID string, msgSeq uint32) (*SentMessage, error)
+	// StreamC2C 发一片私聊流式消息（仅私聊；群聊官方无流式接口）。
+	StreamC2C(ctx context.Context, userOpenID string, body streamBody) (*SentMessage, error)
 }
 
 // msgAnchor 记录某个会话最后一条入站消息，用作被动回复锚点。
@@ -96,11 +98,14 @@ type msgAnchor struct {
 type OutboundSender struct {
 	// Markdown 为 true 时用 msg_type=2 发送（客户端渲染 Markdown）。
 	Markdown bool
-	api      MessageAPI
-	now      func() time.Time
-	mu       sync.Mutex
-	seq      map[string]uint32
-	last     map[string]msgAnchor
+	// Stream 为 true 时，**私聊**回复用 stream_messages 分片发送（边生成边显示）。
+	// 群聊没有流式接口，仍走普通 messages。
+	Stream bool
+	api    MessageAPI
+	now    func() time.Time
+	mu     sync.Mutex
+	seq    map[string]uint32
+	last   map[string]msgAnchor
 	// replies 记录每个锚点已用掉的被动回复次数（配额自检用）。
 	replies map[string]uint32
 	// logErr 输出 ERROR 级诊断（配额耗尽等必须留痕）。
@@ -169,6 +174,44 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 	}
 
 	var last *SentMessage
+
+	// ── 私聊流式：把整段回复按片推给 stream_messages ──
+	//
+	// 文档：《发送单聊流式消息》POST /v2/users/{openid}/stream_messages
+	//   input_state 1=生成中，10=结束；index 从 0 递增；
+	//   stream_msg_id 首片由服务端返回，后续分片必须携带；msg_seq 去重。
+	// 群聊没有流式接口，仍然逐条 messages 发送。
+	if s.Stream && userOpenID != "" && groupOpenID == "" {
+		var streamID string
+		for i, chunk := range chunks {
+			body := streamBody{
+				InputMode:   "replace",
+				InputStream: 1,
+				Index:       i,
+				ContentType: streamContentType(s.Markdown),
+				ContentRaw:  chunk,
+				MsgID:       msgID,
+				MsgSeq:      s.nextSeq(chatID, msgID),
+				StreamMsgID: streamID,
+			}
+			if i == len(chunks)-1 {
+				body.InputStream = 10 // 生成结束
+			}
+			sent, err := s.api.StreamC2C(ctx, userOpenID, body)
+			if err != nil {
+				return last, err
+			}
+			last = sent
+			if streamID == "" && sent != nil {
+				streamID = sent.ID
+			}
+		}
+		if msgID != "" {
+			s.countReply(chatID, msgID)
+		}
+		return last, nil
+	}
+
 	for _, chunk := range chunks {
 		seq := s.nextSeq(chatID, msgID)
 		// Markdown 渲染（默认开启）：agent 的输出基本都是 Markdown，
@@ -282,4 +325,12 @@ func splitRunes(s string, limit int) []string {
 		runes = runes[n:]
 	}
 	return out
+}
+
+// streamContentType 映射 content_type（text / markdown）。
+func streamContentType(markdown bool) string {
+	if markdown {
+		return "markdown"
+	}
+	return "text"
 }

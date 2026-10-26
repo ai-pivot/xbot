@@ -41,6 +41,8 @@ const (
 	KeyWSURL = "ws_url"
 	// KeyMarkdown 控制是否用 msg_type=2（Markdown）发送回复，默认开启。
 	KeyMarkdown = "render_markdown"
+	// KeyStream 控制**私聊**回复是否走流式（边生成边显示），默认开启。
+	KeyStream = "stream_c2c"
 )
 
 // Config 是 QQ 渠道的运行时配置。
@@ -65,6 +67,8 @@ type Config struct {
 	WSURL string
 	// Markdown 为 true 时用 msg_type=2 发送（QQ 客户端按 Markdown 渲染）。
 	Markdown bool
+	// Stream 为 true 时私聊回复走 stream_messages 分片发送。
+	Stream bool
 }
 
 // ParseConfig 把 host 推来的字符串键值解析成 Config。
@@ -85,6 +89,10 @@ func ParseConfig(raw map[string]string) Config {
 	if v := get(KeyMarkdown); v != "" {
 		markdown = parseBool(v)
 	}
+	stream := true
+	if v := get(KeyStream); v != "" {
+		stream = parseBool(v)
+	}
 	return Config{
 		Enabled:   parseBool(get(KeyEnabled)),
 		AppID:     get(KeyAppID),
@@ -95,6 +103,7 @@ func ParseConfig(raw map[string]string) Config {
 		Intents:   parseIntents(get(KeyIntents)),
 		WSURL:     get(KeyWSURL),
 		Markdown:  markdown,
+		Stream:    stream,
 	}
 }
 

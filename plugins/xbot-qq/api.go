@@ -321,3 +321,38 @@ func (c *APIClient) SendGroupMarkdown(ctx context.Context, groupOpenID, markdown
 func (c *APIClient) SendC2CMarkdown(ctx context.Context, userOpenID, markdown, msgID string, msgSeq uint32) (*SentMessage, error) {
 	return c.sendMarkdown(ctx, http.MethodPost, "/v2/users/"+userOpenID+"/messages", markdown, msgID, msgSeq)
 }
+
+// ── 私聊流式消息（stream_messages） ──
+//
+// 出处：《发送单聊流式消息》POST /v2/users/{user_openid}/stream_messages
+//
+//	input_mode    append（默认，拼接到 Pending）/ replace（ContentRaw 为全量正文）
+//	input_state   1=生成中，10=生成结束
+//	index         分片序号，从 0 递增
+//	content_type  text / markdown
+//	content_raw   本片内容
+//	msg_id        被动回复消息 ID（与 event_id 二选一）
+//	stream_msg_id 流式消息 ID：**首片由服务端生成并返回**，后续分片必须携带
+//	msg_seq       消息序号，用于去重
+//
+// 说明：群聊没有对应的流式接口（官方只提供 /v2/users/...），因此流式仅用于私聊。
+type streamBody struct {
+	InputMode   string `json:"input_mode,omitempty"`
+	InputStream int    `json:"input_state"`
+	Index       int    `json:"index"`
+	ContentType string `json:"content_type"`
+	ContentRaw  string `json:"content_raw"`
+	MsgID       string `json:"msg_id,omitempty"`
+	MsgSeq      uint32 `json:"msg_seq,omitempty"`
+	StreamMsgID string `json:"stream_msg_id,omitempty"`
+}
+
+// StreamC2C 发送一片私聊流式消息；返回该片（首片即整条流式消息）的 id。
+func (c *APIClient) StreamC2C(ctx context.Context, userOpenID string, body streamBody) (*SentMessage, error) {
+	var out SentMessage
+	path := "/v2/users/" + userOpenID + "/stream_messages"
+	if err := c.do(ctx, "stream_c2c", http.MethodPost, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
