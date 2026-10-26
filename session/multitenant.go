@@ -132,7 +132,7 @@ type MultiTenantSession struct {
 	toolIndexSvc         *vectordb.ToolIndexService
 	recallTimeRangeFn    vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
 	embeddingConfig      *EmbeddingConfig             // for auto-creating archival service
-	memoryProvider       string                       // "flat" or "letta"
+	memoryProvider       string                       // "xbot", "flat", "letta", or "none" (no memory)
 	mu                   sync.RWMutex
 	tenantCache          map[string]*TenantSession // key: "channel:chat_id"
 	dbPath               string
