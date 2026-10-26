@@ -5159,6 +5159,16 @@ func (a *Agent) bgNotifyLoop() {
 			if !ok {
 				return
 			}
+			// ⛔ 2026-10-26「progress 刷屏」bug：
+			// SubAgentBgNotifyProgress 被无条件 buffer + 投递给父会话，而父会话每收到
+			// 一条就会起一轮 Run ⇒ 子代理每迭代一次，父代理就空跑一轮 LLM。
+			// 实测：首辅在 40 秒内被灌了 6 条 progress，间隔 10-20 秒，无限刷。
+			// 进度通知的消费方只有 UI（由 OnIterationSnapshot 的进度回调推送），
+			// 不该进任何 agent 的 LLM 上下文。这里直接丢弃。
+			if n, ok := notif.(*tools.SubAgentBgNotify); ok && n.Type == tools.SubAgentBgNotifyProgress {
+				continue
+			}
+
 			// Always buffer first
 			a.enqueueBgNotification(notif)
 
