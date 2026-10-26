@@ -959,6 +959,11 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 		"total_tokens":      resp.Usage.TotalTokens,
 	}
 	if isNearEmptyResponse(resp) {
+		// Issue #282 note: this (non-streaming) path deliberately keeps
+		// "near-empty == success" — it is NOT a stream, so stream_body_tail
+		// (captured only for text/event-stream bodies) is always empty here.
+		// Returning an error would push deterministic empty completions of the
+		// compression/summarization paths into the RetryLLM chain.
 		addNearEmptyResponseDebugFields(fields, messages, model, tools, thinkingMode)
 		log.Ctx(ctx).WithFields(fields).Warn("[LLM] Request completed with near-empty response")
 	} else {
@@ -1135,6 +1140,12 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	var lastUsage *TokenUsage
 	var lastFinishReason FinishReason
 	var hasToolCalls bool // track if any tool call deltas were seen
+	// hasContent / hasReasoning track whether the provider delivered anything
+	// USEFUL. A stream that yields zero chunks — or only empty deltas — is
+	// indistinguishable from a clean finish once the loop exits (issue #282:
+	// the caller got EventDone and recorded an empty answer as a success).
+	var hasContent bool
+	var hasReasoning bool
 
 	for stream.Next() {
 		select {
@@ -1175,6 +1186,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		for _, choice := range chunk.Choices {
 			// 处理 reasoning_content（DeepSeek/OpenAI reasoning 模型）
 			if reasoningDelta := extractReasoningContentFromDelta(choice.Delta); reasoningDelta != "" {
+				hasReasoning = true
 				select {
 				case eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
@@ -1187,6 +1199,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 
 			// 处理文本内容
 			if choice.Delta.Content != "" {
+				hasContent = true
 				select {
 				case eventChan <- StreamEvent{
 					Type:    EventContent,
@@ -1327,6 +1340,49 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		return
 	}
 
+	// Empty-stream detection (issue #282). Two shapes arrive here with NOTHING
+	// useful delivered: (a) zero chunks — the provider/proxy answered 200
+	// text/event-stream and closed the body without a single event; (b) chunks
+	// that carried no content, no reasoning and no tool call. Both used to fall
+	// through to EventDone, so CollectStreamWithCallback returned (resp, nil)
+	// and the caller reported an empty answer as a SUCCESSFUL turn.
+	//
+	// This is a provider-side failure, so surface it as an error instead:
+	// IsRetryableError() defaults to retry (only context.Canceled /
+	// input-too-long / unsupported-region are exempt), so the existing
+	// RetryLLM chain re-issues the request, and the user only sees a failure
+	// once the whole chain is exhausted.
+	switch classifyFinishedStream(hasContent, hasToolCalls, hasReasoning, ctx.Err()) {
+	case streamEmptyCanceled:
+		// A user cancel must NOT be turned into an "empty stream" error: an
+		// EventError whose text does not wrap context.Canceled counts as
+		// retryable, so it would kick off a retry storm against the user's
+		// intent. When the ctx is done, the consumer already returns ctx.Err()
+		// (context.Canceled), which IsRetryableError refuses to retry.
+		l.WithFields(log.Fields{
+			"provider":    "openai",
+			"chunk_count": chunkCount,
+			"reason":      ctx.Err().Error(),
+		}).Debug("[LLM] Stream ended empty after cancellation — not an error")
+		return
+	case streamEmptyFailed:
+		// Keep the wording ops greps for ("near-empty response"), add the body
+		// tail: for an empty stream the provider's response body is the ONLY
+		// evidence of why (JSON error, HTML gateway page, quota notice).
+		tail, tailBytes := o.streamBodyTailSnapshot()
+		fields := nearEmptyStreamFields(messages, model, tools, thinkingMode, chunkCount, startTime, firstChunkTime, lastFinishReason, tail, tailBytes)
+		l.WithFields(fields).Warn("[LLM] Stream completed with near-empty response")
+		select {
+		case eventChan <- StreamEvent{
+			Type:  EventError,
+			Error: emptyStreamMessage(tail),
+		}:
+		case <-ctx.Done():
+			return
+		}
+		return
+	}
+
 	// BUG 2 fix: 先发 Usage，再发 Done。确保消费方在处理 Done 之前拿到 usage。
 	if lastUsage != nil {
 		select {
@@ -1370,7 +1426,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		"provider":       "openai",
 		"chunk_count":    chunkCount,
 		"total_duration": time.Since(startTime).String(),
-		"ttft":           firstChunkTime.Sub(startTime).String(),
+		"ttft":           streamTTFTString(startTime, firstChunkTime),
 		"finish_reason":  lastFinishReason,
 	}
 	if lastUsage != nil {
@@ -1385,6 +1441,129 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	} else {
 		l.WithFields(fields).Debug("[LLM] Stream completed")
 	}
+}
+
+// streamBodyTailLogRuneLimit bounds the `stream_body_tail` log field. tailReader
+// keeps up to 8192 raw bytes; a gateway HTML error page must not turn one log
+// line into a wall of text.
+const streamBodyTailLogRuneLimit = 512
+
+// streamBodyTailSnapshot returns the captured tail of the last SSE response
+// body, rendered for logging, plus its raw byte size. The bytes are copied
+// under the lock so tailReader (another goroutine) never blocks on the
+// sanitizer.
+func (o *OpenAILLM) streamBodyTailSnapshot() (tail string, size int) {
+	o.streamBodyMu.Lock()
+	raw := append([]byte(nil), o.streamBodyTail...)
+	o.streamBodyMu.Unlock()
+	return sanitizeStreamBodyTail(raw), len(raw)
+}
+
+// sanitizeStreamBodyTail makes raw SSE bytes safe for a single log field:
+// newlines/control characters become visible escapes (so the body cannot split
+// the log line or explode the log volume), invalid UTF-8 is replaced, and the
+// result is bounded to the LAST streamBodyTailLogRuneLimit runes — the tail is
+// where a provider puts its error payload. Truncation may clip an escape
+// sequence at the cut point; that is cosmetic, the bound is not.
+func sanitizeStreamBodyTail(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	s := strings.ToValidUTF8(string(raw), "?")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	runes := []rune(b.String())
+	if len(runes) > streamBodyTailLogRuneLimit {
+		runes = append([]rune("…"), runes[len(runes)-(streamBodyTailLogRuneLimit-1):]...)
+	}
+	return string(runes)
+}
+
+// streamTTFTString renders time-to-first-chunk for logging. A zero
+// firstChunkTime means the stream produced NO chunk at all: Sub() then
+// overflows int64 and prints "-2562047h47m16.854775808s", which reads like a
+// bogus multi-century timeout and has misled incident diagnosis. Emit "n/a"
+// instead (still a string, so the field type never changes between log lines).
+func streamTTFTString(startTime, firstChunkTime time.Time) string {
+	if firstChunkTime.IsZero() {
+		return "n/a"
+	}
+	return firstChunkTime.Sub(startTime).String()
+}
+
+// nearEmptyStreamFields builds the diagnostic log fields for a near-empty (or
+// zero-chunk) stream. Pure — no logging, no locking — so the field set,
+// including the ttft rendering and the bounded body tail, is unit testable
+// (llm/openai_empty_stream_test.go).
+func nearEmptyStreamFields(messages []ChatMessage, model string, tools []ToolDefinition, thinkingMode string, chunkCount int, startTime, firstChunkTime time.Time, lastFinishReason FinishReason, bodyTail string, bodyBytes int) log.Fields {
+	fields := log.Fields{
+		"provider":          "openai",
+		"chunk_count":       chunkCount,
+		"total_duration":    time.Since(startTime).String(),
+		"ttft":              streamTTFTString(startTime, firstChunkTime),
+		"finish_reason":     lastFinishReason,
+		"stream_body_bytes": bodyBytes,
+		"stream_body_tail":  bodyTail,
+	}
+	addNearEmptyResponseDebugFields(fields, messages, model, tools, thinkingMode)
+	return fields
+}
+
+// emptyStreamMessage is the EventError payload for a stream that delivered no
+// content/reasoning/tool call. It carries the captured body tail: when a
+// gateway replies 200 text/event-stream with a JSON error ("content filter",
+// "quota exceeded"), that body is the only evidence of why the stream was
+// empty — without it the log says "empty" and ops cannot tell a silently
+// broken provider from a broken proxy.
+func emptyStreamMessage(bodyTail string) string {
+	const base = "empty stream: provider returned no chunks/content"
+	if bodyTail == "" {
+		return base
+	}
+	return base + " (body tail: " + bodyTail + ")"
+}
+
+// emptyStreamOutcome 是「流已经结束、但一个有用的载荷都没收到」的三种语义。
+type emptyStreamOutcome int
+
+const (
+	// streamHasPayload —— 收到过 content / reasoning / tool call：正常成功路径。
+	streamHasPayload emptyStreamOutcome = iota
+	// streamEmptyCanceled —— 空 + ctx 已结束：用户取消，不是失败，必须静默返回。
+	streamEmptyCanceled
+	// streamEmptyFailed —— 空 + ctx 仍活着：provider 侧故障，报可重试错误。
+	streamEmptyFailed
+)
+
+// classifyFinishedStream 决定「循环退出后什么算空流」（issue #282）。
+//
+// 抽成纯函数是为了让这个判定（尤其是「取消不报错」这条）可以脱离竞态被
+// 单元测试钉死：真实运行中，取消与干净 EOF 的先后顺序不可控——ctx cancel
+// 会让 watcher 先 close 掉 stream，错误就从既有 stream.Err() 分支冒泡，
+// 走不到这里；只有「body 已干净读完 + ctx 恰好已结束」的竞态窗口才落到
+// streamEmptyCanceled。两条路径对消费方都是 context.Canceled（不可重试）。
+func classifyFinishedStream(hasContent, hasToolCalls, hasReasoning bool, ctxErr error) emptyStreamOutcome {
+	if hasContent || hasToolCalls || hasReasoning {
+		return streamHasPayload
+	}
+	if ctxErr != nil {
+		return streamEmptyCanceled
+	}
+	return streamEmptyFailed
 }
 
 func truncateStr(s string, maxLen int) string {

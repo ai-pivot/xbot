@@ -667,6 +667,9 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 	var lastUsage *TokenUsage
 	var lastFinishReason FinishReason
 	hasToolCalls := false
+	// Issue #282 (Responses API 侧同款)：0 事件空流此前同样被当成功。
+	hasContent := false
+	hasReasoning := false
 
 	// Track tool calls by item_id for assembling delta arguments
 	type toolCallState struct {
@@ -724,6 +727,7 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 		case "response.output_text.delta":
 			// Text content delta
 			if event.Delta != "" {
+				hasContent = true
 				eventChan <- StreamEvent{
 					Type:    EventContent,
 					Content: event.Delta,
@@ -733,6 +737,7 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 		case "response.reasoning_text.delta":
 			// Full reasoning text delta — authoritative for this item.
 			if event.Delta != "" {
+				hasReasoning = true
 				reasoningItemHasText[event.ItemID] = true
 				eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
@@ -744,6 +749,7 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			// Reasoning summary delta — skipped when this item already delivered
 			// its full reasoning text (prevents duplicated reasoning).
 			if event.Delta != "" && !reasoningItemHasText[event.ItemID] {
+				hasReasoning = true
 				eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
 					ReasoningContent: event.Delta,
@@ -902,6 +908,24 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 		eventChan <- StreamEvent{
 			Type:  EventError,
 			Error: err.Error(),
+		}
+		return
+	}
+
+	// Empty-stream detection (issue #282, 与 chat completions 路径同构)：provider/
+	// 代理可能回 200 text/event-stream 却一个事件都不发就关掉 body，或只发不带
+	// 文本/推理/工具调用的空事件。此前一律落到 EventDone → 消费方当成功。
+	switch classifyFinishedStream(hasContent, hasToolCalls, hasReasoning, ctx.Err()) {
+	case streamEmptyCanceled:
+		return
+	case streamEmptyFailed:
+		tail, tailBytes := o.streamBodyTailSnapshot()
+		fields := nearEmptyStreamFields(messages, model, tools, thinkingMode, eventCount, startTime, firstEventTime, lastFinishReason, tail, tailBytes)
+		fields["provider"] = "openai-responses" // helper 默认按 chat completions 打标签，这里覆盖成 API 变体
+		l.WithFields(fields).Warn("[LLM] Stream completed with near-empty response")
+		eventChan <- StreamEvent{
+			Type:  EventError,
+			Error: emptyStreamMessage(tail),
 		}
 		return
 	}
