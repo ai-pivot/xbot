@@ -11,7 +11,7 @@ package main
 //
 // 这是渠道侧的第一道闸门。host 侧另有唯一权威 config.AgentConfig.IsAdminSender
 // （cli/web 恒 admin，其他渠道看 agent.admins）。因此 admin 名单必须在两处口径一致：
-// QQ 号原样写进 config.json 的 agent.admins 与 channels.qq.admins。
+// 同一个 openid 原样写进 config.json 的 agent.admins 与 channels.qq.admins。
 type Policy struct {
 	allow  Patterns
 	admins Patterns

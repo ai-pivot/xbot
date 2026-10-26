@@ -1,4 +1,4 @@
-# xbot-qq — QQ 渠道插件（OneBot v11）
+# xbot-qq — QQ 渠道插件（QQ 官方开放平台 bot.q.qq.com）
 #
 # 零依赖 Go stdio 渠道插件。构建产出独立二进制；`make install` 把二进制与
 # manifest 拷进 xbot 的用户插件目录（安装后需 reload plugins 才生效）。

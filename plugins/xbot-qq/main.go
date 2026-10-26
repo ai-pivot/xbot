@@ -1,4 +1,5 @@
-// Command qq-plugin implements the xbot QQ channel plugin.
+// Command qq-plugin implements the xbot QQ channel plugin — **QQ 官方开放平台**
+// （bot.q.qq.com / q.qq.com）版本，不使用 OneBot / NapCat。
 //
 // 形态：xbot 的 stdio 渠道插件（plugin.json 里 runtime="stdio"）—— 由 host
 // 用 entry 命令拉起一个独立进程，双方用 JSON lines over stdin/stdout 通信
@@ -8,29 +9,21 @@
 //
 //	{"method":"activate","params":{"pluginId":"xbot.qq"}}
 //	{"type":"channel_config","metadata":{"config":"{\"enabled\":\"true\",...}"}}
-//	{"id":"srv-1","method":"channel_send","params":{"chat_id":"...","content":"..."}}
+//	{"type":"text","content":"...","chat_id":"..."}          // 下行回复（真实路径）
+//	{"id":"srv-1","method":"channel_send","params":{...}}    // 兼容旧路径
 //	{"method":"deactivate"}
 //
 // 协议要点（plugin → host）：
 //
-//	{"result":"ok","channel_provider":{"name":"qq","config_schema":[...]}}   // 应答 activate（渠道注册）
-//	{"type":"channel_prompt","system_parts":{"05_channel_qq":"..."}}         // 渠道提示词
-//	{"id":"plugin-1","method":"send_inbound","params":{...}}                 // 入站消息（身份注入）
-//	{"id":"srv-1","result":"..."} | {"id":"srv-1","error":"..."}             // 应答 RPC
-//
-// 阶段状态：
-//
-//	阶段 1（已完成）：协议骨架 + 配置模型 + 白名单/管理员策略
-//	阶段 2（本文件已实现）：渠道注册声明、渠道提示词落盘、身份注入
-//	阶段 3（未开始）：slash 门禁、断线重连、真实 OneBot WS 联调
-//
-// 因此本进程现在**仍不发起任何网络连接**：收不到 QQ 消息，也就不会真的发
-// send_inbound。emitInbound 是已经实装好的真实发送路径，阶段 3 的 WS 读循环
-// 只需要调它。
+//	{"result":"ok","channel_provider":{"name":"qq","config_schema":[...]}}   // 应答 activate
+//	{"type":"channel_prompt","system_parts":{"05_channel_qq":"..."}}          // 渠道提示词
+//	{"id":"plugin-1","method":"send_inbound","params":{...}}                  // 入站消息（openid 身份）
+//	{"id":"srv-1","result":"..."} | {"id":"srv-1","error":"..."}              // 应答 RPC
 package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,11 +31,14 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 func main() {
 	a := newApp(os.Stderr)
-	if err := a.run(os.Stdin, os.Stdout); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := a.run(ctx, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "qq-plugin: fatal: %v\n", err)
 		os.Exit(1)
 	}
@@ -59,6 +55,8 @@ type frame struct {
 	Type     string            `json:"type,omitempty"`
 	Params   json.RawMessage   `json:"params,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
+	Content  string            `json:"content,omitempty"`
+	ChatID   string            `json:"chat_id,omitempty"`
 }
 
 // rpcRequest 是 plugin → host 的 RPC 请求帧（send_inbound 等）。
@@ -94,18 +92,26 @@ type okResponse struct {
 type app struct {
 	mu  sync.RWMutex
 	cfg Config
+	rt  *channelRuntime
 
 	// rpcSeq 生成 plugin → host 的 RPC id（与 examples/echo-channel 的
 	// "plugin-N" 形式一致，便于 host 日志里一眼区分方向）。
 	rpcSeq atomic.Uint64
 
+	// outMu 序列化 stdout 写入：协议读循环与网关事件协程都会写帧，
+	// json.Encoder 本身不是并发安全的。
+	outMu sync.Mutex
+
 	// logw 是诊断输出（stderr）。host 会把它重定向到每插件日志文件，
 	// 所以这里可以自由打；绝不能写 stdout（stdout 只走协议帧）。
 	logw io.Writer
+
+	// newRuntime 可在单测里替换成注入依赖的运行时构造函数。
+	newRuntime func(cfg Config, logf func(string, ...any)) *channelRuntime
 }
 
 func newApp(logw io.Writer) *app {
-	return &app{logw: logw}
+	return &app{logw: logw, newRuntime: newDefaultRuntime}
 }
 
 func (a *app) logf(format string, args ...any) {
@@ -113,6 +119,13 @@ func (a *app) logf(format string, args ...any) {
 		return
 	}
 	fmt.Fprintf(a.logw, "qq-plugin: "+format+"\n", args...)
+}
+
+// write 序列化写一帧到 stdout。
+func (a *app) write(enc *json.Encoder, v any) {
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	_ = enc.Encode(v)
 }
 
 func (a *app) config() Config {
@@ -127,6 +140,31 @@ func (a *app) setConfig(c Config) {
 	a.cfg = c
 }
 
+func (a *app) runtime() *channelRuntime {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.rt
+}
+
+// stopRuntime 停止当前连接（幂等）。
+func (a *app) stopRuntime() {
+	a.mu.Lock()
+	rt := a.rt
+	a.rt = nil
+	a.mu.Unlock()
+	if rt != nil {
+		rt.Stop()
+	}
+}
+
+// swapRuntime 停掉旧运行时并换上新的（nil = 只停不启）。
+func (a *app) swapRuntime(rt *channelRuntime) {
+	a.stopRuntime()
+	a.mu.Lock()
+	a.rt = rt
+	a.mu.Unlock()
+}
+
 // nextRPCID 返回下一个 plugin → host 的 RPC id。
 func (a *app) nextRPCID() string {
 	return fmt.Sprintf("plugin-%d", a.rpcSeq.Add(1))
@@ -134,7 +172,9 @@ func (a *app) nextRPCID() string {
 
 // run 是协议主循环。拆出来是为了单测能喂内存流（与 plugin/protocol 的
 // run(h, stdin, stdout) 同构）。
-func (a *app) run(stdin io.Reader, stdout io.Writer) error {
+func (a *app) run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
+	defer a.stopRuntime()
+
 	enc := json.NewEncoder(stdout)
 	// bufio.Reader, NOT bufio.Scanner: Scanner 的行长上限会让一条大消息
 	// 直接掐断整个协议循环；Reader 没有该限制。
@@ -144,7 +184,7 @@ func (a *app) run(stdin io.Reader, stdout io.Writer) error {
 		raw, rerr := br.ReadBytes('\n')
 		line := strings.TrimSpace(string(raw))
 		if line != "" {
-			if stop := a.handleLine(enc, line); stop {
+			if stop := a.handleLine(ctx, enc, line); stop {
 				a.logf("deactivate received, exiting")
 				return nil
 			}
@@ -159,7 +199,7 @@ func (a *app) run(stdin io.Reader, stdout io.Writer) error {
 }
 
 // handleLine 分发一帧。返回 true 表示应当退出进程（deactivate）。
-func (a *app) handleLine(enc *json.Encoder, line string) (stop bool) {
+func (a *app) handleLine(ctx context.Context, enc *json.Encoder, line string) (stop bool) {
 	var f frame
 	if err := json.Unmarshal([]byte(line), &f); err != nil {
 		// 坏帧不回 ID（不知道是谁），只记录。协议循环必须活下去。
@@ -171,18 +211,22 @@ func (a *app) handleLine(enc *json.Encoder, line string) (stop bool) {
 	case f.Method == "activate":
 		a.handleActivate(enc)
 	case f.Method == "deactivate":
-		writeJSON(enc, okResponse{ID: f.ID, Result: "ok"})
+		a.write(enc, okResponse{ID: f.ID, Result: "ok"})
 		return true
 	case f.Method == "channel_send":
 		a.handleChannelSend(enc, f)
 	case f.Type == "channel_config":
-		a.handleChannelConfig(enc, f)
+		a.handleChannelConfig(ctx, enc, f)
+	case f.Type == "text":
+		a.handleTextEvent(enc, f)
 	case f.Method != "":
 		// 未知 RPC：必须应答，否则 host 侧等到超时。
-		writeJSON(enc, errorResponse{ID: f.ID, Error: "unsupported method: " + f.Method})
+		a.write(enc, errorResponse{ID: f.ID, Error: "unsupported method: " + f.Method})
+	case f.Type != "":
+		// 未识别的异步事件（stream_content / progress_structured / session …）
+		// 流式接口留待后续（官方 msg_seq 分片），当前安全忽略。
 	default:
-		// 未识别的异步事件（stream_content / text / session / progress_structured …）
-		// 阶段 3 接线后才会关心，现在安全忽略。
+		a.logf("drop frame with neither method nor type")
 	}
 	return false
 }
@@ -191,7 +235,7 @@ func (a *app) handleLine(enc *json.Encoder, line string) (stop bool) {
 func (a *app) handleActivate(enc *json.Encoder) {
 	decl := qqChannelDeclaration()
 	a.logf("activate: declaring channel %q with %d config keys", decl.Name, len(decl.ConfigSchema))
-	writeJSON(enc, activateResponse{Result: "ok", ChannelProvider: decl})
+	a.write(enc, activateResponse{Result: "ok", ChannelProvider: decl})
 }
 
 // handleChannelConfig 处理 host 推来的渠道配置（首帧，热更新时会再推）。
@@ -201,7 +245,7 @@ func (a *app) handleActivate(enc *json.Encoder) {
 //
 // 提示词声明放在最前面：它只依赖编译进二进制的文件，与这份配置是否合法无关。
 // 渠道进程被创建出来（= 渠道已启用）就该把渠道约束挂上，别等配置校验。
-func (a *app) handleChannelConfig(enc *json.Encoder, f frame) {
+func (a *app) handleChannelConfig(ctx context.Context, enc *json.Encoder, f frame) {
 	a.declareChannelPrompt(enc)
 
 	var raw map[string]string
@@ -218,17 +262,28 @@ func (a *app) handleChannelConfig(enc *json.Encoder, f frame) {
 	if err := cfg.Validate(); err != nil {
 		a.logf("channel_config: %v", err)
 		a.logf("channel_config: channel stays disconnected until config is fixed")
+		a.swapRuntime(nil)
 		return
 	}
 	a.logf("channel_config: %s", cfg.Summary())
 	if !cfg.Enabled {
-		a.logf("channel_config: disabled — no OneBot connection will be made")
+		a.logf("channel_config: disabled — no QQ gateway connection will be made")
+		a.swapRuntime(nil)
 		return
 	}
 	if cfg.Allow.Empty() {
 		a.logf("channel_config: %s is empty — every inbound message will be rejected "+
 			"(set it to \"*\" to process everything)", KeyAllow)
 	}
+
+	rt := a.newRuntime(cfg, a.logf)
+	// 先换再启：避免新旧两条网关连接短暂并存（官方允许重复连接，但同一
+	// 机器人开两条长连接会让事件投递变成随机一半，排查起来很痛）。
+	a.swapRuntime(rt)
+	rt.Start(ctx, func(eventCtx context.Context, ev GatewayEvent) {
+		a.handleGatewayEvent(enc, eventCtx, ev)
+	})
+	a.logf("qq channel started: app_id=%s allow=%s", cfg.AppID, cfg.Allow)
 }
 
 // declareChannelPrompt 把渠道专属提示词声明给 host。
@@ -238,47 +293,54 @@ func (a *app) handleChannelConfig(enc *json.Encoder, f frame) {
 // ChannelPromptMiddleware 在 mc.Channel == "qq" 时把这些 system_parts 注入
 // system prompt（key 05_channel_qq，排在 00_base 之后、10_skills 之前）。
 func (a *app) declareChannelPrompt(enc *json.Encoder) {
-	writeJSON(enc, newChannelPromptFrame())
+	a.write(enc, newChannelPromptFrame())
 	a.logf("channel_prompt declared: key=%s bytes=%d sha256=%s",
 		ChannelPromptKey, len(channelPromptMarkdown), ChannelPromptSHA256())
 }
 
-// emitInbound 把一条 QQ 入站消息按准入策略处理后提交给 host（send_inbound）。
+// handleGatewayEvent 处理一条网关业务事件：解析 → 白名单 → 身份注入。
 //
-// 三步：身份归一化 → 白名单准入 → 组装参数并发送。被拒绝的消息不发、
-// 只在日志里留痕迹（含 admin 标记，便于排查"为什么他能用我不能"）。
-//
-// 返回 Decision：调用方（阶段 3 的 WS 读循环）据此决定是否回用户一句
-// "你不在白名单里"。返回值的 Handle=false 表示消息没有送出。
-func (a *app) emitInbound(enc *json.Encoder, id Identity, content, requestID string) Decision {
+// 关键纪律：**被拒绝的消息不产生任何外部 API 调用**。这里除了写一条
+// send_inbound RPC（进程内管道）之外不碰网络；也不要"礼貌地回一句拒绝"，
+// 那会变成一次真实的 OpenAPI 调用，把非白名单用户变成可被打量的对象。
+func (a *app) handleGatewayEvent(enc *json.Encoder, _ context.Context, ev GatewayEvent) {
+	in, ok, err := ParseInbound(ev.Type, ev.Data)
+	if err != nil {
+		a.logf("inbound parse failed (%s id=%s): %v", ev.Type, ev.ID, err)
+		return
+	}
+	if !ok {
+		return
+	}
+
 	cfg := a.config()
-	id = id.Normalize()
-
-	decision := cfg.Policy().Decide(id.SenderID)
+	decision := cfg.Policy().Decide(in.SenderOpenID)
 	if !decision.Handle {
-		a.logf("inbound dropped: %s not admitted by allow=%s (admin=%t)",
-			id.Describe(), cfg.Allow, decision.Admin)
-		return decision
+		a.logf("inbound dropped: %s (%s) not admitted by allow=%s (admin=%t)",
+			in.SenderOpenID, in.ChatID(), cfg.Allow, decision.Admin)
+		return
 	}
-	if !id.Valid() {
-		a.logf("inbound dropped: identity incomplete (%s)", id.Describe())
-		return Decision{Handle: false, Admin: decision.Admin}
+	if !in.Valid() {
+		a.logf("inbound dropped: message %s from %s incomplete (empty content/id)",
+			in.MessageID, in.SenderOpenID)
+		return
 	}
 
-	cand := NewInboundCandidate(id, content, requestID, cfg.Policy())
-	a.logf("inbound accepted: %s admin=%t request=%s", id.Describe(), cand.Admin, requestID)
-	writeJSON(enc, rpcRequest{
+	// 记录锚点，让随后的回复能作为"被动消息"带上 msg_id（5 分钟窗口）。
+	if rt := a.runtime(); rt != nil {
+		rt.RememberInbound(in.ChatID(), in.MessageID)
+	}
+
+	cand := NewInboundCandidate(in.Identity(), in.Content, in.MessageID, cfg.Policy())
+	a.logf("inbound accepted: %s admin=%t msg=%s", in.Identity().Describe(), cand.Admin, in.MessageID)
+	a.write(enc, rpcRequest{
 		ID:     a.nextRPCID(),
 		Method: "send_inbound",
 		Params: cand.Params(),
 	})
-	return decision
 }
 
-// handleChannelSend 应答 host 的下行发送请求。
-//
-// 阶段 2 仍没有 OneBot 连接，所以这里**必须诚实地失败**：回 error 让 host 记
-// 一条发送失败，而不是回 "ok" 假装发出去（假成功会让上层永远查不出消息丢了）。
+// handleChannelSend 应答 host 的 channel_send RPC（旧路径，保留兼容）。
 func (a *app) handleChannelSend(enc *json.Encoder, f frame) {
 	var p struct {
 		ChatID  string `json:"chat_id"`
@@ -287,11 +349,46 @@ func (a *app) handleChannelSend(enc *json.Encoder, f frame) {
 	if len(f.Params) > 0 {
 		_ = json.Unmarshal(f.Params, &p)
 	}
-	a.logf("channel_send to %q dropped: OneBot transport not wired yet (phase 3)", p.ChatID)
-	writeJSON(enc, errorResponse{ID: f.ID, Error: "qq OneBot transport is not wired yet (phase 3)"})
+	a.sendOutbound(enc, f.ID, p.ChatID, p.Content)
 }
 
-// writeJSON 写一帧到 stdout。编码失败无法补救（管道已断），忽略返回值。
-func writeJSON(enc *json.Encoder, v any) {
-	_ = enc.Encode(v)
+// handleTextEvent 处理 host 推来的 text 事件（真实下行路径，见
+// agent.ChannelPluginTransport.Send → PushEvent(protocol.MsgTypeText)）。
+func (a *app) handleTextEvent(enc *json.Encoder, f frame) {
+	a.sendOutbound(enc, f.ID, f.ChatID, f.Content)
+}
+
+// sendOutbound 是两条下行路径的公共实现。
+//
+// 没有可用运行时（未配置 / 配置非法 / 已停用）时必须**诚实报错**：
+// 回 ok 假装发出去会让上层永远查不出消息丢了。
+func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
+	rt := a.runtime()
+	if rt == nil {
+		a.logf("outbound to %q dropped: qq channel is not connected "+
+			"(set channels.qq.app_id/app_secret and enabled=true)", chatID)
+		if frameID != "" {
+			a.write(enc, errorResponse{ID: frameID, Error: "qq channel is not connected (missing credentials or disabled)"})
+		}
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	msg, err := rt.Send(ctx, chatID, content)
+	if err != nil {
+		a.logf("outbound to %q failed: %v", chatID, err)
+		if frameID != "" {
+			a.write(enc, errorResponse{ID: frameID, Error: err.Error()})
+		}
+		return
+	}
+	id := ""
+	if msg != nil {
+		id = msg.ID
+	}
+	a.logf("outbound to %q sent (id=%s, %d chars)", chatID, id, len([]rune(content)))
+	if frameID != "" {
+		a.write(enc, okResponse{ID: frameID, Result: "ok"})
+	}
 }

@@ -137,11 +137,15 @@ func run() error {
 
 	// ── 4. 创建渠道实例：真的 spawn channel 进程并推 channel_config ──
 	fmt.Println("\n=== 4. CreateChannel（spawn channel 进程 + 推 channel_config）===")
+	// 用 enabled=false 是有意的：本脚本只验证"注册 + 提示词接线"，不碰网络。
+	// 一旦 enabled=true，插件会真的去 bots.qq.com 换 token —— 本地验证不该
+	// 依赖外部凭据，也不该在 CI/开发机上发起外网请求。
 	cfg := map[string]string{
-		"enabled": "true",
-		"ws_url":  "ws://127.0.0.1:3001",
-		"allow":   "*",
-		"admins":  "10001",
+		"enabled":    "false",
+		"app_id":     "102030405",
+		"app_secret": "not-a-real-secret",
+		"allow":      "*",
+		"admins":     "openid-admin",
 	}
 	ch, err := prov.CreateChannel(cfg, bus.NewMessageBus())
 	if err != nil {
@@ -190,8 +194,8 @@ func run() error {
 	mc := &agent.MessageContext{
 		Ctx:         ctx,
 		Channel:     "qq",
-		ChatID:      "group:20002",
-		SenderID:    "10001",
+		ChatID:      "group:GROUP-OPENID",
+		SenderID:    "MEMBER-OPENID",
 		SystemParts: map[string]string{},
 	}
 	if err := mw.Process(mc); err != nil {
@@ -227,7 +231,7 @@ func run() error {
 func waitForChannelPrompt(ctx context.Context, tr *agent.ChannelPluginTransport, timeout time.Duration) map[string]string {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if parts := tr.ChannelPromptProvider().ChannelSystemParts(ctx, "group:20002", "10001"); len(parts) > 0 {
+		if parts := tr.ChannelPromptProvider().ChannelSystemParts(ctx, "group:GROUP-OPENID", "MEMBER-OPENID"); len(parts) > 0 {
 			return parts
 		}
 		select {

@@ -35,7 +35,7 @@ const patternSeparators = ",，;； \t\r\n"
 //
 // 例：`ParsePatterns("10001, group:123*，*（测试）")` → ["10001","group:123*","*（测试）"]
 //
-// QQ 号 / 群号 / 群名片里都不会出现空白，所以按空白切分是安全的。
+// QQ openid / 群 openid / 群名片里都不会出现空白，所以按空白切分是安全的。
 func ParsePatterns(text string) Patterns {
 	return NewPatterns(strings.FieldsFunc(text, func(r rune) bool {
 		return strings.ContainsRune(patternSeparators, r)
@@ -93,7 +93,7 @@ func (p Patterns) String() string {
 //
 // 双指针回溯实现：遇到 '*' 时记住位置，失败就退回让 '*' 多吃一个字符，
 // 因此最坏 O(len(pattern)*len(subject))，无正则编译开销、无递归。
-// 其余字符（含 '[' ']' '.' '+'）一律按字面量比较 —— 和白名单里写 QQ 号一样直觉。
+// 其余字符（含 '[' ']' '.' '+'）一律按字面量比较 —— 和白名单里写 openid 一样直觉。
 func globMatch(pattern, subject string) bool {
 	pat := []rune(pattern)
 	sub := []rune(subject)
