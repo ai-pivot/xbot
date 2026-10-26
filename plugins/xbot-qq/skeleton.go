@@ -1,22 +1,12 @@
 package main
 
-// 本文件是阶段 3 的落地位置（阶段 1/2 已把形状与前半段接线做完）。
+// 本文件保留两个与"连接策略"相关的纯函数组件：
 //
-// 已完成（不在本文件）：
+//	SlashGate        → slash 命令的语法判定（当前仅保留能力，不参与放行）
+//	ReconnectPolicy  → 断线重连退避（由 gateway.go 的 Run 使用）
 //
-//	渠道注册声明 → declaration.go（activate 返回 channel_provider）
-//	配置模型     → config.go
-//	白名单/权限  → patterns.go / policy.go
-//	身份注入     → inbound.go（Identity / InboundCandidate / Params）
-//	渠道提示词   → prompt.go（go:embed prompt/channel_prompt.md）
-//
-// 本文件里剩下的都是阶段 3：
-//
-//	SlashGate        → slash 门禁（命令白名单 + admin 判定 + 拒绝文案）
-//	ReconnectPolicy  → 断线重连退避（接到 OneBot WS 读循环）
-//
-// 它们现在只有纯函数级别的实现（语法判断 / 算术），不含定时器、不含连接、
-// 不启动任何 goroutine —— 因此接入也不会改变现有行为。
+// 它们都不启动 goroutine、不含定时器、不做网络 I/O，因此可以独立单测。
+// 真实的连接生命周期在 gateway.go，鉴权在 token.go。
 
 import (
 	"strings"
@@ -24,15 +14,14 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// slash 门禁（阶段 3）
+// slash 门禁
 // ---------------------------------------------------------------------------
 
 // SlashGate 是 slash 命令的入口判定。
 //
-// 阶段 3 的规则（尚未实现）：以 Prefix 开头的消息不当作普通对话送给 agent，
-// 而是先过命令白名单 + 管理员判定，未授权直接回一条拒绝文案。
-//
-// 现在只有"这是不是一条 slash 命令"这一个无策略的语法判断 —— 它不决定放行。
+// 当前只做"这是不是一条 slash 命令"的语法判断，不决定放行 —— 放行策略
+// （命令白名单 + admin 判定）尚未实现。保留它是为了后续在进 agent 之前
+// 拦下 /xxx 命令并回拒绝文案。
 type SlashGate struct {
 	// Prefix 是命令前缀，默认 "/"。
 	Prefix string
@@ -50,13 +39,11 @@ func (g SlashGate) IsSlash(content string) bool {
 	return strings.HasPrefix(strings.TrimSpace(content), prefix)
 }
 
-// TODO(阶段3-gate)：Split(cmd, args) + 命令白名单 + admin 判定 + 拒绝文案。
-
 // ---------------------------------------------------------------------------
-// 断线重连（阶段 3）
+// 断线重连
 // ---------------------------------------------------------------------------
 
-// ReconnectPolicy 描述 OneBot 连接断开后的重连退避策略。
+// ReconnectPolicy 描述网关连接断开后的重连退避策略。
 type ReconnectPolicy struct {
 	// Min 是首次重试等待。
 	Min time.Duration
@@ -98,6 +85,3 @@ func (r ReconnectPolicy) Backoff(attempt int) time.Duration {
 	}
 	return delay
 }
-
-// TODO(阶段3-reconnect)：把 Backoff 接到 OneBot WS 读循环，配合 SlashGate
-// 之后统一处理"连接丧失期间的入站积压"与"重连后会话续接"。
