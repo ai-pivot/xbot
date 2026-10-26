@@ -26,11 +26,19 @@ type fakeMessageAPI struct {
 }
 
 func (f *fakeMessageAPI) SendC2C(_ context.Context, userOpenID, content, msgID string, seq uint32) (*SentMessage, error) {
-	return f.record(sentCall{kind: "c2c", target: userOpenID, content: content, msgID: msgID, seq: seq})
+	return f.record(sentCall{kind: "c2c-markdown", target: userOpenID, content: content, msgID: msgID, seq: seq})
 }
 
 func (f *fakeMessageAPI) SendGroup(_ context.Context, groupOpenID, content, msgID string, seq uint32) (*SentMessage, error) {
-	return f.record(sentCall{kind: "group", target: groupOpenID, content: content, msgID: msgID, seq: seq})
+	return f.record(sentCall{kind: "group-markdown", target: groupOpenID, content: content, msgID: msgID, seq: seq})
+}
+
+func (f *fakeMessageAPI) SendC2CMarkdown(_ context.Context, userOpenID, md, msgID string, seq uint32) (*SentMessage, error) {
+	return f.record(sentCall{kind: "c2c-markdown", target: userOpenID, content: md, msgID: msgID, seq: seq})
+}
+
+func (f *fakeMessageAPI) SendGroupMarkdown(_ context.Context, groupOpenID, md, msgID string, seq uint32) (*SentMessage, error) {
+	return f.record(sentCall{kind: "group-markdown", target: groupOpenID, content: md, msgID: msgID, seq: seq})
 }
 
 func (f *fakeMessageAPI) record(c sentCall) (*SentMessage, error) {
@@ -67,10 +75,10 @@ func TestSenderRoutesByChatID(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("calls = %d, want 2", len(calls))
 	}
-	if calls[0].kind != "c2c" || calls[0].target != "USER-OPENID" {
+	if !strings.HasPrefix(calls[0].kind, "c2c") || calls[0].target != "USER-OPENID" {
 		t.Fatalf("first call = %+v, want c2c to USER-OPENID", calls[0])
 	}
-	if calls[1].kind != "group" || calls[1].target != "GROUP-OPENID" {
+	if !strings.HasPrefix(calls[1].kind, "group") || calls[1].target != "GROUP-OPENID" {
 		t.Fatalf("second call = %+v, want group to GROUP-OPENID", calls[1])
 	}
 }

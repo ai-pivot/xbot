@@ -79,6 +79,9 @@ func passiveReplyWindow(chatID string) time.Duration {
 type MessageAPI interface {
 	SendC2C(ctx context.Context, userOpenID, content, msgID string, msgSeq uint32) (*SentMessage, error)
 	SendGroup(ctx context.Context, groupOpenID, content, msgID string, msgSeq uint32) (*SentMessage, error)
+	// Markdown 变体（msg_type=2）。官方硬约束：此时 content 必须为空。
+	SendC2CMarkdown(ctx context.Context, userOpenID, markdown, msgID string, msgSeq uint32) (*SentMessage, error)
+	SendGroupMarkdown(ctx context.Context, groupOpenID, markdown, msgID string, msgSeq uint32) (*SentMessage, error)
 }
 
 // msgAnchor 记录某个会话最后一条入站消息，用作被动回复锚点。
@@ -91,11 +94,13 @@ type msgAnchor struct {
 //
 // 并发安全：host 可能同时推多条回复，seq 表与锚点表都在锁内更新。
 type OutboundSender struct {
-	api  MessageAPI
-	now  func() time.Time
-	mu   sync.Mutex
-	seq  map[string]uint32
-	last map[string]msgAnchor
+	// Markdown 为 true 时用 msg_type=2 发送（客户端渲染 Markdown）。
+	Markdown bool
+	api      MessageAPI
+	now      func() time.Time
+	mu       sync.Mutex
+	seq      map[string]uint32
+	last     map[string]msgAnchor
 	// replies 记录每个锚点已用掉的被动回复次数（配额自检用）。
 	replies map[string]uint32
 	// logErr 输出 ERROR 级诊断（配额耗尽等必须留痕）。
@@ -166,7 +171,16 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 	var last *SentMessage
 	for _, chunk := range chunks {
 		seq := s.nextSeq(chatID, msgID)
-		if groupOpenID != "" {
+		// Markdown 渲染（默认开启）：agent 的输出基本都是 Markdown，
+		// 用 msg_type=2 让 QQ 客户端按 Markdown 渲染（标题/列表/代码块/表格）。
+		// 官方硬约束：传 markdown 时 content 必须为空 —— sendMarkdown 已保证。
+		if s.Markdown {
+			if groupOpenID != "" {
+				last, err = s.api.SendGroupMarkdown(ctx, groupOpenID, chunk, msgID, seq)
+			} else {
+				last, err = s.api.SendC2CMarkdown(ctx, userOpenID, chunk, msgID, seq)
+			}
+		} else if groupOpenID != "" {
 			last, err = s.api.SendGroup(ctx, groupOpenID, chunk, msgID, seq)
 		} else {
 			last, err = s.api.SendC2C(ctx, userOpenID, chunk, msgID, seq)

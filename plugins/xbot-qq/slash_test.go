@@ -189,7 +189,7 @@ func TestNonAdminSlashRejected(t *testing.T) {
 		if strings.Contains(calls[0].content, "可用命令") {
 			t.Fatalf("%q: non-admin refusal leaks command list: %q", content, calls[0].content)
 		}
-		if calls[0].kind != "c2c" || calls[0].target != "NORMAL-USER" {
+		if !strings.HasPrefix(calls[0].kind, "c2c") || calls[0].target != "NORMAL-USER" {
 			t.Fatalf("%q: refusal routed to %s/%s", content, calls[0].kind, calls[0].target)
 		}
 		if calls[0].msgID != "MSG-1" {
@@ -329,7 +329,7 @@ func TestGroupSlashAdminByOpenIDNotGroupMembership(t *testing.T) {
 	if len(calls) != 1 || !strings.Contains(calls[0].content, "需要管理员权限") {
 		t.Fatalf("group refusal calls = %+v", calls)
 	}
-	if calls[0].kind != "group" || calls[0].target != "GROUP-OPENID" {
+	if !strings.HasPrefix(calls[0].kind, "group") || calls[0].target != "GROUP-OPENID" {
 		t.Fatalf("group refusal routed to %s/%s", calls[0].kind, calls[0].target)
 	}
 

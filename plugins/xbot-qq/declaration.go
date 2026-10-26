@@ -104,6 +104,16 @@ func qqChannelDeclaration() ChannelDeclaration {
 				Category:     "连接",
 			},
 			{
+				Key:   KeyMarkdown,
+				Label: "Markdown 渲染（推荐开启）",
+				Description: "开启时用 msg_type=2 发送回复，QQ 客户端会按 Markdown 渲染" +
+					"（标题、列表、代码块、粗体等）。QQ 只支持部分 Markdown 子集。" +
+					"关闭则退化为纯文本（msg_type=0）。默认开启。",
+				Type:         "toggle",
+				DefaultValue: "true",
+				Category:     "发送",
+			},
+			{
 				Key:   KeyAllow,
 				Label: "消息白名单",
 				Description: "决定哪些发送者的消息交给 agent。匹配的是 **openid**（不是 QQ 号）；" +

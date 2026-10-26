@@ -96,7 +96,7 @@ func TestWhoamiAnsweredBeforeWhitelist(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("!whoami 必须恰好回一条消息，实际 %d 条: %+v", len(calls), calls)
 	}
-	if calls[0].kind != "c2c" || calls[0].target != "OPENID-STRANGER" {
+	if !strings.HasPrefix(calls[0].kind, "c2c") || calls[0].target != "OPENID-STRANGER" {
 		t.Fatalf("回复路由不对：%+v", calls[0])
 	}
 	if !strings.Contains(calls[0].content, "OPENID-STRANGER") {
@@ -156,7 +156,7 @@ func TestAllowEmptyAutoReply(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("allow 为空时必须自动回一条指引，实际 %d 条", len(calls))
 	}
-	if calls[0].kind != "group" || calls[0].target != "GROUP-OPENID" {
+	if !strings.HasPrefix(calls[0].kind, "group") || calls[0].target != "GROUP-OPENID" {
 		t.Fatalf("回复应走群会话：%+v", calls[0])
 	}
 	if !strings.Contains(calls[0].content, "MEMBER-OPENID") || !strings.Contains(calls[0].content, "allow") {

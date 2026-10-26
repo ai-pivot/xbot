@@ -65,12 +65,12 @@ func TestActivateDeclaresQQChannel(t *testing.T) {
 	for _, item := range schema {
 		keys[item.(map[string]any)["key"].(string)] = true
 	}
-	for _, want := range []string{KeyEnabled, KeyAppID, KeyAppSecret, KeySandbox, KeyAllow, KeyAdmins, KeyIntents} {
+	for _, want := range []string{KeyEnabled, KeyAppID, KeyAppSecret, KeySandbox, KeyAllow, KeyAdmins, KeyIntents, KeyMarkdown} {
 		if !keys[want] {
 			t.Fatalf("schema missing key %q (got %v)", want, keys)
 		}
 	}
-	if len(keys) != 7 {
+	if len(keys) != 8 {
 		t.Fatalf("schema has %d keys, want 7 (got %v)", len(keys), keys)
 	}
 }
@@ -273,7 +273,7 @@ func TestTextEventSendsViaAPI(t *testing.T) {
 		`{"type":"text","chat_id":"group:GROUP-OPENID","content":"reply text"}`)
 
 	calls := api.Calls()
-	if len(calls) != 1 || calls[0].kind != "group" || calls[0].target != "GROUP-OPENID" || calls[0].content != "reply text" {
+	if len(calls) != 1 || !strings.HasPrefix(calls[0].kind, "group") || calls[0].target != "GROUP-OPENID" || calls[0].content != "reply text" {
 		t.Fatalf("calls = %+v", calls)
 	}
 	if out.Len() != 0 {
@@ -298,7 +298,7 @@ func TestChannelSendRPCRepliesOk(t *testing.T) {
 	if len(frames) != 1 || frames[0]["id"] != "srv-1" || frames[0]["result"] != "ok" {
 		t.Fatalf("frames = %v, want ok response", frames)
 	}
-	if calls := api.Calls(); len(calls) != 1 || calls[0].kind != "c2c" {
+	if calls := api.Calls(); len(calls) != 1 || !strings.HasPrefix(calls[0].kind, "c2c") {
 		t.Fatalf("calls = %+v", calls)
 	}
 }

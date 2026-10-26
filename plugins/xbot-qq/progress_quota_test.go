@@ -127,7 +127,7 @@ func TestGroupOneInboundOneOutbound(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("group outbound calls = %d, want 1", len(calls))
 	}
-	if calls[0].kind != "group" || calls[0].target != "GROUP-1" {
+	if !strings.HasPrefix(calls[0].kind, "group") || calls[0].target != "GROUP-1" {
 		t.Fatalf("group routing = %s/%s", calls[0].kind, calls[0].target)
 	}
 }

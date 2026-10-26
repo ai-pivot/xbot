@@ -47,6 +47,19 @@ import (
 // 出处：《消息收发概述》§消息类型（msg_type=0 → 文本，内容字段 content）。
 const MsgTypeText = 0
 
+// MsgTypeMarkdown 是官方 Markdown 消息的 msg_type。
+//
+// 出处：《发送群聊消息》/《发送单聊消息》§请求体
+//
+//	msg_type: 0=纯文本(content) 2=Markdown(markdown) 7=富媒体(media)
+//	注意：传了 markdown 后 content 必须为空
+const MsgTypeMarkdown = 2
+
+// MessageMarkdown 是 msg_type=2 时的 markdown 内容体。
+type MessageMarkdown struct {
+	Content string `json:"content,omitempty"`
+}
+
 // SentMessage 是发消息接口的响应。
 //
 // 出处：《发送单聊消息》/《发送群聊消息》§响应体（id 消息 ID、timestamp 发送时间）。
@@ -216,8 +229,20 @@ func (c *APIClient) SendGroup(ctx context.Context, groupOpenID, content, msgID s
 type messageBody struct {
 	Content string `json:"content"`
 	MsgType int    `json:"msg_type"`
-	MsgID   string `json:"msg_id,omitempty"`
-	MsgSeq  uint32 `json:"msg_seq"`
+	// Markdown 仅在 msg_type=2 时填写；此时 Content 必须为空（官方硬约束）。
+	Markdown *MessageMarkdown `json:"markdown,omitempty"`
+	MsgID    string           `json:"msg_id,omitempty"`
+	MsgSeq   uint32           `json:"msg_seq"`
+}
+
+// sendMarkdown 以 msg_type=2 发送 Markdown 消息（content 留空，官方硬约束）。
+func (c *APIClient) sendMarkdown(ctx context.Context, op, path, markdown, msgID string, msgSeq uint32) (*SentMessage, error) {
+	body := messageBody{MsgType: MsgTypeMarkdown, Markdown: &MessageMarkdown{Content: markdown}, MsgID: msgID, MsgSeq: msgSeq}
+	var out SentMessage
+	if err := c.do(ctx, op, http.MethodPost, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *APIClient) sendMessage(ctx context.Context, op, path, content, msgID string, msgSeq uint32) (*SentMessage, error) {
@@ -285,4 +310,14 @@ func (c *APIClient) doOnce(ctx context.Context, op, method, path string, payload
 		return fmt.Errorf("qq openapi %s: decode response: %w (body=%s)", op, err, truncate(string(raw), 300))
 	}
 	return nil
+}
+
+// SendGroupMarkdown 以 Markdown（msg_type=2）发群消息。
+func (c *APIClient) SendGroupMarkdown(ctx context.Context, groupOpenID, markdown, msgID string, msgSeq uint32) (*SentMessage, error) {
+	return c.sendMarkdown(ctx, http.MethodPost, "/v2/groups/"+groupOpenID+"/messages", markdown, msgID, msgSeq)
+}
+
+// SendC2CMarkdown 以 Markdown（msg_type=2）发单聊消息。
+func (c *APIClient) SendC2CMarkdown(ctx context.Context, userOpenID, markdown, msgID string, msgSeq uint32) (*SentMessage, error) {
+	return c.sendMarkdown(ctx, http.MethodPost, "/v2/users/"+userOpenID+"/messages", markdown, msgID, msgSeq)
 }

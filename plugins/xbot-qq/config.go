@@ -39,6 +39,8 @@ const (
 	KeyIntents = "intents"
 	// KeyWSURL 固定 wss 地址；非空时跳过 GET /gateway（绕过其 IP 白名单校验）。
 	KeyWSURL = "ws_url"
+	// KeyMarkdown 控制是否用 msg_type=2（Markdown）发送回复，默认开启。
+	KeyMarkdown = "render_markdown"
 )
 
 // Config 是 QQ 渠道的运行时配置。
@@ -61,6 +63,8 @@ type Config struct {
 	Intents int
 	// WSURL 固定 wss 地址；非空时跳过 GET /gateway。用于绕过 /gateway 的 IP 白名单。
 	WSURL string
+	// Markdown 为 true 时用 msg_type=2 发送（QQ 客户端按 Markdown 渲染）。
+	Markdown bool
 }
 
 // ParseConfig 把 host 推来的字符串键值解析成 Config。
@@ -75,6 +79,12 @@ func ParseConfig(raw map[string]string) Config {
 	if v := get(KeySandbox); v != "" {
 		sandbox = parseBool(v)
 	}
+	// Markdown 默认开启（缺省即渲染）：agent 输出基本都是 Markdown，
+	// 纯文本发出去会丢掉标题/列表/代码块的可读性。
+	markdown := true
+	if v := get(KeyMarkdown); v != "" {
+		markdown = parseBool(v)
+	}
 	return Config{
 		Enabled:   parseBool(get(KeyEnabled)),
 		AppID:     get(KeyAppID),
@@ -84,6 +94,7 @@ func ParseConfig(raw map[string]string) Config {
 		Admins:    ParsePatterns(get(KeyAdmins)),
 		Intents:   parseIntents(get(KeyIntents)),
 		WSURL:     get(KeyWSURL),
+		Markdown:  markdown,
 	}
 }
 

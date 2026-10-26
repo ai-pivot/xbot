@@ -61,6 +61,7 @@ func newRuntime(cfg Config, deps runtimeDeps, logf func(string, ...any)) *channe
 	sender := NewOutboundSender(deps.api)
 	// 发送器自己也要能报 ERROR（配额耗尽必须留痕，见 sender.go）。
 	sender.logErr = logf
+	sender.Markdown = cfg.Markdown
 	return &channelRuntime{
 		cfg:    cfg,
 		gw:     gw,

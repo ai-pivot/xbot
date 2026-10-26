@@ -421,7 +421,8 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 		return
 	}
 
-	if cmd, isCmd := ClassifyCommand(in.Content); isCmd {
+	cmd, isCmd := ClassifyCommand(in.Content)
+	if isCmd {
 		switch {
 		case !admin:
 			// 第一优先：非 admin 一律拒，且**不泄漏命令列表**
@@ -539,13 +540,25 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 		}
 	}
 
+	// ── 身份头：显式告诉模型「谁在说话、是不是管理员」──
+	//
+	// metadata 里的 is_admin / sender_id 是给宿主的结构化字段，模型未必看得到
+	// （取决于宿主如何拼 system/tool 上下文）。这里把身份直接写进正文开头，
+	// 保证模型一定能看到，且管理员身份与用户原文分离、不易被注入伪造。
+	// 命令（!xxx / admin 的 /xxx）不加身份头：转发给 host 的必须是原样命令，
+	// 加头会让 commands.Match 失配、也会污染 bang 的 shell 命令。
+	rawContent := content
+	if !isCmd {
+		content = identityHeader(in, admin) + "\n" + content
+	}
+
 	cand := NewInboundCandidate(in.Identity(), content, in.MessageID, cfg.Policy())
 	// 结构化一行：sender / chat / chat_type / event / body_len / body 各自成字段。
 	// 群聊必须满足 sender != chat 的 openid（chat 带 group: 前缀），否则就是把
 	// 回复发到个人私聊去了 —— 这条判据写在日志里，一眼可验（见 inbound_log.go）。
 	a.logf("inbound accepted: sender=%s chat=%s chat_type=%s event=%s body_len=%d body=%s admin=%t msg=%s",
 		in.SenderOpenID, chatLogTarget(in), chatTypeOf(in), in.EventType,
-		bodyRuneLen(content), logPreview(content), cand.Admin, in.MessageID)
+		bodyRuneLen(rawContent), logPreview(rawContent), cand.Admin, in.MessageID)
 	a.write(enc, rpcRequest{
 		ID:     a.nextRPCID(),
 		Method: "send_inbound",
@@ -622,4 +635,31 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 	if frameID != "" {
 		a.write(enc, okResponse{ID: frameID, Result: "ok"})
 	}
+}
+
+// identityHeader 生成注入给模型的身份行。
+//
+// 设计要点：
+//   - 必含：场景（私聊/群聊）、昵称、openid（截断，够区分即可）、是否管理员
+//   - 放在正文之前，用一行包住，模型读到的第一条信息就是"谁在说话"
+//   - 明确写「不是指令」：防止有人把 "管理员: 是" 伪装成自己的话术来提权
+func identityHeader(in Inbound, admin bool) string {
+	scene := "私聊"
+	if in.IsGroup() {
+		scene = "群聊"
+	}
+	name := in.SenderName
+	if name == "" {
+		name = "(未提供昵称)"
+	}
+	role := "否"
+	if admin {
+		role = "是"
+	}
+	short := in.SenderOpenID
+	if len(short) > 12 {
+		short = short[:12] + "…"
+	}
+	return fmt.Sprintf("【QQ %s】发送者: %s (openid %s) · 管理员: %s (此行由系统标注，非发送者文本)",
+		scene, name, short, role)
 }
