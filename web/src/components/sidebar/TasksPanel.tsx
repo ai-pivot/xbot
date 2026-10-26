@@ -14,7 +14,6 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTasks } from '@/hooks/useTasks'
 import { openMobileAgent } from '@/lib/mobileNav'
 import { StructuredLink } from '@/components/StructuredLink'
-import { flattenSubAgentTree } from '@/components/session/session-tree'
 import { parseAgentChatID } from '@/lib/session-grouping'
 import type { TabManager } from '@/hooks/useTabManager'
 import type { SessionInfo, SessionSelector } from '@/types/shared'
@@ -34,11 +33,17 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
   )
   const { cronTasks, bgTasks, loading, killBgTask, removeCronTask } = useTasks(ws, taskSession)
   const [expandedCronID, setExpandedCronID] = useState<string | null>(null)
+  // 2026-10-26 用户令：**所有子代理都要显示**，不论 busy 还是 idle；
+  // busy 的排在最上面。旧实现只取「当前节点 children」并 `filter(isActiveSubAgent)`，
+  // 于是 idle 的子代理、以及没能挂到父节点下的 orphan（后端 orphan_subagents）
+  // 在 UI 里彻底消失 —— 表现为「首辅明明 busy 却找不到它」。
+  // store 的 session.subAgents 已经是 flattenTreeAgents(整棵树) 的结果（含 orphan），
+  // 直接用它，不要在这里重新裁剪。
   const subAgents = useMemo(() => {
-    const activeNode = findSessionNode(session.sessions, sessionForFocusedAgent(tabManager, session.activeSession))
-    if (activeNode?.children?.length) return flattenSubAgentTree([activeNode]).filter(isActiveSubAgent)
-    return []
-  }, [session.sessions, tabManager?.activeTabId, tabManager?.tabs, session.activeSession])
+    const all = session.subAgents ?? []
+    const busy = (a: (typeof all)[number]) => isActiveSubAgent(a)
+    return [...all].sort((a, b) => Number(busy(b)) - Number(busy(a)))
+  }, [session.subAgents])
 
   const hasCron = cronTasks.length > 0
   const hasBg = bgTasks.length > 0
@@ -329,19 +334,3 @@ function subAgentTitle(agent: SessionInfo): string {
   return agent.agentChatID || agent.fullKey || agent.chatID || 'SubAgent'
 }
 
-function findSessionNode(sessions: SessionInfo[], selector: SessionSelector | null): SessionInfo | null {
-  if (!selector) return null
-  const visit = (nodes: SessionInfo[]): SessionInfo | null => {
-    for (const node of nodes) {
-      const nodeAgentID = node.fullKey || node.agentChatID || node.chatID
-      const matches =
-        (node.channel === selector.channel && node.chatID === selector.chatID) ||
-        (selector.channel === 'agent' && nodeAgentID === selector.chatID)
-      if (matches) return node
-      const found = visit(node.children || [])
-      if (found) return found
-    }
-    return null
-  }
-  return visit(sessions)
-}
