@@ -203,6 +203,18 @@ func ParseInbound(eventType string, data json.RawMessage) (Inbound, bool, error)
 	if !isGroupEvent && in.GroupOpenID != "" {
 		return in, true, fmt.Errorf("%s payload unexpectedly carries group_openid=%q", eventType, in.GroupOpenID)
 	}
+	// 群事件的会话 id 必须是 "group:<group_openid>"，且**必须与发送者不同**：
+	// 两者相同意味着回复会被当私聊发给那个人（群里什么都看不到）。这条不变量
+	// 是"群里收不到"的直接对照实验判据，放解析层挡住，不给下游猜的机会。
+	if isGroupEvent {
+		if in.GroupOpenID == in.SenderOpenID {
+			return in, true, fmt.Errorf("%s payload group_openid == member_openid (%q); "+
+				"身份字段取错，拒绝把它当群会话", eventType, in.GroupOpenID)
+		}
+		if !strings.HasPrefix(in.ChatID(), "group:") {
+			return in, true, fmt.Errorf("%s payload chat id %q lacks group: prefix", eventType, in.ChatID())
+		}
+	}
 	// 引用消息：只取一层快照（msg_elements），不递归。
 	if isQuoteMessage(d.MessageType, d.MsgElements) {
 		if q, ok := pickQuoted(d.MsgElements, sceneExt); ok {

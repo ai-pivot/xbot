@@ -485,6 +485,19 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 		return
 	}
 
+	// ── 正文护栏：正文绝不允许是平台令牌 ──
+	//
+	// 官方事件体的 content 是明文用户文本，id 才是 ROBOT1.0_ 形态（见
+	// inbound_log.go 文件头）。如果这里发现正文本身就是令牌，说明报文被
+	// 错误地映射（或平台字段变了），此时把它喂给 agent 只会得到乱回复 ——
+	// 明确报错并丢弃，不做任何"猜测式解密"。
+	if looksLikePlatformToken(in.Content) {
+		a.logf("inbound dropped: body is a platform token, not user text (sender=%s chat=%s "+
+			"event=%s msg=%s body=%s) — 拒绝把令牌当正文喂给 agent",
+			in.SenderOpenID, chatLogTarget(in), in.EventType, in.MessageID, logPreview(in.Content))
+		return
+	}
+
 	// 记录锚点，让随后的回复能作为"被动消息"带上 msg_id（按场景有效期）。
 	if rt := a.runtime(); rt != nil {
 		rt.RememberInbound(in.ChatID(), in.MessageID)
@@ -511,7 +524,12 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 	}
 
 	cand := NewInboundCandidate(in.Identity(), content, in.MessageID, cfg.Policy())
-	a.logf("inbound accepted: %s admin=%t msg=%s", in.Identity().Describe(), cand.Admin, in.MessageID)
+	// 结构化一行：sender / chat / chat_type / event / body_len / body 各自成字段。
+	// 群聊必须满足 sender != chat 的 openid（chat 带 group: 前缀），否则就是把
+	// 回复发到个人私聊去了 —— 这条判据写在日志里，一眼可验（见 inbound_log.go）。
+	a.logf("inbound accepted: sender=%s chat=%s chat_type=%s event=%s body_len=%d body=%s admin=%t msg=%s",
+		in.SenderOpenID, chatLogTarget(in), chatTypeOf(in), in.EventType,
+		bodyRuneLen(content), logPreview(content), cand.Admin, in.MessageID)
 	a.write(enc, rpcRequest{
 		ID:     a.nextRPCID(),
 		Method: "send_inbound",

@@ -102,6 +102,35 @@ GET /gateway  (Authorization: QQBot {token})
 > 平台侧**不要**开启「接收所有消息」：即使开了，本插件也会丢弃群全量消息；
 > 私聊只认 `C2C_MESSAGE_CREATE`。
 
+### 4.0.1 入站日志与两条硬不变量（inbound_log.go）
+
+`inbound accepted` 是一行可 grep 的结构化日志，六项一个不少：
+
+```
+inbound accepted: sender=<openid> chat=<group:<B>|c2c:<C>> chat_type=<group|c2c>
+                  event=<事件名> body_len=<字符数> body=<正文前 80 字符> admin=<bool> msg=<消息 id>
+```
+
+排查"群里收不到"时只看这一行就够：
+
+| 形态 | 含义 |
+|---|---|
+| `chat=group:<B>` 且 `sender=<A>`，A≠B | 群消息解析正常，回复会回群 |
+| `chat=c2c:<A>` 且 `sender=<A>` | 这是**私聊**事件，A==B 是正确行为 |
+| 没有 `inbound accepted`，只有 `inbound parse failed` | 报文缺 `group_openid` 等关键字段，被解析层挡住 |
+
+两条硬不变量（解析层强制，违反即报错丢弃，绝不静默降级）：
+
+1. 群事件的 `chat` 必须是 `group:<group_openid>`；`group_openid` 缺失或与
+   `member_openid` 相同 → 报错（后者意味着回复会被当私聊发给个人）。
+2. 正文绝不许是平台令牌：`ROBOT1.0_` + 20 字符以上的裸串 → 报错并丢弃。
+
+> **`ROBOT1.0_` 不是密文，是消息 ID。** 官方事件体的 `id` 形如
+> `ROBOT1.0_xxxx`（见 `group_at_message_create.html` 事件示例），而 `content`
+> 就是明文用户文本（官方原文："content 字段已自动去除@机器人的前缀"）。
+> 官方**没有**事件正文加密流程，`app_id/app_secret` 也解不了它 —— 看到
+> `msg=ROBOT1.0_...` 那是在打消息 ID，不是正文。日志里正文一律打在 `body=`。
+
 ### 4.0 入站去重（dedup.go）
 
 官方原文：**「相同 msg_id 可能重复推送，需结合 `message_scene.ext` 中的
