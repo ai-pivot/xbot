@@ -2180,14 +2180,10 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		a.userSys = &userSystem{}
 	}
 	a.userSys.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
-	// ⚠️ PG 后端：订阅/租户服务是 SQLite 专属具体类型（*sqlite.LLMSubscriptionService
-	// / *sqlite.TenantService），PG 走 storage.ConfigStore/TenantStore 接口 —— 此处
-	// 不接线（PG 路径为后端对齐/测试用途，LLM 配置不在其范围内）。消费点都有
-	// nil 守卫（如 llm_factory.go 的 settingsSvc/subSvc 检查）。
-	if db := multiSession.DB(); db != nil {
-		a.userSys.llmFactory.SetSubscriptionSvc(storage.NewSQLiteConfigStore(db))
-		a.userSys.llmFactory.SetTenantSvc(storage.NewSQLiteTenantStore(db))
-	} else if multiSession.Store() != nil {
+	// ⚠️ 不按 db != nil 分支：订阅/租户访问统一经 storage 接口。SQLite 的
+	// sqliteStorage.config/tenant 与 PG 的实现都满足同一契约，PG 上也就不再
+	// 需要「跳过接线」这种会静默丢失功能的路径。
+	if multiSession.Store() != nil {
 		a.userSys.llmFactory.SetSubscriptionSvc(multiSession.Store().Config())
 		a.userSys.llmFactory.SetTenantSvc(multiSession.Store().Tenant())
 	}
@@ -2287,11 +2283,9 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.registryManager = NewRegistryManager(a.skills, a.agents, cfg.WorkDir, cfg.XbotHome, cfg.Sandbox)
 
 	// Initialize UserSettingsService and SettingsService.
-	// SettingsService 走后端无关的 storage.ConfigStore：SQLite 用适配层包主库，
-	// PG 用 Store().Config()（同一套 ConfigStore 接口，无后端分支）。
-	if db := multiSession.DB(); db != nil {
-		a.userSys.settingsSvc = NewSettingsService(storage.NewSQLiteConfigStore(db))
-	} else if multiSession.Store() != nil {
+	// SettingsService 走后端无关的 storage.ConfigStore（SQLite 用适配层包主库，
+	// PG 用 Store().Config()）—— 同一套接口，不再按是否有 SQLite 句柄分支。
+	if multiSession.Store() != nil {
 		a.userSys.settingsSvc = NewSettingsService(multiSession.Store().Config())
 	}
 

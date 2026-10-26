@@ -427,6 +427,43 @@ func NewMultiTenantPG(dsn string, opts ...MultiTenantOption) (*MultiTenantSessio
 	return m, nil
 }
 
+// NewMultiTenantWithStorage builds a MultiTenantSession on top of an existing
+// storage backend. It is the dependency-injection entry point: the SQLite and
+// PG constructors are thin wrappers that create the backend and delegate here.
+//
+// The session has NO SQLite handle (`DB()` returns nil). Every SQLite-only
+// helper (session DB files, migrations, WAL checkpoint) must therefore return
+// an explicit error/no-op instead of dereferencing it.
+func NewMultiTenantWithStorage(store storage.Storage, opts ...MultiTenantOption) *MultiTenantSession {
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	m := &MultiTenantSession{
+		store:                 store,
+		memoryProvider:        "flat",
+		tenantCache:           make(map[string]*TenantSession),
+		toolIndexFingerprints: make(map[int64]string),
+		toolIndexPrevNames:    make(map[int64]map[string]bool),
+		mcpConfigPath:         "mcp.json",
+		mcpInactivityTimeout:  30 * time.Minute,
+		mcpCleanupInterval:    5 * time.Minute,
+		sessionCacheTimeout:   24 * time.Hour,
+		cleanupStopCh:         make(chan struct{}),
+		shutdownCtx:           shutdownCtx,
+		shutdownCancel:        shutdownCancel,
+		sessionDBs:            make(map[int64]*sessionDBEntry),
+	}
+
+	// 应用配置选项
+	for _, opt := range opts {
+		opt(m)
+	}
+
+	// Memory services (archival store / tool index / recall) are created through
+	// the same path as both concrete constructors — see initMemoryServices.
+	m.initMemoryServices()
+
+	return m
+}
+
 // SetMCPConfigPath 设置 MCP 配置文件路径
 func (m *MultiTenantSession) SetMCPConfigPath(path string) {
 	m.mu.Lock()
@@ -455,25 +492,21 @@ func (m *MultiTenantSession) GetDailyTokenUsage(senderID string, days int) ([]sq
 }
 
 // GetDailyTokenUsageSummary retrieves aggregated per-day usage for a user.
-//
-// ⚠️ SQLite-only：GetDailyUsageSummary 未纳入 storage.ConfigStore 契约（PG 实现
-// 存在，但不经后端无关接口暴露）。PG 路径下明确报错，绝不静默返回空数据。
+// Backend-agnostic: ConfigStore exposes this on both SQLite and PG.
 func (m *MultiTenantSession) GetDailyTokenUsageSummary(senderID string, days int) ([]sqlite.DailyTokenUsage, error) {
-	if m.tokenUsageSvc == nil {
-		return nil, fmt.Errorf("daily usage summary is unavailable on the PG backend")
+	if m == nil || m.store == nil {
+		return nil, fmt.Errorf("storage backend is not initialized")
 	}
-	return m.tokenUsageSvc.GetDailyUsageSummary(senderID, days)
+	return m.store.Config().GetDailyUsageSummary(senderID, days)
 }
 
 // GetAllUserTokenUsage retrieves token usage for all users, sorted by total desc.
-//
-// ⚠️ SQLite-only（同 GetDailyTokenUsageSummary 的理由：GetAllUsage 不在
-// storage.ConfigStore 契约内）。
+// Backend-agnostic: ConfigStore exposes this on both SQLite and PG.
 func (m *MultiTenantSession) GetAllUserTokenUsage() ([]sqlite.UserTokenUsage, error) {
-	if m.tokenUsageSvc == nil {
-		return nil, fmt.Errorf("all-user token usage is unavailable on the PG backend")
+	if m == nil || m.store == nil {
+		return nil, fmt.Errorf("storage backend is not initialized")
 	}
-	return m.tokenUsageSvc.GetAllUsage()
+	return m.store.Config().GetAllUsage()
 }
 
 // SetSessionCreateGuard installs the phantom-session gate (see the field docs).
@@ -1107,9 +1140,7 @@ func (m *MultiTenantSession) ClearMemory(ctx context.Context, channel, chatID, t
 		} else {
 			appendErr("session", svc.Clear(tenantID))
 			// 清空后 preview 也清（主库 tenants.preview —— 跨会话列表读这一列）。
-			if sdb, dbErr := m.sessionDB(tenantID); dbErr == nil {
-				m.recomputeSessionPreview(sdb, tenantID)
-			}
+			m.refreshTenantPreview(tenantID)
 		}
 		// Evict cached session so next request loads fresh state
 		sessionKey := sessKey(channel, chatID)
@@ -1149,9 +1180,7 @@ func (m *MultiTenantSession) ClearMemory(ctx context.Context, channel, chatID, t
 			appendErr("session", fmt.Errorf("open session db: %w", err))
 		} else {
 			appendErr("session", svc.Clear(tenantID))
-			if sdb, dbErr := m.sessionDB(tenantID); dbErr == nil {
-				m.recomputeSessionPreview(sdb, tenantID)
-			}
+			m.refreshTenantPreview(tenantID)
 		}
 		appendErr("core_all", m.store.Memory().ClearAllBlocks(tenantID, userID))
 		appendErr("long_term", m.store.Memory().ClearLongTerm(ctx, tenantID))
@@ -1259,21 +1288,37 @@ func (m *MultiTenantSession) GetSessionUsageStats(channel, chatID string, recent
 }
 
 // fillUsageStatsFromMainDB 补齐 GetTenantUsageStats 不再从会话库读的字段
-// （tenant_state 水位 + tenants 元数据 —— 主库表）。失败静默（这些是展示性
-// 字段，缺省零值可接受）。
-// PG 路径无主库 *sqlite.DB（SQLite 专属 ? 占位符查询）—— 直接跳过。
+// （tenant_state 水位 + tenants 元数据 —— 主库表）。
+//
+// 后端无关：token 水位走 MemoryStore，模型/时间走 TenantStore，因此在 PG 上
+// 同样能填（旧实现 `if m.db == nil { return }` 让 PG 的统计面板永远缺这几列）。
+// 失败静默（展示性字段，缺省零值可接受）。
 func (m *MultiTenantSession) fillUsageStatsFromMainDB(tenantID int64, stats *sqlite.TenantUsageStats) {
-	if m.db == nil {
+	if m == nil || m.store == nil || stats == nil {
 		return
 	}
-	conn := m.db.Conn()
-	if conn == nil {
+	ctx := context.Background()
+	if pt, ct, err := m.store.Memory().GetTokenState(ctx, tenantID); err == nil {
+		stats.LastPromptTokens = pt
+		stats.LastCompletionTokens = ct
+	}
+	tenants, err := m.store.Tenant().ListTenants()
+	if err != nil {
 		return
 	}
-	_ = conn.QueryRow(`SELECT COALESCE(last_prompt_tokens, 0), COALESCE(last_completion_tokens, 0) FROM tenant_state WHERE tenant_id = ?`, tenantID).
-		Scan(&stats.LastPromptTokens, &stats.LastCompletionTokens)
-	_ = conn.QueryRow(`SELECT COALESCE(model, ''), COALESCE(created_at, ''), COALESCE(last_active_at, '') FROM tenants WHERE id = ?`, tenantID).
-		Scan(&stats.CurrentModel, &stats.SessionCreatedAt, &stats.SessionLastActive)
+	for _, t := range tenants {
+		if t.ID != tenantID {
+			continue
+		}
+		stats.CurrentModel = t.Model
+		if !t.CreatedAt.IsZero() {
+			stats.SessionCreatedAt = t.CreatedAt.Format(time.RFC3339)
+		}
+		if !t.LastActiveAt.IsZero() {
+			stats.SessionLastActive = t.LastActiveAt.Format(time.RFC3339)
+		}
+		break
+	}
 }
 
 // GetSessionUsageBuckets aggregates a session's usage into fixed-width time
@@ -1322,8 +1367,7 @@ func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int
 		log.WithError(err).WithField("tenant_id", tenantID).Warn("rewind: restore tenant_state token watermark failed (derived cache; self-heals on next message)")
 	}
 	// preview 重算（主库 tenants.preview）：截断后最新一条 user/assistant 消息变化。
-	if sdb, dbErr := m.sessionDB(tenantID); dbErr == nil {
-		m.recomputeSessionPreview(sdb, tenantID)
-	}
+	// 走接口实现（SQLite / PG 通用），绝不依赖会话库文件句柄。
+	m.refreshTenantPreview(tenantID)
 	return target, turnIdx, nil
 }

@@ -764,9 +764,11 @@ func (a *Agent) markRegistryUnloaded(roleName, instance string) {
 		return
 	}
 	agentKey := "agent:" + roleName + "/" + instance
-	if err := a.interactiveAgentSvc().MarkUnloadedCascade(agentKey); err != nil {
-		log.WithError(err).WithField("agent_key", agentKey).
-			Warn("Failed to mark interactive agent unloaded in the registry")
+	if svc := a.interactiveAgentSvc(); svc != nil {
+		if err := svc.MarkUnloadedCascade(agentKey); err != nil {
+			log.WithError(err).WithField("agent_key", agentKey).
+				Warn("Failed to mark interactive agent unloaded in the registry")
+		}
 	}
 }
 
@@ -858,6 +860,9 @@ func (a *Agent) ReconcileInteractiveAgentsOnStartup() error {
 		return nil
 	}
 	svc := a.interactiveAgentSvc()
+	if svc == nil {
+		return nil
+	}
 
 	var errs []error
 	if n, err := svc.MarkAllRunningAsInterrupted(); err != nil {

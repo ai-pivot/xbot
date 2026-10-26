@@ -30,9 +30,22 @@ import (
 // （agent:<role>/<instance>），也可以是用户（web-<id>）。
 func groupMemberAddr(senderID string) string { return senderID }
 
+// groupUnsupported reports that the active storage backend does not implement
+// the group (Agent 通信指挥室) capability. PG is one such backend: group
+// metadata lives in SQLite-only tables (groups/group_members) and group
+// messages are a SQLite-only SessionService extension. Returning 501 is an
+// explicit answer — leaving the callback nil would panic on call.
+func groupUnsupported(w http.ResponseWriter) {
+	jsonErrorResponse(w, http.StatusNotImplemented, "groups are not supported by this storage backend")
+}
+
 func (wc *WebChannel) handleGroups(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if wc.callbacks.GroupList == nil {
+		groupUnsupported(w)
 		return
 	}
 	senderID := senderIDFromContext(r.Context())
@@ -61,6 +74,10 @@ func (wc *WebChannel) handleGroupCreate(w http.ResponseWriter, r *http.Request) 
 	if strings.TrimSpace(body.Name) == "" {
 		body.Name = "未命名群组"
 	}
+	if wc.callbacks.GroupCreate == nil {
+		groupUnsupported(w)
+		return
+	}
 	group, err := wc.callbacks.GroupCreate(groupMemberAddr(senderID), body.Name, body.Members)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -78,6 +95,10 @@ func (wc *WebChannel) handleGroupMembers(w http.ResponseWriter, r *http.Request)
 	senderID := senderIDFromContext(r.Context())
 	switch r.Method {
 	case http.MethodGet:
+		if wc.callbacks.GroupMembers == nil {
+			groupUnsupported(w)
+			return
+		}
 		members, err := wc.callbacks.GroupMembers(groupMemberAddr(senderID), groupID)
 		if err != nil {
 			jsonErrorResponse(w, groupErrorStatus(err), err.Error())
@@ -90,6 +111,10 @@ func (wc *WebChannel) handleGroupMembers(w http.ResponseWriter, r *http.Request)
 		}
 		if err := decodeJSONBody(r, &body, false); err != nil || strings.TrimSpace(body.MemberAddr) == "" {
 			jsonErrorResponse(w, http.StatusBadRequest, "member_addr is required")
+			return
+		}
+		if wc.callbacks.GroupAddMember == nil {
+			groupUnsupported(w)
 			return
 		}
 		member, err := wc.callbacks.GroupAddMember(groupMemberAddr(senderID), groupID, body.MemberAddr)
@@ -108,6 +133,10 @@ func (wc *WebChannel) handleGroupMessages(w http.ResponseWriter, r *http.Request
 	senderID := senderIDFromContext(r.Context())
 	switch r.Method {
 	case http.MethodGet:
+		if wc.callbacks.GroupMessages == nil {
+			groupUnsupported(w)
+			return
+		}
 		cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit <= 0 {
@@ -157,6 +186,10 @@ func (wc *WebChannel) handleGroupMessages(w http.ResponseWriter, r *http.Request
 		}
 		if err := decodeJSONBody(r, &body, false); err != nil || strings.TrimSpace(body.Content) == "" {
 			jsonErrorResponse(w, http.StatusBadRequest, "content is required")
+			return
+		}
+		if wc.callbacks.GroupAppendMessage == nil {
+			groupUnsupported(w)
 			return
 		}
 		if body.Kind == "" {

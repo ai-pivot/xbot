@@ -857,8 +857,9 @@ func Run(args []string) error {
 		Timeout:  time.Duration(cfg.Agent.LLMRetryTimeout),
 	})
 
-	// PG 后端：token DB / runner token 持久化是 SQLite 文件专属 —— 跳过
-	// （tools.SetRunnerTokenDB / wireRunnerBindingStore 不接线）。
+	// Runner tokens are still a SQLite-only store (tools.SetRunnerTokenDB), but
+	// session→runner bindings live in tenants.runner_id and must be wired on
+	// every backend — otherwise bindings silently vanish after a PG restart.
 	var tokenDB *sqlite.DB
 	if !pgBackend {
 		tokenDB, err = sqlite.Open(dbPath)
@@ -866,8 +867,10 @@ func Run(args []string) error {
 			log.WithError(err).Warn("Failed to open token database, runner tokens disabled")
 		} else {
 			tools.SetRunnerTokenDB(tokenDB.Conn())
-			wireRunnerBindingStore(tokenDB)
 		}
+	}
+	if ms := ag.MultiSession(); ms != nil && ms.Store() != nil {
+		wireRunnerBindingStore(ms.Store().Tenant())
 	}
 
 	// Backend-agnostic storage layer (SQLite adapter or PG). The web channel and

@@ -295,6 +295,7 @@ func WirePluginCommands(pm *PluginManager, registerFn CommandRegisterFn) {
 // are cleaned up before re-adding to avoid duplicates.
 func WirePluginCrons(pm *PluginManager, cronSvc storage.CronStore) {
 	if cronSvc == nil {
+		log.Warn("plugin crons not wired: cron store unavailable (plugin schedules will not run)")
 		return
 	}
 

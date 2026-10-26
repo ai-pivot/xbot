@@ -31,6 +31,12 @@ type Storage interface {
 	// server can run on every backend — it previously required a SQLite file and
 	// was silently disabled on PG.
 	OAuth() OAuthTokenStore
+	// InteractiveAgents is the interactive SubAgent registry (interactive_agents).
+	// It lives on Storage because the agent must be able to rebuild the sub-agent
+	// tree after a restart on EVERY backend — the previous code called
+	// `multiSession.DB().Conn()` directly, which dereferences a nil handle on PG
+	// and panics during startup reconcile.
+	InteractiveAgents() InteractiveAgentStore
 	// CopySessionFrom copies srcTenantID's conversation history (session_messages
 	// + iteration_history) into dstTenantID, returning the message count. This
 	// exists for session fork, which is a data copy — not an application-level
@@ -337,6 +343,28 @@ type CronStore interface {
 	// MigrateFromJSON imports jobs from the legacy cron.json (idempotent: it is a
 	// no-op once the table has rows). Backends without a legacy file ignore it.
 	MigrateFromJSON(dataDir string) error
+}
+
+// InteractiveAgentStore is the storage seam for the interactive SubAgent
+// registry (interactive_agents). The agent uses it to rebuild the sub-agent
+// tree after a process restart, so it must work on every backend — a concrete
+// *sqlite.InteractiveAgentService built from `MultiTenantSession.DB()` panics
+// on PG because there is no SQLite handle at all.
+type InteractiveAgentStore interface {
+	// Upsert inserts or updates one registry row (created_at is preserved).
+	Upsert(rec sqlite.InteractiveAgentRecord) error
+	// Get returns sqlite.ErrInteractiveAgentNotFound when the key is absent.
+	Get(agentKey string) (*sqlite.InteractiveAgentRecord, error)
+	ListChildAgents(parentChannel, parentChatID string) ([]sqlite.InteractiveAgentRecord, error)
+	MarkStatus(agentKey, status string, turnID uint64) error
+	// MarkAllRunningAsInterrupted flips every running row to interrupted and
+	// returns the number of rows changed (startup reconcile step 1).
+	MarkAllRunningAsInterrupted() (int64, error)
+	MarkUnloadedCascade(agentKey string) error
+	// MarkOrphanedIdleUnloaded flips idle rows whose session no longer exists
+	// (and whose key is not live) to unloaded; returns rows changed.
+	MarkOrphanedIdleUnloaded(liveKeys []string) (int64, error)
+	ListActive(cutoff time.Time, includeUnloaded bool) ([]sqlite.AgentActivity, error)
 }
 
 // WebUserInfo describes a web UI user account (for listing).

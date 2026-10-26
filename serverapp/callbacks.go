@@ -838,7 +838,19 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			return chats, err
 		}
 		if webSQL == nil {
-			return nil, nil
+			// PG / backend-agnostic fallback: browse tenants through TenantStore.
+			if channel == "cli" {
+				tenants, terr := listTenantsViaStore(store.Tenant(), "cli", currentChatID)
+				if terr != nil {
+					return nil, terr
+				}
+				rows, lerr := mergeCLISessionRows(currentChatID, tenants)
+				applyWebRunningStatuses(ag, rows)
+				return rows, lerr
+			}
+			rows, lerr := listTenantsViaStore(store.Tenant(), channel, currentChatID)
+			applyWebRunningStatuses(ag, rows)
+			return rows, lerr
 		}
 		// For non-web channels (admin only): list all tenants in that channel.
 		if channel == "cli" {
@@ -851,11 +863,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		return rows, err
 	}
 	callbacks.SubAgentList = func(senderID string, admin bool) ([]web.UserChatWithPreview, error) {
-		if webSQL == nil {
-			return nil, nil
-		}
 		// v63 single-operator: always use the full unfiltered view.
-		rows, err := listTenantsByChannel(webSQL, "agent", "")
+		var rows []web.UserChatWithPreview
+		var err error
+		if webSQL != nil {
+			rows, err = listTenantsByChannel(webSQL, "agent", "")
+		} else {
+			rows, err = listTenantsViaStore(store.Tenant(), "agent", "")
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -893,14 +908,20 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				continue
 			}
 			if ch == "cli" {
-				if webSQL == nil {
-					continue
-				}
 				cliCurrent := ""
 				if current.Channel == "cli" {
 					cliCurrent = current.ChatID
 				}
-				cliChats, err := listCLIChatSessions(webSQL, cliCurrent)
+				var cliChats []web.UserChatWithPreview
+				if webSQL != nil {
+					cliChats, err = listCLIChatSessions(webSQL, cliCurrent)
+				} else {
+					tenants, terr := listTenantsViaStore(store.Tenant(), "cli", cliCurrent)
+					if terr != nil {
+						return web.SessionTreeResult{}, terr
+					}
+					cliChats, err = mergeCLISessionRows(cliCurrent, tenants)
+				}
 				if err != nil {
 					return web.SessionTreeResult{}, err
 				}
@@ -916,25 +937,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if webSQL != nil {
 				tenants, err = listTenantsByChannel(webSQL, ch, chCurrent)
 			} else {
-				// PG path: use TenantStore
-				allTenants, tErr := store.Tenant().ListTenants()
-				if tErr != nil {
-					log.WithError(tErr).WithField("channel", ch).Warn("Failed to list tenants")
-					continue
-				}
-				for _, t := range allTenants {
-					if t.Channel != ch {
-						continue
-					}
-					tenants = append(tenants, web.UserChatWithPreview{
-						ChatID:     t.ChatID,
-						Channel:    t.Channel,
-						Label:      t.Label,
-						LastActive: t.LastActiveAt.Format(time.RFC3339),
-						Preview:    "",
-						IsCurrent:  t.ChatID == chCurrent,
-					})
-				}
+				tenants, err = listTenantsViaStore(store.Tenant(), ch, chCurrent)
 			}
 			if err != nil {
 				log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
@@ -1147,11 +1150,34 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	callbacks.StructuredMessages = structuredList
 
 	// ─── 跨会话活动流（通信视图性能重构）───
-	// 只绑主库连接（webSQL）。PG 后端没有 activity_index/interactive_agents 的
-	// 兼容实现 ⇒ 两个回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
+	// AgentActivityList 走后端无关的 InteractiveAgents store（SQLite / PG 均可）。
+	// ActivityList 仍依赖 activity_index（结构化消息的 SQLite 派生索引）——
+	// PG 没有该表 ⇒ 回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
+	if store != nil {
+		if agentSvc := store.InteractiveAgents(); agentSvc != nil {
+			callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
+				cutoff := time.Now().Add(-sqlite.NormalizeActivityWindow(within))
+				rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]web.AgentActivityEntry, 0, len(rows))
+				for _, r := range rows {
+					out = append(out, web.AgentActivityEntry{
+						AgentKey:    r.AgentKey,
+						RoleName:    r.RoleName,
+						Instance:    r.Instance,
+						Status:      r.Status,
+						UpdatedAt:   r.UpdatedAt,
+						LastReplyAt: r.LastReplyAt,
+					})
+				}
+				return out, nil
+			}
+		}
+	}
 	if webSQL != nil {
 		activityIdx := sqlite.NewActivityIndex(webSQL)
-		agentSvc := sqlite.NewInteractiveAgentService(webSQL)
 		callbacks.ActivityList = func(limit int, within time.Duration, kinds []string) ([]web.ActivityEntry, bool, error) {
 			rows, hasMore, err := activityIdx.List(limit, within, kinds)
 			if err != nil {
@@ -1170,25 +1196,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				})
 			}
 			return out, hasMore, nil
-		}
-		callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
-			cutoff := time.Now().Add(-sqlite.NormalizeActivityWindow(within))
-			rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
-			if err != nil {
-				return nil, err
-			}
-			out := make([]web.AgentActivityEntry, 0, len(rows))
-			for _, r := range rows {
-				out = append(out, web.AgentActivityEntry{
-					AgentKey:    r.AgentKey,
-					RoleName:    r.RoleName,
-					Instance:    r.Instance,
-					Status:      r.Status,
-					UpdatedAt:   r.UpdatedAt,
-					LastReplyAt: r.LastReplyAt,
-				})
-			}
-			return out, nil
 		}
 	}
 
@@ -1340,6 +1347,54 @@ func appendMissingSessionRows(base, extra []web.UserChatWithPreview) []web.UserC
 		base = append(base, row)
 	}
 	return base
+}
+
+// listTenantsViaStore is the backend-agnostic equivalent of listTenantsByChannel.
+// It uses storage.TenantStore.ListTenants (SQLite adapter or PG) instead of a raw
+// *sql.DB, so session browsing works on the PG backend too.
+func listTenantsViaStore(ts storage.TenantStore, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
+	if ts == nil {
+		return nil, fmt.Errorf("tenant store is unavailable")
+	}
+	all, err := ts.ListTenants()
+	if err != nil {
+		return nil, fmt.Errorf("list tenants: %w", err)
+	}
+	var result []web.UserChatWithPreview
+	for _, t := range all {
+		if t.Channel != channel || t.ChatID == "_shared" {
+			continue
+		}
+		preview := t.Preview
+		if runes := []rune(preview); len(runes) > 80 {
+			preview = string(runes[:80])
+		}
+		createdAt := t.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = t.LastActiveAt
+		}
+		chat := web.UserChatWithPreview{
+			ChatID:     t.ChatID,
+			Channel:    t.Channel,
+			Label:      displayLabelForTenant(t.Channel, t.ChatID, t.Label),
+			LastActive: t.LastActiveAt.Format(time.RFC3339),
+			CreatedAt:  createdAt.Format(time.RFC3339),
+			SortOrder:  t.SortOrder,
+			Preview:    preview,
+			IsCurrent:  t.ChatID == currentChatID,
+		}
+		if channel == "agent" {
+			normalized, ok := normalizeSubAgentRow(chat, preview)
+			if !ok {
+				continue
+			}
+			chat = normalized
+		} else if isInteractiveSubAgentTenant(channel, t.ChatID) {
+			continue
+		}
+		result = append(result, chat)
+	}
+	return result, nil
 }
 
 func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, error) {
@@ -1528,6 +1583,13 @@ func listCLIChatSessions(db *sql.DB, currentChatID string) ([]web.UserChatWithPr
 	if err != nil {
 		return nil, err
 	}
+	return mergeCLISessionRows(currentChatID, tenantRows)
+}
+
+// mergeCLISessionRows merges the local CLI session files into the tenant rows
+// (which may come from SQLite's raw browse query or the backend-agnostic
+// TenantStore). Extracted so the PG fallback gets the same CLI session list.
+func mergeCLISessionRows(currentChatID string, tenantRows []web.UserChatWithPreview) ([]web.UserChatWithPreview, error) {
 	tenantByChatID := make(map[string]web.UserChatWithPreview, len(tenantRows))
 	for _, row := range tenantRows {
 		tenantByChatID[row.ChatID] = row

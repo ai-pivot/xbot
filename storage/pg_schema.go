@@ -314,6 +314,37 @@ func initPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			PRIMARY KEY (channel, chat_id)
 		)`,
 
+		// ── Interactive SubAgent registry (restart recovery) ──
+		// Minimal facts needed to rebuild the sub-agent tree; messages live in
+		// each sub-agent's own session. Timestamps are RFC3339 TEXT on purpose:
+		// the registry orders/compares them as fixed-width UTC strings, which is
+		// identical to the SQLite backend (see sqlite.ListActive).
+		`CREATE TABLE IF NOT EXISTS interactive_agents (
+			agent_key TEXT PRIMARY KEY,
+			parent_channel TEXT NOT NULL,
+			parent_chat_id TEXT NOT NULL,
+			role_name TEXT NOT NULL,
+			instance TEXT NOT NULL DEFAULT '',
+			group_id TEXT NOT NULL DEFAULT '',
+			task TEXT NOT NULL DEFAULT '',
+			background BOOLEAN NOT NULL DEFAULT false,
+			status TEXT NOT NULL DEFAULT 'idle',
+			turn_id BIGINT NOT NULL DEFAULT 0,
+			model_name TEXT NOT NULL DEFAULT '',
+			sub_id TEXT NOT NULL DEFAULT '',
+			origin_user_id TEXT NOT NULL DEFAULT '',
+			workspace_root TEXT NOT NULL DEFAULT '',
+			parent_agent_id TEXT NOT NULL DEFAULT '',
+			last_error TEXT NOT NULL DEFAULT '',
+			last_reply TEXT NOT NULL DEFAULT '',
+			last_reply_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS ix_ia_parent ON interactive_agents(parent_channel, parent_chat_id)`,
+		`CREATE INDEX IF NOT EXISTS ix_ia_status ON interactive_agents(status)`,
+		`CREATE INDEX IF NOT EXISTS ix_ia_updated ON interactive_agents(updated_at DESC)`,
+
 		// ── Iteration history ──
 		`CREATE TABLE IF NOT EXISTS iteration_history (
 			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -796,6 +796,7 @@ type sqliteStorage struct {
 	cron      CronStore
 	trigger   event.TriggerStore
 	oauth     OAuthTokenStore
+	agents    InteractiveAgentStore
 	sessionFn func(int64) (SessionStore, error)
 	closeFn   func() error
 }
@@ -816,6 +817,7 @@ func NewSQLiteStorage(
 		cron:      sqlite.NewCronService(mainDB),
 		trigger:   sqlite.NewTriggerService(mainDB),
 		oauth:     &sqliteOAuthTokenStore{db: mainDB},
+		agents:    newSQLiteInteractiveAgentStore(mainDB),
 		sessionFn: sessionFactory,
 		closeFn:   close,
 	}
@@ -824,13 +826,14 @@ func NewSQLiteStorage(
 func (s *sqliteStorage) Session(tenantID int64) (SessionStore, error) {
 	return s.sessionFn(tenantID)
 }
-func (s *sqliteStorage) Tenant() TenantStore         { return s.tenant }
-func (s *sqliteStorage) Memory() MemoryStore         { return s.memory }
-func (s *sqliteStorage) Config() ConfigStore         { return s.config }
-func (s *sqliteStorage) Cron() CronStore             { return s.cron }
-func (s *sqliteStorage) Trigger() event.TriggerStore { return s.trigger }
-func (s *sqliteStorage) OAuth() OAuthTokenStore      { return s.oauth }
-func (s *sqliteStorage) Close() error                { return s.closeFn() }
+func (s *sqliteStorage) Tenant() TenantStore                      { return s.tenant }
+func (s *sqliteStorage) Memory() MemoryStore                      { return s.memory }
+func (s *sqliteStorage) Config() ConfigStore                      { return s.config }
+func (s *sqliteStorage) Cron() CronStore                          { return s.cron }
+func (s *sqliteStorage) Trigger() event.TriggerStore              { return s.trigger }
+func (s *sqliteStorage) OAuth() OAuthTokenStore                   { return s.oauth }
+func (s *sqliteStorage) InteractiveAgents() InteractiveAgentStore { return s.agents }
+func (s *sqliteStorage) Close() error                             { return s.closeFn() }
 
 // CopySessionFrom copies a session's conversation into another session.
 //
@@ -861,6 +864,19 @@ func (s *sqliteStorage) CopySessionFrom(dstTenantID, srcTenantID int64) (int, er
 
 // Compile-time check.
 var _ Storage = (*sqliteStorage)(nil)
+
+// sqliteInteractiveAgentStore adapts the SQLite interactive_agents table to
+// the backend-neutral InteractiveAgentStore. The concrete service already has
+// the exact method set; this wrapper only bridges the type system.
+type sqliteInteractiveAgentStore struct {
+	*sqlite.InteractiveAgentService
+}
+
+func newSQLiteInteractiveAgentStore(db *sqlite.DB) InteractiveAgentStore {
+	return &sqliteInteractiveAgentStore{sqlite.NewInteractiveAgentService(db.Conn())}
+}
+
+var _ InteractiveAgentStore = (*sqliteInteractiveAgentStore)(nil)
 
 // sqliteOAuthTokenStore adapts the SQLite oauth_tokens table to the
 // backend-neutral OAuthTokenStore. It keeps the credential semantics of the

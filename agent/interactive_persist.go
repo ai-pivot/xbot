@@ -23,6 +23,7 @@ import (
 
 	"xbot/bus"
 	log "xbot/logger"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -30,9 +31,13 @@ import (
 // maxAgentRestoreDepth 限制递归深度，防御 parent_key 意外成环。
 const maxAgentRestoreDepth = 6
 
-// interactiveAgentSvc 返回注册表的读写入口。
-func (a *Agent) interactiveAgentSvc() *sqlite.InteractiveAgentService {
-	return sqlite.NewInteractiveAgentService(a.multiSession.DB().Conn())
+// interactiveAgentSvc 返回注册表的读写入口（后端无关）。
+// PG 后端没有 SQLite 句柄 —— 必须经 storage.Storage，绝不调用 DB()。
+func (a *Agent) interactiveAgentSvc() storage.InteractiveAgentStore {
+	if a == nil || a.multiSession == nil || a.multiSession.Store() == nil {
+		return nil
+	}
+	return a.multiSession.Store().InteractiveAgents()
 }
 
 // splitParentKey 把 "channel:chatID" 拆成两段。
@@ -49,6 +54,10 @@ func splitParentKey(key string) (channel, chatID string) {
 // status 传当前状态（running / idle / unloaded）。
 func (a *Agent) persistInteractiveAgent(ia *interactiveAgent, status string) {
 	if ia == nil || a.multiSession == nil {
+		return
+	}
+	svc := a.interactiveAgentSvc()
+	if svc == nil {
 		return
 	}
 	parentChannel, parentChatID := splitParentKey(ia.parentKey)
@@ -82,7 +91,7 @@ func (a *Agent) persistInteractiveAgent(ia *interactiveAgent, status string) {
 		LastError:     ia.lastError,
 		LastReply:     ia.lastReply,
 	}
-	if err := a.interactiveAgentSvc().Upsert(rec); err != nil {
+	if err := svc.Upsert(rec); err != nil {
 		log.WithError(err).WithField("agent_key", rec.AgentKey).
 			Warn("Failed to persist interactive agent (restart recovery will miss it)")
 	}
@@ -93,8 +102,12 @@ func (a *Agent) markPersistedAgentStatus(ia *interactiveAgent, status string, tu
 	if ia == nil || a.multiSession == nil {
 		return
 	}
+	svc := a.interactiveAgentSvc()
+	if svc == nil {
+		return
+	}
 	key := "agent:" + ia.roleName + "/" + ia.instance
-	if err := a.interactiveAgentSvc().MarkStatus(key, status, turnID); err != nil {
+	if err := svc.MarkStatus(key, status, turnID); err != nil {
 		log.WithError(err).WithField("agent_key", key).Warn("Failed to mark interactive agent status")
 	}
 }
@@ -107,13 +120,17 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 	if a.multiSession == nil || parentChannel == "" || parentChatID == "" {
 		return
 	}
+	svc := a.interactiveAgentSvc()
+	if svc == nil {
+		return
+	}
 	if depth > maxAgentRestoreDepth {
 		log.WithFields(log.Fields{"parent": parentChannel + ":" + parentChatID, "depth": depth}).
 			Warn("Sub-agent restore depth exceeded — stopping recursion (possible parent cycle)")
 		return
 	}
 
-	rows, err := a.interactiveAgentSvc().ListChildAgents(parentChannel, parentChatID)
+	rows, err := svc.ListChildAgents(parentChannel, parentChatID)
 	if err != nil {
 		log.WithError(err).Warn("Failed to list child agents for restore")
 		return
@@ -276,8 +293,10 @@ func (a *Agent) resumeIfPreviouslyRunning(rec sqlite.InteractiveAgentRecord, ia 
 		return // 本进程里它已经真的在跑，不要再插一条 resume
 	}
 	key := "agent:" + rec.RoleName + "/" + rec.Instance
-	if err := a.interactiveAgentSvc().MarkStatus(key, sqlite.InteractiveAgentInterrupted, rec.TurnID); err != nil {
-		log.WithError(err).WithField("agent_key", key).Warn("Restore: failed to mark interrupted")
+	if svc := a.interactiveAgentSvc(); svc != nil {
+		if err := svc.MarkStatus(key, sqlite.InteractiveAgentInterrupted, rec.TurnID); err != nil {
+			log.WithError(err).WithField("agent_key", key).Warn("Restore: failed to mark interrupted")
+		}
 	}
 	log.WithFields(log.Fields{
 		"agent_key": key,

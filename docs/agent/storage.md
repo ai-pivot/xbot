@@ -19,9 +19,20 @@ type Storage interface {
     Tenant() TenantStore                          // tenant registry + per-session DB metadata + model binding
     Memory() MemoryStore                          // core memory + long-term + events
     Config() ConfigStore                          // user profile/settings, LLM subs, usage, cron, triggers, share, web auth
+    Cron() CronStore                              // scheduled jobs (cron_jobs)
+    Trigger() event.TriggerStore                  // webhook triggers (event_triggers)
+    OAuth() OAuthTokenStore                       // OAuth credentials (oauth_tokens)
+    InteractiveAgents() InteractiveAgentStore     // interactive SubAgent registry (interactive_agents)
+    CopySessionFrom(dst, src int64) (int, error)  // session fork
     Close() error
 }
 ```
+
+The last four accessors exist because their runtime owners previously held a concrete
+`*sqlite.*` service. On PG the SQLite handle is nil, so a concrete handle meant the
+feature either panicked (interactive registry: `DB().Conn()` on nil) or silently
+disappeared (cron / webhook / OAuth). **Any new cross-cutting store must be added
+here, not threaded as `MultiSession().DB()`.**
 
 Sub-interfaces decouple the SQLite-specific concrete types that used to leak upward:
 
@@ -41,8 +52,9 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   (`sqliteSessionStore` / `sqliteTenantStore` / `sqliteMemoryStore` / `sqliteConfigStore`);
   `NewSQLiteStorage`, `NewSQLiteConfigStore`, `NewSQLiteTenantStore`, `NewSQLiteMemoryStore`
 - `storage/pg_storage.go` — `NewPGStorage(ctx, dsn)` / `NewPGStorageWithPool(pool)`
-- `storage/pg_schema.go` — `initPGSchema(ctx, pool)` — idempotent DDL for all 25 tables
+- `storage/pg_schema.go` — `initPGSchema(ctx, pool)` — idempotent DDL for all tables
 - `storage/pg_{session,tenant,memory,config}.go` — the PG implementations
+- `storage/pg_interactive_agents.go` — PG `InteractiveAgentStore` (restart recovery registry)
 
 ## Wiring
 
@@ -57,7 +69,12 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   `MultiTenantSession.SessionServiceForSQLite(tenantID)` which returns an explicit error
   on PG (**never a silent degradation**).
 - `agent.MultiSession().DB()` is the raw SQLite handle (nil on PG) — used only for the
-  WAL checkpoint on shutdown and legacy browse SQL; nothing new should depend on it.
+  WAL checkpoint on shutdown and runner-token/legacy browse SQL that has no PG store
+  yet. **Nothing in the agent loop may depend on it**; session, tenant, config, cron,
+  trigger, OAuth and the interactive SubAgent registry all go through `Storage`.
+- `NewMultiTenantWithStorage(store)` builds a session on an injected backend (no SQLite
+  handle). It is the dependency-injection entry point and makes the “nil DB” contract
+  testable without a PG server.
 
 ## Gotchas (PG)
 
@@ -379,6 +396,27 @@ nil on PG. They are now reached through `Storage`:
 | `Storage.Cron()` | `CronStore` | `cron.Scheduler`, `tools.CronTool`, `plugin.WirePluginCrons`, web cron panel |
 | `Storage.Trigger()` | `event.TriggerStore` | `event.Router` (webhook dispatch) |
 | `Storage.OAuth()` | `OAuthTokenStore` | `oauth.Manager` via a thin adapter in `serverapp` |
+| `Storage.InteractiveAgents()` | `InteractiveAgentStore` | `agent.ReconcileInteractiveAgentsOnStartup` / restore / persist / unload |
+
+The interactive registry is the canonical example of why this table matters: the old
+code built `sqlite.NewInteractiveAgentService(multiSession.DB().Conn())`; on PG
+`DB()` is nil, so **startup reconciliation panicked** (`nil pointer dereference` in
+`(*sqlite.DB).Conn`). Guard: `agent/interactive_reconcile_nosqlite_test.go` +
+`storage/contract_interactive_agent_test.go` (runs on PG when `XBOT_PG_TEST_DSN` is set).
+
+### Remaining explicitly SQLite-only capabilities
+
+These are **known gaps, not silent fallbacks** — they either return a readable error
+or 501/503 rather than pretending to work:
+
+| Capability | PG behaviour | Why it is not abstracted yet |
+|---|---|---|
+| Structured messages (`report`/`ask_user`/`decision`/inbox), group messages | readable error (`structured messages are not supported by this storage backend`) | a SQLite-only `*sqlite.SessionService` extension; needs a `StructuredStore` contract + PG tables |
+| Activity feed (`activity_index`) | callback stays nil → web 503 | derived index of structured messages; meaningless until structured messages exist on PG |
+| Groups (`groups`/`group_members`) | web endpoints return 501 | metadata is simple, but group *messages* depend on the structured store above |
+| Runner management / runner tokens (`tools.GetRunnerTokenDB`) | runner RPCs return `runner management not configured` | whole runner persistence is still a process-global `*sql.DB`; needs a `RunnerStore` contract |
+| Raw SQLite browse helpers (`listTenantsByChannel` etc.) | **functional fallback now**: `TenantStore.ListTenants` supplies the same rows (label/preview/sort order) | kept for SQLite because they can use `rowid` tie-breaks; PG uses the store |
+| WAL checkpoint on shutdown | skipped (no file) | physical SQLite concept |
 
 Consequences worth knowing:
 

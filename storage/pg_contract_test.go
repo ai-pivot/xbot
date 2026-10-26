@@ -96,6 +96,7 @@ func NewPGStorageWithPool(pool *pgxpool.Pool) (Storage, error) {
 	pg.cron = newPGCronStore(pool)
 	pg.trigger = newPGTriggerStore(pool)
 	pg.oauth = newPGOAuthTokenStore(pool)
+	pg.agents = newPGInteractiveAgentStore(pool)
 	pg.session = newPGSessionStore(pool)
 	return pg, nil
 }
