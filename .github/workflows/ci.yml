@@ -2,9 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # master = 发布线；experiment/xbot = 迭代主线（2026-10-26 用户令：迭代分支必须有门禁，
+    # 否则推送只靠本地三件套，质量会退化）。两者都跑同一套 7 job。
+    branches: [master, experiment/xbot]
   pull_request:
-    branches: [master]
+    branches: [master, experiment/xbot]
 
 permissions:
   contents: read
