@@ -133,8 +133,12 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 			continue
 		}
 		restored++
-		// 递归恢复它的孩子：孙代理的 parent 是 (agent, "<role>/<instance>")。
-		a.restoreInteractiveTree(ctx, "agent", rec.RoleName+"/"+rec.Instance, depth+1)
+		// 递归恢复它的孩子。子代理的 parent 记录是
+		//   (channel=<同一 channel>, chatID="<本节点的 chatID>/<role>:<instance>")
+		// —— 与写入侧保持一致；旧实现查 ("agent", "<role>/<instance>")，
+		// 和 DB 里存的格式对不上，孙代理永远恢复不出来。
+		childChatID := rec.ParentChatID + "/" + rec.RoleName + ":" + rec.Instance
+		a.restoreInteractiveTree(ctx, rec.ParentChannel, childChatID, depth+1)
 	}
 	if restored > 0 {
 		log.WithFields(log.Fields{
@@ -146,9 +150,34 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 	}
 }
 
+// restoreMapKey 由持久化记录推出「内存里的会话 key」与「origin chatID」。
+//
+// 不变式（2026-10-26 定，有回归测试锁住）：
+//
+//	spawn 时   key = interactiveKey(originChannel, originChatID, role, instance)
+//	restore 时 必须得到**同一个**字符串
+//
+// 记录里 parentChatID 形如 "<originChatID>/<parentRole>:<parentInstance>"，
+// 因此 origin chatID 就是第一个 "/" 之前那段。两处一旦走偏，恢复出来的实例
+// 会挂在错 key 下，父代理随后报
+// "no sub-agent with instance=… in your sub-agent tree"。
+func restoreMapKey(rec sqlite.InteractiveAgentRecord) (originChatID, mapKey string) {
+	originChatID = rec.ParentChatID
+	if i := strings.Index(originChatID, "/"); i > 0 {
+		originChatID = originChatID[:i]
+	}
+	return originChatID, interactiveKey(rec.ParentChannel, originChatID, rec.RoleName, rec.Instance)
+}
+
 // restoreOneAgent 重建单个子代理并注册 AgentChannel（幂等）。
 func (a *Agent) restoreOneAgent(ctx context.Context, rec sqlite.InteractiveAgentRecord) error {
-	mapKey := interactiveKey(rec.ParentChannel, rec.ParentChatID, rec.RoleName, rec.Instance)
+	// ⛔ 2026-10-26 树断链 bug：spawn 用 interactiveKey(origin, role, instance) 建 key，
+	// 而恢复用 interactiveKey(parentChannel, parentChatID, ...) —— parentChatID 是
+	// 「<origin_chatID>/<parent_role>:<parent_instance>」，两者拼出来根本不是同一个 key。
+	// 后果：实例挂在错 key 下，SubAgent/SendMessage 按 (origin, role, instance) 解析时
+	// 找不到 ⇒ 父代理报 "no sub-agent with instance=… in your sub-agent tree"。
+	// 父的 origin chatID 就是 parentChatID 里第一个 "/" 之前那段。
+	originChatID, mapKey := restoreMapKey(rec)
 	if existing, ok := a.interactiveSubAgents.Load(mapKey); ok {
 		// 正在销毁的那一代不挡恢复（墓碑会话没有可用资源）：摘掉后重建。
 		if ia, ok := existing.(*interactiveAgent); ok && ia != nil && ia.isDestroyed() {
@@ -173,13 +202,16 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec sqlite.InteractiveAgent
 	//
 	// 提示词必须带 role rules（如 roles/RULES.md）：这里只传 role.SystemPrompt 的话，
 	// 重启后恢复出来的子代理会静默丢掉自己声明的规则（2026-10-22 review 发现的绕过路径）。
+	// 渲染/归属用 origin chatID（= parentChatID 去掉 "/<role>:<instance>" 后缀），
+	// 不能把带后缀的 parentChatID 当成聊天 ID 传下去 —— 那会让子代理把消息
+	// 路由到 "web-4/court.shoufu:main" 这种不存在的会话。
 	parentMsg := bus.InboundMessage{
 		Channel:  rec.ParentChannel,
-		ChatID:   rec.ParentChatID,
+		ChatID:   originChatID,
 		SenderID: rec.OriginUserID,
 		Content:  rec.Task,
 	}
-	parentCtx := a.buildParentToolContext(ctx, rec.ParentChannel, rec.ParentChatID, rec.OriginUserID, parentMsg)
+	parentCtx := a.buildParentToolContext(ctx, rec.ParentChannel, originChatID, rec.OriginUserID, parentMsg)
 	cfg, err := a.buildSubAgentRunConfig(
 		ctx, parentCtx, rec.Task, tools.RoleSystemPrompt(role), role.AllowedTools, role.Capabilities,
 		role.Name, true, rec.Instance, rec.ModelName)
