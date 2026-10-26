@@ -124,6 +124,14 @@ type GatewayEvent struct {
 type GatewayConfig struct {
 	// Intents 为空时用 DefaultIntents。
 	Intents int
+	// WSURLOverride 非空时**跳过 GET /gateway**，直接连这个 wss 地址。
+	//
+	// 2026-10-26 实测背景：正式域名下 GET /gateway 会 401（11298 IP 白名单），
+	// 但**直连 wss 是通的**（能收到 op=10 Hello）：
+	//   wss://api.sgroup.qq.com/websocket/   → Hello
+	//   wss://api.bot.qq.com/websocket/      → Hello
+	// 因此提供一个"固定地址"旁路，绕过 /gateway 那一步。
+	WSURLOverride string
 	// Reconnect 是断线退避策略；零值用 DefaultReconnectPolicy。
 	Reconnect ReconnectPolicy
 	// HelloTimeout 是连上后等 op=10 的上限；0 用 15s。
@@ -241,9 +249,16 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("get access token: %w", err)
 	}
-	wsURL, err := g.gatewayURL(ctx)
-	if err != nil {
-		return false, fmt.Errorf("get gateway url: %w", err)
+	var wsURL string
+	if ov := g.cfg.WSURLOverride; ov != "" {
+		wsURL = ov
+		g.logf("gateway ws url (override, skip /gateway): %s", wsURL)
+	} else {
+		u, err := g.gatewayURL(ctx)
+		if err != nil {
+			return false, fmt.Errorf("get gateway url: %w", err)
+		}
+		wsURL = u
 	}
 
 	conn, err := g.dialer.Dial(ctx, wsURL, nil)

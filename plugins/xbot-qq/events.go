@@ -133,6 +133,10 @@ type eventEnvelope struct {
 		MemberOpenID string `json:"member_openid"`
 		UnionOpenID  string `json:"union_openid"`
 	} `json:"author"`
+	// Mentions 是被 @ 的用户列表（GROUP_MESSAGE_CREATE 才有；用于判断是否 @ 了机器人）。
+	// 出处：group_message_create.html §事件体「被 @ 的成员列表见 mentions 字段」，
+	// 其中 User.bot 标明该成员是否为机器人。
+	Mentions []MentionUser `json:"mentions"`
 }
 
 // SupportedEvent 报告该事件是否由本渠道处理。
@@ -143,7 +147,7 @@ type eventEnvelope struct {
 // （main.go handleGatewayEvent）显式丢弃并记 debug 日志 —— 这里是第二道防线。
 func SupportedEvent(eventType string) bool {
 	switch eventType {
-	case EventC2CMessageCreate, EventGroupAtMessageCreate:
+	case EventC2CMessageCreate, EventGroupAtMessageCreate, EventGroupMessageCreate:
 		return true
 	default:
 		return false
@@ -162,6 +166,22 @@ func ParseInbound(eventType string, data json.RawMessage) (Inbound, bool, error)
 	var d eventEnvelope
 	if err := json.Unmarshal(data, &d); err != nil {
 		return Inbound{}, true, fmt.Errorf("parse %s payload: %w", eventType, err)
+	}
+
+	// 群全量（GROUP_MESSAGE_CREATE）：群里每条消息都会推，必须自己判断有没有 @ 机器人。
+	// 判据：mentions 里存在 bot=true 的成员（官方文档：被 @ 的成员见 mentions 字段）。
+	// 没 @ 机器人就 ok=false 静默跳过 —— 不进消息循环、不调 LLM、不出站。
+	if eventType == EventGroupMessageCreate {
+		mentionedBot := false
+		for i := range d.Mentions {
+			if d.Mentions[i].Bot {
+				mentionedBot = true
+				break
+			}
+		}
+		if !mentionedBot {
+			return Inbound{}, false, nil
+		}
 	}
 
 	sceneExt := parseSceneExt(d.MessageScene.Ext)
@@ -225,4 +245,16 @@ func ParseInbound(eventType string, data json.RawMessage) (Inbound, bool, error)
 		return in, true, fmt.Errorf("%s payload has no message id (d.id required for passive reply)", eventType)
 	}
 	return in, true, nil
+}
+
+// MentionUser 是 mentions 数组里的一个被 @ 成员。
+//
+// 出处：group_message_create.html §事件体 → mentions []User，
+// User.bot = 是否为机器人；群内 @ 机器人时该机器人会出现在这里。
+type MentionUser struct {
+	ID           string `json:"id"`
+	Username     string `json:"username"`
+	Bot          bool   `json:"bot"`
+	MemberOpenID string `json:"member_openid"`
+	UnionOpenID  string `json:"union_openid"`
 }

@@ -370,10 +370,9 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 	// 开启了接收所有消息时都会推送此事件」）。所以拆分只能发生在**分发层**：
 	// 群全量消息在这里显式丢弃 —— 只记 debug 级日志，不进消息循环、不产生
 	// inbound / LLM 调用 / 出站、不计 metrics。
-	if ev.Type == EventGroupMessageCreate {
-		a.logf("debug: drop %s (id=%s) — %s", ev.Type, ev.ID, debugDropReason)
-		return
-	}
+	// 群全量（GROUP_MESSAGE_CREATE）不再在此丢弃：是否 @ 机器人由 ParseInbound
+	// 依据 mentions 判定（2026-10-26 修正 —— 群里开了「接收所有消息」时平台只推
+	// 全量事件，此前在这里一律丢弃，表现为「群里 @ 机器人毫无反应」）。
 
 	in, ok, err := ParseInbound(ev.Type, ev.Data)
 	if err != nil {

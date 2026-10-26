@@ -37,6 +37,8 @@ const (
 	// KeyIntents 允许显式覆盖订阅的事件位（十进制）。留空则用 DefaultIntents。
 	// 用途：QQ 的「群聊」与「频道」走不同 intent，现场排障时无需重新编译即可切换。
 	KeyIntents = "intents"
+	// KeyWSURL 固定 wss 地址；非空时跳过 GET /gateway（绕过其 IP 白名单校验）。
+	KeyWSURL = "ws_url"
 )
 
 // Config 是 QQ 渠道的运行时配置。
@@ -57,6 +59,8 @@ type Config struct {
 	// Intents 覆盖订阅的事件位（十进制）。0 表示用 DefaultIntents。
 	// QQ「群聊」用 1<<25，「频道」用 1<<30，现场可热切。
 	Intents int
+	// WSURL 固定 wss 地址；非空时跳过 GET /gateway。用于绕过 /gateway 的 IP 白名单。
+	WSURL string
 }
 
 // ParseConfig 把 host 推来的字符串键值解析成 Config。
@@ -79,6 +83,7 @@ func ParseConfig(raw map[string]string) Config {
 		Allow:     ParsePatterns(get(KeyAllow)),
 		Admins:    ParsePatterns(get(KeyAdmins)),
 		Intents:   parseIntents(get(KeyIntents)),
+		WSURL:     get(KeyWSURL),
 	}
 }
 

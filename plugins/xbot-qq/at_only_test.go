@@ -72,16 +72,48 @@ func TestGroupFullMessageDropped(t *testing.T) {
 	}
 }
 
-// TestGroupFullMessageNotParseable 第二道防线：解析层也不认这个事件类型。
-func TestGroupFullMessageNotParseable(t *testing.T) {
-	if SupportedEvent(EventGroupMessageCreate) {
-		t.Fatalf("SupportedEvent(GROUP_MESSAGE_CREATE) = true, want false")
+// TestGroupFullMessageRequiresBotMention 群全量消息：只在 mentions 里含机器人时才处理。
+//
+// 2026-10-26 修正：真实群开启了「接收所有消息」，平台推的是
+// GROUP_MESSAGE_CREATE（全量），而不是 GROUP_AT_MESSAGE_CREATE。
+// 此前把它整类丢弃，导致「群里 @ 机器人毫无反应」。正确做法是接收全量事件、
+// 用 mentions[].bot 判断有没有 @ 机器人：
+//   - 没 @ 机器人 → ok=false（不进消息循环、不调 LLM、不出站）
+//   - @ 了机器人 → 正常解析并处理
+func TestGroupFullMessageRequiresBotMention(t *testing.T) {
+	if !SupportedEvent(EventGroupMessageCreate) {
+		t.Fatalf("SupportedEvent(GROUP_MESSAGE_CREATE) = false, want true (全量模式下 @ 事件走这个类型)")
 	}
-	if _, ok, err := ParseInbound(EventGroupMessageCreate,
-		json.RawMessage(groupPayload("G", "M", "MSG-1", "@bot hi"))); ok || err != nil {
-		t.Fatalf("ParseInbound(GROUP_MESSAGE_CREATE) = ok=%t err=%v, want ok=false err=nil", ok, err)
+
+	// 1) 普通群消息（无 mentions）→ 必须不处理
+	plain := json.RawMessage(`{"id":"M1","content":"大家好","group_openid":"G1","author":{"member_openid":"U1","username":"someone"}}`)
+	if _, ok, err := ParseInbound(EventGroupMessageCreate, plain); ok || err != nil {
+		t.Fatalf("无 mentions 的群消息应被忽略，实际 ok=%t err=%v", ok, err)
 	}
-	// 两个真正要处理的事件类型保持可用。
+
+	// 2) mentions 里只有普通成员 → 仍不处理
+	memberOnly := json.RawMessage(`{"id":"M2","content":"<@U2> 你看","group_openid":"G1","author":{"member_openid":"U1"},"mentions":[{"id":"U2","username":"bob","bot":false}]}`)
+	if _, ok, _ := ParseInbound(EventGroupMessageCreate, memberOnly); ok {
+		t.Fatalf("只 @ 了普通成员时不应处理")
+	}
+
+	// 3) mentions 里含机器人 → 处理
+	botMentioned := json.RawMessage(`{"id":"M3","content":"<@BOT1> 帮我查下","group_openid":"G1","author":{"member_openid":"U1","username":"someone"},"mentions":[{"id":"BOT1","username":"机器人","bot":true}]}`)
+	in, ok, err := ParseInbound(EventGroupMessageCreate, botMentioned)
+	if err != nil || !ok {
+		t.Fatalf("@ 机器人时应处理，实际 ok=%t err=%v", ok, err)
+	}
+	if got := in.ChatID(); got != "group:G1" {
+		t.Fatalf("chat id = %q, want group:G1", got)
+	}
+	if in.SenderOpenID != "U1" {
+		t.Fatalf("sender = %q, want U1", in.SenderOpenID)
+	}
+	if in.Content == "" {
+		t.Fatalf("content 不应为空")
+	}
+
+	// 4) 另两个事件类型保持可用
 	for _, et := range []string{EventC2CMessageCreate, EventGroupAtMessageCreate} {
 		if !SupportedEvent(et) {
 			t.Fatalf("SupportedEvent(%s) = false, want true", et)
