@@ -73,8 +73,8 @@ LLM consolidates and summarizes the memory blob.
 | Search | Basic text matching (grep-style) |
 
 {{< hint type=tip >}}
-**Flat is the right choice** for most users. It's dead simple, requires zero
-additional setup, and works great for remembering preferences and key facts.
+**Flat is dead simple** — a good fit when you want a human-readable text blob
+and no SQLite. The built-in `xbot` provider is the default.
 {{< /hint >}}
 
 ## Letta Provider

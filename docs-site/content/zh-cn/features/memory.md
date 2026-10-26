@@ -47,7 +47,7 @@ LLM_EMBEDDING_MODEL=text-embedding-3-small
 | 搜索 | 基础文本匹配（grep 风格） |
 
 {{< hint type=tip >}}
-**大多数用户应该选择 Flat。** 它极其简单，无需额外配置，记住偏好和关键信息效果很好。
+**Flat 极其简单**——想要人类可读、不依赖 SQLite 的文本块时很合适。内置 `xbot` 才是默认值。
 {{< /hint >}}
 
 ## Letta Provider
