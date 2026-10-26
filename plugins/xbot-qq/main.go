@@ -109,6 +109,9 @@ type app struct {
 	// newRuntime 可在单测里替换成注入依赖的运行时构造函数。
 	newRuntime func(cfg Config, logf func(string, ...any)) *channelRuntime
 
+	// attachments 下载并落盘多模态附件（约束 3）。nil 时按 $XBOT_HOME 构造。
+	attachments *AttachmentStore
+
 	// dedup 挡住网关的重复推送（同一 msg_idx / msg_id 只能进一次 host），
 	// 见 dedup.go 与约束 5。
 	dedup *inboundDeduper
@@ -116,9 +119,10 @@ type app struct {
 
 func newApp(logw io.Writer) *app {
 	return &app{
-		logw:       logw,
-		newRuntime: newDefaultRuntime,
-		dedup:      newInboundDeduper(defaultDedupTTL, defaultDedupMax),
+		logw:        logw,
+		newRuntime:  newDefaultRuntime,
+		dedup:       newInboundDeduper(defaultDedupTTL, defaultDedupMax),
+		attachments: NewAttachmentStore("", nil),
 	}
 }
 
@@ -321,7 +325,7 @@ func (a *app) declareChannelPrompt(enc *json.Encoder) {
 // debugDropReason 说明为什么群全量消息被丢弃（日志与测试共用，防止后人"修好"它）。
 const debugDropReason = "只处理 @ 机器人消息；群全量消息一律丢弃"
 
-func (a *app) handleGatewayEvent(enc *json.Encoder, _ context.Context, ev GatewayEvent) {
+func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev GatewayEvent) {
 	// ── 约束 2：只处理 @ 消息 ──
 	//
 	// 官方 intents 只有 GROUP_AND_C2C_EVENT (1<<25) 一个位同时覆盖
@@ -403,6 +407,19 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, _ context.Context, ev Gatewa
 	// 记录锚点，让随后的回复能作为"被动消息"带上 msg_id（按场景有效期）。
 	if rt := a.runtime(); rt != nil {
 		rt.RememberInbound(in.ChatID(), in.MessageID)
+	}
+
+	// ── 只有被准入的消息才下载附件 ──
+	//
+	// 非白名单消息的纪律是"零外部 API 调用"，下载附件也是外部调用，
+	// 所以必须在 allow 判定之后。
+	if len(in.Attachments) > 0 {
+		actx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		block := a.attachments.Ingest(actx, in.Attachments)
+		cancel()
+		if block != "" {
+			content = content + "\n\n" + block
+		}
 	}
 
 	cand := NewInboundCandidate(in.Identity(), content, in.MessageID, cfg.Policy())

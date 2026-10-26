@@ -66,6 +66,8 @@ type Inbound struct {
 	SenderName string
 	// GroupOpenID 是群 openid，仅群聊非空。
 	GroupOpenID string
+	// Attachments 是官方 attachments[]（多模态：图片/语音/视频/文件）。
+	Attachments []MessageAttachment
 	// MsgIdx 是 message_scene.ext 里的 msg_idx（官方的去重键）。缺失时为 0。
 	MsgIdx int
 	// SceneExt 是 message_scene.ext 解析后的 k=v 映射（含 msg_idx / ref_msg_idx /
@@ -108,6 +110,9 @@ type eventEnvelope struct {
 	Content     string `json:"content"`
 	GroupOpenID string `json:"group_openid"`
 	Timestamp   string `json:"timestamp"`
+	// Attachments 出处：事件页 attachments 数组（MessageAttachment）：
+	// url / filename / width / height / size / content_type / voice_wav_url / asr_refer_text。
+	Attachments []MessageAttachment `json:"attachments"`
 	// MessageScene 出处：事件页 message_scene 对象；ext 是 **[]string 的 "k=v" 串**
 	// （msg_idx / ref_msg_idx / auth_token …）。
 	MessageScene struct {
@@ -156,6 +161,7 @@ func ParseInbound(eventType string, data json.RawMessage) (Inbound, bool, error)
 	in := Inbound{
 		EventType:   eventType,
 		MessageID:   d.ID,
+		Attachments: d.Attachments,
 		SceneExt:    sceneExt,
 		MsgIdx:      sceneExtInt(sceneExt, "msg_idx"),
 		Content:     strings.TrimSpace(d.Content),
