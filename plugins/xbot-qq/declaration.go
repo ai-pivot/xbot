@@ -34,6 +34,8 @@ type SettingDef struct {
 }
 
 // ChannelDeclaration 是 activate 时回给 host 的 channel_provider 声明。
+// 注意：配置键只有 app_id / app_secret / allow / admins / enabled ——
+// 不含任何 OneBot 字段（反向 WS 地址 / 静态 token）。
 type ChannelDeclaration struct {
 	Name         string       `json:"name"`
 	ConfigSchema []SettingDef `json:"config_schema"`
@@ -46,8 +48,12 @@ const ChannelName = "qq"
 
 // qqChannelDeclaration 返回 QQ 渠道的完整声明。
 //
-// 配置项顺序即 UI 面板顺序：先开关与连接，再准入，最后权限 ——
+// 配置项顺序即 UI 面板顺序：先开关与凭据，再准入，最后权限 ——
 // 让用户在填白名单之前先看到"留空 = 不处理任何消息"的说明。
+//
+// 只暴露 QQ 官方开放平台的凭据（app_id + app_secret）。OneBot / NapCat 的
+// 反向 WS 与静态 token 已作废，不能再出现在配置面板里（否则用户会以为还要
+// 跑一个第三方网关）。
 func qqChannelDeclaration() ChannelDeclaration {
 	return ChannelDeclaration{
 		Name: ChannelName,
@@ -55,23 +61,23 @@ func qqChannelDeclaration() ChannelDeclaration {
 			{
 				Key:          KeyEnabled,
 				Label:        "启用 QQ 渠道",
-				Description:  "关闭时插件保持加载但不连接 OneBot。",
+				Description:  "关闭时插件保持加载但不连接 QQ 官方网关。",
 				Type:         "toggle",
 				DefaultValue: "false",
 				Category:     "连接",
 			},
 			{
-				Key:          KeyWSURL,
-				Label:        "OneBot WS 地址",
-				Description:  "OneBot v11 的正向 WebSocket 地址，例如 ws://127.0.0.1:3001。",
+				Key:          KeyAppID,
+				Label:        "AppID",
+				Description:  "QQ 开放平台 → 机器人 → 开发设置 里的 AppID（纯数字）。",
 				Type:         "text",
 				DefaultValue: "",
 				Category:     "连接",
 			},
 			{
-				Key:          KeyAccessToken,
-				Label:        "Access Token",
-				Description:  "OneBot 的 access_token；未设置则留空。",
+				Key:          KeyAppSecret,
+				Label:        "AppSecret",
+				Description:  "QQ 开放平台 → 机器人 → 开发设置 里的 AppSecret；只用于换 access_token。",
 				Type:         "password",
 				DefaultValue: "",
 				Category:     "连接",
@@ -79,8 +85,8 @@ func qqChannelDeclaration() ChannelDeclaration {
 			{
 				Key:   KeyAllow,
 				Label: "消息白名单",
-				Description: "决定哪些发送者的消息交给 agent。每行/逗号分隔；" +
-					"支持精确值（QQ 号、group:<群号>）与通配模式（* 任意长度，? 一个字符）；" +
+				Description: "决定哪些发送者的消息交给 agent。匹配的是 **openid**（不是 QQ 号）；" +
+					"每行/逗号分隔，支持精确值与通配模式（* 任意长度，? 一个字符）；" +
 					"填 * 表示处理所有消息。留空 = 不处理任何消息。",
 				Type:         "textarea",
 				DefaultValue: "",
@@ -89,7 +95,7 @@ func qqChannelDeclaration() ChannelDeclaration {
 			{
 				Key:   KeyAdmins,
 				Label: "管理员名单",
-				Description: "拥有管理员权限的发送者（QQ 号）。每行/逗号分隔，支持通配。留空 = 无管理员。" +
+				Description: "拥有管理员权限的发送者 openid。每行/逗号分隔，支持通配。留空 = 无管理员。" +
 					"注意：host 侧 agent.admins 才是权限最终权威，两处口径需一致。",
 				Type:         "textarea",
 				DefaultValue: "",
