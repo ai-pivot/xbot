@@ -55,7 +55,9 @@ func newRuntime(cfg Config, deps runtimeDeps, logf func(string, ...any)) *channe
 		logf = func(string, ...any) {}
 	}
 	gw := NewGateway(deps.tokens, deps.gatewayURL, deps.dialer, nil, logf)
-	gw.cfg = GatewayConfig{Reconnect: deps.reconnect, Sleep: deps.sleep}
+	// Intents 来自 channels.qq.intents（十进制/0x），0 表示用 DefaultIntents。
+	// 这样切换「群聊(1<<25) / 频道(1<<30)」只需要改配置 + reload，不必重新编译。
+	gw.cfg = GatewayConfig{Reconnect: deps.reconnect, Sleep: deps.sleep, Intents: cfg.Intents}
 	sender := NewOutboundSender(deps.api)
 	// 发送器自己也要能报 ERROR（配额耗尽必须留痕，见 sender.go）。
 	sender.logErr = logf

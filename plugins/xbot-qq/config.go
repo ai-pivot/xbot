@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -33,6 +34,9 @@ const (
 	// 40023002「IP 不在白名单」），只有 sandbox.api.sgroup.qq.com 返回 wss 地址。
 	// 默认沙箱 = 装上就能连；发布后再手动关掉这个 toggle。
 	KeySandbox = "sandbox"
+	// KeyIntents 允许显式覆盖订阅的事件位（十进制）。留空则用 DefaultIntents。
+	// 用途：QQ 的「群聊」与「频道」走不同 intent，现场排障时无需重新编译即可切换。
+	KeyIntents = "intents"
 )
 
 // Config 是 QQ 渠道的运行时配置。
@@ -50,6 +54,9 @@ type Config struct {
 	Sandbox   bool
 	Allow     Patterns
 	Admins    Patterns
+	// Intents 覆盖订阅的事件位（十进制）。0 表示用 DefaultIntents。
+	// QQ「群聊」用 1<<25，「频道」用 1<<30，现场可热切。
+	Intents int
 }
 
 // ParseConfig 把 host 推来的字符串键值解析成 Config。
@@ -71,6 +78,7 @@ func ParseConfig(raw map[string]string) Config {
 		Sandbox:   sandbox,
 		Allow:     ParsePatterns(get(KeyAllow)),
 		Admins:    ParsePatterns(get(KeyAdmins)),
+		Intents:   parseIntents(get(KeyIntents)),
 	}
 }
 
@@ -154,4 +162,21 @@ func redactedSecret(s string) string {
 		return "<empty>"
 	}
 	return fmt.Sprintf("<%d chars>", len(s))
+}
+
+// parseIntents 解析十进制或 0x 前缀的 intents 位掩码；非法/空值返回 0（用默认）。
+func parseIntents(v string) int {
+	if v == "" {
+		return 0
+	}
+	base := 10
+	if strings.HasPrefix(v, "0x") || strings.HasPrefix(v, "0X") {
+		v = v[2:]
+		base = 16
+	}
+	n, err := strconv.ParseInt(v, base, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return int(n)
 }

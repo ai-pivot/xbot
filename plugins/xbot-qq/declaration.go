@@ -93,6 +93,17 @@ func qqChannelDeclaration() ChannelDeclaration {
 				Category:     "连接",
 			},
 			{
+				Key:   KeyIntents,
+				Label: "事件订阅位（intents，十进制，留空=默认）",
+				Description: "留空使用默认：1<<25 | 1<<30 = 1107296256。" +
+					"QQ 的「群聊」走 GROUP_AND_C2C(1<<25)，「频道」走 PUBLIC_GUILD_MESSAGES(1<<30)，" +
+					"两类��景的事件名不同、位也不同。" +
+					"填 33554432 只订群聊+私聊；填 1107296256 同时订频道。改完点重载插件即可生效，不必重启服务。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "连接",
+			},
+			{
 				Key:   KeyAllow,
 				Label: "消息白名单",
 				Description: "决定哪些发送者的消息交给 agent。匹配的是 **openid**（不是 QQ 号）；" +

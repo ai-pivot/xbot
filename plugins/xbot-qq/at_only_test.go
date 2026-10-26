@@ -19,8 +19,10 @@ import (
 )
 
 // TestIntentsAreExactlyTheMessageBits 锁死订阅面：只允许
-//   GROUP_AND_C2C (1<<25)        → 私聊 C2C + QQ群 @
-//   PUBLIC_GUILD_MESSAGES (1<<30) → QQ频道 AT_MESSAGE_CREATE
+//
+//	GROUP_AND_C2C (1<<25)        → 私聊 C2C + QQ群 @
+//	PUBLIC_GUILD_MESSAGES (1<<30) → QQ频道 AT_MESSAGE_CREATE
+//
 // 这两个**消息类**位，任何其他位（GUILDS/GUILD_MEMBERS/DIRECT_MESSAGE/INTERACTION）
 // 都不许叠加。
 //

@@ -99,8 +99,9 @@ const (
 // 影响事件投递。因此回到已验证可用的最小集：只订 GROUP_AND_C2C(1<<25)，
 // 它能收到 C2C_MESSAGE_CREATE。
 // 默认同时订阅：
-//   GROUP_AND_C2C      (1<<25) → 私聊 C2C_MESSAGE_CREATE + QQ群 GROUP_AT_MESSAGE_CREATE
-//   PUBLIC_GUILD_MESSAGES (1<<30) → QQ**频道**里 AT_MESSAGE_CREATE
+//
+//	GROUP_AND_C2C      (1<<25) → 私聊 C2C_MESSAGE_CREATE + QQ群 GROUP_AT_MESSAGE_CREATE
+//	PUBLIC_GUILD_MESSAGES (1<<30) → QQ**频道**里 AT_MESSAGE_CREATE
 //
 // 2026-10-26：此前只订 1<<25，能收私聊、收不到「群」消息。QQ 的「群」有两类——
 // 群聊(group)和频道(guild)，后者走 AT_MESSAGE_CREATE + 1<<30，是 1<<25 覆盖不到的。
