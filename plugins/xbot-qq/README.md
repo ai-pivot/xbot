@@ -89,7 +89,26 @@ GET /gateway  (Authorization: QQBot {token})
 |---|---|---|
 | `C2C_MESSAGE_CREATE` | `d.author.user_openid` | `<openid>` |
 | `GROUP_AT_MESSAGE_CREATE` | `d.author.member_openid` + `d.group_openid` | `group:<group_openid>` |
-| `GROUP_MESSAGE_CREATE`（需权限） | 同上 | 同上 |
+| `GROUP_MESSAGE_CREATE`（群全量，需权限） | **丢弃，不处理**（见下） | — |
+
+**只处理 @ 消息。** 官方 intents 只有 `GROUP_AND_C2C_EVENT (1<<25 = 33554432)`
+一个位同时覆盖 `GROUP_AT_MESSAGE_CREATE` 与 `GROUP_MESSAGE_CREATE`，订阅层**拆不开**；
+因此拆分发生在分发层（`main.go#handleGatewayEvent`）：`GROUP_MESSAGE_CREATE` 进事件
+循环后**立刻显式丢弃**（debug 日志，不产生 inbound / 不触发 LLM / 无出站，
+连 metrics 都不记）。`events.go#SupportedEvent` 是第二道防线。
+
+> 平台侧**不要**开启「接收所有消息」：即使开了，本插件也会丢弃群全量消息；
+> 私聊只认 `C2C_MESSAGE_CREATE`。
+
+### 4.0 入站去重（dedup.go）
+
+官方原文：**「相同 msg_id 可能重复推送，需结合 `message_scene.ext` 中的
+`msg_idx` 做去重」**。`message_scene.ext` 是 `[]string` 的 **`k=v` 串**
+（`msg_idx=` / `ref_msg_idx=` / `auth_token=`），**不是 map**。
+
+- 去重键 = `("idx", chat_id, msg_idx)`；`msg_idx` 缺失时退回 `("id", chat_id, msg_id)`。
+- 窗口 10 分钟、表上限 8192（过期清理 + 最旧淘汰），长跑不会无界增长。
+- 重复推送在任何后续动作之前丢弃：不进命令门禁、不产生 `send_inbound`、无出站。
 
 `d.author.id` 是平台内部 id，**禁止**当作身份或白名单依据；缺 openid 的报文
 直接报错并记日志，不会退回 `author.id`。
@@ -250,6 +269,11 @@ go run ./scripts/qq-channel-verify
 | 非 admin 命令拒绝 | `TestNonAdminSlashRejected` / `TestNonAdminBangRejected` |
 | admin 命令放行 + /compact 改写 | `TestAdminSlashAllowed` |
 | admin 不在白名单的理由 | `TestAdminNotAllowlistedGetsWhitelistReason` |
+| 只处理 @ 消息（intents 只有 1<<25） | `TestIntentsOnlyGroupAndC2C` |
+| 群全量消息零 inbound / 零出站 | `TestGroupFullMessageDropped` / `TestGroupFullMessageNotParseable` |
+| 同 msg_id 连推 3 次只进 1 条 | `TestDuplicatePushDeliveredOnce` |
+| 无 msg_idx 时按 msg_id 去重 | `TestDuplicateWithoutMsgIdxFallsBackToMessageID` |
+| 去重窗口 / 上限 | `TestDedupWindowExpires` / `TestDedupTableBounded` |
 
 ---
 

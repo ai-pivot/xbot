@@ -108,10 +108,18 @@ type app struct {
 
 	// newRuntime 可在单测里替换成注入依赖的运行时构造函数。
 	newRuntime func(cfg Config, logf func(string, ...any)) *channelRuntime
+
+	// dedup 挡住网关的重复推送（同一 msg_idx / msg_id 只能进一次 host），
+	// 见 dedup.go 与约束 5。
+	dedup *inboundDeduper
 }
 
 func newApp(logw io.Writer) *app {
-	return &app{logw: logw, newRuntime: newDefaultRuntime}
+	return &app{
+		logw:       logw,
+		newRuntime: newDefaultRuntime,
+		dedup:      newInboundDeduper(defaultDedupTTL, defaultDedupMax),
+	}
 }
 
 func (a *app) logf(format string, args ...any) {
@@ -310,13 +318,38 @@ func (a *app) declareChannelPrompt(enc *json.Encoder) {
 //
 // 普通消息（非命令）被拒绝时不回任何消息；只有命令拒绝才回文案 —— 那是用户
 // 显式发起的动作，静默会让人以为卡住了。
+// debugDropReason 说明为什么群全量消息被丢弃（日志与测试共用，防止后人"修好"它）。
+const debugDropReason = "只处理 @ 机器人消息；群全量消息一律丢弃"
+
 func (a *app) handleGatewayEvent(enc *json.Encoder, _ context.Context, ev GatewayEvent) {
+	// ── 约束 2：只处理 @ 消息 ──
+	//
+	// 官方 intents 只有 GROUP_AND_C2C_EVENT (1<<25) 一个位同时覆盖
+	// GROUP_AT_MESSAGE_CREATE 与 GROUP_MESSAGE_CREATE（群全量），**订阅层无法拆分**
+	// （出处：event-emit.html §事件订阅Intents，以及群消息事件页「机器人被添加到群且
+	// 开启了接收所有消息时都会推送此事件」）。所以拆分只能发生在**分发层**：
+	// 群全量消息在这里显式丢弃 —— 只记 debug 级日志，不进消息循环、不产生
+	// inbound / LLM 调用 / 出站、不计 metrics。
+	if ev.Type == EventGroupMessageCreate {
+		a.logf("debug: drop %s (id=%s) — %s", ev.Type, ev.ID, debugDropReason)
+		return
+	}
+
 	in, ok, err := ParseInbound(ev.Type, ev.Data)
 	if err != nil {
 		a.logf("inbound parse failed (%s id=%s): %v", ev.Type, ev.ID, err)
 		return
 	}
 	if !ok {
+		return
+	}
+
+	// ── 约束 5：入站去重（官方：相同 msg_id 可能重复推送，需按 msg_idx 去重）──
+	// 重复推送必须在任何后续动作之前丢弃：不进命令门禁、不产生 send_inbound、
+	// 不触发任何出站调用。
+	if key := dedupKey(in); a.dedup.Duplicate(key) {
+		a.logf("debug: drop duplicate inbound key=%s (msg=%s idx=%d) — 重复推送，已丢弃",
+			key, in.MessageID, in.MsgIdx)
 		return
 	}
 

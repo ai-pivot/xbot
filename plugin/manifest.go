@@ -352,7 +352,17 @@ func DiscoverPlugins(dirs []string) []*PluginManifest {
 			if !entry.IsDir() {
 				continue
 			}
-			pluginDir := filepath.Join(dir, entry.Name())
+			// 跳过隐藏目录（`.` 开头）和下划线前缀目录（`_` 开头）。
+			// 运维把插件移走做备份时最常用的就是这两种命名；旧实现不跳过，
+			// 于是备份会被当成有效插件重新发现 —— 实测 2026-10-26：
+			// 把 xbot.qq 备份成 .backup-xbot.qq-<ts> 后，每次 `/plugin reload-all`
+			// 都会把旧 OneBot 插件扫回来，再因为 bin/qq-plugin 不存在而激活失败，
+			// 表现为「删掉了但面板里还在、且 reload 一直报错」。
+			name := entry.Name()
+			if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+				continue
+			}
+			pluginDir := filepath.Join(dir, name)
 			manifest, err := LoadManifest(pluginDir)
 			if err != nil {
 				log.WithField("dir", pluginDir).Warn("Skipping invalid plugin: ", err)

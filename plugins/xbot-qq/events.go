@@ -66,6 +66,11 @@ type Inbound struct {
 	SenderName string
 	// GroupOpenID 是群 openid，仅群聊非空。
 	GroupOpenID string
+	// MsgIdx 是 message_scene.ext 里的 msg_idx（官方的去重键）。缺失时为 0。
+	MsgIdx int
+	// SceneExt 是 message_scene.ext 解析后的 k=v 映射（含 msg_idx / ref_msg_idx /
+	// auth_token 等）。官方格式是 []string 的 k=v 串，不是 map。
+	SceneExt map[string]string
 	// Timestamp 是消息时间（解析失败为零值）。
 	Timestamp time.Time
 	// Raw 保留原文，便于排查平台字段变化。
@@ -103,7 +108,13 @@ type eventEnvelope struct {
 	Content     string `json:"content"`
 	GroupOpenID string `json:"group_openid"`
 	Timestamp   string `json:"timestamp"`
-	Author      struct {
+	// MessageScene 出处：事件页 message_scene 对象；ext 是 **[]string 的 "k=v" 串**
+	// （msg_idx / ref_msg_idx / auth_token …）。
+	MessageScene struct {
+		Ext    []string `json:"ext"`
+		Source string   `json:"source"`
+	} `json:"message_scene"`
+	Author struct {
 		ID           string `json:"id"`
 		Username     string `json:"username"`
 		UserOpenID   string `json:"user_openid"`
@@ -113,9 +124,14 @@ type eventEnvelope struct {
 }
 
 // SupportedEvent 报告该事件是否由本渠道处理。
+//
+// GROUP_MESSAGE_CREATE（群全量消息）**故意不在此列**：本渠道只处理 @ 机器人的
+// 群消息与单聊消息。它与 GROUP_AT_MESSAGE_CREATE 共用同一个 intent 位，
+// 订阅层拆不开（见 gateway.go IntentGroupAndC2C 注释），因此分发层
+// （main.go handleGatewayEvent）显式丢弃并记 debug 日志 —— 这里是第二道防线。
 func SupportedEvent(eventType string) bool {
 	switch eventType {
-	case EventC2CMessageCreate, EventGroupAtMessageCreate, EventGroupMessageCreate:
+	case EventC2CMessageCreate, EventGroupAtMessageCreate:
 		return true
 	default:
 		return false
@@ -136,9 +152,12 @@ func ParseInbound(eventType string, data json.RawMessage) (Inbound, bool, error)
 		return Inbound{}, true, fmt.Errorf("parse %s payload: %w", eventType, err)
 	}
 
+	sceneExt := parseSceneExt(d.MessageScene.Ext)
 	in := Inbound{
 		EventType:   eventType,
 		MessageID:   d.ID,
+		SceneExt:    sceneExt,
+		MsgIdx:      sceneExtInt(sceneExt, "msg_idx"),
 		Content:     strings.TrimSpace(d.Content),
 		SenderName:  d.Author.Username, // 出处：事件页 User.username（可能为空，仅供展示）
 		GroupOpenID: d.GroupOpenID,

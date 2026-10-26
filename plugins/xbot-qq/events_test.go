@@ -70,17 +70,17 @@ func TestParseInboundGroupAt(t *testing.T) {
 	}
 }
 
-// TestParseInboundGroupFullMessage 群全量消息（需后台开通）同样按 openid 解析。
-func TestParseInboundGroupFullMessage(t *testing.T) {
+// TestParseInboundGroupFullMessageDropped 群全量消息（GROUP_MESSAGE_CREATE）**不解析**。
+//
+// 约束 2（御前令）：本渠道只处理 @ 消息。群全量与 @ 消息共用同一个 intent 位
+// （订阅层拆不开），所以丢弃点在分发层（main.go handleGatewayEvent）；这里断言
+// 解析层是第二道防线，不允许把群全量消息变成一条 inbound。
+func TestParseInboundGroupFullMessageDropped(t *testing.T) {
 	raw := json.RawMessage(`{
 		"id":"MSG-3","content":"hello","group_openid":"G","author":{"member_openid":"M"}
 	}`)
-	in, ok, err := ParseInbound(EventGroupMessageCreate, raw)
-	if err != nil || !ok {
-		t.Fatalf("ParseInbound = ok:%t err:%v", ok, err)
-	}
-	if in.SenderOpenID != "M" || in.GroupOpenID != "G" {
-		t.Fatalf("inbound = %+v", in)
+	if _, ok, err := ParseInbound(EventGroupMessageCreate, raw); ok || err != nil {
+		t.Fatalf("ParseInbound(GROUP_MESSAGE_CREATE) = ok:%t err:%v, want ok=false err=nil", ok, err)
 	}
 }
 
