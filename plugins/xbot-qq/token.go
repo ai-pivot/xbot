@@ -54,8 +54,16 @@ const (
 	// 「IP 白名单」这个错误码在这里是平台对"未发布应用"的另一种表达，加了白名单也没用。
 	apiBaseSandbox = "https://sandbox.api.sgroup.qq.com"
 
-	// apiBaseProd 是**正式环境**的 OpenAPI 基地址（应用发布后才有权限）。
-	apiBaseProd = "https://api.sgroup.qq.com"
+	// apiBaseProd 是**正式环境**的 OpenAPI 基地址（应用发布后 / 白名单放行后可用）。
+	//
+	// 2026-10-26 依据官方新 SDK（@tencent-connect/qqbot-nodejs v1.0.5）修正：
+	// 它的默认 baseUrl 是 https://api.bot.qq.com（src/gateway/bootstrap.ts 里
+	// `baseUrl: process.env.QQBOT_BASE_URL || 'https://api.bot.qq.com'`），
+	// 而不是 sgroup。两个域名都指向同一套 OpenAPI，但 bot.qq.com 是新域名。
+	apiBaseProd = "https://api.bot.qq.com"
+
+	// apiBaseProdLegacy 是旧域名，保留作回退（部分老应用只认它）。
+	apiBaseProdLegacy = "https://api.sgroup.qq.com"
 
 	// defaultAPIBase 是默认基地址 = 沙箱（见 channels.qq.sandbox，默认 true）。
 	defaultAPIBase = apiBaseSandbox

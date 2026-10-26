@@ -85,7 +85,7 @@ func qqChannelDeclaration() ChannelDeclaration {
 			{
 				Key:   KeySandbox,
 				Label: "沙箱环境（应用未发布时必开）",
-				Description: "开启时 OpenAPI 走 sandbox.api.sgroup.qq.com，关闭时走正式域名 api.sgroup.qq.com。" +
+				Description: "开启时 OpenAPI 走 sandbox.api.sgroup.qq.com，关闭时走正式域名 api.bot.qq.com。" +
 					"应用未在开放平台发布时，正式域名的 /gateway 一律 401（11298/40023002），只有沙箱能连。" +
 					"默认开启；发布上线后再关掉。",
 				Type:         "toggle",

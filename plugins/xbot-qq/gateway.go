@@ -71,7 +71,33 @@ const (
 // 需要在开放平台申请（本渠道默认就用它，属既定前提）。
 const IntentGroupAndC2C = 1 << 25
 
-// DefaultIntents 是默认订阅的 intents。
+// FULL_INTENTS 对齐官方新 SDK（@tencent-connect/qqbot-nodejs v1.0.5
+// src/protocol/gateway/constants.ts）：
+//
+//	FULL_INTENTS = GUILDS | GUILD_MEMBERS | PUBLIC_GUILD_MESSAGES |
+//	               DIRECT_MESSAGE | GROUP_AND_C2C | INTERACTION
+//
+// 2026-10-26 排障：该 SDK 默认就用 FULL_INTENTS，且它**能**收到群 @ 消息；
+// 而我们只订 GROUP_AND_C2C(1<<25) 时，沙箱/正式两种域名下 GROUP_AT_MESSAGE_CREATE
+// 都一条没到（C2C 正常）。因此按官方 SDK 的取值逐位对齐后再验证一次。
+// 若某些位无权限，握手会被 4914/4915 直接关闭 —— 那说明对齐过度，退回最小集。
+const (
+	IntentGuilds              = 1 << 0
+	IntentGuildMembers        = 1 << 1
+	IntentPublicGuildMessages = 1 << 30
+	IntentDirectMessage       = 1 << 12
+	IntentInteraction         = 1 << 26
+)
+
+// DefaultIntents 是最小可用集。
+//
+// 2026-10-26 实测：用官方 SDK 的 FULL_INTENTS
+// （GUILDS|GUILD_MEMBERS|PUBLIC_GUILD_MESSAGES|DIRECT_MESSAGE|GROUP_AND_C2C|INTERACTION）
+// 时，连 C2C_MESSAGE_CREATE 都收不到了（`gateway event received` 一次都没触发）。
+// 官方文档 §权限 明确："如果拥有的某个特殊事件类型的权限被取消，则在当前连接上
+// 不会报错，但是将不会收到对应的事件类型" —— 即多订了没权限的位会**静默**
+// 影响事件投递。因此回到已验证可用的最小集：只订 GROUP_AND_C2C(1<<25)，
+// 它能收到 C2C_MESSAGE_CREATE。
 const DefaultIntents = IntentGroupAndC2C
 
 // GatewayEvent 是一条 op=0 业务事件（READY 由 Gateway 内部消费，不外抛）。

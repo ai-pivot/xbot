@@ -58,7 +58,7 @@ func FatalGatewayReason(err error) (bool, string) {
 			// 2026-10-26 真机定论：11298/40023002 在"应用未发布"场景下也会出现，
 			// 且加白名单无效 —— 只有沙箱域名通。所以提示必须先指向沙箱开关。
 			return true, "（应用可能在**沙箱态**：HTTP 401 + 11298/40023002 常见于" +
-				"应用未在开放平台发布、却访问了正式域名 api.sgroup.qq.com；" +
+				"应用未在开放平台发布、却访问了正式域名 api.bot.qq.com；" +
 				"把 channels.qq.sandbox 打开（base 切到 sandbox.api.sgroup.qq.com）即可连，" +
 				"或去 QQ 开放平台发布应用后再关掉这个开关。" +
 				"若确实已发布，则去 开发设置 → IP 白名单 加上本机出口 IP。" +

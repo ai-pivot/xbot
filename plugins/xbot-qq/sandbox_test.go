@@ -5,7 +5,7 @@ package main
 // 现场事实（同一 access_token、同一台机器、同一出口 IP 202.163.9.244）：
 //
 //	POST bots.qq.com/app/getAppAccessToken     → 200            凭据正确
-//	GET  api.sgroup.qq.com/gateway             → 401 11298/40023002
+//	GET  api.bot.qq.com/gateway             → 401 11298/40023002
 //	GET  api.bot.qq.com/gateway                → 401 同上
 //	GET  sandbox.api.sgroup.qq.com/gateway     → 200 {"url":"wss://sandbox..."}
 //
@@ -51,8 +51,8 @@ func TestSandboxBaseURLFromConfig(t *testing.T) {
 			name:     "显式关沙箱走正式",
 			raw:      map[string]string{KeySandbox: "false"},
 			wantEnv:  "prod",
-			wantBase: "https://api.sgroup.qq.com",
-			wantHost: "api.sgroup.qq.com",
+			wantBase: "https://api.bot.qq.com",
+			wantHost: "api.bot.qq.com",
 		},
 	}
 
@@ -113,7 +113,7 @@ func TestStartupLogPrintsEnv(t *testing.T) {
 		wantPart string
 	}{
 		{"true", "qq channel started: env=sandbox base=sandbox.api.sgroup.qq.com app_id=102030405"},
-		{"false", "qq channel started: env=prod base=api.sgroup.qq.com app_id=102030405"},
+		{"false", "qq channel started: env=prod base=api.bot.qq.com app_id=102030405"},
 	}
 
 	for _, tc := range cases {

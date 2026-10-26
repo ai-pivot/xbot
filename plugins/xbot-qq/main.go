@@ -357,6 +357,11 @@ func (a *app) declareChannelPrompt(enc *json.Encoder) {
 const debugDropReason = "只处理 @ 机器人消息；群全量消息一律丢弃"
 
 func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev GatewayEvent) {
+	// 2026-10-26 排障：把平台推来的**每一个**事件类型都打出来（含我们不认识的），
+	// 这样「平台到底推没推 GROUP_AT_MESSAGE_CREATE」可以被日志直接判定，
+	// 不再靠猜。info 级，一行一个事件，不影响消息循环。
+	a.logf("gateway event received: t=%s id=%s", ev.Type, ev.ID)
+
 	// ── 约束 2：只处理 @ 消息 ──
 	//
 	// 官方 intents 只有 GROUP_AND_C2C_EVENT (1<<25) 一个位同时覆盖
