@@ -409,6 +409,13 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 		rt.RememberInbound(in.ChatID(), in.MessageID)
 	}
 
+	// ── 引用消息：把被引用的一层快照注入上下文（不递归）──
+	if in.Reply != nil {
+		if block := renderQuoteBlock(*in.Reply); block != "" {
+			content = block + "\n" + content
+		}
+	}
+
 	// ── 只有被准入的消息才下载附件 ──
 	//
 	// 非白名单消息的纪律是"零外部 API 调用"，下载附件也是外部调用，

@@ -66,6 +66,9 @@ type Inbound struct {
 	SenderName string
 	// GroupOpenID 是群 openid，仅群聊非空。
 	GroupOpenID string
+	// Reply 非空表示这是一条**引用消息**（message_type==103），值是被引用
+	// 消息的一层快照（不递归）。
+	Reply *QuotedMessage
 	// Attachments 是官方 attachments[]（多模态：图片/语音/视频/文件）。
 	Attachments []MessageAttachment
 	// MsgIdx 是 message_scene.ext 里的 msg_idx（官方的去重键）。缺失时为 0。
@@ -110,6 +113,10 @@ type eventEnvelope struct {
 	Content     string `json:"content"`
 	GroupOpenID string `json:"group_openid"`
 	Timestamp   string `json:"timestamp"`
+	// MessageType 官方 message_type：103 = 引用消息。
+	MessageType int `json:"message_type"`
+	// MsgElements 出处：事件页 msg_elements 数组（引用消息携带的被引用快照）。
+	MsgElements []MsgElement `json:"msg_elements"`
 	// Attachments 出处：事件页 attachments 数组（MessageAttachment）：
 	// url / filename / width / height / size / content_type / voice_wav_url / asr_refer_text。
 	Attachments []MessageAttachment `json:"attachments"`
@@ -195,6 +202,12 @@ func ParseInbound(eventType string, data json.RawMessage) (Inbound, bool, error)
 	}
 	if !isGroupEvent && in.GroupOpenID != "" {
 		return in, true, fmt.Errorf("%s payload unexpectedly carries group_openid=%q", eventType, in.GroupOpenID)
+	}
+	// 引用消息：只取一层快照（msg_elements），不递归。
+	if isQuoteMessage(d.MessageType, d.MsgElements) {
+		if q, ok := pickQuoted(d.MsgElements, sceneExt); ok {
+			in.Reply = &q
+		}
 	}
 	if in.MessageID == "" {
 		return in, true, fmt.Errorf("%s payload has no message id (d.id required for passive reply)", eventType)
