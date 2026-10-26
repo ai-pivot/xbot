@@ -298,11 +298,18 @@ func (a *app) declareChannelPrompt(enc *json.Encoder) {
 		ChannelPromptKey, len(channelPromptMarkdown), ChannelPromptSHA256())
 }
 
-// handleGatewayEvent 处理一条网关业务事件：解析 → 白名单 → 身份注入。
+// handleGatewayEvent 处理一条网关业务事件：解析 → 命令门禁 → 白名单 → 身份注入。
 //
-// 关键纪律：**被拒绝的消息不产生任何外部 API 调用**。这里除了写一条
-// send_inbound RPC（进程内管道）之外不碰网络；也不要"礼貌地回一句拒绝"，
-// 那会变成一次真实的 OpenAPI 调用，把非白名单用户变成可被打量的对象。
+// 两道闸门，顺序不能反：
+//
+//  1. 命令门禁（slash.go）：未知命令一律拒绝（连 admin 也拒，否则 host 会把它
+//     当普通消息喂给模型）；非 admin 的 `/xxx`、`!xxx` 一律拒绝且**不产生
+//     send_inbound**（= host 不会执行），回一条 QQ 拒绝文案；admin 但不在
+//     allow 里也拒绝，理由要写"白名单"而不是"你不是管理员"。
+//  2. 普通消息准入：不在 allow 里的普通消息仍然**零外部 API 调用**（只记日志）。
+//
+// 普通消息（非命令）被拒绝时不回任何消息；只有命令拒绝才回文案 —— 那是用户
+// 显式发起的动作，静默会让人以为卡住了。
 func (a *app) handleGatewayEvent(enc *json.Encoder, _ context.Context, ev GatewayEvent) {
 	in, ok, err := ParseInbound(ev.Type, ev.Data)
 	if err != nil {
@@ -314,30 +321,82 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, _ context.Context, ev Gatewa
 	}
 
 	cfg := a.config()
-	decision := cfg.Policy().Decide(in.SenderOpenID)
-	if !decision.Handle {
+	allow := cfg.Policy().ShouldHandle(in.SenderOpenID)
+	admin := cfg.Policy().IsAdmin(in.SenderOpenID)
+	content := in.Content
+
+	if cmd, isCmd := ClassifyCommand(in.Content); isCmd {
+		switch {
+		case !admin:
+			// 第一优先：非 admin 一律拒，且**不泄漏命令列表**
+			// （非管理员不该知道有哪些命令可用）。也必须在 Known 之前判 ——
+			// 否则非 admin 发 "/rm" 会拿到"未知命令 + 可用命令清单"，既泄清单
+			// 又把"权限不足"伪装成"命令写错"。
+			a.logf("slash rejected: %s (%s) not admin; cmd=%s category=%s dangerous=%t",
+				in.SenderOpenID, in.ChatID(), cmd.Name, cmd.Category, cmd.Dangerous)
+			a.rejectCommand(in, cmd, RefuseNotAdmin)
+			return
+		case !cmd.Known:
+			// 未知命令一律不转发：host 的 commands.Match 不匹配后会落进普通
+			// 消息路径（= 一次模型调用），见 agent/agent.go:3275。
+			// 只有 admin 走到这里，才告诉他"命令不存在 + 可用清单"。
+			a.logf("slash rejected: %s (%s) unknown cmd=%s (not forwarded, would hit LLM)",
+				in.SenderOpenID, in.ChatID(), cmd.Name)
+			a.rejectCommand(in, cmd, RefuseUnknown)
+			return
+		case !allow:
+			a.logf("slash rejected: admin %s not in allow=%s; cmd=%s",
+				in.SenderOpenID, cfg.Allow, cmd.Name)
+			a.rejectCommand(in, cmd, RefuseNotAllowlisted)
+			return
+		default:
+			// admin + allow：交给 host 命令注册表执行（含危险命令与压缩）。
+			content = cmd.Forward
+			a.logf("slash allowed: %s (%s) cmd=%s category=%s dangerous=%t forward=%q",
+				in.SenderOpenID, in.ChatID(), cmd.Name, cmd.Category, cmd.Dangerous, content)
+		}
+	} else if !allow {
 		a.logf("inbound dropped: %s (%s) not admitted by allow=%s (admin=%t)",
-			in.SenderOpenID, in.ChatID(), cfg.Allow, decision.Admin)
+			in.SenderOpenID, in.ChatID(), cfg.Allow, admin)
 		return
 	}
+
 	if !in.Valid() {
 		a.logf("inbound dropped: message %s from %s incomplete (empty content/id)",
 			in.MessageID, in.SenderOpenID)
 		return
 	}
 
-	// 记录锚点，让随后的回复能作为"被动消息"带上 msg_id（5 分钟窗口）。
+	// 记录锚点，让随后的回复能作为"被动消息"带上 msg_id（按场景有效期）。
 	if rt := a.runtime(); rt != nil {
 		rt.RememberInbound(in.ChatID(), in.MessageID)
 	}
 
-	cand := NewInboundCandidate(in.Identity(), in.Content, in.MessageID, cfg.Policy())
+	cand := NewInboundCandidate(in.Identity(), content, in.MessageID, cfg.Policy())
 	a.logf("inbound accepted: %s admin=%t msg=%s", in.Identity().Describe(), cand.Admin, in.MessageID)
 	a.write(enc, rpcRequest{
 		ID:     a.nextRPCID(),
 		Method: "send_inbound",
 		Params: cand.Params(),
 	})
+}
+
+// rejectCommand 给被门禁拒绝的命令回一条 QQ 文本（不产生 send_inbound）。
+//
+// 记录锚点后再发：这是对用户消息的被动回复，按场景有效期带 msg_id。
+// 发送失败只记日志 —— 门禁已经生效（命令没执行），回复只是提示。
+func (a *app) rejectCommand(in Inbound, cmd Command, reason string) {
+	rt := a.runtime()
+	if rt == nil {
+		a.logf("slash refusal not sent (%s): channel not connected", reason)
+		return
+	}
+	rt.RememberInbound(in.ChatID(), in.MessageID)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := rt.Send(ctx, in.ChatID(), refusalText(cmd.UserForm, reason)); err != nil {
+		a.logf("slash refusal send failed (%s): %v", reason, err)
+	}
 }
 
 // handleChannelSend 应答 host 的 channel_send RPC（旧路径，保留兼容）。

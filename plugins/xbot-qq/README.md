@@ -111,6 +111,33 @@ GET /gateway  (Authorization: QQBot {token})
 
 ---
 
+## 4.1 斜杠 / bang 命令门禁（slash.go）
+
+host 侧**确实支持**"渠道消息 → 斜杠命令"：`agent/agent.go:3275` 在 chatWorker 里
+`a.commands.Match(msg.Content)`，命中后执行；命令注册表见
+`agent/command_builtin.go:569-600`（`/compress`、`/new`、`/help`、`/set-llm`…）。
+但 host 只拦 `AdminOnly` 命令（`/compress` 不是），所以"非 admin 一律不许发
+slash"必须由渠道侧先拦 —— 这就是 `slash.go` 的职责。
+
+| 身份 | 结果 |
+|---|---|
+| 非 admin（无论 allow、无论命令是否已知） | **第一优先**拒绝：需要管理员权限。**不列出可用命令**（非 admin 不该知道有哪些命令） |
+| admin + 未知命令 | 拒绝：未知命令 + 可用命令清单（**面向用户的 `!xxx` 形态**，不暴露 host 内部 `/xxx` 名） |
+| admin + 在 allow | 放行 → 交给 host 命令注册表（危险命令、压缩都放行） |
+| admin + 不在 allow | 拒绝，理由 = 不在白名单（**不是**"你不是管理员"） |
+
+判定顺序不可颠倒：把「未知命令」排在「非 admin」前面，会让非 admin 发 `/rm`
+时拿到"未知命令 + 完整命令清单"，既泄漏清单，又把"权限不足"伪装成"命令写错"。
+
+- 被拒绝：**不产生 `send_inbound`**（host 不会执行），只回一条 QQ 文本并记日志。
+- 被拒绝的普通消息（非命令）仍然零外部调用，不受影响。
+- `/compact` 改写成 `/compress`（host 只注册了后者）；`!` bang（sandbox 执行 shell）
+  同样只允许 admin。
+- 危险命令清单见 `slash.go#knownCommands`（删除 / 改配置 / 重启服务 / 凭据 / 未知），
+  只用于日志分类与文案；放行判定只看 `admin == true`。
+
+---
+
 ## 5. 发送（api.go + sender.go）
 
 ```
@@ -174,6 +201,7 @@ POST /v2/groups/{group_openid}/messages
 | `gateway.go` | Hello/Identify/READY/心跳/op9/指数退避重连 |
 | `events.go` | 官方事件解析（openid 身份） |
 | `sender.go` | 路由、msg_seq、被动窗口、分片 |
+| `slash.go` | 斜杠 / bang 命令门禁（admin 判定、拒绝理由、/compact 别名） |
 | `runtime.go` | 配置 → 运行时（连接 + 发送器）的生命周期 |
 | `inbound.go` / `policy.go` / `patterns.go` | 身份注入结构、白名单与 admin 策略 |
 | `prompt.go` + `prompt/` | 渠道提示词（embed + sha256） |
@@ -219,6 +247,9 @@ go run ./scripts/qq-channel-verify
 | 非白名单零外部调用 | `TestNonAllowlistedMessageMakesZeroExternalCalls` |
 | URL 与 msg_seq | `TestSendC2CRequestShape` / `TestSendGroupRequestShape` / `TestSenderMsgSeqIncrementsPerAnchor` |
 | 提示词 sha256 与硬约束 | `TestChannelPromptMatchesRepoFile` / `TestChannelPromptHardRequirements` |
+| 非 admin 命令拒绝 | `TestNonAdminSlashRejected` / `TestNonAdminBangRejected` |
+| admin 命令放行 + /compact 改写 | `TestAdminSlashAllowed` |
+| admin 不在白名单的理由 | `TestAdminNotAllowlistedGetsWhitelistReason` |
 
 ---
 
