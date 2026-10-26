@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,6 +73,21 @@ func TestSanitizeUTF8(t *testing.T) {
 
 	if got := sanitizeUTF8(""); got != "" {
 		t.Errorf("empty string changed: %q", got)
+	}
+
+	// NUL bytes: valid UTF-8, rejected by PostgreSQL text (SQLSTATE 22021,
+	// "invalid byte sequence for encoding UTF8": 0x00). SQLite persisted them
+	// from binary tool output, so migration must repair them too.
+	nul := "before\x00after"
+	got = sanitizeUTF8(nul)
+	if strings.ContainsRune(got, 0) {
+		t.Fatalf("NUL survived sanitisation: %q", got)
+	}
+	if !utf8Valid(got) {
+		t.Errorf("NUL repair produced invalid UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(got, "before") || !strings.HasSuffix(got, "after") {
+		t.Errorf("NUL repair dropped content: %q", got)
 	}
 }
 

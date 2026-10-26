@@ -15,7 +15,7 @@ xbot 内置 50+ 工具，Agent 在对话中可以随时调用。所有工具默�
 
 | Tool | Description |
 |------|-------------|
-| `Read` | Read file content with line numbers, optional offset/limit |
+| `Read` | 读取文件内容（带行号，支持 offset / max_lines 分页）。**二进制文件会被拒绝**（NUL 字节 / 非 UTF-8 内容），并提示改用 `Shell`（`xxd` / `head -c` / `base64`）查看——原始二进制不是文本，也不是所有存储后端都能持久化。 |
 | `FileCreate` | Create new files (errors if file already exists) |
 | `FileReplace` | Search-and-replace in files (exact or RE2 regex, line range, replace_all) |
 | `Glob` | Find files by glob pattern (`**` recursive matching) |

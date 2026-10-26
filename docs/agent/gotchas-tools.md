@@ -35,3 +35,12 @@
 - **契约**：① `internal/cmdbuilder.Build` 在赋值 `cmd.Dir` 前 `os.Stat` 校验；缺失/非目录 ⇒ 返回 `working directory %q is not accessible: ...; use the Cd tool to change to an existing directory`（**明确 cwd + 恢复路径**，绝不再出现 `fork/exec`）；② `tools/none_sandbox.go` 的 `setupPipes` 在 `cmd.Start()` 失败且 `cmd.Dir != ""` 时，把 cwd 与可执行文件都写进错误 —— 兜住 stat 与 start 之间的竞态/权限类 chdir 失败（stat 看不出的那种），保留底层原因。
 - **不选 fallback**：本地 none sandbox **不**静默退到 home/祖先目录 —— 在错误的目录里跑 `git`/`rm` 比明确失败危险得多；`Cd` 是设计好的恢复路径。
 - 守护：`tools/none_sandbox_missing_dir_test.go`（`Exec` 与 `noneSandboxExecAsync` 都必须报 cwd 错误、含 `Cd`、不含 `fork/exec`；已存在目录的正常执行不受影响）。
+## 二进制工具输出绝不能进文本管道（NUL / 非法 UTF-8，2026-10-24 issue #457 根治）
+
+- **现象**：`Read` 读二进制文件（ELF/PNG/tar）后，该轮对话**持久化失败**：`append message batch item 1: ERROR: invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)`。SQLite 后端完全看不见（TEXT 不校验），只有 PG 报错——一条消息带坏字节，**整批 INSERT 被拒**，代价是整个 turn。
+- **根因两层**：① `tools/read.go` 把 `io.ReadAll` 的原始字节直接 `string(data)` 返回，**零二进制检测**；② `storage/pgText` 调的 `textutil.SanitizeUTF8` 只修**非法序列**，而 `0x00`（NUL）是**合法 UTF-8**（U+0000）⇒ 被原样放过；但 PG 的 `text` 类型**永远不能存 NUL**（现场 pgx 事务探针实测：`0x00` 与 `0xff` 都报 22021，正常串通过）。
+- **契约（三层，缺一不可）**：
+  1. **生产方**：`tools/read.go` 的 `detectBinary`（本地与 sandbox `cat` 两条路径共用）在前 8 KiB 内发现 **NUL** 或 **>25% 非法 UTF-8 字节** ⇒ 返回 `binary file (NUL byte at offset N): <path> — Read returns UTF-8 text only; use Shell (xxd / head -c / base64) to inspect it`，**绝不把二进制当文本返回**（既防 PG 失败，也省掉几 MB 垃圾 token）。单字节损坏的文本文件仍在阈值内正常读取（交给文本管道修复）。
+  2. **文本管道边界**：`internal/textutil.SanitizeText` = **非法序列 + NUL 一律 → U+FFFD**（合法且无 NUL 时零分配）；`agent.updateToolResultLine`（成功/失败两分支）与 `newSyntheticToolPair` 对所有工具结果统一调用它 ⇒ 模型上下文、SSE、offload 文件、DB 四处同源干净。⛔ `SanitizeUTF8` 保持"只修编码"语义（NUL 合法，不能顺手改它，否则历史迁移语义漂移）。
+  3. **存储边界（最后防线）**：`storage.pgText = textutil.SanitizeText`；`cmd/xbot-migrate` 的 `sanitizeUTF8` 同样委托它（否则 SQLite 历史行里的 NUL 会让迁移整表失败）。
+- 守护：`internal/textutil/textutil_test.go`（`SanitizeUTF8` 保留 NUL / `SanitizeText` 去掉）、`storage/pg_sanitize_test.go`、`storage/pg_contract_test.go` 的 `TestPGSessionStoreNULMessageStoredSanitized`（真实 PG：写入 + 读回无 NUL）、`storage/contract_session_test.go` 的 `AddMessage_NULAndInvalidUTF8_DoesNotFail`（双后端）、`tools/read_binary_test.go`、`agent/tool_output_sanitize_test.go`。

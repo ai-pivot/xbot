@@ -7,10 +7,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"xbot/internal/textutil"
 )
 
 // ─── Introspection ───
@@ -547,31 +548,21 @@ func pgPrimaryKey(ctx context.Context, pool *pgxpool.Pool, table string) ([]stri
 
 var pkCache = map[string][]string{}
 
-// sanitizeUTF8 replaces invalid UTF-8 sequences with U+FFFD.
+// sanitizeUTF8 makes a SQLite TEXT value acceptable to PostgreSQL.
 //
 // Why this is necessary and not a hack: SQLite stores TEXT as opaque bytes and
-// never validates encoding, so a historical truncation (a multi-byte character cut
-// mid-sequence) leaves rows that are readable by SQLite but rejected by
-// PostgreSQL ("invalid byte sequence for encoding UTF8"). Such rows exist in real
-// installations (measured: 36 of 15,341 message rows). Dropping them would lose
-// conversation history; aborting would make migration impossible. Replacing just
-// the damaged bytes keeps the rest of the text intact, and the caller reports how
-// many values were repaired so the loss is never silent.
+// never validates encoding, so a historical truncation (a multi-byte character
+// cut mid-sequence) leaves rows that are readable by SQLite but rejected by
+// PostgreSQL ("invalid byte sequence for encoding UTF8"). Such rows exist in
+// real installations (measured: 36 of 15,341 message rows). Dropping them would
+// lose conversation history; aborting would make migration impossible.
+// Replacing just the damaged bytes keeps the rest of the text intact, and the
+// caller reports how many values were repaired so the loss is never silent.
+//
+// NUL bytes are repaired too, for the same reason: 0x00 is valid UTF-8 but
+// PostgreSQL text cannot store it at all, and SQLite happily persisted it
+// (binary tool output). Same single implementation as the runtime write path
+// (storage.pgText) so migrated and freshly written rows match.
 func sanitizeUTF8(s string) string {
-	if utf8.ValidString(s) {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if r == utf8.RuneError && size == 1 {
-			b.WriteRune(utf8.RuneError)
-			i++
-			continue
-		}
-		b.WriteString(s[i : i+size])
-		i += size
-	}
-	return b.String()
+	return textutil.SanitizeText(s)
 }

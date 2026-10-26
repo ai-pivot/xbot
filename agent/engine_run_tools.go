@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"xbot/clipanic"
+	"xbot/internal/textutil"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
@@ -296,7 +297,7 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 			"tool":    tc.Name,
 			"elapsed": elapsed.Round(time.Millisecond),
 		}).WithError(execErr).Debug("Tool failed (hook also logged)")
-		batch.results[entry.index].content = fmt.Sprintf("Error: %v\n\nPlease fix the issue and try again with corrected parameters.", execErr)
+		batch.results[entry.index].content = textutil.SanitizeText(fmt.Sprintf("Error: %v\n\nPlease fix the issue and try again with corrected parameters.", execErr))
 		batch.results[entry.index].llmContent = batch.results[entry.index].content
 		if s.autoNotify {
 			// progressLines slot write: runs on concurrent tool goroutines —
@@ -313,8 +314,15 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 			s.progressMu.Unlock()
 		}
 	} else {
+		// Tool output is arbitrary bytes at the edges (Shell `cat` on an ELF, an
+		// MCP server, a hook script). Sanitise once here, at the boundary where
+		// it becomes text: the offload file, the model context and the DB row
+		// must all see valid UTF-8 without NUL. PG rejects NUL with SQLSTATE
+		// 22021 and, before textutil.SanitizeText existed here, one binary tool
+		// result killed the whole turn's persistence.
+		result.Summary = textutil.SanitizeText(result.Summary)
 		batch.results[entry.index].content = result.Summary
-		batch.results[entry.index].llmContent = buildToolMessageContent(result)
+		batch.results[entry.index].llmContent = textutil.SanitizeText(buildToolMessageContent(result))
 		if result.IsError {
 			GlobalMetrics.TotalToolErrors.Add(1)
 			batch.results[entry.index].llmContent = fmt.Sprintf("Error: %s\n\nDo NOT retry the same command. Analyze the error, fix the root cause, then try a different approach.", batch.results[entry.index].llmContent)
