@@ -1,0 +1,62 @@
+{
+  "id": "xbot.qq",
+  "name": "QQ Channel",
+  "version": "0.1.0",
+  "description": "QQ 渠道（OneBot v11）：把 QQ 私聊/群聊接入 xbot agent，带白名单准入与管理员判定。阶段 1：渠道声明 + 配置模型 + 访问策略；连接与身份注入见阶段 2。",
+  "author": "xbot",
+  "runtime": "stdio",
+  "entry": "./bin/qq-plugin",
+  "activationEvents": [
+    "onStart"
+  ],
+  "permissions": [
+    "channels.register"
+  ],
+  "contributes": {
+    "channelProvider": {
+      "name": "qq",
+      "config_schema": [
+        {
+          "key": "enabled",
+          "label": "启用 QQ 渠道",
+          "description": "关闭时插件保持加载但不连接 OneBot。",
+          "type": "toggle",
+          "default_value": "false",
+          "category": "连接"
+        },
+        {
+          "key": "ws_url",
+          "label": "OneBot WS 地址",
+          "description": "OneBot v11 的正向 WebSocket 地址，例如 ws://127.0.0.1:3001。",
+          "type": "text",
+          "default_value": "",
+          "category": "连接"
+        },
+        {
+          "key": "access_token",
+          "label": "Access Token",
+          "description": "OneBot 的 access_token；未设置则留空。",
+          "type": "password",
+          "default_value": "",
+          "category": "连接"
+        },
+        {
+          "key": "allow",
+          "label": "消息白名单",
+          "description": "决定哪些发送者的消息交给 agent。每行/逗号分隔；支持精确值（QQ 号、group:<群号>）与通配模式（* 任意长度，? 一个字符）；填 * 表示处理所有消息。留空 = 不处理任何消息。",
+          "type": "textarea",
+          "default_value": "",
+          "category": "准入"
+        },
+        {
+          "key": "admins",
+          "label": "管理员名单",
+          "description": "拥有管理员权限的发送者（QQ 号）。每行/逗号分隔，支持通配。留空 = 无管理员。注意：host 侧 agent.admins 才是权限最终权威，两处口径需一致。",
+          "type": "textarea",
+          "default_value": "",
+          "category": "权限"
+        }
+      ]
+    }
+  }
+}

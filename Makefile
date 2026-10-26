@@ -106,6 +106,7 @@ plugins-build:
 	$(MAKE) -C plugins/xbot-genui build
 	$(MAKE) -C plugins/xbot-git-fancy build
 	$(MAKE) -C plugins/xbot-ssh-runner build
+	$(MAKE) -C plugins/xbot-qq build
 
 plugins-install: plugins-build plugins-web
 	$(MAKE) -C plugins/xbot-genui install
@@ -143,6 +144,7 @@ plugins-clean:
 	$(MAKE) -C plugins/xbot-genui clean
 	$(MAKE) -C plugins/xbot-git-fancy clean
 	$(MAKE) -C plugins/xbot-ssh-runner clean
+	$(MAKE) -C plugins/xbot-qq clean
 	rm -rf plugins/xbot-git-fancy/web plugins/xbot-ssh-runner/web
 
 # Package plugins into per-platform tarballs (release-style) for local testing.
