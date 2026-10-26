@@ -901,13 +901,18 @@ const (
 // SubAgentBgNotify is a background notification for interactive subagent events.
 // Implements BgNotification so it flows through the same NotifyCh pipeline.
 type SubAgentBgNotify struct {
-	Key      string               // channel:chatID for routing
-	Type     SubAgentBgNotifyType // "progress" or "completed"
-	Role     string               // subagent role name
-	Instance string               // subagent instance ID
-	Content  string               // formatted notification content for the LLM
-	Elapsed  time.Duration        // total elapsed time (for completed notifications)
-	Sid      string               // original user ID that triggered the subagent
+	Key string // routing key：父会话 key（interactive 会话时为完整
+	//                              "channel:chatID/role:instance"，顶层时为 "channel:chatID"）
+	// ParentKey 是派发这次 spawn/send 的那个 agent 的会话 key。
+	// 非空且对应一个 active interactive session 时，通知直接投给它，
+	// 不再落到底层 IM 会话（否则父 agent 收不到自己派活的结果）。
+	ParentKey string
+	Type      SubAgentBgNotifyType // "progress" or "completed"
+	Role      string               // subagent role name
+	Instance  string               // subagent instance ID
+	Content   string               // formatted notification content for the LLM
+	Elapsed   time.Duration        // total elapsed time (for completed notifications)
+	Sid       string               // original user ID that triggered the subagent
 	// Task is the ORIGINAL task the sub-agent was spawned with. It is not sent
 	// to the model (the notification body already carries the result) — it
 	// exists so the web completion card can show what was asked for, see

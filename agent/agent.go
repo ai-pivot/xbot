@@ -5162,6 +5162,28 @@ func (a *Agent) bgNotifyLoop() {
 			// Always buffer first
 			a.enqueueBgNotification(notif)
 
+			// ① 先看这条通知是谁派发的：ParentKey 指向一个仍在的 interactive
+			// session（例如首辅派出的工部），就投给那个会话，由它继续处理。
+			// 旧实现把 Key 设为 originChannel:originChatID，而嵌套 spawn 的
+			// origin 继承自主会话 ⇒ 通知越级注入主会话，父 agent 永远收不到
+			// 自己派活的结果（2026-10-26 实测：工部交付完成，首辅全程 idle）。
+			if n, ok := notif.(*tools.SubAgentBgNotify); ok && n.ParentKey != "" {
+				if _, live := a.interactiveSubAgents.Load(n.ParentKey); live {
+					// 已交给父会话，不要在主会话再排一次
+					a.takePendingBgNotifications(n.ParentKey)
+					a.deliverNotifyToParentSession(n)
+					continue
+				}
+				// 父会话已被 TTL/unload 回收：落回它所属的 origin 会话。
+				// 绝不能拿 parentKey 当 chatID 交给下游（SplitN(":",2) 会切出
+				// "chat2/court.shoufu:main" 这种畸形会话，通知等于丢）。
+				if ch, chat, _, _ := parseInteractiveKeyTail(n.ParentKey); ch != "" && chat != "" {
+					a.takePendingBgNotifications(n.ParentKey)
+					n.Key = ch + ":" + chat
+					a.enqueueBgNotification(n)
+				}
+			}
+
 			sessionKey := notif.SessionKey()
 			if state, ok := a.bgSessionStates.Load(sessionKey); ok {
 				// Active chatWorker exists — signal it to drain at a safe point
@@ -5178,6 +5200,41 @@ func (a *Agent) bgNotifyLoop() {
 			}
 		}
 	}
+}
+
+// deliverNotifyToParentSession 把子代理的进度/完成通知投递给**真正派发它的
+// 那个 interactive session**（父 agent），而不是底层 IM 会话。
+//
+// 走 SendToInteractiveSession 是因为它已经是「向 interactive 会话注入一条
+// 用户消息并驱动一轮 Run」的唯一实现：父会话 idle 时会被唤醒，running 时
+// 消息进 pendingMessages 在下一个迭代边界被 drain。不新造通道。
+func (a *Agent) deliverNotifyToParentSession(n *tools.SubAgentBgNotify) {
+	channel, chatID, role, instance := parseInteractiveKeyTail(n.ParentKey)
+	if role == "" || channel == "" || chatID == "" {
+		log.WithField("parent_key", n.ParentKey).
+			Warn("deliverNotifyToParentSession: 无法解析父会话 key，放弃投递")
+		return
+	}
+	content := tools.FormatSubAgentBgNotify(n)
+	go func() {
+		_, err := a.SendToInteractiveSession(context.Background(), role, bus.InboundMessage{
+			Channel:  channel,
+			ChatID:   chatID,
+			SenderID: n.Sid,
+			Content:  content,
+			Metadata: map[string]string{
+				"instance_id":             instance,
+				bgNotificationMetadataKey: "true",
+			},
+		})
+		if err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"parent_key": n.ParentKey,
+				"role":       n.Role,
+				"instance":   n.Instance,
+			}).Warn("向父会话投递子代理通知失败（该会话可能已 TTL 回收）")
+		}
+	}()
 }
 
 // injectBgUserMessage is the unified entry point for injecting background notification

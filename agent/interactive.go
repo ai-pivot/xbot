@@ -1375,7 +1375,15 @@ func (a *Agent) SpawnInteractiveSession(
 		}) // 清理占位符
 		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
 	}
-	subCtx := WithCallChain(ctx, cc.Spawn(roleName))
+	// 生命周期语义（2026-10-26 用户令）：
+	// interactive session 的存活区间 = spawn → unload。
+	// **一轮 Run 结束不等于 creator 死亡**，所以子会话不得继承父 Run ctx 的
+	// 取消信号 —— 否则父回合自然结束，子会话就被连带 kill。
+	// 实测事故：首辅派工部，工部 37 秒后被 "background session cancelled (unload)"
+	// 杀掉，恰好等于父那一轮的剩余时长。
+	// WithoutCancel 保留全部 values（调用链 / UserContext / bgParentKey），
+	// 只切断取消传播；显式销毁仍走 UnloadInteractiveSession → cancelChildSessions。
+	subCtx := WithCallChain(context.WithoutCancel(ctx), cc.Spawn(roleName))
 
 	// ⛔ 会话用户身份快照（2026-09-30 panic 根治）：Run ctx 从 agentCtx 派生时
 	// 会丢 UserContext，嵌套 spawn 因此拿 nil panic（50/50）—— spawn 时把它存进
@@ -1552,12 +1560,14 @@ func (a *Agent) SpawnInteractiveSession(
 
 	if background {
 		// Background mode: launch Run in goroutine, return immediately.
-		// Lifecycle rule: bg subagents never outlive their parent.
+		// Lifecycle rule (2026-10-26 用户令修订)：
+		// **子会话的寿命跟着父会话的 unload，而不是父的某一轮 Run。**
 		// - First level: ctx is per-request (no marker) → derive from Agent-level ctx
 		//   so the session survives across multiple parent requests.
-		// - Nested level: ctx is a bg session's runCtx (has marker) → derive from
-		//   parent's ctx so the child dies when the parent session is cancelled/unloaded.
-		// - Agent exit: agentCancel() cascades through first-level → nested levels.
+		// - Nested level: ctx 带 bg 标记 → 仍然取父 ctx 的 values（调用链/身份），
+		//   但取消传播已在 SpawnInteractiveSession 里用 WithoutCancel 切断，
+		//   因此父回合结束不会杀死子会话；父 unload 时由 cancelChildSessions 显式级联。
+		// - Agent exit: agentCancel() 仍会级联第一层，进程随之退出。
 		var bgBase context.Context
 		if ctx.Value(bgSessionCtxKey{}) != nil {
 			// Nested: parent is a bg session → derive from parent's lifecycle
@@ -1618,12 +1628,13 @@ func (a *Agent) SpawnInteractiveSession(
 					sb.WriteString("\n")
 				}
 				notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-					Key:      sessionKey,
-					Type:     tools.SubAgentBgNotifyProgress,
-					Role:     roleName,
-					Instance: instance,
-					Content:  sb.String(),
-					Sid:      originSender,
+					Key:       placeholder.parentKey,
+					ParentKey: placeholder.parentKey,
+					Type:      tools.SubAgentBgNotifyProgress,
+					Role:      roleName,
+					Instance:  instance,
+					Content:   sb.String(),
+					Sid:       originSender,
 				})
 			}
 		}
@@ -1671,14 +1682,15 @@ func (a *Agent) SpawnInteractiveSession(
 					// Notify parent
 					if notifyMgr != nil {
 						notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-							Key:      sessionKey,
-							Type:     tools.SubAgentBgNotifyCompleted,
-							Role:     roleName,
-							Instance: instance,
-							Content:  fmt.Sprintf("Panic: %v", r),
-							Elapsed:  time.Since(startTime),
-							Sid:      originSender,
-							Task:     msg.Content,
+							Key:       placeholder.parentKey,
+							ParentKey: placeholder.parentKey,
+							Type:      tools.SubAgentBgNotifyCompleted,
+							Role:      roleName,
+							Instance:  instance,
+							Content:   fmt.Sprintf("Panic: %v", r),
+							Elapsed:   time.Since(startTime),
+							Sid:       originSender,
+							Task:      msg.Content,
 						})
 					}
 					// subagent_stopped(removed=true) is emitted by
@@ -1727,14 +1739,15 @@ func (a *Agent) SpawnInteractiveSession(
 					notifyMgr.CloseSubAgentTask(bgTask.ID, status, content)
 				}
 				notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-					Key:      sessionKey,
-					Type:     tools.SubAgentBgNotifyCompleted,
-					Role:     roleName,
-					Instance: instance,
-					Content:  content,
-					Elapsed:  time.Since(startTime),
-					Sid:      originSender,
-					Task:     msg.Content,
+					Key:       placeholder.parentKey,
+					ParentKey: placeholder.parentKey,
+					Type:      tools.SubAgentBgNotifyCompleted,
+					Role:      roleName,
+					Instance:  instance,
+					Content:   content,
+					Elapsed:   time.Since(startTime),
+					Sid:       originSender,
+					Task:      msg.Content,
 				})
 			}
 
@@ -1787,14 +1800,15 @@ func (a *Agent) SpawnInteractiveSession(
 							notifyMgr.CloseSubAgentTask(bgTask.ID, tools.BgTaskDone, content)
 						}
 						notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-							Key:      sessionKey,
-							Type:     tools.SubAgentBgNotifyCompleted,
-							Role:     roleName,
-							Instance: instance,
-							Content:  content,
-							Elapsed:  time.Since(startTime),
-							Sid:      originSender,
-							Task:     msg.Content,
+							Key:       placeholder.parentKey,
+							ParentKey: placeholder.parentKey,
+							Type:      tools.SubAgentBgNotifyCompleted,
+							Role:      roleName,
+							Instance:  instance,
+							Content:   content,
+							Elapsed:   time.Since(startTime),
+							Sid:       originSender,
+							Task:      msg.Content,
 						})
 					}
 					log.WithFields(log.Fields{
@@ -2022,9 +2036,9 @@ func (a *Agent) SpawnInteractiveSession(
 		return &channelpkg.OutboundMsg{Content: destroyedErr.Error(), Error: destroyedErr}, nil
 	}
 
-	// Cascade: cancel and remove all child sessions spawned by this Run,
-	// ensuring no SubAgent outlives its creator even on natural completion.
-	a.cancelChildSessions(key)
+	// 不再在此级联销毁子会话：本轮的结束只是"这一轮做完了"，
+	// 父会话仍未 unload，子会话应当继续存活（生命周期 = spawn → unload）。
+	// 显式销毁路径：UnloadInteractiveSession → cancelChildSessions。
 
 	if out.Error != nil {
 		a.destroyInteractiveSession(key) // 清理占位符 + tenant session
@@ -2452,7 +2466,6 @@ func (a *Agent) SendToInteractiveSession(
 
 		// Re-wire OnIterationSnapshot for incremental history updates
 		// (same as SpawnInteractiveSession does for the initial Run).
-		sessionKey := originChannel + ":" + originChatID
 		notifyMgr := a.bgTaskMgr.Load()
 		cfg.OnIterationSnapshot = func(snap IterationSnapshot) {
 			ia.mu.Lock()
@@ -2470,12 +2483,13 @@ func (a *Agent) SendToInteractiveSession(
 					sb.WriteString("\n")
 				}
 				notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-					Key:      sessionKey,
-					Type:     tools.SubAgentBgNotifyProgress,
-					Role:     roleName,
-					Instance: instance,
-					Content:  sb.String(),
-					Sid:      originSender,
+					Key:       ia.parentKey,
+					ParentKey: ia.parentKey,
+					Type:      tools.SubAgentBgNotifyProgress,
+					Role:      roleName,
+					Instance:  instance,
+					Content:   sb.String(),
+					Sid:       originSender,
 				})
 			}
 		}
@@ -2596,15 +2610,15 @@ func (a *Agent) SendToInteractiveSession(
 				ia.lastError = fmt.Sprintf("panic: %v", r)
 				ia.mu.Unlock()
 				if a.bgTaskMgr.Load() != nil {
-					sessionKey := originChannel + ":" + originChatID
 					a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
-						Key:      sessionKey,
-						Type:     tools.SubAgentBgNotifyCompleted,
-						Role:     roleName,
-						Instance: instance,
-						Content:  fmt.Sprintf("Panic: %v", r),
-						Elapsed:  time.Since(startTime),
-						Sid:      originSender,
+						Key:       ia.parentKey,
+						ParentKey: ia.parentKey,
+						Type:      tools.SubAgentBgNotifyCompleted,
+						Role:      roleName,
+						Instance:  instance,
+						Content:   fmt.Sprintf("Panic: %v", r),
+						Elapsed:   time.Since(startTime),
+						Sid:       originSender,
 					})
 				}
 				a.emitSessionState(protocol.SessionEvent{
@@ -2704,15 +2718,15 @@ func (a *Agent) SendToInteractiveSession(
 					// No pre-truncation — see the SpawnInteractiveSession note:
 					// the notification path offloads oversized payloads and
 					// attaches a working offload_recall(id=…) marker.
-					sessionKey := originChannel + ":" + originChatID
 					a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
-						Key:      sessionKey,
-						Type:     tools.SubAgentBgNotifyCompleted,
-						Role:     roleName,
-						Instance: instance,
-						Content:  content,
-						Elapsed:  time.Since(startTime),
-						Sid:      originSender,
+						Key:       ia.parentKey,
+						ParentKey: ia.parentKey,
+						Type:      tools.SubAgentBgNotifyCompleted,
+						Role:      roleName,
+						Instance:  instance,
+						Content:   content,
+						Elapsed:   time.Since(startTime),
+						Sid:       originSender,
 					})
 				}
 				log.WithFields(log.Fields{
@@ -2750,15 +2764,15 @@ func (a *Agent) SendToInteractiveSession(
 			}
 			// No pre-truncation: oversized payloads are offloaded downstream
 			// (with an offload_recall marker) instead of losing their tail here.
-			sessionKey := originChannel + ":" + originChatID
 			a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
-				Key:      sessionKey,
-				Type:     tools.SubAgentBgNotifyCompleted,
-				Role:     roleName,
-				Instance: instance,
-				Content:  content,
-				Elapsed:  time.Since(startTime),
-				Sid:      originSender,
+				Key:       ia.parentKey,
+				ParentKey: ia.parentKey,
+				Type:      tools.SubAgentBgNotifyCompleted,
+				Role:      roleName,
+				Instance:  instance,
+				Content:   content,
+				Elapsed:   time.Since(startTime),
+				Sid:       originSender,
 			})
 		}
 
@@ -2768,11 +2782,8 @@ func (a *Agent) SendToInteractiveSession(
 		// （用户报告"有时候不渲染最后一个 iter"）。子代理面板收不到 text/
 		// session(idle) 事件（带父 chatID），无后续 reload，缺到手动刷新。
 
-		// Cascade: cancel and remove all child sessions spawned by this Run.
-		// This ensures no SubAgent outlives its creator even on natural completion.
-		// The session itself stays for future "send" interactions, but its children
-		// (which were created to serve this specific Run) must be cleaned up.
-		a.cancelChildSessions(key)
+		// 与 fg 路径同理：本轮结束不等于父会话 unload，子会话保留。
+		// 销毁由 UnloadInteractiveSession → cancelChildSessions 显式触发。
 
 		// --- Write back results ---
 		ia.mu.Lock()

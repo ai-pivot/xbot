@@ -277,7 +277,10 @@ func (db *DB) Close() error {
 		} else {
 			log.WithFields(log.Fields{"path": db.path, "caller": callerTag(1)}).Info("SQLite database closed")
 		}
-		db.logWALState("close")
+		// Close 之后 SQLite 会 checkpoint 并**正常删除** -wal 文件。
+		// 这里若继续用 logWALState 的"上次有、这次没有 ⇒ 异常"判定，
+		// 每一次正常关闭都会打出 committed-data-loss 签名（2026-10-26 误报）。
+		db.logWALStateFinal("close")
 	}
 	// 释放进程级独占锁：必须在 conn.Close() 之后（checkpoint 已做完），
 	// 且无论 Close 成败都要释放。
@@ -364,6 +367,26 @@ func (db *DB) logWALState(where string) {
 		return
 	}
 	log.WithFields(fields).Info("WAL state")
+}
+
+// logWALStateFinal records the WAL state AFTER the pool is closed, where the
+// absence of -wal is the expected outcome: the last connection's Close()
+// checkpoints and unlinks it. Unlike logWALState it never raises the
+// "DISAPPEARED / committed-data-loss" warning, because that warning exists to
+// catch a *live* connection losing its WAL — not the teardown path.
+func (db *DB) logWALStateFinal(where string) {
+	if db == nil || db.path == "" || db.path == ":memory:" {
+		return
+	}
+	fi, err := os.Stat(db.path + "-wal")
+	present := err == nil && fi != nil
+	fields := log.Fields{"path": db.path, "where": where, "wal_present": present}
+	if present {
+		fields["wal_size"] = fi.Size()
+		log.WithFields(fields).Info("WAL state after close")
+		return
+	}
+	log.WithFields(fields).Info("WAL absent after close (expected: SQLite checkpointed and removed -wal)")
 }
 
 // CheckpointForShutdown copies every committed WAL frame into the main database
