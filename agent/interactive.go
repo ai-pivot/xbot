@@ -1570,8 +1570,15 @@ func (a *Agent) SpawnInteractiveSession(
 		// - Agent exit: agentCancel() 仍会级联第一层，进程随之退出。
 		var bgBase context.Context
 		if ctx.Value(bgSessionCtxKey{}) != nil {
-			// Nested: parent is a bg session → derive from parent's lifecycle
-			bgBase = ctx
+			// Nested: 父是 bg session。
+			// ⛔ 2026-10-26 第二次修：这里原来直接 `bgBase = ctx`，而 ctx 是**父这一轮的
+			// runCtx**（父回合结束时 runCancel 会取消它）。上一版只改了 subCtx，
+			// 但这行又从裸 ctx 重新派生，等于把切断的取消传播又接回去了 ——
+			// 实测后果：首辅回合结束 → 它派的工部被 cancel → 走 unload 分支销毁
+			// （日志 "background session cancelled (unload)"），工部死在写测试中途。
+			// 现在同样切断取消传播（保留调用链/UserContext），父 unload 时由
+			// cancelChildSessions 显式级联。
+			bgBase = context.WithoutCancel(ctx)
 		} else {
 			// First level: derive from Agent lifecycle
 			bgBase = a.agentCtx
