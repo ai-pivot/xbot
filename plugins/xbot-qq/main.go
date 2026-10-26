@@ -231,6 +231,16 @@ func (a *app) handleLine(ctx context.Context, enc *json.Encoder, line string) (s
 		a.handleChannelConfig(ctx, enc, f)
 	case f.Type == "text":
 		a.handleTextEvent(enc, f)
+	case f.Type == "progress_structured":
+		// 约束 1：**绝对禁止**把进度/迭代快照/工具调用/思考过程转成 QQ 消息。
+		// 官方配额（单聊 60 分钟 4 次、群聊 5 分钟 5 次）根本不容许刷进度；
+		// 群聊更是明确不支持流式。内部进度只走 stderr。
+		a.logf("debug: drop progress frame (progress 一律不转发到 QQ；只发最终答案)")
+	case f.Type == "stream_content":
+		// 约束 1：流式/增量内容一律不发。群聊官方明确不支持流式；单聊即便
+		// 支持 stream_messages，本渠道也选择"一条入站 = 最多一条出站"，
+		// 等 host 的最终 text 帧再发。
+		a.logf("debug: drop stream_content frame (本渠道只发最终答案，不发增量)")
 	case f.Method != "":
 		// 未知 RPC：必须应答，否则 host 侧等到超时。
 		a.write(enc, errorResponse{ID: f.ID, Error: "unsupported method: " + f.Method})

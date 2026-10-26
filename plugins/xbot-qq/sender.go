@@ -45,13 +45,27 @@ const maxMessageRunes = 1500
 // 《消息收发概述》§消息去重：「相同 msg_id 可能多次推送……被动回复时，相同的
 // msg_id + msg_seq 重复发送会失败，可递增 msg_seq 实现对同一消息的多次回复。」
 //
-// 注意：回复次数上限（单聊 4 / 群聊 5）目前**不强制**。超出后平台的确切行为
-// （拒绝被动回复？自动转主动？）文档没写清，属未证实项，留待真机联调确认。
+// 注意：回复次数上限（单聊 4 / 群聊 5）在这里**强制自检** —— 不交给平台去报
+// 40034128（被动回复时间或次数超限）。平台报错时消息已经丢了；我们能提前
+// 拒发并把原因写进本地 ERROR 日志，便于排障。超出后的平台确切行为文档没写清，
+// 属未证实项，留待真机联调确认。
 const (
 	// 被动回复有效期，按会话类型区分（见上表）。
 	passiveWindowPrivate = 60 * time.Minute
 	passiveWindowGroup   = 5 * time.Minute
+
+	// 被动回复次数上限（每锚点）。出处同上表：单聊 4 次 / 群聊 5 次。
+	passiveReplyLimitPrivate = 4
+	passiveReplyLimitGroup   = 5
 )
+
+// passiveReplyLimit 返回该会话每个锚点允许的被动回复条数（单聊 4 / 群聊 5）。
+func passiveReplyLimit(chatID string) uint32 {
+	if strings.HasPrefix(strings.TrimSpace(chatID), "group:") {
+		return passiveReplyLimitGroup
+	}
+	return passiveReplyLimitPrivate
+}
 
 // passiveReplyWindow 返回该会话的被动回复有效期（文档口径，按场景区分）。
 func passiveReplyWindow(chatID string) time.Duration {
@@ -82,15 +96,21 @@ type OutboundSender struct {
 	mu   sync.Mutex
 	seq  map[string]uint32
 	last map[string]msgAnchor
+	// replies 记录每个锚点已用掉的被动回复次数（配额自检用）。
+	replies map[string]uint32
+	// logErr 输出 ERROR 级诊断（配额耗尽等必须留痕）。
+	logErr func(format string, args ...any)
 }
 
 // NewOutboundSender 构造发送器。
 func NewOutboundSender(api MessageAPI) *OutboundSender {
 	return &OutboundSender{
-		api:  api,
-		now:  time.Now,
-		seq:  make(map[string]uint32),
-		last: make(map[string]msgAnchor),
+		api:     api,
+		now:     time.Now,
+		seq:     make(map[string]uint32),
+		last:    make(map[string]msgAnchor),
+		replies: make(map[string]uint32),
+		logErr:  func(string, ...any) {},
 	}
 }
 
@@ -122,6 +142,27 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 	msgID := s.passiveMsgID(chatID)
 	chunks := splitRunes(content, maxMessageRunes)
 
+	// ── 配额自检（约束 1）──
+	//
+	// 每个锚点（msg_id）的被动回复条数有硬上限：单聊 4、群聊 5。
+	// 超了平台会回 40034128（被动回复时间或次数超限），消息直接丢 ——
+	// 所以我们提前拒发并记 ERROR，绝不把错误留给平台去发现。
+	if msgID != "" {
+		limit := passiveReplyLimit(chatID)
+		used := s.repliesUsed(chatID, msgID)
+		if used >= limit {
+			s.logErr("ERROR: passive reply quota exhausted: chat=%s msg_id=%s used=%d limit=%d — refusing to send %d chars",
+				chatID, msgID, used, limit, len([]rune(content)))
+			return nil, fmt.Errorf("qq send: passive reply quota exhausted for msg_id=%s (%d/%d), refused",
+				msgID, used, limit)
+		}
+		if avail := int(limit - used); len(chunks) > avail {
+			s.logErr("ERROR: passive reply quota would be exceeded by chunking: chat=%s msg_id=%s used=%d limit=%d chunks=%d — sending only %d chunk(s)",
+				chatID, msgID, used, limit, len(chunks), avail)
+			chunks = chunks[:avail]
+		}
+	}
+
 	var last *SentMessage
 	for _, chunk := range chunks {
 		seq := s.nextSeq(chatID, msgID)
@@ -133,8 +174,27 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 		if err != nil {
 			return last, err
 		}
+		if msgID != "" {
+			s.countReply(chatID, msgID)
+		}
 	}
 	return last, nil
+}
+
+// repliesUsed 返回该锚点已用掉的被动回复次数。
+func (s *OutboundSender) repliesUsed(chatID, msgID string) uint32 {
+	key := chatID + "|" + msgID
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.replies[key]
+}
+
+// countReply 记一次成功的被动回复（配额自检用）。
+func (s *OutboundSender) countReply(chatID, msgID string) {
+	key := chatID + "|" + msgID
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.replies[key]++
 }
 
 // passiveMsgID 返回当前可用的被动回复锚点；超出该会话的有效期或没有锚点时返回 ""。

@@ -55,10 +55,13 @@ func newRuntime(cfg Config, deps runtimeDeps, logf func(string, ...any)) *channe
 	}
 	gw := NewGateway(deps.tokens, deps.gatewayURL, deps.dialer, nil, logf)
 	gw.cfg = GatewayConfig{Reconnect: deps.reconnect, Sleep: deps.sleep}
+	sender := NewOutboundSender(deps.api)
+	// 发送器自己也要能报 ERROR（配额耗尽必须留痕，见 sender.go）。
+	sender.logErr = logf
 	return &channelRuntime{
 		cfg:    cfg,
 		gw:     gw,
-		sender: NewOutboundSender(deps.api),
+		sender: sender,
 		logf:   logf,
 	}
 }
