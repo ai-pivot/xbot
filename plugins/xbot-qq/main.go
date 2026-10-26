@@ -115,6 +115,14 @@ type app struct {
 	// dedup 挡住网关的重复推送（同一 msg_idx / msg_id 只能进一次 host），
 	// 见 dedup.go 与约束 5。
 	dedup *inboundDeduper
+
+	// seen 是"见过的发送者"台账：每条入站（含被拒的）都记，用户靠它 + !whoami
+	// 拿到自己的 openid（见 seen_senders.go）。
+	seen *SeenSenderStore
+	// notice 给 !whoami / allow 未配置时的自动应答限流，保护被动回复配额。
+	notice *noticeLimiter
+	// dropLog 压掉 progress / stream 这类高频 debug 噪音（否则真错误会被埋）。
+	dropLog *logThrottle
 }
 
 func newApp(logw io.Writer) *app {
@@ -123,6 +131,9 @@ func newApp(logw io.Writer) *app {
 		newRuntime:  newDefaultRuntime,
 		dedup:       newInboundDeduper(defaultDedupTTL, defaultDedupMax),
 		attachments: NewAttachmentStore("", nil),
+		seen:        NewSeenSenderStore(DefaultSeenSendersPath(), nil),
+		notice:      NewNoticeLimiter(noticeCooldown, time.Now),
+		dropLog:     NewLogThrottle(dropLogInterval, time.Now),
 	}
 }
 
@@ -235,12 +246,21 @@ func (a *app) handleLine(ctx context.Context, enc *json.Encoder, line string) (s
 		// 约束 1：**绝对禁止**把进度/迭代快照/工具调用/思考过程转成 QQ 消息。
 		// 官方配额（单聊 60 分钟 4 次、群聊 5 分钟 5 次）根本不容许刷进度；
 		// 群聊更是明确不支持流式。内部进度只走 stderr。
-		a.logf("debug: drop progress frame (progress 一律不转发到 QQ；只发最终答案)")
+		//
+		// 但 stderr 也不能刷：这条 debug 曾单次联调刷出 2.3 万行 / 2.1MB，
+		// 把 HTTP 401 这种决定性错误埋掉。限流到每分钟最多一行 + 压缩计数。
+		if ok, dropped := a.dropLog.Allow("progress"); ok {
+			a.logf("debug: drop progress frame ×%d 累计（进度一律不转发到 QQ；只发最终答案）",
+				dropped+1)
+		}
 	case f.Type == "stream_content":
 		// 约束 1：流式/增量内容一律不发。群聊官方明确不支持流式；单聊即便
 		// 支持 stream_messages，本渠道也选择"一条入站 = 最多一条出站"，
 		// 等 host 的最终 text 帧再发。
-		a.logf("debug: drop stream_content frame (本渠道只发最终答案，不发增量)")
+		if ok, dropped := a.dropLog.Allow("stream"); ok {
+			a.logf("debug: drop stream_content frame ×%d 累计（本渠道只发最终答案，不发增量）",
+				dropped+1)
+		}
 	case f.Method != "":
 		// 未知 RPC：必须应答，否则 host 侧等到超时。
 		a.write(enc, errorResponse{ID: f.ID, Error: "unsupported method: " + f.Method})
@@ -305,7 +325,8 @@ func (a *app) handleChannelConfig(ctx context.Context, enc *json.Encoder, f fram
 	rt.Start(ctx, func(eventCtx context.Context, ev GatewayEvent) {
 		a.handleGatewayEvent(enc, eventCtx, ev)
 	})
-	a.logf("qq channel started: app_id=%s allow=%s", cfg.AppID, cfg.Allow)
+	a.logf("qq channel started: env=%s base=%s app_id=%s allow=%s",
+		EnvName(cfg.Sandbox), APIBaseHost(cfg.Sandbox), cfg.AppID, cfg.Allow)
 }
 
 // declareChannelPrompt 把渠道专属提示词声明给 host。
@@ -371,6 +392,30 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 	allow := cfg.Policy().ShouldHandle(in.SenderOpenID)
 	admin := cfg.Policy().IsAdmin(in.SenderOpenID)
 	content := in.Content
+	name := senderNameOf(in)
+	chatDesc := chatDescription(in)
+
+	// 每条解析成功的入站先落一条"见过"记录（handled=false），保证即便后面的
+	// 分支提前返回，用户的 openid 也已经在台账里 —— 这是他被拒后唯一的自救路径。
+	a.recordSeen(in, name, false)
+
+	// ── !whoami：必须在白名单判定之前 ──
+	//
+	// 被拒的人如果连自己的 openid 都问不到，就永远进不来（先有鸡还是先有蛋）。
+	// 只查本地状态 + 一条固定文案，**绝不产生 send_inbound（零 LLM）**，
+	// 且同一 openid 每 noticeCooldown 只回一次（保护被动回复配额）。
+	if IsWhoamiCommand(in.Content) {
+		a.recordSeen(in, name, true)
+		a.logf("QQ inbound: sender=%s name=%s chat=%s handled=true (!whoami)",
+			in.SenderOpenID, name, chatDesc)
+		if a.notice.Allow("whoami:" + in.SenderOpenID) {
+			a.replyNotice(in, whoamiText(in.SenderOpenID, name, allow, !cfg.Allow.Empty()))
+		} else {
+			a.logf("whoami suppressed: %s within %s cooldown (配额保护，不重复回)",
+				in.SenderOpenID, noticeCooldown)
+		}
+		return
+	}
 
 	if cmd, isCmd := ClassifyCommand(in.Content); isCmd {
 		switch {
@@ -379,6 +424,9 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 			// （非管理员不该知道有哪些命令可用）。也必须在 Known 之前判 ——
 			// 否则非 admin 发 "/rm" 会拿到"未知命令 + 可用命令清单"，既泄清单
 			// 又把"权限不足"伪装成"命令写错"。
+			a.recordSeen(in, name, true) // 已受理（回了拒绝文案）
+			a.logf("QQ inbound: sender=%s name=%s chat=%s handled=true (cmd refused: not admin)",
+				in.SenderOpenID, name, chatDesc)
 			a.logf("slash rejected: %s (%s) not admin; cmd=%s category=%s dangerous=%t",
 				in.SenderOpenID, in.ChatID(), cmd.Name, cmd.Category, cmd.Dangerous)
 			a.rejectCommand(in, cmd, RefuseNotAdmin)
@@ -387,11 +435,17 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 			// 未知命令一律不转发：host 的 commands.Match 不匹配后会落进普通
 			// 消息路径（= 一次模型调用），见 agent/agent.go:3275。
 			// 只有 admin 走到这里，才告诉他"命令不存在 + 可用清单"。
+			a.recordSeen(in, name, true)
+			a.logf("QQ inbound: sender=%s name=%s chat=%s handled=true (cmd refused: unknown)",
+				in.SenderOpenID, name, chatDesc)
 			a.logf("slash rejected: %s (%s) unknown cmd=%s (not forwarded, would hit LLM)",
 				in.SenderOpenID, in.ChatID(), cmd.Name)
 			a.rejectCommand(in, cmd, RefuseUnknown)
 			return
 		case !allow:
+			a.recordSeen(in, name, true)
+			a.logf("QQ inbound: sender=%s name=%s chat=%s handled=true (cmd refused: not in allow)",
+				in.SenderOpenID, name, chatDesc)
 			a.logf("slash rejected: admin %s not in allow=%s; cmd=%s",
 				in.SenderOpenID, cfg.Allow, cmd.Name)
 			a.rejectCommand(in, cmd, RefuseNotAllowlisted)
@@ -403,8 +457,25 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 				in.SenderOpenID, in.ChatID(), cmd.Name, cmd.Category, cmd.Dangerous, content)
 		}
 	} else if !allow {
+		// ── 白名单三态（用户令 2026-10-26，语义不许混）──
+		//
+		//  a) allow 为空（用户还没填）→ 自动回一条 whoami 指引，零 LLM。
+		//     完全没反应会让第一次使用的人不知道下一步干嘛，产品等于死的。
+		//  b) allow 已配置但不含本人（含填了不相干 openid）→ **静默拒绝**：
+		//     零回复、零 LLM。联调步骤 6 的判据就是"完全无反应"。
+		a.recordSeen(in, name, false)
+		a.logf("QQ inbound: sender=%s name=%s chat=%s handled=false allow=%s",
+			in.SenderOpenID, name, chatDesc, cfg.Allow)
 		a.logf("inbound dropped: %s (%s) not admitted by allow=%s (admin=%t)",
 			in.SenderOpenID, in.ChatID(), cfg.Allow, admin)
+		if cfg.Allow.Empty() {
+			if a.notice.Allow("allowempty:" + in.SenderOpenID) {
+				a.replyNotice(in, allowEmptyText(in.SenderOpenID, name))
+			} else {
+				a.logf("allow-empty notice suppressed: %s within %s cooldown (配额保护)",
+					in.SenderOpenID, noticeCooldown)
+			}
+		}
 		return
 	}
 

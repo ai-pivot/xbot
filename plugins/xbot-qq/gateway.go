@@ -151,6 +151,12 @@ func (g *Gateway) Run(ctx context.Context) error {
 		if ready {
 			attempt = 0 // 成功收到 READY = 连接稳定，退避归零
 		}
+		// 先判"不可重试"，再决定退避：IP 白名单 / 限流 / 鉴权失败重试一万次
+		// 也不会变绿，只会烧配额并触发风控（2026-10-26 联调事故）。
+		if fatal, hint := FatalGatewayReason(err); fatal {
+			g.logf("gateway stopped: 不可重试错误%s: %v", hint, err)
+			return fmt.Errorf("qq gateway: fatal: %w%s", err, hint)
+		}
 		attempt++
 
 		delay := g.reconnectPolicy().Backoff(attempt)

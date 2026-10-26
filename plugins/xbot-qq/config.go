@@ -26,12 +26,20 @@ const (
 	KeyAppSecret = "app_secret"
 	KeyAllow     = "allow"
 	KeyAdmins    = "admins"
+	// KeySandbox 选择 OpenAPI 环境：true（默认）= 沙箱，false = 正式。
+	//
+	// 为什么默认沙箱（2026-10-26 真机实测）：应用未在开放平台发布时，正式域名
+	// api.sgroup.qq.com / api.bot.qq.com 的 GET /gateway 一律 401（11298 /
+	// 40023002「IP 不在白名单」），只有 sandbox.api.sgroup.qq.com 返回 wss 地址。
+	// 默认沙箱 = 装上就能连；发布后再手动关掉这个 toggle。
+	KeySandbox = "sandbox"
 )
 
 // Config 是 QQ 渠道的运行时配置。
 //
-// 三个字段组：
+// 四个字段组：
 //   - 凭据：AppID / AppSecret（QQ 开放平台机器人 → 开发设置）；
+//   - 环境：Sandbox（true=沙箱域名，false=正式域名）；
 //   - 准入：Allow（白名单，匹配 openid，支持精确项与通配项，
 //     空 = 谁都不处理，"*" = 全部处理）；
 //   - 权限：Admins（管理员名单，同样匹配 openid、同样的通配语义）。
@@ -39,6 +47,7 @@ type Config struct {
 	Enabled   bool
 	AppID     string
 	AppSecret string
+	Sandbox   bool
 	Allow     Patterns
 	Admins    Patterns
 }
@@ -50,10 +59,16 @@ type Config struct {
 // 严格检查，由调用方决定"报错还是带病运行"。
 func ParseConfig(raw map[string]string) Config {
 	get := func(key string) string { return strings.TrimSpace(raw[key]) }
+	// 环境默认沙箱：键缺失或为空都按沙箱处理（应用未发布时只有沙箱能连）。
+	sandbox := true
+	if v := get(KeySandbox); v != "" {
+		sandbox = parseBool(v)
+	}
 	return Config{
 		Enabled:   parseBool(get(KeyEnabled)),
 		AppID:     get(KeyAppID),
 		AppSecret: get(KeyAppSecret),
+		Sandbox:   sandbox,
 		Allow:     ParsePatterns(get(KeyAllow)),
 		Admins:    ParsePatterns(get(KeyAdmins)),
 	}
@@ -121,6 +136,7 @@ func (c Config) Redacted() map[string]string {
 		KeyEnabled:   fmt.Sprintf("%t", c.Enabled),
 		KeyAppID:     c.AppID,
 		KeyAppSecret: redactedSecret(c.AppSecret),
+		KeySandbox:   fmt.Sprintf("%t", c.Sandbox),
 		KeyAllow:     c.Allow.String(),
 		KeyAdmins:    c.Admins.String(),
 	}
@@ -128,8 +144,8 @@ func (c Config) Redacted() map[string]string {
 
 // Summary 返回一行日志摘要（绝不含 secret 原文）。
 func (c Config) Summary() string {
-	return fmt.Sprintf("enabled=%t app_id=%s secret=%s allow=%s(%d) admins=%s(%d)",
-		c.Enabled, c.AppID, redactedSecret(c.AppSecret),
+	return fmt.Sprintf("enabled=%t env=%s app_id=%s secret=%s allow=%s(%d) admins=%s(%d)",
+		c.Enabled, EnvName(c.Sandbox), c.AppID, redactedSecret(c.AppSecret),
 		c.Allow, c.Allow.Len(), c.Admins, c.Admins.Len())
 }
 

@@ -56,10 +56,22 @@ type SentMessage struct {
 }
 
 // APIError 是一个非 2xx 的 OpenAPI 响应。
+//
+// Code / ErrCode / Message 是从官方错误体里解析出的结构化字段，用于把
+// "重试也没用"的错误（IP 不在白名单、被限流、凭据错）与"可以重试"的错误
+// （网络抖动、5xx）分开 —— 否则插件会在白名单没配的情况下无限重试，
+// 一边烧被动消息配额，一边把自己送进平台风控。
+//
+// 官方错误体形如：
+//
+//	{"message":"接口访问源IP不在白名单","code":11298,"err_code":40023002,"trace_id":"..."}
 type APIError struct {
-	Op     string // "gateway" / "send_c2c" / "send_group"
-	Status int
-	Body   string
+	Op      string // "gateway" / "send_c2c" / "send_group"
+	Status  int
+	Body    string
+	Code    int
+	ErrCode int
+	Message string
 }
 
 func (e *APIError) Error() string {
@@ -69,20 +81,93 @@ func (e *APIError) Error() string {
 // IsUnauthorized 便于调用方判断是否需要换 token。
 func (e *APIError) IsUnauthorized() bool { return e.Status == http.StatusUnauthorized }
 
+// NewAPIError 解析官方错误体后构造 APIError（解析失败时只带 Status/Body）。
+func NewAPIError(op string, status int, body string) *APIError {
+	e := &APIError{Op: op, Status: status, Body: body}
+	var parsed struct {
+		Message string `json:"message"`
+		Code    int    `json:"code"`
+		ErrCode int    `json:"err_code"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err == nil {
+		e.Message = parsed.Message
+		e.Code = parsed.Code
+		e.ErrCode = parsed.ErrCode
+	}
+	return e
+}
+
+// 官方错误码（出处：平台返回体；本仓库只记实际观测到的两种）。
+const (
+	// errCodeIPNotAllowed 接口访问源 IP 不在白名单（HTTP 401）。
+	errCodeIPNotAllowed = 40023002
+	// codeIPNotAllowed 是同一错误的 code 字段。
+	codeIPNotAllowed = 11298
+	// errCodeRateLimited 接口调用超过频率限制（HTTP 400）。
+	errCodeRateLimited = 40023001
+	// codeRateLimited 是同一错误的 code 字段。
+	codeRateLimited = 100017
+)
+
+// IsIPNotAllowed 报告是否"接口访问源 IP 不在白名单"。
+//
+// 这是**人工才能解**的错误：出口 IP 必须由用户在 QQ 开放平台加白名单。
+// 重试一万次也不会变绿，只会把风控烧起来。
+func (e *APIError) IsIPNotAllowed() bool {
+	if e == nil {
+		return false
+	}
+	if e.ErrCode == errCodeIPNotAllowed || e.Code == codeIPNotAllowed {
+		return true
+	}
+	return strings.Contains(e.Message, "白名单")
+}
+
+// IsRateLimited 报告是否"接口调用超过频率限制"。
+//
+// 触发后继续按秒级重试会加重风控（官方口径：持续超限会延长封禁）。
+func (e *APIError) IsRateLimited() bool {
+	if e == nil {
+		return false
+	}
+	if e.ErrCode == errCodeRateLimited || e.Code == codeRateLimited {
+		return true
+	}
+	return strings.Contains(e.Message, "频率限制") || strings.Contains(e.Message, "频率")
+}
+
 // APIClient 是官方 OpenAPI 的最小客户端。
 type APIClient struct {
 	tokens  TokenSource
 	http    *http.Client
 	baseURL string
+	// sandbox 记录当前环境，只用于日志与错误提示（请求走 baseURL）。
+	sandbox bool
 }
 
-// NewAPIClient 构造生产用客户端。
+// NewAPIClient 构造客户端（默认沙箱环境）。
+//
+// 单测会直接改 baseURL 指向 httptest，所以这里不做任何网络动作。
 func NewAPIClient(tokens TokenSource) *APIClient {
+	return NewAPIClientEnv(tokens, true)
+}
+
+// NewAPIClientEnv 按环境构造客户端：sandbox=true → sandbox.api.sgroup.qq.com。
+func NewAPIClientEnv(tokens TokenSource, sandbox bool) *APIClient {
 	return &APIClient{
 		tokens:  tokens,
 		http:    &http.Client{Timeout: 20 * time.Second},
-		baseURL: defaultAPIBase,
+		baseURL: APIBase(sandbox),
+		sandbox: sandbox,
 	}
+}
+
+// Env 返回环境名（sandbox / prod）。
+func (c *APIClient) Env() string {
+	if c == nil {
+		return ""
+	}
+	return EnvName(c.sandbox)
 }
 
 // GatewayURL 调 GET /gateway 拿 wss 地址。
@@ -191,7 +276,7 @@ func (c *APIClient) doOnce(ctx context.Context, op, method, path string, payload
 		return fmt.Errorf("qq openapi %s: read response: %w", op, err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return &APIError{Op: op, Status: resp.StatusCode, Body: truncate(string(raw), 500)}
+		return NewAPIError(op, resp.StatusCode, truncate(string(raw), 500))
 	}
 	if out == nil {
 		return nil

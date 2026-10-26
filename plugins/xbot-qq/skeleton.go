@@ -53,10 +53,18 @@ type ReconnectPolicy struct {
 	MaxAttempts int
 }
 
-// DefaultReconnectPolicy 返回默认策略：1s 起，指数退避到 60s，无限重试
-// （渠道插件应当长期自愈，而不是自己放弃后需要人去重启服务）。
+// DefaultReconnectPolicy 返回默认策略：2s 起，指数退避到 10min，不限次数。
+//
+// 为什么不再是"1s 起 60s 封顶"（2026-10-26 联调事故的教训）：
+//   - 无限重试在"配置错"（IP 白名单 / 凭据）场景下只是刷平台接口，
+//     1 分钟内就能把 401 打成 100017（接口调用超过频率限制），把自己送进风控；
+//   - 单次等待上限拉到 10min，让"真的只是网络抖动"的场景也能自愈，但不会高频敲门。
+//
+// 为什么次数仍然不限：配置错导致的致命错误另有快停路径（见 gateway_fatal.go），
+// 根本不进退避循环；剩下的都是可自愈的瞬时故障，给次数上限只会让渠道
+// 在长稳场景下悄悄死掉、等人去重启。
 func DefaultReconnectPolicy() ReconnectPolicy {
-	return ReconnectPolicy{Min: time.Second, Max: time.Minute, MaxAttempts: 0}
+	return ReconnectPolicy{Min: 2 * time.Second, Max: 10 * time.Minute, MaxAttempts: 0}
 }
 
 // Backoff 返回第 attempt 次重试（attempt 从 1 开始）应等待的时长。

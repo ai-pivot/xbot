@@ -135,13 +135,13 @@ func TestConfigRedacted(t *testing.T) {
 	}
 }
 
-// TestConfigKeysExcludeOneBot 配置键集合必须只有官方那五项。
+// TestConfigKeysExcludeOneBot 配置键集合必须只有官方那几项（+ 环境开关）。
 //
 // 这是对"方向纠正"的硬断言：一旦有人把 OneBot 的键加回来，这里变红。
 func TestConfigKeysExcludeOneBot(t *testing.T) {
 	keys := map[string]bool{
 		KeyEnabled: false, KeyAppID: false, KeyAppSecret: false,
-		KeyAllow: false, KeyAdmins: false,
+		KeySandbox: false, KeyAllow: false, KeyAdmins: false,
 	}
 	for _, def := range qqChannelDeclaration().ConfigSchema {
 		if _, ok := keys[def.Key]; !ok {
@@ -154,7 +154,7 @@ func TestConfigKeysExcludeOneBot(t *testing.T) {
 			t.Fatalf("declaration missing config key %q", k)
 		}
 	}
-	if len(keys) != 5 {
-		t.Fatalf("expected exactly 5 config keys, got %d", len(keys))
+	if len(keys) != 6 {
+		t.Fatalf("expected exactly 6 config keys, got %d", len(keys))
 	}
 }

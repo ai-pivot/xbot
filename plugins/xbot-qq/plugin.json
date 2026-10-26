@@ -41,6 +41,14 @@
           "category": "连接"
         },
         {
+          "key": "sandbox",
+          "label": "沙箱环境（应用未发布时必开）",
+          "description": "开启时 OpenAPI 走 sandbox.api.sgroup.qq.com，关闭时走正式域名 api.sgroup.qq.com。应用未在开放平台发布时正式域名的 /gateway 一律 401（11298/40023002），只有沙箱能连。默认开启；发布上线后再关掉。",
+          "type": "toggle",
+          "default_value": "true",
+          "category": "连接"
+        },
+        {
           "key": "allow",
           "label": "消息白名单",
           "description": "决定哪些发送者的消息交给 agent。匹配的是 openid（不是 QQ 号）；每行/逗号分隔，支持精确值与通配模式（* 任意长度，? 一个字符）；填 * 表示处理所有消息。留空 = 不处理任何消息。",

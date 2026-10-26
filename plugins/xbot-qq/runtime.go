@@ -39,7 +39,8 @@ type channelRuntime struct {
 // newDefaultRuntime 用真实网络依赖构造运行时。
 func newDefaultRuntime(cfg Config, logf func(string, ...any)) *channelRuntime {
 	tokens := NewTokenClient(cfg.AppID, cfg.AppSecret)
-	api := NewAPIClient(tokens)
+	// 环境由配置决定：应用未发布时必须走沙箱域名，否则 /gateway 一律 401。
+	api := NewAPIClientEnv(tokens, cfg.Sandbox)
 	return newRuntime(cfg, runtimeDeps{
 		tokens:     tokens,
 		gatewayURL: api.GatewayURL,

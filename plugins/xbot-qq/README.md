@@ -10,7 +10,7 @@
 
 ## 1. 配置
 
-`config.json` → `channels.qq`，只有五项：
+`config.json` → `channels.qq`，只有六项：
 
 ```json
 {
@@ -19,6 +19,7 @@
       "enabled": "true",
       "app_id": "102030405",
       "app_secret": "your-app-secret",
+      "sandbox": "true",
       "allow": "OPENID_A, OPENID_B, group:*",
       "admins": "OPENID_A"
     }
@@ -31,6 +32,7 @@
 | `enabled` | 是否连接官方网关（`true/1/yes/on`） |
 | `app_id` | 开放平台 → 机器人 → 开发设置 的 AppID（纯数字；非数字直接拒绝启用） |
 | `app_secret` | 对应 AppSecret，只用于换 access_token；日志里只打长度 |
+| `sandbox` | **默认 `true`**：OpenAPI 走 `sandbox.api.sgroup.qq.com`；`false` 走正式 `api.sgroup.qq.com`。应用未在开放平台发布时正式域名一律 401（11298/40023002），只有沙箱能连。发布上线后再关掉 |
 | `allow` | 白名单，匹配 **openid**；`*` = 全部，`?` = 单字符；留空 = 谁都不处理（fail-closed） |
 | `admins` | 管理员 openid 名单；写入 `metadata.is_admin` |
 
@@ -279,12 +281,33 @@ go run ./scripts/qq-channel-verify
 
 ## 9. 联调状态
 
-**未与真实 AppID/AppSecret 联调**（本仓库没有凭据）。当前证据链止于：
-HTTP/WS 协议级单测（本地 httptest + 内存连接）+ host 侧注册与提示词注入验证。
+**已用真实 AppID/AppSecret 完成协议级真机联调（2026-10-26）**。当时实测（同一个
+access_token、同一台机器、同一出口 IP 202.163.9.244）：
+
+| 请求 | 结果 |
+|---|---|
+| `POST bots.qq.com/app/getAppAccessToken` | 200（凭据正确，token 端点两环境通用） |
+| `GET api.sgroup.qq.com/gateway` | 401 `11298 / 40023002`「接口访问源IP不在白名单」 |
+| `GET api.bot.qq.com/gateway` | 401 同上 |
+| `GET sandbox.api.sgroup.qq.com/gateway` | 200 `{"url":"wss://sandbox.api.sgroup.qq.com/websocket"}` |
+
+**结论：应用处于沙箱态（未发布），正式 OpenAPI 全拒** —— 这个场景下「IP 白名单」
+是平台对未发布应用的错误表达，加白名单没用；唯一解是走沙箱域名
+（`channels.qq.sandbox=true`，默认值），或去开放平台发布应用。
+
+所以本插件：
+
+- 基地址由 `sandbox` 开关决定，默认沙箱；
+- 启动日志固定打印 `env=sandbox|prod base=<host>`，上线忘切环境一眼可见；
+- 401 + `11298/40023002` 判为**致命**，立即停止重连并提示指向沙箱开关
+  （不再像早期那样无限重试，把 401 刷成 100017 频率限制）。
+
+当前证据链止于：HTTP/WS 协议级单测（本地 httptest + 内存连接）+ host 侧注册与
+提示词注入验证 + 上述真机端点探测。
 
 **未证实项（文档没写清 / 无法离线验证）**：
 
-- token 端点与 OpenAPI 基地址（`bots.qq.com` vs `api.bot.qq.com`、`api.sgroup.qq.com` vs `api.bot.qq.com`）；
+- token 端点的正式口径（`bots.qq.com` 实测 200，`api.bot.qq.com` 保留为降级候选）；
 - `expires_in` 是否恒为 7200、是否始终以字符串返回；
 - 事件「相同 msg_id 可能重复推送」的实际频率与去重键（文档在 `msg_seq` / `msg_idx` 之间自相矛盾）；
 - 被动回复超出次数上限（单聊 4 / 群聊 5）后平台的确切行为；

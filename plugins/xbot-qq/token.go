@@ -44,11 +44,21 @@ import (
 )
 
 const (
-	// defaultAPIBase 是 OpenAPI 基地址。
-	// 出处：event-emit.html §WebSocket方式（示例 wss://api.bot.qq.com/websocket/）
-	// 与 url_get.html §示例（同域名）。历史上是 api.sgroup.qq.com，两者并存，
-	// 联调时以实际返回为准。
-	defaultAPIBase = "https://api.sgroup.qq.com"
+	// apiBaseSandbox 是**沙箱环境**的 OpenAPI 基地址。
+	//
+	// 2026-10-26 真机实测（同一个 access_token、同一台机器、同一出口 IP）：
+	//	GET api.sgroup.qq.com/gateway         → 401 11298/40023002「IP 不在白名单」
+	//	GET api.bot.qq.com/gateway            → 401 同上
+	//	GET sandbox.api.sgroup.qq.com/gateway → 200 {"url":"wss://sandbox.api.sgroup.qq.com/websocket"}
+	// 结论：应用处于**沙箱态**（未在开放平台发布），只有 sandbox.* 通；
+	// 「IP 白名单」这个错误码在这里是平台对"未发布应用"的另一种表达，加了白名单也没用。
+	apiBaseSandbox = "https://sandbox.api.sgroup.qq.com"
+
+	// apiBaseProd 是**正式环境**的 OpenAPI 基地址（应用发布后才有权限）。
+	apiBaseProd = "https://api.sgroup.qq.com"
+
+	// defaultAPIBase 是默认基地址 = 沙箱（见 channels.qq.sandbox，默认 true）。
+	defaultAPIBase = apiBaseSandbox
 
 	// tokenRefreshSkew 是提前续期的安全窗：token 剩余寿命小于它就换新。
 	// 出处：api-use.html §其他说明（"接近过期时间 60 秒内"）。
@@ -58,6 +68,29 @@ const (
 	// 出处：api-use.html §请求参数（"目前是7200秒之内的值"）。
 	defaultTokenTTL = 7200 * time.Second
 )
+
+// APIBase 返回指定环境下的 OpenAPI 基地址。
+//
+// 换 token 的端点（bots.qq.com）两个环境**通用**，不随这个开关变化。
+func APIBase(sandbox bool) string {
+	if sandbox {
+		return apiBaseSandbox
+	}
+	return apiBaseProd
+}
+
+// APIBaseHost 只取 host（启动日志用：base=sandbox.api.sgroup.qq.com）。
+func APIBaseHost(sandbox bool) string {
+	return strings.TrimPrefix(strings.TrimPrefix(APIBase(sandbox), "https://"), "http://")
+}
+
+// EnvName 返回环境名（启动日志用）。上线忘切环境时，日志里必须一眼看出来。
+func EnvName(sandbox bool) string {
+	if sandbox {
+		return "sandbox"
+	}
+	return "prod"
+}
 
 // defaultTokenURLs 是换 token 的端点候选，按顺序尝试。
 //
@@ -220,7 +253,7 @@ func (c *TokenClient) fetchFrom(ctx context.Context, url string) (token string, 
 		return "", 0, true, fmt.Errorf("read getAppAccessToken response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, false, fmt.Errorf("getAppAccessToken(%s): HTTP %d: %s", url, resp.StatusCode, truncate(string(raw), 300))
+		return "", 0, false, &TokenHTTPError{URL: url, Status: resp.StatusCode, Body: truncate(string(raw), 300)}
 	}
 
 	var tr tokenResponse
