@@ -101,11 +101,13 @@ type OutboundSender struct {
 	// Stream 为 true 时，**私聊**回复用 stream_messages 分片发送（边生成边显示）。
 	// 群聊没有流式接口，仍走普通 messages。
 	Stream bool
-	api    MessageAPI
-	now    func() time.Time
-	mu     sync.Mutex
-	seq    map[string]uint32
-	last   map[string]msgAnchor
+	// streams 是每条会话的流式分片状态（stream_msg_id / index / 是否已收尾）。
+	streams map[string]*streamState
+	api     MessageAPI
+	now     func() time.Time
+	mu      sync.Mutex
+	seq     map[string]uint32
+	last    map[string]msgAnchor
 	// replies 记录每个锚点已用掉的被动回复次数（配额自检用）。
 	replies map[string]uint32
 	// logErr 输出 ERROR 级诊断（配额耗尽等必须留痕）。
@@ -120,6 +122,7 @@ func NewOutboundSender(api MessageAPI) *OutboundSender {
 		seq:     make(map[string]uint32),
 		last:    make(map[string]msgAnchor),
 		replies: make(map[string]uint32),
+		streams: make(map[string]*streamState),
 		logErr:  func(string, ...any) {},
 	}
 }
@@ -333,4 +336,80 @@ func streamContentType(markdown bool) string {
 		return "markdown"
 	}
 	return "text"
+}
+
+// streamState 记录一条流式消息的跨片状态。
+type streamState struct {
+	msgID    string // 被动回复锚点（msg_id）
+	streamID string // 服务端返回的 stream_msg_id（首片后填写）
+	index    int
+	closed   bool
+}
+
+// SendStreamDelta 把一段**增量**文本推给私聊流式接口。
+//
+// 与 Send 的区别：Send 面向"最终整段答案"（一次性/分片），本方法面向
+// host 的 stream_content 增量帧 —— 边生成边显示。
+//   - 只在私聊启用（官方只有 /v2/users/{openid}/stream_messages）
+//   - 首片 input_state=1、index=0，服务端返回 id 作为后续片的 stream_msg_id
+//   - final=true 时发 input_state=10 收尾，并清掉本地状态
+//
+// 返回是否真的发出去了（群聊/未开启流式/空增量都会返回 false）。
+func (s *OutboundSender) SendStreamDelta(ctx context.Context, chatID, delta string, final bool) (bool, error) {
+	if !s.Stream {
+		return false, nil
+	}
+	groupOpenID, userOpenID, err := parseChatID(chatID)
+	if err != nil || groupOpenID != "" {
+		return false, nil // 群聊无流式接口
+	}
+	if strings.TrimSpace(delta) == "" && !final {
+		return false, nil
+	}
+
+	s.mu.Lock()
+	st, ok := s.streams[chatID]
+	if !ok {
+		st = &streamState{}
+		s.streams[chatID] = st
+	}
+	if st.closed {
+		// 已经收尾过，新一轮从 0 开始
+		st = &streamState{}
+		s.streams[chatID] = st
+	}
+	anchor := st.msgID
+	index := st.index
+	stream := st.streamID
+	s.mu.Unlock()
+
+	body := streamBody{
+		InputMode:   "append",
+		InputStream: 1,
+		Index:       index,
+		ContentType: streamContentType(s.Markdown),
+		ContentRaw:  delta,
+		MsgID:       anchor,
+		MsgSeq:      s.nextSeq(chatID, anchor),
+		StreamMsgID: stream,
+	}
+	if final {
+		body.InputStream = 10
+	}
+	sent, err := s.api.StreamC2C(ctx, userOpenID, body)
+	if err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st2, ok := s.streams[chatID]; ok {
+		st2.index++
+		if st2.streamID == "" && sent != nil {
+			st2.streamID = sent.ID
+		}
+		if final {
+			st2.closed = true
+		}
+	}
+	return true, nil
 }

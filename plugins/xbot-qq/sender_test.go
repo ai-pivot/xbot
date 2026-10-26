@@ -226,3 +226,91 @@ func TestSenderPropagatesAPIError(t *testing.T) {
 		t.Fatalf("err = %v, want API error", err)
 	}
 }
+
+// TestStreamC2CChunksAndState 私聊流式：分片语义必须符合官方文档。
+//
+// 文档《发送单聊流式消息》POST /v2/users/{openid}/stream_messages：
+//
+//	input_state  1=生成中，10=生成结束
+//	index        分片序号，从 0 递增
+//	stream_msg_id 首片由服务端返回，后续分片必须携带
+//
+// 群聊没有流式接口（只有 /v2/users/...），所以群聊必须仍走普通 messages。
+func TestStreamC2CChunksAndState(t *testing.T) {
+	api := &fakeMessageAPI{}
+	s := NewOutboundSender(api)
+	s.Markdown = true
+	s.Stream = true
+	s.RememberInbound("USER-OPENID", "MSG-1")
+
+	long := strings.Repeat("这是一段很长的内容。", 400) // 超过单片上限，必然分片
+	if _, err := s.Send(context.Background(), "USER-OPENID", long); err != nil {
+		t.Fatalf("Send err: %v", err)
+	}
+	calls := api.Calls()
+	if len(calls) < 2 {
+		t.Fatalf("长消息应分多片发送，实际 %d 片", len(calls))
+	}
+	for i, c := range calls {
+		if c.kind != "c2c-stream" {
+			t.Fatalf("第 %d 片 kind = %s, want c2c-stream（群聊才走普通 messages）", i, c.kind)
+		}
+	}
+	if calls[0].content == "" {
+		t.Fatalf("首片内容为空")
+	}
+
+	// 群聊即使开了 Stream，也必须回落到普通 messages（官方无群流式接口）。
+	api2 := &fakeMessageAPI{}
+	s2 := NewOutboundSender(api2)
+	s2.Markdown = true
+	s2.Stream = true
+	s2.RememberInbound("group:G1", "MSG-2")
+	if _, err := s2.Send(context.Background(), "group:G1", "群里的回复"); err != nil {
+		t.Fatalf("group Send err: %v", err)
+	}
+	if got := api2.Calls(); len(got) != 1 || !strings.HasPrefix(got[0].kind, "group") {
+		t.Fatalf("群聊必须走普通 messages，实际 %+v", got)
+	}
+}
+
+// TestSendStreamDeltaC2COnly 增量流式：只有私聊转发、群聊忽略。
+//
+// 用户要求「个人聊天支持 stream」。官方只有 /v2/users/{openid}/stream_messages，
+// 群聊没有对应接口 ⇒ 群会话的增量必须被忽略（返回 false 且零 API 调用）。
+func TestSendStreamDeltaC2COnly(t *testing.T) {
+	api := &fakeMessageAPI{}
+	s := NewOutboundSender(api)
+	s.Markdown = true
+	s.Stream = true
+	s.RememberInbound("USER-OPENID", "MSG-S1")
+
+	ok, err := s.SendStreamDelta(context.Background(), "USER-OPENID", "第一段", false)
+	if err != nil || !ok {
+		t.Fatalf("私聊增量应发出，ok=%t err=%v", ok, err)
+	}
+	if calls := api.Calls(); len(calls) != 1 || calls[0].kind != "c2c-stream" {
+		t.Fatalf("calls = %+v, want 一条 c2c-stream", calls)
+	}
+
+	// 群聊：必须忽略
+	api2 := &fakeMessageAPI{}
+	s2 := NewOutboundSender(api2)
+	s2.Stream = true
+	ok2, err2 := s2.SendStreamDelta(context.Background(), "group:G1", "群里的增量", false)
+	if err2 != nil || ok2 {
+		t.Fatalf("群聊增量必须忽略，ok=%t err=%v", ok2, err2)
+	}
+	if calls := api2.Calls(); len(calls) != 0 {
+		t.Fatalf("群聊增量不应产生 API 调用，实际 %+v", calls)
+	}
+
+	// 关闭流式开关时也必须忽略
+	api3 := &fakeMessageAPI{}
+	s3 := NewOutboundSender(api3)
+	s3.Stream = false
+	ok3, _ := s3.SendStreamDelta(context.Background(), "USER-OPENID", "x", false)
+	if ok3 || len(api3.Calls()) != 0 {
+		t.Fatalf("Stream=false 时不应发送")
+	}
+}

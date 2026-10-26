@@ -76,6 +76,11 @@ func (r *channelRuntime) Send(ctx context.Context, chatID, content string) (*Sen
 	return r.sender.Send(ctx, chatID, content)
 }
 
+// SendStreamDelta 转发一段增量文本到私聊流式接口（群聊自动忽略）。
+func (r *channelRuntime) SendStreamDelta(ctx context.Context, chatID, delta string, final bool) (bool, error) {
+	return r.sender.SendStreamDelta(ctx, chatID, delta, final)
+}
+
 // RememberInbound 记录被动回复锚点。
 func (r *channelRuntime) RememberInbound(chatID, msgID string) {
 	r.sender.RememberInbound(chatID, msgID)

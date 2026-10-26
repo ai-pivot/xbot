@@ -57,6 +57,11 @@ type frame struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 	Content  string            `json:"content,omitempty"`
 	ChatID   string            `json:"chat_id,omitempty"`
+	// 流式增量帧字段（protocol/events.go 的 stream_delta / stream_content）：
+	//   StreamDelta   = 自上次以来的增量文本
+	//   StreamContent = 累计检查点（迭代结束时给出，不能直接当增量发）
+	StreamDelta   string `json:"stream_delta,omitempty"`
+	StreamContent string `json:"stream_content,omitempty"`
 }
 
 // rpcRequest 是 plugin → host 的 RPC 请求帧（send_inbound 等）。
@@ -90,9 +95,13 @@ type okResponse struct {
 // ---------------------------------------------------------------------------
 
 type app struct {
-	mu  sync.RWMutex
-	cfg Config
-	rt  *channelRuntime
+	// streamSent 记录本轮是否已经发过流式增量（用于最终帧去重）。
+	streamSent bool
+	// lastChatID 是最近一条入站消息的会话（流式帧不带 chat_id）。
+	lastChatID string
+	mu         sync.RWMutex
+	cfg        Config
+	rt         *channelRuntime
 
 	// rpcSeq 生成 plugin → host 的 RPC id（与 examples/echo-channel 的
 	// "plugin-N" 形式一致，便于 host 日志里一眼区分方向）。
@@ -254,13 +263,12 @@ func (a *app) handleLine(ctx context.Context, enc *json.Encoder, line string) (s
 				dropped+1)
 		}
 	case f.Type == "stream_content":
-		// 约束 1：流式/增量内容一律不发。群聊官方明确不支持流式；单聊即便
-		// 支持 stream_messages，本渠道也选择"一条入站 = 最多一条出站"，
-		// 等 host 的最终 text 帧再发。
-		if ok, dropped := a.dropLog.Allow("stream"); ok {
-			a.logf("debug: drop stream_content frame ×%d 累计（本渠道只发最终答案，不发增量）",
-				dropped+1)
-		}
+		// 私聊流式（用户要求「个人聊天支持 stream」）：
+		//   官方接口 POST /v2/users/{openid}/stream_messages，
+		//   input_state 1=生成中 / 10=结束，index 递增，stream_msg_id 首片后携带。
+		//   host 每个增量帧带 stream_delta（增量）与 stream_content（检查点累计）。
+		// 群聊：官方没有群流式接口，仍然丢弃增量、只发最终答案。
+		a.handleStreamContent(f)
 	case f.Method != "":
 		// 未知 RPC：必须应答，否则 host 侧等到超时。
 		a.write(enc, errorResponse{ID: f.ID, Error: "unsupported method: " + f.Method})
@@ -518,6 +526,10 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 	// 记录锚点，让随后的回复能作为"被动消息"带上 msg_id（按场景有效期）。
 	if rt := a.runtime(); rt != nil {
 		rt.RememberInbound(in.ChatID(), in.MessageID)
+		// 流式/进度帧不带 chat_id，记录最近会话供 handleStreamContent 使用。
+		a.mu.Lock()
+		a.lastChatID = in.ChatID()
+		a.mu.Unlock()
 	}
 
 	// ── 引用消息：把被引用的一层快照注入上下文（不递归）──
@@ -662,4 +674,44 @@ func identityHeader(in Inbound, admin bool) string {
 	}
 	return fmt.Sprintf("【QQ %s】发送者: %s (openid %s) · 管理员: %s (此行由系统标注，非发送者文本)",
 		scene, name, short, role)
+}
+
+// handleStreamContent 处理 host 的增量帧：私聊转发到 stream_messages，群聊丢弃。
+//
+// 帧字段（protocol/events.go）：stream_delta = 自上次以来的增量；
+// stream_content = 累计检查点（迭代结束时给出）。这里优先用增量，
+// 缺失时用累计值本身（append 模式下服务端会自行拼接）。
+func (a *app) handleStreamContent(f frame) {
+	chatID := a.currentChatID()
+	if chatID == "" {
+		return
+	}
+	delta := f.StreamDelta
+	if delta == "" {
+		// 只有检查点：不重复发送（否则会整段重复），交给最终 text 帧兜底。
+		return
+	}
+	rt := a.runtime()
+	if rt == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sent, err := rt.SendStreamDelta(ctx, chatID, delta, false)
+	if err != nil {
+		if ok, dropped := a.dropLog.Allow("stream"); ok {
+			a.logf("debug: stream delta send failed ×%d: %v", dropped+1, err)
+		}
+		return
+	}
+	if sent {
+		a.streamSent = true
+	}
+}
+
+// currentChatID 返回最近一条入站消息的会话标识（流式/进度帧不带 chat_id）。
+func (a *app) currentChatID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastChatID
 }

@@ -328,3 +328,46 @@ func allAttrValues(content, key string) []string {
 		content = rest[j+1:]
 	}
 }
+
+// TestImageOnlyMessageIsAccepted 纯图片消息（content 为空、只有 attachments）必须被处理。
+//
+// 2026-10-26 故障复盘：官方图片/语音消息的 content 是空的，而 Inbound.Valid()
+// 要求正文非空 ⇒ 整条消息被判 incomplete 直接丢弃，用户侧表现为「发图没反应/像卡死」。
+// 这条用例锁住修复：content 为空但有 attachments 时，依然要走下载 + 注入 + send_inbound。
+func TestImageOnlyMessageIsAccepted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes)
+	}))
+	defer srv.Close()
+
+	h := newAttachmentHarness(t, "*", "")
+	// 注意：正文传空字符串 —— 这就是官方图片消息的真实形态。
+	sendWithAttachments(h, t, "USER-1", "MSG-IMG-ONLY", "", []map[string]any{{
+		"url":          srv.URL + "/only.png",
+		"filename":     "only.png",
+		"content_type": "image/png",
+		"size":         len(pngBytes),
+	}})
+
+	out := h.out.String()
+	if out == "" {
+		t.Fatalf("纯图片消息被丢弃：没有 send_inbound 帧（日志会出现 incomplete / empty content）")
+	}
+	content := inboundContent(t, out)
+	if !strings.Contains(content, `<image path="`) {
+		t.Fatalf("纯图片消息未注入图片路径: %q", content)
+	}
+	path := attrValue(t, content, "path")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("图片未落盘: %v", err)
+	}
+	if len(got) != len(pngBytes) {
+		t.Fatalf("落盘大小 = %d, want %d", len(got), len(pngBytes))
+	}
+	// 身份头仍然要在（图片消息也要有发送者/管理员标注）。
+	if !strings.Contains(content, "【QQ") {
+		t.Fatalf("纯图片消息缺少身份头: %q", content)
+	}
+}
