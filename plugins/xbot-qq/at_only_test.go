@@ -18,21 +18,34 @@ import (
 	"testing"
 )
 
-// TestIntentsOnlyGroupAndC2C intents 只能是 1<<25，不叠加任何其他位。
-func TestIntentsOnlyGroupAndC2C(t *testing.T) {
+// TestIntentsAreExactlyTheMessageBits 锁死订阅面：只允许
+//   GROUP_AND_C2C (1<<25)        → 私聊 C2C + QQ群 @
+//   PUBLIC_GUILD_MESSAGES (1<<30) → QQ频道 AT_MESSAGE_CREATE
+// 这两个**消息类**位，任何其他位（GUILDS/GUILD_MEMBERS/DIRECT_MESSAGE/INTERACTION）
+// 都不许叠加。
+//
+// 2026-10-26 变更理由：原先只允许 1<<25。实测私聊可收、群消息零事件；而 QQ 的
+// 「群」有两类，频道(guild)走 AT_MESSAGE_CREATE + 1<<30，是 1<<25 覆盖不到的。
+// 同时历史教训：用官方 SDK 的 FULL_INTENTS 时连 C2C 都收不到（说明了"多订无权限
+// 的位会静默影响投递"），所以这里严格限定为这两个消息位，不跟随 FULL_INTENTS。
+func TestIntentsAreExactlyTheMessageBits(t *testing.T) {
 	if IntentGroupAndC2C != 33554432 {
 		t.Fatalf("IntentGroupAndC2C = %d, want 33554432 (=1<<25)", IntentGroupAndC2C)
 	}
-	if DefaultIntents != IntentGroupAndC2C {
-		t.Fatalf("DefaultIntents = %d, want exactly %d (no other bits)", DefaultIntents, IntentGroupAndC2C)
+	if IntentPublicGuildMessages != 1<<30 {
+		t.Fatalf("IntentPublicGuildMessages = %d, want %d (=1<<30)", IntentPublicGuildMessages, 1<<30)
 	}
-	if extra := DefaultIntents &^ IntentGroupAndC2C; extra != 0 {
-		t.Fatalf("DefaultIntents carries extra bits 0x%x", extra)
+	want := IntentGroupAndC2C | IntentPublicGuildMessages
+	if DefaultIntents != want {
+		t.Fatalf("DefaultIntents = %d, want %d", DefaultIntents, want)
+	}
+	if extra := DefaultIntents &^ want; extra != 0 {
+		t.Fatalf("DefaultIntents carries forbidden extra bits 0x%x", extra)
 	}
 	// 零值配置也必须落到同一组 intents（不能由配置文件放宽订阅面）。
 	gw := &Gateway{}
-	if got := gw.intents(); got != 33554432 {
-		t.Fatalf("Gateway.intents() = %d, want 33554432", got)
+	if got := gw.intents(); got != want {
+		t.Fatalf("Gateway.intents() = %d, want %d", got, want)
 	}
 }
 

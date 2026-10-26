@@ -98,7 +98,14 @@ const (
 // 不会报错，但是将不会收到对应的事件类型" —— 即多订了没权限的位会**静默**
 // 影响事件投递。因此回到已验证可用的最小集：只订 GROUP_AND_C2C(1<<25)，
 // 它能收到 C2C_MESSAGE_CREATE。
-const DefaultIntents = IntentGroupAndC2C
+// 默认同时订阅：
+//   GROUP_AND_C2C      (1<<25) → 私聊 C2C_MESSAGE_CREATE + QQ群 GROUP_AT_MESSAGE_CREATE
+//   PUBLIC_GUILD_MESSAGES (1<<30) → QQ**频道**里 AT_MESSAGE_CREATE
+//
+// 2026-10-26：此前只订 1<<25，能收私聊、收不到「群」消息。QQ 的「群」有两类——
+// 群聊(group)和频道(guild)，后者走 AT_MESSAGE_CREATE + 1<<30，是 1<<25 覆盖不到的。
+// 两个位都是消息类基础位，同时订阅即可兼容两种场景。
+const DefaultIntents = IntentGroupAndC2C | IntentPublicGuildMessages
 
 // GatewayEvent 是一条 op=0 业务事件（READY 由 Gateway 内部消费，不外抛）。
 type GatewayEvent struct {
@@ -291,6 +298,12 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 		return false, fmt.Errorf("hello carried invalid heartbeat_interval %d", hello.HeartbeatInterval)
 	}
 	g.logf("gateway hello: heartbeat_interval=%s", interval)
+	// 把实际订阅的 intents 打进日志：排障时"订了什么"必须是可观测事实，
+	// 而不是靠读代码推断（此前多次因为看不到 intents 而误判）。
+	if iv := g.intents(); true {
+		g.logf("gateway identify: intents=%d (group_c2c=%v guild_messages=%v resume=%v)",
+			iv, iv&IntentGroupAndC2C != 0, iv&IntentPublicGuildMessages != 0, g.currentSessionID() != "")
+	}
 
 	// ── 2. Resume 或 Identify ──
 	//
