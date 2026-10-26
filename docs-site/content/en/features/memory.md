@@ -7,12 +7,12 @@ weight: 50
 
 xbot supports pluggable memory providers. The agent uses memory to persist
 information across conversations, recall past interactions, and maintain
-user-specific context.
+user-specific context. The built-in default is `xbot`; `flat` and `letta` are
+alternatives, and `none` disables memory completely (no tools, no prompt).
 
 {{< columns >}}
 
 ## Flat
-*(default)*
 
 - File-based text blob
 - Zero dependencies
@@ -28,14 +28,25 @@ user-specific context.
 - FTS5 full-text search
 - Requires embedding model
 
+<--->
+
+## None
+
+- No memory tools
+- No memory prompt
+- Nothing persisted or recalled
+
 {{< /columns >}}
 
 ## Configuration
 
 ```bash
-# Set via environment variable
-MEMORY_PROVIDER=flat    # or: letta
+# Set via environment variable / config.json
+MEMORY_PROVIDER=xbot    # xbot (default) | flat | letta | none
 ```
+
+`none` is an explicit mode: the agent receives no memory tools and no memory
+prompt at all — nothing is recalled, consolidated, or injected.
 
 For Letta mode, configure an embedding model:
 
@@ -46,7 +57,7 @@ LLM_EMBEDDING_API_KEY=sk-xxx
 LLM_EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-## Flat Provider (default)
+## Flat Provider
 
 All long-term memories are stored as a single text blob and injected into the
 system prompt on every request. When you start a new conversation (`/new`), the
@@ -96,6 +107,21 @@ Full conversation history searchable by date range. Powered by SQLite FTS5
 (full-text search) for fast keyword matching.
 
 **Tools:** `recall_memory_search`
+
+## None (no memory)
+
+Set `memory_provider: "none"` to run the agent with no memory capability at all:
+
+- No `memory_*`, `core_memory_*`, `archival_memory_*`, or `recall_memory_search`
+  tools are registered — the model never sees them.
+- No memory section is injected into the system prompt.
+- No recall injection, no automatic memory consolidation, and no compression
+  memory hooks. SubAgents also get no memory.
+
+{{< hint type=note >}}
+`none` is a deliberate mode, not a fallback. An unknown/unregistered provider
+name still gets the generic flat prompt guide; only `none` disables memory.
+{{< /hint >}}
 
 ## Memory Consolidation
 

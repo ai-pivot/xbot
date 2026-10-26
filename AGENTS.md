@@ -68,7 +68,7 @@
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build, **local/remote unification**
 - `docs/agent/hooks.md` — hooks lifecycle events, handler types, configuration, gotchas
 - `docs/agent/channel.md` — CLI (BubbleTea TUI), Feishu, Web adapters, asyncCh pattern, deterministic rendering, mouse support, settings panels
-- `docs/agent/memory.md` — letta vs flat providers; **xbot provider BM25 搜索 OR 语义**（`fts5OrQuery` 召回 + bm25 排序；dedup 保持 `fts5SafeQuery` AND —— 多词查询一个词缺席不能零化结果集，"frpc vs frps" 用户报告根因）
+- `docs/agent/memory.md` — letta vs flat providers; **`none` 是一等模式**（`memory_provider: "none"`：不注册任何记忆工具、不注入记忆提示词、会话 `Memory()` 为 nil、SubAgent 无记忆；显式分支在 `agent/context.go`，守护 `agent/memory_none_test.go` + `session/multitenant_none_test.go`）；**xbot provider BM25 搜索 OR 语义**（`fts5OrQuery` 召回 + bm25 排序；dedup 保持 `fts5SafeQuery` AND —— 多词查询一个词缺席不能零化结果集，"frpc vs frps" 用户报告根因）
 - `docs/agent/plugin.md` — plugin system architecture, runtimes, integration, RPC bridge
 - `docs/agent/worktree.md` — git worktree-based multi-agent workspace isolation, WorktreeRegistry, AutoDetectAndInit, peer discovery, path security
 - `docs/agent/web-message-store.md` — **Web 消息渲染架构（方案 A）**: MessageStore 单一消息状态机（Map<turnID, TurnSlot>，每 turn 1 user + 1 assistant，live 是 assistant 的未完成态）。取代 "两套数据 + buildMessageRows 启发式去重" —— 唯一性由结构保证，渲染层零去重，从根上消除 "turn 消失/重复" 整类 bug（exactDup 跨 turn 迭代号匹配等）。buildMessageRows/liveMessage prop/dedupMessages 已删除。**「一个 turn 一条 user 行」的可判定规则**：该 turn **dbID 最小**的 user 行（turn 开始时的用户消息）；同 turn 后来的 user 行是内部载体（view_image 注入，`Internal`），既不渲染（后端过滤）也不能顶掉用户消息（前端 `mergeHistory` 取最早那条）

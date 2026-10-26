@@ -73,6 +73,7 @@ func formatErrorForUser(err error) string {
 //
 // 用户决策（2026-09-17 再次确认）：**缺省必须是内置 xbot**（此前缺省为 "flat"）。
 // 空值一律落到 xbot —— 不猜别的 provider（用户铁律：严禁推断/自动 fallback）。
+// "none" 是显式关闭记忆的一等模式，原样透传（绝不回落到 xbot）。
 func resolveMemoryProvider(cfg string) string {
 	if cfg == "" {
 		return "xbot"
@@ -2064,7 +2065,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 			"provider": memoryProvider,
 			"tools":    memToolNames,
 		}).Info("Memory tools registered (core)")
-	} else {
+	} else if memoryProvider != "none" {
 		log.WithField("provider", memoryProvider).Warn("No memory tools declared by provider")
 	}
 

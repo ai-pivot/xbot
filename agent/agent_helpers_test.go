@@ -95,6 +95,7 @@ func TestResolveMemoryProvider(t *testing.T) {
 		{name: "empty defaults to xbot", cfg: "", want: "xbot"},
 		{name: "flat stays flat", cfg: "flat", want: "flat"},
 		{name: "letta stays letta", cfg: "letta", want: "letta"},
+		{name: "none stays none", cfg: "none", want: "none"},
 		{name: "arbitrary value passed through", cfg: "custom", want: "custom"},
 	}
 
