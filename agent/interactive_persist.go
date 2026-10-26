@@ -311,11 +311,28 @@ func (a *Agent) resumeIfPreviouslyRunning(rec sqlite.InteractiveAgentRecord, ia 
 	if err := a.interactiveAgentSvc().MarkStatus(key, sqlite.InteractiveAgentInterrupted, rec.TurnID); err != nil {
 		log.WithError(err).WithField("agent_key", key).Warn("Restore: failed to mark interrupted")
 	}
+
+	// ⛔ 2026-10-26「假忙碌」bug：旧实现这里是
+	//     a.InjectInboundResume("agent", rec.RoleName+"/"+rec.Instance, ...)
+	// 它把 resume 消息投进 bus.Inbound 的 "agent" 渠道 —— 但：
+	//   1) 系统里没有名为 "agent" 的渠道消费者；
+	//   2) interactive 会话从不通过 bus.Inbound 驱动，它只走
+	//      SendToInteractiveSession / ContinueInteractiveSession。
+	// ⇒ 消息进了没人读的队列，会话状态却一直是 running（DB 与内存都这么标），
+	//   于是「假忙碌」：首辅 15:09 恢复后到 15:48 一条日志都没有，
+	//   工部交付的回执只能躺在 pendingMessages 里没人 drain。
+	//
+	// 现在改为：**如实标记 interrupted 并置回 idle**，不假装续跑。
+	// 下一次 send / 上级投递会正常驱动它（idle 分支会起新一轮 Run）。
+	// 代价：重启前那一轮不会自动接上——这是可接受的，远好过静默卡死。
+	ia.mu.Lock()
+	ia.running = false
+	ia.cancelCurrent = nil
+	ia.mu.Unlock()
 	log.WithFields(log.Fields{
 		"agent_key": key,
 		"turn_id":   rec.TurnID,
-	}).Info("Restore: resuming previously running sub-agent")
-	a.InjectInboundResume("agent", rec.RoleName+"/"+rec.Instance, rec.OriginUserID)
+	}).Info("Restore: 上一轮未完成 → 标记 interrupted 并置 idle，等待下一次 send 驱动")
 }
 
 // lookupRoleDefinition 从 agents 目录重新解析 role（恢复时以磁盘定义为准）。
