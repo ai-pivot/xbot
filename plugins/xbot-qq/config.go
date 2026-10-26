@@ -8,6 +8,15 @@ import (
 // channels.qq.* 的配置键。host 侧把它们作为 map[string]string 推给插件
 // （config.json → channels.qq，见 config.Channels）。
 //
+// 文档依据：
+//
+//	《启动接入》§接入票据
+//	https://bot.q.qq.com/wiki/develop/api-v2/
+//	  AppID：机器人 ID；AppSecret：机器人密钥；Token「已弃用」，
+//	  鉴权请使用 Access Token（见 token.go 引用的 api-use.html）。
+//	《QQ Bot 介绍与接入指南》§8.2 服务器 IP 白名单（部署前需在开放平台配置）
+//	https://bot.q.qq.com/wiki/
+//
 // 这里只保留 QQ 官方开放平台（bot.q.qq.com）的凭据：app_id + app_secret。
 // OneBot / NapCat 那套"用户自建反向 WS + 静态 token"的模型已作废 ——
 // 官方是按 app_id 换 token、再按 openid 收发消息，没有第三方网关这一层。

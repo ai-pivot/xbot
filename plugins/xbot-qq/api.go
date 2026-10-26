@@ -2,18 +2,32 @@ package main
 
 // 官方 QQ 机器人 OpenAPI 客户端（只用 stdlib）。
 //
-// 覆盖本插件需要的四个端点：
+// 文档依据（QQ 机器人官方文档，API v2）：
 //
-//	GET  /gateway                                   拿 WebSocket 地址（接 gateway.go）
-//	POST /v2/users/{openid}/messages                私聊发消息
-//	POST /v2/groups/{group_openid}/messages         群聊发消息
+//	GET  /gateway
+//	     《获取通用 WSS 接入点》§接口
+//	     https://bot.q.qq.com/wiki/develop/api-v2/openapi/wss/url_get.html
+//	     返回 {"url": "wss://api.bot.qq.com/websocket/"}
 //
-// 鉴权头固定 `Authorization: QQBot {access_token}`。
+//	POST /v2/users/{user_openid}/messages
+//	     《发送单聊消息》§请求/§基础信息
+//	     https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html
+//	     「被动消息有效时间 60 分钟，每个消息最多回复 4 次」
 //
-// 401 的处理是本文件的关键：token 可能在两次请求之间过期（缓存窗口算错、
-// 平台提前失效、时钟漂移），收到 401 后**必须** Invalidate + 重新取 token
-// 再重试一次，而不是把 401 直接丢给调用方导致消息永久丢失。只重试一次，
-// 避免凭据本身错误时打成无限循环。
+//	POST /v2/groups/{group_openid}/messages
+//	     《发送群聊消息》§请求/§基础信息
+//	     https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages.post.html
+//	     「被动消息有效时间 5 分钟，每个消息最多回复 5 次」
+//
+// 请求体字段（msg_type / msg_id / msg_seq / content）与响应 id/timestamp 出处同上
+// 两页的「请求体」「响应体」小节；msg_type=0 表示文本见《消息收发概述》§消息类型。
+//
+// 鉴权头 `Authorization: QQBot {ACCESS_TOKEN}` 出处：
+//	《接口调用与鉴权》§鉴权方式
+//	https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/api-use.html
+//
+// 401 的处理是实现层选择（文档只写了「开发者需要在过期后自行刷新 access_token」）：
+// 收到 401 后 Invalidate + 重新取 token 再重试一次，避免把 401 直接丢给调用方。
 
 import (
 	"bytes"
@@ -29,9 +43,13 @@ import (
 )
 
 // MsgTypeText 是官方文本消息的 msg_type。
+//
+// 出处：《消息收发概述》§消息类型（msg_type=0 → 文本，内容字段 content）。
 const MsgTypeText = 0
 
 // SentMessage 是发消息接口的响应。
+//
+// 出处：《发送单聊消息》/《发送群聊消息》§响应体（id 消息 ID、timestamp 发送时间）。
 type SentMessage struct {
 	ID        string `json:"id"`
 	Timestamp string `json:"timestamp"`
@@ -68,6 +86,8 @@ func NewAPIClient(tokens TokenSource) *APIClient {
 }
 
 // GatewayURL 调 GET /gateway 拿 wss 地址。
+//
+// 出处：《获取通用 WSS 接入点》§接口/§示例（url_get.html）。
 func (c *APIClient) GatewayURL(ctx context.Context) (string, error) {
 	var out struct {
 		URL string `json:"url"`
@@ -83,21 +103,31 @@ func (c *APIClient) GatewayURL(ctx context.Context) (string, error) {
 
 // SendC2C 给私聊用户发一条文本消息。
 //
-// msgID 非空表示被动回复（官方要求 5 分钟内、按收到的消息 id 回）；
-// msgID 为空表示主动消息（受平台主动消息配额限制）。msgSeq 由 Sender 递增。
+// 出处：《发送单聊消息》（v2_users_user_openid_messages.post.html）
+// msgID 非空表示被动回复（事件 d.id）；msgID 为空表示主动消息。
+// msgSeq 由 Sender 递增（相同 msg_id + msg_seq 重复发送会失败）。
 func (c *APIClient) SendC2C(ctx context.Context, userOpenID, content, msgID string, msgSeq uint32) (*SentMessage, error) {
 	path := "/v2/users/" + url.PathEscape(userOpenID) + "/messages"
 	return c.sendMessage(ctx, "send_c2c", path, content, msgID, msgSeq)
 }
 
 // SendGroup 给群聊发一条文本消息。
+//
+// 出处：《发送群聊消息》（v2_groups_group_openid_messages.post.html）
 func (c *APIClient) SendGroup(ctx context.Context, groupOpenID, content, msgID string, msgSeq uint32) (*SentMessage, error) {
 	path := "/v2/groups/" + url.PathEscape(groupOpenID) + "/messages"
 	return c.sendMessage(ctx, "send_group", path, content, msgID, msgSeq)
 }
 
-// messageBody 是发消息请求体。msg_seq 必须带（官方用它给同一条被动回复
-// 的多个分片去重/排序）。
+// messageBody 是发消息请求体。
+//
+// 字段与语义出处：《发送单聊消息》/《发送群聊消息》§请求体
+//
+//	msg_type  消息类型（0=文本）
+//	msg_id    被动回复的事件 ID（事件最外层 id）；与 event_id 二选一
+//	msg_seq   回复消息的序号，与 msg_id 联合使用，避免相同消息 id 重复发送；
+//	          不填默认 1；相同的 msg_id + msg_seq 重复发送会失败
+//	content   文本内容（msg_type=0）
 type messageBody struct {
 	Content string `json:"content"`
 	MsgType int    `json:"msg_type"`

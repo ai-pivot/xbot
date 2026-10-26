@@ -47,7 +47,7 @@ func TestParseInboundGroupAt(t *testing.T) {
 		"id":"MSG-2",
 		"content":"  /help",
 		"group_openid":"GROUP-OPENID",
-		"author":{"id":"INTERNAL-ID","member_openid":"MEMBER-OPENID"}
+		"author":{"id":"INTERNAL-ID","member_openid":"MEMBER-OPENID","username":"小明"}
 	}`)
 	in, ok, err := ParseInbound(EventGroupAtMessageCreate, raw)
 	if err != nil || !ok {
@@ -61,6 +61,9 @@ func TestParseInboundGroupAt(t *testing.T) {
 	}
 	if in.ChatID() != "group:GROUP-OPENID" {
 		t.Fatalf("chat id = %q", in.ChatID())
+	}
+	if in.SenderName != "小明" {
+		t.Fatalf("sender name = %q, want username 小明 (display only)", in.SenderName)
 	}
 	if id := in.Identity(); id.ChatType != ChatTypeGroup || id.GroupID != "GROUP-OPENID" {
 		t.Fatalf("identity = %+v", id)

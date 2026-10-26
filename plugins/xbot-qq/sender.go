@@ -2,14 +2,16 @@ package main
 
 // 下行发送：把 host 的 channel 回复发到 QQ 官方接口。
 //
-// 三条官方规则必须遵守，否则消息要么发不出去、要么重复：
+// 官方规则（文档依据见下方常量块与各函数注释）：
 //
 //  1. 路由看 chat_id：私聊是用户 openid，群聊是 "group:<群 openid>"，
-//     分别对应 POST /v2/users/{openid}/messages 与 /v2/groups/{openid}/messages。
-//  2. 被动回复要带收到消息的 msg_id（d.id），且必须在 5 分钟内
-//     （官方限制）；超出窗口只能发主动消息（不带 msg_id，受配额限制）。
-//  3. 同一个 msg_id 的多条回复用 msg_seq 递增去重/排序，从 1 开始。
-//     主动消息也要带 msg_seq。
+//     分别对应 POST /v2/users/{user_openid}/messages 与
+//     POST /v2/groups/{group_openid}/messages。
+//     （《消息收发概述》§收发场景）
+//  2. 被动回复要带收到消息的 msg_id（事件最外层 d.id），有效期按场景区分：
+//     单聊 60 分钟、群聊 5 分钟；超出窗口只能发主动消息（不带 msg_id，受配额限制）。
+//  3. 同一个 msg_id 的多条回复用 msg_seq 递增：相同 msg_id + msg_seq 重复发送
+//     会失败（《消息收发概述》§消息去重）。
 //
 // 本文件不碰网络细节（那是 api.go），只负责路由、分片、seq 与窗口。
 
@@ -21,12 +23,43 @@ import (
 	"time"
 )
 
-// maxMessageRunes 是单条消息的分片上限（官方文本上限 2000 字符左右，
-// 留余量给前缀/标点；按 rune 切，不会把中文切坏）。
+// maxMessageRunes 是单条消息的分片上限。
+//
+// 官方发送接口页没有给出文本长度上限（未证实项），这里取保守的 1500 rune：
+// 按 rune 切，不会把中文切坏；一条回复拆成多片时 msg_seq 递增。
 const maxMessageRunes = 1500
 
-// passiveReplyWindow 是被动回复的官方时限。超过它就不能再带 msg_id。
-const passiveReplyWindow = 5 * time.Minute
+// 被动消息与时效规则（文档依据）：
+//
+//	《消息收发概述》§频率与时效规则 → 被动消息
+//	https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/overview.html
+//	  场景   有效期    每条消息可回复次数
+//	  单聊   60 分钟   4 次
+//	  群聊   5 分钟    5 次
+//
+// 《发送单聊消息》/《发送群聊消息》各页开头重复了同一条约束：
+//
+//	https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html
+//	https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages.post.html
+//
+// 《消息收发概述》§消息去重：「相同 msg_id 可能多次推送……被动回复时，相同的
+// msg_id + msg_seq 重复发送会失败，可递增 msg_seq 实现对同一消息的多次回复。」
+//
+// 注意：回复次数上限（单聊 4 / 群聊 5）目前**不强制**。超出后平台的确切行为
+// （拒绝被动回复？自动转主动？）文档没写清，属未证实项，留待真机联调确认。
+const (
+	// 被动回复有效期，按会话类型区分（见上表）。
+	passiveWindowPrivate = 60 * time.Minute
+	passiveWindowGroup   = 5 * time.Minute
+)
+
+// passiveReplyWindow 返回该会话的被动回复有效期（文档口径，按场景区分）。
+func passiveReplyWindow(chatID string) time.Duration {
+	if strings.HasPrefix(strings.TrimSpace(chatID), "group:") {
+		return passiveWindowGroup
+	}
+	return passiveWindowPrivate
+}
 
 // MessageAPI 是发送侧依赖的最小接口（便于单测断言 URL 与 msg_seq）。
 type MessageAPI interface {
@@ -104,7 +137,9 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 	return last, nil
 }
 
-// passiveMsgID 返回当前可用的被动回复锚点；超出 5 分钟窗口或没有锚点时返回 ""。
+// passiveMsgID 返回当前可用的被动回复锚点；超出该会话的有效期或没有锚点时返回 ""。
+//
+// 有效期按场景区分（单聊 60 分钟 / 群聊 5 分钟），见文件头文档依据。
 func (s *OutboundSender) passiveMsgID(chatID string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -112,13 +147,17 @@ func (s *OutboundSender) passiveMsgID(chatID string) string {
 	if !ok || a.msgID == "" {
 		return ""
 	}
-	if s.now().Sub(a.at) > passiveReplyWindow {
+	if s.now().Sub(a.at) > passiveReplyWindow(chatID) {
 		return ""
 	}
 	return a.msgID
 }
 
 // nextSeq 返回这条回复的 msg_seq（从 1 开始，按 msg_id 分组递增）。
+//
+// 文档依据：《消息收发概述》§消息去重；《发送单聊消息》msg_seq 字段说明
+// ——「与 msg_id 联合使用，避免相同消息 id 回复重复发送，不填默认是 1。
+// 相同的 msg_id + msg_seq 重复发送会失败。」
 //
 // 分片之间、多轮回复之间都共用同一个计数：官方按 (msg_id, msg_seq) 去重，
 // 序号必须严格递增，不能重复。

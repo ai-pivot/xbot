@@ -19,8 +19,10 @@ import "fmt"
 //	metadata.is_admin ← "true"/"false"，渠道侧管理员判定结果
 //	metadata.group_id ← 群 openid（群聊时有，私聊时缺省）
 //
-// 身份只认 openid：d.author.id 是平台内部 id，不是 openid 也不是 QQ 号，
-// 不能写进 sender_id（换 app 就变，且无法与用户对应）。
+// 身份只认 openid：事件页把 author.id 标为「用户唯一标识（OpenID 格式）」，
+// 但同页明确指定「单聊场景使用 user_openid」「群聊场景使用 member_openid」，
+// 所以按场景取对应字段；缺了不退回 author.id（作用域不同，拿错会串身份）。
+// 具体出处见 events.go 文件头。
 //
 // 关于 admin 的边界：host 侧的权限权威是 config.AgentConfig.IsAdminSender
 // （agent.isAdminSender → agent.admins）。本字段是**渠道侧**判定结果，用于

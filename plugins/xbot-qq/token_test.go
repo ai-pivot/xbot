@@ -81,7 +81,7 @@ func TestTokenProactiveRenewal(t *testing.T) {
 	clock := newFakeClock()
 
 	tc := NewTokenClient("102030405", "s3cret")
-	tc.tokenURL = ts.srv.URL
+	tc.tokenURLs = []string{ts.srv.URL}
 	tc.now = clock.Now
 
 	ctx := context.Background()
@@ -120,7 +120,7 @@ func TestTokenExpiresInString(t *testing.T) {
 	ts := newTokenServer(t, `"3600"`)
 	clock := newFakeClock()
 	tc := NewTokenClient("102030405", "s3cret")
-	tc.tokenURL = ts.srv.URL
+	tc.tokenURLs = []string{ts.srv.URL}
 	tc.now = clock.Now
 
 	ctx := context.Background()
@@ -141,7 +141,7 @@ func TestTokenShortTTLUsesHalfWindow(t *testing.T) {
 	ts := newTokenServer(t, "60")
 	clock := newFakeClock()
 	tc := NewTokenClient("102030405", "s3cret")
-	tc.tokenURL = ts.srv.URL
+	tc.tokenURLs = []string{ts.srv.URL}
 	tc.now = clock.Now
 
 	ctx := context.Background()
@@ -168,7 +168,7 @@ func TestTokenShortTTLUsesHalfWindow(t *testing.T) {
 func TestTokenInvalidateForcesRefetch(t *testing.T) {
 	ts := newTokenServer(t, "7200")
 	tc := NewTokenClient("102030405", "s3cret")
-	tc.tokenURL = ts.srv.URL
+	tc.tokenURLs = []string{ts.srv.URL}
 	tc.now = newFakeClock().Now
 
 	ctx := context.Background()
@@ -198,7 +198,7 @@ func TestTokenHTTPErrorNotCached(t *testing.T) {
 	defer srv.Close()
 
 	tc := NewTokenClient("102030405", "s3cret")
-	tc.tokenURL = srv.URL
+	tc.tokenURLs = []string{srv.URL}
 
 	if _, err := tc.Token(context.Background()); err == nil || !strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("Token error = %v, want HTTP 500", err)
@@ -206,6 +206,44 @@ func TestTokenHTTPErrorNotCached(t *testing.T) {
 	fail = false
 	if tok, err := tc.Token(context.Background()); err != nil || tok != "tok-ok" {
 		t.Fatalf("retry Token = %q,%v", tok, err)
+	}
+}
+
+// TestTokenFallsBackToDocEndpoint 文档与派发口径给了两个换 token 域名：
+// 连接层失败时必须降级到下一个（HTTP 4xx 不降级，避免掩盖凭据错误）。
+func TestTokenFallsBackToDocEndpoint(t *testing.T) {
+	ts := newTokenServer(t, "7200")
+	tc := NewTokenClient("102030405", "s3cret")
+	// 127.0.0.1:1 基本可以保证 connection refused（transport 失败）。
+	tc.tokenURLs = []string{"http://127.0.0.1:1/app/getAppAccessToken", ts.srv.URL}
+
+	tok, err := tc.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token with fallback: %v", err)
+	}
+	if tok != "tok-1" {
+		t.Fatalf("tok = %q, want tok-1", tok)
+	}
+	if ts.Calls() != 1 {
+		t.Fatalf("calls = %d, want 1", ts.Calls())
+	}
+}
+
+// TestTokenNoFallbackOnHTTPError 4xx/5xx 不降级（凭据错换域名没用）。
+func TestTokenNoFallbackOnHTTPError(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad secret", http.StatusUnauthorized)
+	}))
+	defer bad.Close()
+	good := newTokenServer(t, "7200")
+
+	tc := NewTokenClient("102030405", "s3cret")
+	tc.tokenURLs = []string{bad.URL, good.srv.URL}
+	if _, err := tc.Token(context.Background()); err == nil {
+		t.Fatal("Token = nil error, want 401 propagated without fallback")
+	}
+	if good.Calls() != 0 {
+		t.Fatalf("fallback endpoint calls = %d, want 0 on HTTP error", good.Calls())
 	}
 }
 
@@ -217,7 +255,7 @@ func TestTokenEmptyAccessTokenIsError(t *testing.T) {
 	defer srv.Close()
 
 	tc := NewTokenClient("102030405", "s3cret")
-	tc.tokenURL = srv.URL
+	tc.tokenURLs = []string{srv.URL}
 	if _, err := tc.Token(context.Background()); err == nil || !strings.Contains(err.Error(), "empty access_token") {
 		t.Fatalf("Token error = %v, want empty access_token", err)
 	}

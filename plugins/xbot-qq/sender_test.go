@@ -107,24 +107,52 @@ func TestSenderMsgSeqIncrementsPerAnchor(t *testing.T) {
 	}
 }
 
-// TestSenderPassiveWindowExpires 超过 5 分钟的锚点不能再当被动回复用。
+// TestSenderPassiveWindowExpires 超过文档时效后不能再当被动回复用。
+//
+// 文档：单聊 60 分钟、群聊 5 分钟（overview.html §频率与时效规则-被动消息）。
 func TestSenderPassiveWindowExpires(t *testing.T) {
 	api := &fakeMessageAPI{}
 	s := NewOutboundSender(api)
 	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
 
+	// 单聊：59 分钟仍可带 msg_id，61 分钟不再带。
 	s.RememberInbound("U", "MSG-OLD")
-	now = now.Add(passiveReplyWindow + time.Second)
+	now = now.Add(59 * time.Minute)
+	if _, err := s.Send(context.Background(), "U", "still passive"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	now = now.Add(2 * time.Minute) // 61 分钟
 	if _, err := s.Send(context.Background(), "U", "late reply"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	calls := api.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("calls = %d", len(calls))
+
+	// 群聊：4 分钟可带，6 分钟不再带。
+	s.RememberInbound("group:G", "MSG-G")
+	now = now.Add(4 * time.Minute)
+	if _, err := s.Send(context.Background(), "group:G", "group passive"); err != nil {
+		t.Fatalf("Send: %v", err)
 	}
-	if calls[0].msgID != "" {
-		t.Fatalf("msg_id = %q, want empty (outside 5min passive window)", calls[0].msgID)
+	now = now.Add(2 * time.Minute)
+	if _, err := s.Send(context.Background(), "group:G", "group late"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	calls := api.Calls()
+	if len(calls) != 4 {
+		t.Fatalf("calls = %d, want 4", len(calls))
+	}
+	if calls[0].msgID != "MSG-OLD" {
+		t.Fatalf("private 59min msg_id = %q, want MSG-OLD", calls[0].msgID)
+	}
+	if calls[1].msgID != "" {
+		t.Fatalf("private 61min msg_id = %q, want empty (outside 60min window)", calls[1].msgID)
+	}
+	if calls[2].msgID != "MSG-G" {
+		t.Fatalf("group 4min msg_id = %q, want MSG-G", calls[2].msgID)
+	}
+	if calls[3].msgID != "" {
+		t.Fatalf("group 6min msg_id = %q, want empty (outside 5min window)", calls[3].msgID)
 	}
 }
 

@@ -2,6 +2,11 @@ package main
 
 // 最小 WebSocket 客户端（RFC 6455 子集，只用 stdlib）。
 //
+// 说明：QQ 官方文档只规定了网关地址与 opcode（见 gateway.go 头部引用），
+// WebSocket 握手/帧格式本身由 RFC 6455 规定，不在 QQ 文档范围内。
+// 本实现覆盖：握手（Sec-WebSocket-Accept 校验）、客户端帧掩码、分片消息、
+// ping/pong、close。
+//
 // 为什么不用 gorilla/websocket：本插件一直是**零依赖**模块（go.mod 只有
 // `module xbot-qq` + `go 1.22`），安装到插件目录时不希望带 vendor/网络拉包。
 // 官方 QQ 网关只用文本帧 + ping/pong/close，不需要扩展协商、不需要压缩，

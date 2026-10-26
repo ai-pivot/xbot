@@ -2,16 +2,32 @@ package main
 
 // QQ 官方 WebSocket 网关生命周期。
 //
-// 协议（docs: 开放平台 → 开发 → WebSocket 连接）：
+// 文档依据（QQ 机器人官方文档）：
 //
-//	1. GET /gateway 拿 wss 地址                  （APIClient.GatewayURL）
-//	2. 连上去，收 op=10 Hello（带 heartbeat_interval）
+//	《事件订阅与通知》§通用数据结构 Payload / §OpCode 含义 / §WebSocket方式
+//	https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html
+//	《opcode》
+//	https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/opcode.html
+//	《获取通用 WSS 接入点》
+//	https://bot.q.qq.com/wiki/develop/api-v2/openapi/wss/url_get.html
+//
+// 协议流程（出处：event-emit.html §WebSocket方式）：
+//
+//	1. GET /gateway 拿 wss 地址                  （url_get.html）
+//	2. 连上去，收 op=10 Hello（d.heartbeat_interval）        （§发起连接到 Gateway）
 //	3. 发 op=2 Identify（token "QQBot {token}" + intents + shard）
-//	4. 收 op=0 t=READY（带 session_id）
-//	5. 每 heartbeat_interval 发 op=1 心跳，收 op=11 ACK
-//	6. 断线 → 指数退避重连；op=9 Invalid Session → 丢掉 token 重取再重连
+//	                                         （§登录鉴权获得 Session）
+//	4. 收 op=0 t=READY（d.session_id）        （同上，Ready Event 示例）
+//	5. 每 heartbeat_interval 发 op=1 心跳（d=最新 s，首次 null），收 op=11 ACK
+//	                                         （§发送心跳 Ack）
+//	6. 断线 → 指数退避重连；op=9 Invalid Session → 丢 token 重取再重连
+//	                                         （opcode.html：9 = identify/resume 参数错）
 //
-// 本文件只做生命周期，不解析业务事件（见 events.go 的 ParseEvent）。
+// ⚠️ 已知差异（文档有、未实现）：event-emit.html §恢复登录态 Session 要求重连后
+// 发 op=6 Resume（携带 session_id + seq）以补发断线期间遗漏的事件；本实现选择
+// 重连后重新 Identify（会漏掉断线窗口内的事件）。属未完成项，待联调排期。
+//
+// 本文件只做生命周期，不解析业务事件（见 events.go 的 ParseInbound）。
 // 所有外部依赖都是接口（TokenSource / Dialer / gatewayURL 函数），
 // 因此完整生命周期可以在单测里用内存假连接逐步驱动。
 
@@ -26,19 +42,32 @@ import (
 )
 
 // 网关 opcode。
+//
+// 出处：opcode.html 全表；event-emit.html §OpCode 含义。
 const (
-	opDispatch     = 0
-	opHeartbeat    = 1
-	opIdentify     = 2
-	opReconnect    = 7
-	opInvalidSess  = 9
-	opHello        = 10
-	opHeartbeatACK = 11
+	opDispatch     = 0  // Dispatch        服务端消息推送
+	opHeartbeat    = 1  // Heartbeat       客户端/服务端心跳
+	opIdentify     = 2  // Identify        客户端发送鉴权
+	opReconnect    = 7  // Reconnect       服务端通知客户端重新连接
+	opInvalidSess  = 9  // Invalid Session identify/resume 参数有错
+	opHello        = 10 // Hello           连接建立后网关下发第一条
+	opHeartbeatACK = 11 // Heartbeat ACK   心跳成功后的回执
 )
 
-// IntentGroupAndC2C 覆盖 C2C_MESSAGE_CREATE 与 GROUP_AT_MESSAGE_CREATE。
-// GROUP_MESSAGE_CREATE（群全量消息）需要在开放平台后台单独申请私域权限，
-// 权限下来后事件会走同一个 intent，无需改这里。
+// IntentGroupAndC2C 覆盖 C2C_MESSAGE_CREATE 与 GROUP_AT_MESSAGE_CREATE，
+// 同时也覆盖 GROUP_MESSAGE_CREATE（群全量）。
+//
+// 出处：event-emit.html §事件订阅Intents
+//
+//	GROUP_AND_C2C_EVENT (1 << 25)
+//	  - C2C_MESSAGE_CREATE      // 用户单聊发消息给机器人
+//	  - GROUP_AT_MESSAGE_CREATE // 用户在群里@机器人时收到的消息
+//	  （GROUP_MESSAGE_CREATE 同页列在群消息事件文档，intent 同为 1<<25）
+//
+// 注意：event-emit.html §权限 说明「除了 GUILDS、PUBLIC_GUILD_MESSAGES、
+// GUILD_MEMBERS 是基础事件……其他特殊事件都需要申请才能使用；如果传递了
+// 无权限的 intents，websocket 会报错并直接关闭连接」。GROUP_AND_C2C_EVENT
+// 需要在开放平台申请（本渠道默认就用它，属既定前提）。
 const IntentGroupAndC2C = 1 << 25
 
 // DefaultIntents 是默认订阅的 intents。
@@ -212,6 +241,9 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 	var hello struct {
 		HeartbeatInterval int64 `json:"heartbeat_interval"`
 	}
+	// 出处：event-emit.html §发起连接到 Gateway
+	// ——「一旦连接成功，就会返回 OpCode 10 Hello 消息。这个消息主要的内容是
+	//    心跳周期，单位毫秒(milliseconds)」。
 	if err := json.Unmarshal(env.D, &hello); err != nil {
 		return false, fmt.Errorf("parse hello: %w", err)
 	}
@@ -222,6 +254,12 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 	g.logf("gateway hello: heartbeat_interval=%s", interval)
 
 	// ── 2. Identify ──
+	//
+	// 出处：event-emit.html §登录鉴权获得 Session
+	//   token     格式为 "QQBot {AccessToken}"
+	//   intents   本次连接要接收的事件位
+	//   shard     两元素数组 [shard_id, num_shards]
+	//   properties 目前无实际作用（同页原文），按示例填 $os/$browser/$device
 	identify := map[string]any{
 		"op": opIdentify,
 		"d": map[string]any{
@@ -241,6 +279,8 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 
 	// ── 3. 等 READY ──
 	// READY 之前也可能先来 op=9（凭据/会话失效），必须处理。
+	// 出处：event-emit.html §登录鉴权获得 Session（Ready Event 示例：
+	// op=0, t="READY", d.session_id）；opcode.html（9 = Invalid Session）。
 	if err := conn.SetReadDeadline(time.Now().Add(helloTimeout)); err != nil {
 		return false, fmt.Errorf("set read deadline: %w", err)
 	}
@@ -357,8 +397,13 @@ func (g *Gateway) drainEarlyDispatch(ctx context.Context, env gwEnvelope) {
 
 // heartbeatLoop 按 interval 发 op=1，收不到 ACK 就判失联。
 //
+// 出处：event-emit.html §发送心跳 Ack
+//   - 「d 为客户端收到的最新的消息的 s，如果是首次连接，d 为传 null」
+//   - 「心跳发送成功之后会收到 OpCode 11 Heartbeat ACK」
+//
 // 判定方式：发过一次心跳后，下次 tick 到来前没收到 op=11 → 失联。
 // 这样容忍"ACK 晚一个周期"，但连续两个周期没有 ACK 一定重连，不会假活。
+// （"漏 ACK 就重连"是实现策略：文档只说明 ACK 的存在，没写超时处理。）
 func (g *Gateway) heartbeatLoop(ctx context.Context, conn WSConn, interval time.Duration, ackCh <-chan struct{}, done chan<- struct{}, fail func(error)) {
 	defer close(done)
 	ticker := time.NewTicker(interval)

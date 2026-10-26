@@ -1,20 +1,34 @@
 package main
 
-// 官方 QQ 机器人的鉴权模型（docs: 开放平台 → 开发 → 接口鉴权）：
+// 官方 QQ 机器人的鉴权模型。
 //
-//	POST https://bots.qq.com/app/getAppAccessToken
+// 文档依据：QQ 机器人官方文档《接口调用与鉴权》
+//
+//	https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/api-use.html
+//	§获取调用凭证 / §鉴权方式
+//
+//	POST {token 端点}
 //	{"appId": "...", "clientSecret": "..."}
-//	→ {"access_token": "...", "expires_in": 7200}
+//	→ {"access_token": "...", "expires_in": "7200"}
 //
-// 然后每个 OpenAPI 请求带 `Authorization: QQBot {access_token}`。
+// 然后每个 OpenAPI 请求带 `Authorization: QQBot {ACCESS_TOKEN}`（同页 §鉴权方式）。
 //
 // 两个容易踩的点，本文件专门处理：
 //
-//  1. **必须提前续期**。token 有效期约 7200s，用到期才换会让每 2 小时出现
-//     一批 401。这里在"到期前 skew"就换新（默认 60s，且不超过有效期一半），
-//     所以正常路径不会打到过期 token。
-//  2. **expires_in 可能是字符串**。官方返回的 expires_in 在不同版本里出现过
-//     number 与 string 两种形态，这里用 json.RawMessage 两种都认。
+//  1. **必须提前续期**。同页 §其他说明原文：「目前 access_token 生命周期默认
+//     7200 秒……在上一个 access_token 接近过期时间 60 秒内，获取 access_token
+//     时，会获得一个新的 access_token，老的 access_token 在这个 60 秒内仍然
+//     有效。」所以这里在"到期前 skew"就换新（默认 60s，且不超过有效期一半）。
+//  2. **expires_in 可能是字符串**。同页 §请求参数把它写成 number，但 §返回示例
+//     给的是 `"expires_in": "7200"`（字符串）。这里用 json.RawMessage 两种都认。
+//
+// ⚠️ 端点口径不一致（记录在案，未实测）：
+//   - 首辅派发口径与既往实现：`https://bots.qq.com/app/getAppAccessToken`
+//   - 现行文档（api-use.html §获取调用凭证）：`https://api.bot.qq.com/app/getAppAccessToken`
+//
+// 没有真实凭据无法判定哪个是当前生效域名，因此按"transport 失败才换下一个"
+// 的顺序尝试两者；收到 HTTP 4xx 不切换（那是凭据/参数错，换域名没用）。
+// 联调时以实际返回为准，并回来收敛成单一端点。
 
 import (
 	"bytes"
@@ -30,15 +44,29 @@ import (
 )
 
 const (
-	defaultTokenURL = "https://bots.qq.com/app/getAppAccessToken"
-	defaultAPIBase  = "https://api.sgroup.qq.com"
+	// defaultAPIBase 是 OpenAPI 基地址。
+	// 出处：event-emit.html §WebSocket方式（示例 wss://api.bot.qq.com/websocket/）
+	// 与 url_get.html §示例（同域名）。历史上是 api.sgroup.qq.com，两者并存，
+	// 联调时以实际返回为准。
+	defaultAPIBase = "https://api.sgroup.qq.com"
 
 	// tokenRefreshSkew 是提前续期的安全窗：token 剩余寿命小于它就换新。
+	// 出处：api-use.html §其他说明（"接近过期时间 60 秒内"）。
 	tokenRefreshSkew = 60 * time.Second
 
-	// defaultTokenTTL 是官方文档的典型值，仅在响应缺 expires_in 时兜底。
+	// defaultTokenTTL 是文档给出的典型有效期，仅在响应缺 expires_in 时兜底。
+	// 出处：api-use.html §请求参数（"目前是7200秒之内的值"）。
 	defaultTokenTTL = 7200 * time.Second
 )
+
+// defaultTokenURLs 是换 token 的端点候选，按顺序尝试。
+//
+// 第 1 项来自既往文档/派发口径，第 2 项来自现行 api-use.html；两处不一致，
+// 详见文件头注释。只在 transport 层失败时降级。
+var defaultTokenURLs = []string{
+	"https://bots.qq.com/app/getAppAccessToken",
+	"https://api.bot.qq.com/app/getAppAccessToken",
+}
 
 // TokenSource 是"取一个当前可用的 access_token"的抽象。
 // APIClient 与 Gateway 都只依赖它，单测可替换成计数用的假实现。
@@ -52,7 +80,7 @@ type TokenSource interface {
 type TokenClient struct {
 	appID     string
 	appSecret string
-	tokenURL  string
+	tokenURLs []string
 	http      *http.Client
 	now       func() time.Time
 	skew      time.Duration
@@ -68,7 +96,7 @@ func NewTokenClient(appID, appSecret string) *TokenClient {
 	return &TokenClient{
 		appID:     appID,
 		appSecret: appSecret,
-		tokenURL:  defaultTokenURL,
+		tokenURLs: defaultTokenURLs,
 		http:      &http.Client{Timeout: 15 * time.Second},
 		now:       time.Now,
 		skew:      tokenRefreshSkew,
@@ -145,39 +173,64 @@ func (c *TokenClient) usableWindow(ttl time.Duration) time.Duration {
 	return ttl - skew
 }
 
+// fetch 按 tokenURLs 顺序尝试，transport 失败才降级到下一个端点。
+//
+// 不做 4xx/5xx 降级：那通常是凭据或参数错误，换域名只会掩盖真实原因。
 func (c *TokenClient) fetch(ctx context.Context) (string, time.Duration, error) {
+	urls := c.tokenURLs
+	if len(urls) == 0 {
+		urls = defaultTokenURLs
+	}
+	var lastErr error
+	for _, u := range urls {
+		tok, ttl, retryable, err := c.fetchFrom(ctx, u)
+		if err == nil {
+			return tok, ttl, nil
+		}
+		lastErr = err
+		if !retryable {
+			return "", 0, err
+		}
+	}
+	return "", 0, lastErr
+}
+
+// fetchFrom 向单一端点换 token。retryable 表示"换个端点可能成功"
+// （只有连接层失败算这一类）。
+func (c *TokenClient) fetchFrom(ctx context.Context, url string) (token string, ttl time.Duration, retryable bool, err error) {
 	body, err := json.Marshal(tokenRequest{AppID: c.appID, ClientSecret: c.appSecret})
 	if err != nil {
-		return "", 0, fmt.Errorf("marshal token request: %w", err)
+		return "", 0, false, fmt.Errorf("marshal token request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return "", 0, fmt.Errorf("build token request: %w", err)
+		return "", 0, false, fmt.Errorf("build token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", 0, fmt.Errorf("getAppAccessToken: %w", err)
+		// 连接失败（DNS / TCP / TLS）：可能只是这个域名不通，换下一个。
+		return "", 0, true, fmt.Errorf("getAppAccessToken(%s): %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", 0, fmt.Errorf("read getAppAccessToken response: %w", err)
+		return "", 0, true, fmt.Errorf("read getAppAccessToken response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("getAppAccessToken: HTTP %d: %s", resp.StatusCode, truncate(string(raw), 300))
+		return "", 0, false, fmt.Errorf("getAppAccessToken(%s): HTTP %d: %s", url, resp.StatusCode, truncate(string(raw), 300))
 	}
 
 	var tr tokenResponse
 	if err := json.Unmarshal(raw, &tr); err != nil {
-		return "", 0, fmt.Errorf("decode getAppAccessToken response: %w (body=%s)", err, truncate(string(raw), 300))
+		return "", 0, false, fmt.Errorf("decode getAppAccessToken response: %w (body=%s)", err, truncate(string(raw), 300))
 	}
 	if strings.TrimSpace(tr.AccessToken) == "" {
-		return "", 0, fmt.Errorf("getAppAccessToken returned empty access_token (body=%s)", truncate(string(raw), 300))
+		return "", 0, false, fmt.Errorf("getAppAccessToken returned empty access_token (body=%s)", truncate(string(raw), 300))
 	}
-	return tr.AccessToken, parseExpiresIn(tr.ExpiresIn), nil
+	return tr.AccessToken, parseExpiresIn(tr.ExpiresIn), false, nil
 }
 
 // parseExpiresIn 兼容 number 与 string，缺省返回 0（由 usableWindow 兜底）。
