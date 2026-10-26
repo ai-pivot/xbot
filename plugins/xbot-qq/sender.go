@@ -103,11 +103,13 @@ type OutboundSender struct {
 	Stream bool
 	// streams 是每条会话的流式分片状态（stream_msg_id / index / 是否已收尾）。
 	streams map[string]*streamState
-	api     MessageAPI
-	now     func() time.Time
-	mu      sync.Mutex
-	seq     map[string]uint32
-	last    map[string]msgAnchor
+	// streamDelay 是流式片之间的间隔（打字机效果的节奏）。
+	streamDelay time.Duration
+	api         MessageAPI
+	now         func() time.Time
+	mu          sync.Mutex
+	seq         map[string]uint32
+	last        map[string]msgAnchor
 	// replies 记录每个锚点已用掉的被动回复次数（配额自检用）。
 	replies map[string]uint32
 	// logErr 输出 ERROR 级诊断（配额耗尽等必须留痕）。
@@ -185,8 +187,24 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 	//   stream_msg_id 首片由服务端返回，后续分片必须携带；msg_seq 去重。
 	// 群聊没有流式接口，仍然逐条 messages 发送。
 	if s.Stream && userOpenID != "" && groupOpenID == "" {
+		// 打字机式流式：把答案切成更多小片 + 片间延迟，客户端才会"逐渐长出来"。
+		// 直接用 maxMessageRunes 切片时，常见回答只有 1 片 ⇒ 看起来完全没有流式。
+		// 配额说明：同一 stream_msg_id 的多个分片属于**同一条**消息，
+		// 不按分片数重复计入被动回复次数（这也是官方 stream_messages 的设计目的）。
+		pieces := streamPieces
+		// 配额守卫同样作用于流式片数：不能因为"流式"就超发。
+		if msgID != "" {
+			if avail := int(passiveReplyLimit(chatID) - s.repliesUsed(chatID, msgID)); avail < pieces {
+				pieces = avail
+			}
+			if pieces < 1 {
+				s.logErr("ERROR: passive reply quota exhausted before stream: chat=%s msg_id=%s", chatID, msgID)
+				return nil, fmt.Errorf("qq send: passive reply quota exhausted for msg_id=%s", msgID)
+			}
+		}
+		streamChunks := splitForStream(content, pieces, streamMinRunes)
 		var streamID string
-		for i, chunk := range chunks {
+		for i, chunk := range streamChunks {
 			body := streamBody{
 				InputMode:   "replace",
 				InputStream: 1,
@@ -197,7 +215,7 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 				MsgSeq:      s.nextSeq(chatID, msgID),
 				StreamMsgID: streamID,
 			}
-			if i == len(chunks)-1 {
+			if i == len(streamChunks)-1 {
 				body.InputStream = 10 // 生成结束
 			}
 			sent, err := s.api.StreamC2C(ctx, userOpenID, body)
@@ -207,6 +225,13 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 			last = sent
 			if streamID == "" && sent != nil {
 				streamID = sent.ID
+			}
+			if i < len(streamChunks)-1 && s.streamDelay > 0 {
+				select {
+				case <-ctx.Done():
+					return last, ctx.Err()
+				case <-time.After(s.streamDelay):
+				}
 			}
 		}
 		if msgID != "" {
@@ -383,8 +408,10 @@ func (s *OutboundSender) SendStreamDelta(ctx context.Context, chatID, delta stri
 	stream := st.streamID
 	s.mu.Unlock()
 
+	// input_mode=replace：ContentRaw 是**当前全量正文**，服务端自行求差；
+	// host 的 stream_content 给的就是累计内容，所以必须用 replace（append 会重复拼接）。
 	body := streamBody{
-		InputMode:   "append",
+		InputMode:   "replace",
 		InputStream: 1,
 		Index:       index,
 		ContentType: streamContentType(s.Markdown),
@@ -412,4 +439,57 @@ func (s *OutboundSender) SendStreamDelta(ctx context.Context, chatID, delta stri
 		}
 	}
 	return true, nil
+}
+
+// 流式切片参数：片数上限与单片最小字数。
+//
+// 太少的片看不出流式（1 片 = 完全没有效果），
+// 太多片则请求数暴涨、触发平台频率限制（50 QPS）且拖慢首字显示。
+// 8~12 片、片间 120ms 是"看得出在长"与"不炸频率"的折中。
+const (
+	// streamPieces 是流式分片上限。
+	//
+	// 硬约束：单聊被动回复只有 **4 次**配额（群聊 5 次）。分片再细会直接撞
+	// 40034128（被动回复次数超限），消息被平台拒掉 —— 那比"没有流式"更糟。
+	// 取 3 片留一次余量给最终帧/提示，视觉上仍是"逐渐长出来"。
+	streamPieces   = 3
+	streamMinRunes = 24
+	// streamSingleShotRunes：短于此长度的回答不切片（一次性发完整）。
+	// 否则 "hi" 会被切成 "h"/"i" 两片，既浪费请求数又显得很傻。
+	streamSingleShotRunes = 200
+)
+
+// splitForStream 把整段回复切成若干片用于流式发送（打字机效果）。
+//
+// 与 splitRunes（受单条消息长度上限约束）不同，这里按**片数**切：
+// 保证长回答也能被拆到足够多的片，短回答也不会被切成单字。
+func splitForStream(content string, pieces, minRunes int) []string {
+	r := []rune(content)
+	if len(r) == 0 {
+		return nil
+	}
+	if len(r) < streamSingleShotRunes {
+		return []string{content}
+	}
+	if pieces < 1 {
+		pieces = 1
+	}
+	// 短内容：不硬凑片数，按 minRunes 切
+	n := pieces
+	if size := (len(r) + n - 1) / n; size < minRunes && len(r) > minRunes {
+		n = (len(r) + minRunes - 1) / minRunes
+	}
+	if n < 1 {
+		n = 1
+	}
+	size := (len(r) + n - 1) / n
+	out := make([]string, 0, n)
+	for i := 0; i < len(r); i += size {
+		end := i + size
+		if end > len(r) {
+			end = len(r)
+		}
+		out = append(out, string(r[i:end]))
+	}
+	return out
 }

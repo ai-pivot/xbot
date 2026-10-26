@@ -63,6 +63,8 @@ func newRuntime(cfg Config, deps runtimeDeps, logf func(string, ...any)) *channe
 	sender.logErr = logf
 	sender.Markdown = cfg.Markdown
 	sender.Stream = cfg.Stream
+	// 350ms/片 × 3 片 ≈ 1 秒：客户端能明显看到"逐渐长出来"，又不会拖太久。
+	sender.streamDelay = 350 * time.Millisecond
 	return &channelRuntime{
 		cfg:    cfg,
 		gw:     gw,

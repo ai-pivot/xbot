@@ -686,9 +686,17 @@ func (a *app) handleStreamContent(f frame) {
 	if chatID == "" {
 		return
 	}
-	delta := f.StreamDelta
-	if delta == "" {
-		// 只有检查点：不重复发送（否则会整段重复），交给最终 text 帧兜底。
+	// ⚠️ host 的帧结构与 protocol.WSMessage 对齐：
+	//   ChannelPluginTransport.SendStreamContent() 发的是
+	//     WSMessage{Type: "stream_content", ChatID: ..., Content: content}
+	//   即**累计内容**放在 Content 字段，而不是 StreamDelta。
+	// 2026-10-26 排障：上一版读 f.StreamDelta（永远为空）⇒ 直接 return，
+	// 一帧都没发出去，表现就是「完全没有 stream」。
+	acc := f.Content
+	if acc == "" {
+		acc = f.StreamDelta // 兼容未来可能的增量字段
+	}
+	if acc == "" {
 		return
 	}
 	rt := a.runtime()
@@ -697,7 +705,7 @@ func (a *app) handleStreamContent(f frame) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	sent, err := rt.SendStreamDelta(ctx, chatID, delta, false)
+	sent, err := rt.SendStreamDelta(ctx, chatID, acc, false)
 	if err != nil {
 		if ok, dropped := a.dropLog.Allow("stream"); ok {
 			a.logf("debug: stream delta send failed ×%d: %v", dropped+1, err)

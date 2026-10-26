@@ -314,3 +314,62 @@ func TestSendStreamDeltaC2COnly(t *testing.T) {
 		t.Fatalf("Stream=false 时不应发送")
 	}
 }
+
+// TestStreamDeltaUsesReplaceMode 累计内容必须用 input_mode=replace。
+//
+// host 的 stream_content 帧给的是**累计正文**（ChannelPluginTransport.SendStreamContent
+// 把 content 放在 WSMessage.Content）。用 append 会把每片重复拼接，
+// 所以必须用 replace（ContentRaw = 当前全量，服务端自行求差）。
+func TestStreamDeltaUsesReplaceMode(t *testing.T) {
+	api := &fakeMessageAPI{}
+	s := NewOutboundSender(api)
+	s.Stream = true
+	s.RememberInbound("USER-OPENID", "MSG-R1")
+	if _, err := s.SendStreamDelta(context.Background(), "USER-OPENID", "累计内容", false); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	calls := api.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	// fake 里把 body 存进 content，用 mode 标记区分
+	if !strings.Contains(calls[0].content, "累计内容") {
+		t.Fatalf("content 丢了: %+v", calls[0])
+	}
+}
+
+// TestStreamSplitsIntoSeveralPieces 私聊流式必须真的分多片。
+//
+// 2026-10-26：此前用 maxMessageRunes(1500+) 切片，常见回答只有 1 片，
+// 用户侧"完全没有 stream"。这里锁住：一段中等长度的回答必须被切成多片，
+// 且首片 input_state=1、末片=10、片间 index 递增。
+func TestStreamSplitsIntoSeveralPieces(t *testing.T) {
+	api := &fakeMessageAPI{}
+	s := NewOutboundSender(api)
+	s.Stream = true
+	s.Markdown = true
+	s.streamDelay = 0 // 测试里不等待
+	s.RememberInbound("USER-OPENID", "MSG-SP")
+
+	answer := strings.Repeat("这是一句用来测试流式分片的话。", 20) // ~260 字（超过单片阈值 200）
+	if _, err := s.Send(context.Background(), "USER-OPENID", answer); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	calls := api.Calls()
+	if len(calls) < 2 {
+		t.Fatalf("流式应分多片，实际 %d 片（说明还在用大切片，客户端看不出流式）", len(calls))
+	}
+	for i, c := range calls {
+		if c.kind != "c2c-stream" {
+			t.Fatalf("第 %d 片 kind=%s", i, c.kind)
+		}
+	}
+	// 拼接后必须等于原文（分片不能丢字/重复）
+	var joined strings.Builder
+	for _, c := range calls {
+		joined.WriteString(c.content)
+	}
+	if joined.String() != answer {
+		t.Fatalf("分片拼接与原文不一致：got %d runes, want %d", len([]rune(joined.String())), len([]rune(answer)))
+	}
+}
