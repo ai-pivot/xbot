@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -460,36 +461,88 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 	}
 
 	// 注册插件 channel（从 ChannelProviderRegistry 查找）
-	reg := GetChannelProviderRegistry()
-	if reg != nil {
-		for _, provider := range reg.List() {
-			name := provider.Name()
-			pluginCfg := GetPluginChannelConfig(cfg, name)
-			if !provider.IsEnabled(pluginCfg) {
-				continue
-			}
-			ch, err := provider.CreateChannel(pluginCfg, msgBus)
-			if err != nil {
-				log.WithError(err).WithField("channel", name).Error("Failed to create plugin channel")
-				continue
-			}
-			disp.Register(ch)
+	registerPluginChannels(cfg, msgBus, disp)
 
-			// If the channel is a ChannelPluginTransport, start its readLoop
-			// for bidirectional JSON-RPC communication.
-			if transport, ok := ch.(*agent.ChannelPluginTransport); ok {
-				if err := transport.Start(); err != nil {
-					log.WithError(err).WithField("channel", name).Error("Failed to start plugin transport")
-					continue
-				}
-				go transport.Run(context.Background())
-			}
-
-			log.WithField("channel", name).Info("Plugin channel registered")
-		}
+	// 热重载后重建插件 channel：`/plugin reload-all`（config reload_plugins）
+	// 只重启插件**进程**，不会重建 channel 进程 —— 而插件渠道的实际收发逻辑
+	// 跑在 channel 进程里。结果：reload 后通道仍是旧进程（甚至已断线），
+	// 新代码永不生效，表现为"reload 成功了但机器人没反应"。
+	// 这里注册一个 reload 回调，让每次 reload 都重新创建插件 channel。
+	RegisterPluginChannelRebuilder(func() {
+		registerPluginChannels(cfg, msgBus, disp)
+	})
+	// 挂到 PluginManager 的 reload 钩子：`/plugin reload-all` 或配置保存触发的
+	// 插件重载都会走到这里，从而**重建 channel 进程**（否则新代码/新配置永不生效）。
+	if pm := ag.PluginManager(); pm != nil {
+		pm.OnReload(RebuildPluginChannels)
 	}
 
 	return feishuCh, webCh, pushSvc, nil
+}
+
+// pluginChannelRebuilders 保存 reload 后需要重跑的 channel 注册逻辑。
+var (
+	pluginChannelRebuildersMu sync.Mutex
+	pluginChannelRebuilders   []func()
+)
+
+// RegisterPluginChannelRebuilder 注册一个"插件重载后重建 channel"的回调。
+func RegisterPluginChannelRebuilder(fn func()) {
+	pluginChannelRebuildersMu.Lock()
+	defer pluginChannelRebuildersMu.Unlock()
+	pluginChannelRebuilders = append(pluginChannelRebuilders, fn)
+}
+
+// RebuildPluginChannels 依次执行已注册的重建回调（由 plugin 的 reload 钩子触发）。
+func RebuildPluginChannels() {
+	pluginChannelRebuildersMu.Lock()
+	fns := append([]func(){}, pluginChannelRebuilders...)
+	pluginChannelRebuildersMu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+}
+
+// registerPluginChannels 把 ChannelProviderRegistry 里的每个 provider 实例化为
+// channel 并注册/启动（可重复调用：用于启动期与插件热重载后重建）。
+func registerPluginChannels(cfg *config.Config, msgBus *bus.MessageBus, disp *channel.Dispatcher) {
+	reg := GetChannelProviderRegistry()
+	if reg == nil {
+		return
+	}
+	for _, provider := range reg.List() {
+		name := provider.Name()
+		pluginCfg := GetPluginChannelConfig(cfg, name)
+		// 重建前先停掉同名旧 channel（含它的子进程），否则每次 reload 都留一个
+		// 孤儿 transport —— 实测 reload 后会出现两个 qq-plugin 进程，旧的那个
+		// 还在抢同一 bot 的 WS 连接。
+		if old, ok := disp.GetChannel(name); ok && old != nil {
+			old.Stop()
+			log.WithField("channel", name).Info("Plugin channel stopped (before rebuild)")
+		}
+
+		if !provider.IsEnabled(pluginCfg) {
+			continue
+		}
+		ch, err := provider.CreateChannel(pluginCfg, msgBus)
+		if err != nil {
+			log.WithError(err).WithField("channel", name).Error("Failed to create plugin channel")
+			continue
+		}
+		disp.Register(ch)
+
+		// If the channel is a ChannelPluginTransport, start its readLoop
+		// for bidirectional JSON-RPC communication.
+		if transport, ok := ch.(*agent.ChannelPluginTransport); ok {
+			if err := transport.Start(); err != nil {
+				log.WithError(err).WithField("channel", name).Error("Failed to start plugin transport")
+				continue
+			}
+			go transport.Run(context.Background())
+		}
+
+		log.WithField("channel", name).Info("Plugin channel registered")
+	}
 }
 
 // loadServerConfig resolves the server configuration selected by --config.
