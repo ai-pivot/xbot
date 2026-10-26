@@ -13,18 +13,20 @@
 //
 // 协议要点（plugin → host）：
 //
-//	{"result":"ok","channel_provider":{"name":"qq","config_schema":[...]}}   // 应答 activate
-//	{"id":"plugin-1","method":"send_inbound","params":{...}}                 // 阶段 2
+//	{"result":"ok","channel_provider":{"name":"qq","config_schema":[...]}}   // 应答 activate（渠道注册）
+//	{"type":"channel_prompt","system_parts":{"05_channel_qq":"..."}}         // 渠道提示词
+//	{"id":"plugin-1","method":"send_inbound","params":{...}}                 // 入站消息（身份注入）
 //	{"id":"srv-1","result":"..."} | {"id":"srv-1","error":"..."}             // 应答 RPC
 //
-// 阶段划分（见 skeleton.go 头部）：
+// 阶段状态：
 //
-//	阶段 1（本文件已实现）：渠道声明 + 配置解析 + 访问策略 + 协议骨架
-//	阶段 2：OneBot 连接、身份注入、渠道提示词落盘
-//	阶段 3：slash 门禁、断线重连
+//	阶段 1（已完成）：协议骨架 + 配置模型 + 白名单/管理员策略
+//	阶段 2（本文件已实现）：渠道注册声明、渠道提示词落盘、身份注入
+//	阶段 3（未开始）：slash 门禁、断线重连、真实 OneBot WS 联调
 //
-// 因此本进程现在**不发起任何网络连接**：收到 channel_config 只解析并记录，
-// channel_send 一律回 error（诚实失败，不假装发出去）。
+// 因此本进程现在**仍不发起任何网络连接**：收不到 QQ 消息，也就不会真的发
+// send_inbound。emitInbound 是已经实装好的真实发送路径，阶段 3 的 WS 读循环
+// 只需要调它。
 package main
 
 import (
@@ -35,6 +37,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 func main() {
@@ -56,6 +59,13 @@ type frame struct {
 	Type     string            `json:"type,omitempty"`
 	Params   json.RawMessage   `json:"params,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// rpcRequest 是 plugin → host 的 RPC 请求帧（send_inbound 等）。
+type rpcRequest struct {
+	ID     string `json:"id"`
+	Method string `json:"method"`
+	Params any    `json:"params"`
 }
 
 // activateResponse 应答 activate：声明本插件提供名为 qq 的渠道。
@@ -85,6 +95,10 @@ type app struct {
 	mu  sync.RWMutex
 	cfg Config
 
+	// rpcSeq 生成 plugin → host 的 RPC id（与 examples/echo-channel 的
+	// "plugin-N" 形式一致，便于 host 日志里一眼区分方向）。
+	rpcSeq atomic.Uint64
+
 	// logw 是诊断输出（stderr）。host 会把它重定向到每插件日志文件，
 	// 所以这里可以自由打；绝不能写 stdout（stdout 只走协议帧）。
 	logw io.Writer
@@ -111,6 +125,11 @@ func (a *app) setConfig(c Config) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cfg = c
+}
+
+// nextRPCID 返回下一个 plugin → host 的 RPC id。
+func (a *app) nextRPCID() string {
+	return fmt.Sprintf("plugin-%d", a.rpcSeq.Add(1))
 }
 
 // run 是协议主循环。拆出来是为了单测能喂内存流（与 plugin/protocol 的
@@ -157,13 +176,13 @@ func (a *app) handleLine(enc *json.Encoder, line string) (stop bool) {
 	case f.Method == "channel_send":
 		a.handleChannelSend(enc, f)
 	case f.Type == "channel_config":
-		a.handleChannelConfig(f)
+		a.handleChannelConfig(enc, f)
 	case f.Method != "":
 		// 未知 RPC：必须应答，否则 host 侧等到超时。
 		writeJSON(enc, errorResponse{ID: f.ID, Error: "unsupported method: " + f.Method})
 	default:
 		// 未识别的异步事件（stream_content / text / session / progress_structured …）
-		// 阶段 2 接线后才会关心，现在安全忽略。
+		// 阶段 3 接线后才会关心，现在安全忽略。
 	}
 	return false
 }
@@ -179,7 +198,12 @@ func (a *app) handleActivate(enc *json.Encoder) {
 //
 // 两段式：宽松解析（永不失败）→ 严格校验（失败只记日志，留着上一次可用配置
 // 继续跑）。插件进程绝不因为配置写错而退出 —— 那会让 host 陷入重启循环。
-func (a *app) handleChannelConfig(f frame) {
+//
+// 提示词声明放在最前面：它只依赖编译进二进制的文件，与这份配置是否合法无关。
+// 渠道进程被创建出来（= 渠道已启用）就该把渠道约束挂上，别等配置校验。
+func (a *app) handleChannelConfig(enc *json.Encoder, f frame) {
+	a.declareChannelPrompt(enc)
+
 	var raw map[string]string
 	if s := strings.TrimSpace(f.Metadata["config"]); s != "" {
 		if err := json.Unmarshal([]byte(s), &raw); err != nil {
@@ -207,10 +231,54 @@ func (a *app) handleChannelConfig(f frame) {
 	}
 }
 
+// declareChannelPrompt 把渠道专属提示词声明给 host。
+//
+// host 侧链路：agent.ChannelPluginTransport.handleChannelPrompt →
+// channelPluginPromptProvider.setSystemParts → Agent.AddChannelPromptProvider →
+// ChannelPromptMiddleware 在 mc.Channel == "qq" 时把这些 system_parts 注入
+// system prompt（key 05_channel_qq，排在 00_base 之后、10_skills 之前）。
+func (a *app) declareChannelPrompt(enc *json.Encoder) {
+	writeJSON(enc, newChannelPromptFrame())
+	a.logf("channel_prompt declared: key=%s bytes=%d sha256=%s",
+		ChannelPromptKey, len(channelPromptMarkdown), ChannelPromptSHA256())
+}
+
+// emitInbound 把一条 QQ 入站消息按准入策略处理后提交给 host（send_inbound）。
+//
+// 三步：身份归一化 → 白名单准入 → 组装参数并发送。被拒绝的消息不发、
+// 只在日志里留痕迹（含 admin 标记，便于排查"为什么他能用我不能"）。
+//
+// 返回 Decision：调用方（阶段 3 的 WS 读循环）据此决定是否回用户一句
+// "你不在白名单里"。返回值的 Handle=false 表示消息没有送出。
+func (a *app) emitInbound(enc *json.Encoder, id Identity, content, requestID string) Decision {
+	cfg := a.config()
+	id = id.Normalize()
+
+	decision := cfg.Policy().Decide(id.SenderID)
+	if !decision.Handle {
+		a.logf("inbound dropped: %s not admitted by allow=%s (admin=%t)",
+			id.Describe(), cfg.Allow, decision.Admin)
+		return decision
+	}
+	if !id.Valid() {
+		a.logf("inbound dropped: identity incomplete (%s)", id.Describe())
+		return Decision{Handle: false, Admin: decision.Admin}
+	}
+
+	cand := NewInboundCandidate(id, content, requestID, cfg.Policy())
+	a.logf("inbound accepted: %s admin=%t request=%s", id.Describe(), cand.Admin, requestID)
+	writeJSON(enc, rpcRequest{
+		ID:     a.nextRPCID(),
+		Method: "send_inbound",
+		Params: cand.Params(),
+	})
+	return decision
+}
+
 // handleChannelSend 应答 host 的下行发送请求。
 //
-// 阶段 1 没有 OneBot 连接，所以这里**必须诚实地失败**：回 error 让 host 记一条
-// 发送失败，而不是回 "ok" 假装发出去（假成功会让上层永远查不出消息丢了）。
+// 阶段 2 仍没有 OneBot 连接，所以这里**必须诚实地失败**：回 error 让 host 记
+// 一条发送失败，而不是回 "ok" 假装发出去（假成功会让上层永远查不出消息丢了）。
 func (a *app) handleChannelSend(enc *json.Encoder, f frame) {
 	var p struct {
 		ChatID  string `json:"chat_id"`
@@ -219,8 +287,8 @@ func (a *app) handleChannelSend(enc *json.Encoder, f frame) {
 	if len(f.Params) > 0 {
 		_ = json.Unmarshal(f.Params, &p)
 	}
-	a.logf("channel_send to %q dropped: channel not wired yet (phase 2)", p.ChatID)
-	writeJSON(enc, errorResponse{ID: f.ID, Error: "qq channel is not wired yet (phase 2)"})
+	a.logf("channel_send to %q dropped: OneBot transport not wired yet (phase 3)", p.ChatID)
+	writeJSON(enc, errorResponse{ID: f.ID, Error: "qq OneBot transport is not wired yet (phase 3)"})
 }
 
 // writeJSON 写一帧到 stdout。编码失败无法补救（管道已断），忽略返回值。

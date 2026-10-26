@@ -7,12 +7,18 @@ import (
 	"testing"
 )
 
-// frameOut 是测试侧解出的 host 应答帧形状（只关心断言用到的字段）。
+// frameOut 是测试侧解出的帧形状，覆盖两个方向：
+//   - host → plugin 的应答（activate / RPC 应答）
+//   - plugin → host 的声明与入站消息（channel_prompt / send_inbound）
 type frameOut struct {
 	ID              string              `json:"id"`
 	Result          json.RawMessage     `json:"result"`
 	Error           string              `json:"error"`
 	ChannelProvider *ChannelDeclaration `json:"channel_provider"`
+	Type            string              `json:"type"`
+	SystemParts     map[string]string   `json:"system_parts"`
+	Method          string              `json:"method"`
+	Params          map[string]any      `json:"params"`
 }
 
 // TestActivateDeclaresQQChannel 验证渠道注册声明：名字、配置键集合、类型合法。
@@ -73,6 +79,9 @@ func TestActivateDeclaresQQChannel(t *testing.T) {
 
 // TestRunProtocolRoundTrip 驱动完整协议循环：activate → channel_config →
 // channel_send → 未知 method → deactivate。deactivate 之后 run 必须返回。
+//
+// 期望 5 帧输出：activate 应答、channel_prompt 声明、channel_send 错误、
+// 未知 method 错误、deactivate ok。
 func TestRunProtocolRoundTrip(t *testing.T) {
 	cfgJSON := `{"enabled":"true","ws_url":"ws://127.0.0.1:3001","allow":"*","admins":"10001"}`
 	lines := []string{
@@ -90,28 +99,36 @@ func TestRunProtocolRoundTrip(t *testing.T) {
 	}
 
 	frames := decodeFrames(t, out.String())
-	if len(frames) != 4 {
-		t.Fatalf("got %d response frames, want 4 (raw=%q)", len(frames), out.String())
+	if len(frames) != 5 {
+		t.Fatalf("got %d frames, want 5 (raw=%q)", len(frames), out.String())
 	}
 
 	// 1) activate → channel_provider.name == qq
 	if frames[0].ChannelProvider == nil || frames[0].ChannelProvider.Name != "qq" {
-		t.Fatalf("activate response = %+v, want channel_provider.name=qq", frames[0])
+		t.Fatalf("frame[0] = %+v, want activate response with channel_provider.name=qq", frames[0])
 	}
 
-	// 2) channel_send → 必须诚实报错（阶段 1 没有连接，不许假成功）
-	if frames[1].ID != "srv-1" || frames[1].Error == "" {
-		t.Fatalf("channel_send response = %+v, want {id:srv-1 error:...}", frames[1])
+	// 2) channel_config → 立即声明渠道提示词
+	if frames[1].Type != "channel_prompt" {
+		t.Fatalf("frame[1].type = %q, want channel_prompt", frames[1].Type)
+	}
+	if frames[1].SystemParts[ChannelPromptKey] == "" {
+		t.Fatalf("frame[1].system_parts[%q] is empty", ChannelPromptKey)
 	}
 
-	// 3) 未知 method → 必须应答，否则 host 侧等到超时
-	if frames[2].ID != "srv-2" || frames[2].Error == "" {
-		t.Fatalf("unknown-method response = %+v, want {id:srv-2 error:...}", frames[2])
+	// 3) channel_send → 必须诚实报错（阶段 2 没有 OneBot 连接，不许假成功）
+	if frames[2].ID != "srv-1" || frames[2].Error == "" {
+		t.Fatalf("frame[2] = %+v, want {id:srv-1 error:...}", frames[2])
 	}
 
-	// 4) deactivate → 带同一个 id 的 ok
-	if frames[3].ID != "srv-3" || string(frames[3].Result) != `"ok"` {
-		t.Fatalf("deactivate response = %+v, want {id:srv-3 result:ok}", frames[3])
+	// 4) 未知 method → 必须应答，否则 host 侧等到超时
+	if frames[3].ID != "srv-2" || frames[3].Error == "" {
+		t.Fatalf("frame[3] = %+v, want {id:srv-2 error:...}", frames[3])
+	}
+
+	// 5) deactivate → 带同一个 id 的 ok
+	if frames[4].ID != "srv-3" || string(frames[4].Result) != `"ok"` {
+		t.Fatalf("frame[4] = %+v, want {id:srv-3 result:ok}", frames[4])
 	}
 
 	// 配置已生效并接进 Policy。
@@ -125,6 +142,89 @@ func TestRunProtocolRoundTrip(t *testing.T) {
 	}
 	if !p.IsAdmin("10001") || p.IsAdmin("10002") {
 		t.Fatal("admins from channel_config not wired into policy")
+	}
+}
+
+// TestEmitInboundSendsParams 驱动真实的发送路径，并打印两条合成入站帧的
+// params JSON（admin / 非 admin）—— 阶段 2 验收要求的实证。
+func TestEmitInboundSendsParams(t *testing.T) {
+	a := newApp(&bytes.Buffer{})
+	a.setConfig(ParseConfig(map[string]string{
+		KeyEnabled: "true",
+		KeyWSURL:   "ws://127.0.0.1:3001",
+		KeyAllow:   "*",
+		KeyAdmins:  "10001",
+	}))
+
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+
+	d1 := a.emitInbound(enc, adminIdentity(), "你好", "req-admin")
+	d2 := a.emitInbound(enc, memberIdentity(), "在吗", "req-member")
+
+	if !d1.Handle || !d1.Admin {
+		t.Fatalf("admin decision = %+v, want {Handle:true Admin:true}", d1)
+	}
+	if !d2.Handle || d2.Admin {
+		t.Fatalf("member decision = %+v, want {Handle:true Admin:false}", d2)
+	}
+
+	frames := decodeFrames(t, out.String())
+	if len(frames) != 2 {
+		t.Fatalf("got %d send_inbound frames, want 2 (raw=%q)", len(frames), out.String())
+	}
+	for i, f := range frames {
+		if f.Method != "send_inbound" {
+			t.Fatalf("frame[%d].method = %q, want send_inbound", i, f.Method)
+		}
+		if !strings.HasPrefix(f.ID, "plugin-") {
+			t.Fatalf("frame[%d].id = %q, want plugin-N", i, f.ID)
+		}
+		pretty, _ := json.MarshalIndent(f.Params, "", "  ")
+		t.Logf("frame[%d] %s params:\n%s", i, f.ID, pretty)
+	}
+
+	// 校验 admin / 非 admin 两条帧的关键差异。
+	adminMeta := frames[0].Params["metadata"].(map[string]any)
+	memberMeta := frames[1].Params["metadata"].(map[string]any)
+	if adminMeta[MetaKeyIsAdmin] != "true" {
+		t.Fatalf("admin frame metadata[%s] = %v, want \"true\"", MetaKeyIsAdmin, adminMeta[MetaKeyIsAdmin])
+	}
+	if memberMeta[MetaKeyIsAdmin] != "false" {
+		t.Fatalf("member frame metadata[%s] = %v, want \"false\"", MetaKeyIsAdmin, memberMeta[MetaKeyIsAdmin])
+	}
+	if frames[0].Params["chat_id"] != "group:20002" || frames[0].Params["sender_id"] != "10001" {
+		t.Fatalf("admin frame identity mismatch: %v", frames[0].Params)
+	}
+	if frames[1].Params["sender_id"] != "30003" {
+		t.Fatalf("member frame sender_id = %v, want 30003", frames[1].Params["sender_id"])
+	}
+}
+
+// TestEmitInboundDropsNonAllowlisted 白名单外的消息不发帧（只记日志）。
+func TestEmitInboundDropsNonAllowlisted(t *testing.T) {
+	var logs bytes.Buffer
+	a := newApp(&logs)
+	a.setConfig(ParseConfig(map[string]string{
+		KeyEnabled: "true",
+		KeyWSURL:   "ws://127.0.0.1:3001",
+		KeyAllow:   "10001",
+		KeyAdmins:  "10001",
+	}))
+
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+
+	intruder := Identity{SenderID: "99999", SenderName: "陌生人", GroupID: "20002"}
+	d := a.emitInbound(enc, intruder, "hi", "req-x")
+	if d.Handle {
+		t.Fatal("non-allowlisted sender must not be admitted")
+	}
+	if strings.TrimSpace(out.String()) != "" {
+		t.Fatalf("rejected message must not produce any frame, got %q", out.String())
+	}
+	if !strings.Contains(logs.String(), "not admitted") {
+		t.Fatalf("expected a drop log line, got %q", logs.String())
 	}
 }
 
@@ -152,7 +252,8 @@ func TestRunBadFramesDoNotKillLoop(t *testing.T) {
 // TestChannelConfigUnparsableKeepsPrevious 配置 JSON 解析失败时不得清空已有配置。
 func TestChannelConfigUnparsableKeepsPrevious(t *testing.T) {
 	a := newApp(&bytes.Buffer{})
-	a.handleChannelConfig(frame{
+	enc := json.NewEncoder(&bytes.Buffer{})
+	a.handleChannelConfig(enc, frame{
 		Type:     "channel_config",
 		Metadata: map[string]string{"config": `{"enabled":"true","ws_url":"ws://x:1","allow":"10001"}`},
 	})
@@ -160,7 +261,7 @@ func TestChannelConfigUnparsableKeepsPrevious(t *testing.T) {
 		t.Fatal("setup: config not applied")
 	}
 
-	a.handleChannelConfig(frame{
+	a.handleChannelConfig(enc, frame{
 		Type:     "channel_config",
 		Metadata: map[string]string{"config": `{ this is not json`},
 	})
@@ -174,7 +275,7 @@ func TestChannelConfigUnparsableKeepsPrevious(t *testing.T) {
 func TestChannelConfigEnabledWithoutURLKeepsConfig(t *testing.T) {
 	var logs bytes.Buffer
 	a := newApp(&logs)
-	a.handleChannelConfig(frame{
+	a.handleChannelConfig(json.NewEncoder(&bytes.Buffer{}), frame{
 		Type:     "channel_config",
 		Metadata: map[string]string{"config": `{"enabled":"true","allow":"*"}`},
 	})
@@ -194,7 +295,7 @@ func TestChannelConfigEnabledWithoutURLKeepsConfig(t *testing.T) {
 func TestChannelConfigEmptyAllowWarns(t *testing.T) {
 	var logs bytes.Buffer
 	a := newApp(&logs)
-	a.handleChannelConfig(frame{
+	a.handleChannelConfig(json.NewEncoder(&bytes.Buffer{}), frame{
 		Type:     "channel_config",
 		Metadata: map[string]string{"config": `{"enabled":"true","ws_url":"ws://127.0.0.1:3001"}`},
 	})
