@@ -242,8 +242,11 @@ func TestAdminSlashAllowed(t *testing.T) {
 // 优先级（2026-10-26 修正）：非 admin 先被拒（只说"需要管理员权限"，不泄漏清单）；
 // 只有 admin 才拿到"未知命令 + 可用命令"。
 func TestUnknownSlashNeverForwarded(t *testing.T) {
-	for _, content := range []string{"/echo a b", "/foo", "/"} {
-		// 非 admin：拒绝理由是权限，不是"未知命令"，且不泄漏命令清单。
+	// 2026-10-26 用户令：admin 的 slash 命令「包括危险命令」都要能用。
+	// 因此：
+	//   非 admin 的 /未知 → 拒绝（不泄漏命令清单）
+	//   admin   的 /未知 → 等价于 "!未知" 交给 host 执行（/ls == !ls）
+	for _, content := range []string{"/echo a b", "/foo", "/ls"} {
 		np := newGateHarness(t, "*", "")
 		np.send(t, "NORMAL-USER", content)
 		if np.out.Len() != 0 {
@@ -255,28 +258,22 @@ func TestUnknownSlashNeverForwarded(t *testing.T) {
 			t.Fatalf("%q: non-admin refusal leaks command list: %q", content, calls[0].content)
 		}
 
-		// admin：可以知道"未知命令"，且清单是面向用户的 "!" 形态。
 		ap := newGateHarness(t, "*", "ADMIN-OPENID")
 		ap.send(t, "ADMIN-OPENID", content)
-		if ap.out.Len() != 0 {
-			t.Fatalf("%q: admin unknown command must not reach host, got %s", content, ap.out.String())
+		out := ap.out.String()
+		if out == "" {
+			t.Fatalf("%q: admin slash 应转发为 bang，实际没有 send_inbound", content)
 		}
-		calls := ap.api.Calls()
-		if len(calls) != 1 || !strings.Contains(calls[0].content, "未知命令") {
-			t.Fatalf("%q: admin refusal = %+v, want unknown-command refusal", content, calls)
+		if !strings.Contains(out, "send_inbound") {
+			t.Fatalf("%q: admin slash 应产生 send_inbound，实际=%s", content, out)
 		}
-		got := calls[0].content
-		if !strings.Contains(got, "可用命令：") || !strings.Contains(got, "!compress") {
-			t.Fatalf("%q: hint must list user-facing ! forms, got %q", content, got)
-		}
-		if strings.Contains(got, "/compress") || strings.Contains(got, "/cancel") {
-			t.Fatalf("%q: hint leaks host-internal / names: %q", content, got)
+		wantBang := "!" + strings.TrimSpace(strings.TrimPrefix(content, "/"))
+		if !strings.Contains(out, wantBang) {
+			t.Fatalf("%q: admin slash 应转成 %q，实际帧=%s", content, wantBang, out)
 		}
 	}
 }
 
-// TestAdminNotAllowlistedGetsWhitelistReason admin 但不在 allow：
-// 仍然拒绝（准入与权限分离），且理由必须是白名单，不是"你不是管理员"。
 func TestAdminNotAllowlistedGetsWhitelistReason(t *testing.T) {
 	h := newGateHarness(t, "OTHER-USER", "ADMIN-OPENID")
 	h.send(t, "ADMIN-OPENID", "/compress")

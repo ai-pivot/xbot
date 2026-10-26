@@ -435,6 +435,18 @@ func (a *app) handleGatewayEvent(enc *json.Encoder, ctx context.Context, ev Gate
 				in.SenderOpenID, in.ChatID(), cmd.Name, cmd.Category, cmd.Dangerous)
 			a.rejectCommand(in, cmd, RefuseNotAdmin)
 			return
+		case !cmd.Known && cmd.Raw[0] == '/':
+			// 2026-10-26：admin 的「/未知命令」按 bang 执行（等价于 "!xxx"）。
+			// 用户明确要求「admin 可以使用 slash 命令，包括危险命令」；
+			// host 的 bang 通道本来就是给 admin 直接跑 shell 的，这里只是让
+			// "/ls" 与 "!ls" 等价，避免 admin 敲斜杠就被"未知命令"挡回去。
+			bang := "!" + strings.TrimSpace(strings.TrimPrefix(cmd.Raw, "/"))
+			a.recordSeen(in, name, true)
+			a.logf("QQ inbound: sender=%s name=%s chat=%s handled=true (slash→bang: %q)",
+				in.SenderOpenID, name, chatDesc, bang)
+			// 不 return：把 content 换成 bang 形态后，继续走下面的正常转发流程
+			// （附件下载 / 引用块 / send_inbound），与 "!xxx" 完全等价。
+			content = bang
 		case !cmd.Known:
 			// 未知命令一律不转发：host 的 commands.Match 不匹配后会落进普通
 			// 消息路径（= 一次模型调用），见 agent/agent.go:3275。

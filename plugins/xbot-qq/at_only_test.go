@@ -113,6 +113,19 @@ func TestGroupFullMessageRequiresBotMention(t *testing.T) {
 		t.Fatalf("content 不应为空")
 	}
 
+	// 3b) 正文必须去掉「@ 本机器人」的标记（<@botid>），@ 其他成员保留
+	withBot := json.RawMessage(`{"id":"M4","content":"<@BOT1> 帮我看下 <@U9> 的报告","group_openid":"G1","author":{"member_openid":"U1"},"mentions":[{"id":"BOT1","member_openid":"BOT1","bot":true},{"id":"U9","member_openid":"U9","bot":false}]}`)
+	in2, ok2, err2 := ParseInbound(EventGroupMessageCreate, withBot)
+	if err2 != nil || !ok2 {
+		t.Fatalf("应处理，ok=%t err=%v", ok2, err2)
+	}
+	if strings.Contains(in2.Content, "<@BOT1>") {
+		t.Fatalf("@机器人的标记未被清理: %q", in2.Content)
+	}
+	if !strings.Contains(in2.Content, "<@U9>") {
+		t.Fatalf("@其他成员的标记应保留: %q", in2.Content)
+	}
+
 	// 4) 另两个事件类型保持可用
 	for _, et := range []string{EventC2CMessageCreate, EventGroupAtMessageCreate} {
 		if !SupportedEvent(et) {

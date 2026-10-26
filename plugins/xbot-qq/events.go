@@ -184,6 +184,27 @@ func ParseInbound(eventType string, data json.RawMessage) (Inbound, bool, error)
 		}
 	}
 
+	// 群全量模式下 content 会把 @ 成员替换成「<@对方openid>」（官方 group_message_create.html
+	// §事件体：消息中 @ 某成员时替换为 <@ + member_openid + >，@全体成员为 <@all>）。
+	// 若不清理，agent 收到的是 "<@5268…> 1" 而不是 "1"。
+	// 处理：把 @ **本机器人** 的标记整段去掉；@ 其他成员保留（agent 需要知道 @ 了谁），
+	// <@all> 也保留。
+	content := strings.TrimSpace(d.Content)
+	for i := range d.Mentions {
+		m := &d.Mentions[i]
+		if !m.Bot {
+			continue
+		}
+		id := m.MemberOpenID
+		if id == "" {
+			id = m.ID
+		}
+		if id != "" {
+			content = strings.ReplaceAll(content, "<@"+id+">", "")
+		}
+	}
+	content = strings.TrimSpace(content)
+
 	sceneExt := parseSceneExt(d.MessageScene.Ext)
 	in := Inbound{
 		EventType:   eventType,
@@ -191,7 +212,7 @@ func ParseInbound(eventType string, data json.RawMessage) (Inbound, bool, error)
 		Attachments: d.Attachments,
 		SceneExt:    sceneExt,
 		MsgIdx:      sceneExtInt(sceneExt, "msg_idx"),
-		Content:     strings.TrimSpace(d.Content),
+		Content:     content,
 		SenderName:  d.Author.Username, // 出处：事件页 User.username（可能为空，仅供展示）
 		GroupOpenID: d.GroupOpenID,
 		Raw:         data,
