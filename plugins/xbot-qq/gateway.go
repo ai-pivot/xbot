@@ -48,6 +48,7 @@ const (
 	opDispatch     = 0  // Dispatch        服务端消息推送
 	opHeartbeat    = 1  // Heartbeat       客户端/服务端心跳
 	opIdentify     = 2  // Identify        客户端发送鉴权
+	opResume       = 6  // Resume          恢复登录态（断线重连用，见 §恢复登录态 Session）
 	opReconnect    = 7  // Reconnect       服务端通知客户端重新连接
 	opInvalidSess  = 9  // Invalid Session identify/resume 参数有错
 	opHello        = 10 // Hello           连接建立后网关下发第一条
@@ -109,7 +110,13 @@ type Gateway struct {
 	logf       func(format string, args ...any)
 
 	cfg GatewayConfig
+	// seq 是最后收到的 s（心跳与 op6 Resume 的 seq 都用它）。
 	seq atomic.Int64
+	// sessionID 是 READY 事件给出的 session_id；非空时重连走 op=6 Resume
+	// （官方：「断开重连 gateway 后不需要发送重新登录 OpCode 2 Identify 请求，
+	// 需要发送 OpCode 6 Resume」）。op=9 时清空，退回 Identify。
+	sessionMu sync.Mutex
+	sessionID string
 
 	// identify 构造只做一次，便于测试断言。
 	shard [2]int
@@ -253,37 +260,61 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 	}
 	g.logf("gateway hello: heartbeat_interval=%s", interval)
 
-	// ── 2. Identify ──
+	// ── 2. Resume 或 Identify ──
 	//
-	// 出处：event-emit.html §登录鉴权获得 Session
-	//   token     格式为 "QQBot {AccessToken}"
-	//   intents   本次连接要接收的事件位
-	//   shard     两元素数组 [shard_id, num_shards]
-	//   properties 目前无实际作用（同页原文），按示例填 $os/$browser/$device
-	identify := map[string]any{
-		"op": opIdentify,
-		"d": map[string]any{
-			"token":   "QQBot " + token,
-			"intents": g.intents(),
-			"shard":   g.shard,
-			"properties": map[string]string{
-				"$os":      "linux",
-				"$browser": "xbot",
-				"$device":  "xbot",
+	// 官方（event-emit.html §恢复登录态 Session）：
+	// 「断开重连 gateway 后不需要发送重新登录 Opcode 2 Identify 请求。在连接到
+	//  Gateway 之后，需要发送 Opcode 6 Resume 消息」，字段 token / session_id / seq，
+	// seq 为最后收到的 s。成功后服务端补发断线期间遗漏的事件，补完再下发 RESUMED。
+	//
+	// 只有"没有 session"（首次连接、或收到 op=9 被清空）时才走 Identify。
+	if sid := g.currentSessionID(); sid != "" {
+		resume := map[string]any{
+			"op": opResume,
+			"d": map[string]any{
+				"token":      "QQBot " + token,
+				"session_id": sid,
+				"seq":        g.seq.Load(),
 			},
-		},
-	}
-	if err := writeJSONFrame(conn, identify); err != nil {
-		return false, fmt.Errorf("send identify: %w", err)
+		}
+		if err := writeJSONFrame(conn, resume); err != nil {
+			return false, fmt.Errorf("send resume: %w", err)
+		}
+		g.logf("gateway resume sent: session_id=%s seq=%d", sid, g.seq.Load())
+	} else {
+		// ── Identify ──
+		//
+		// 出处：event-emit.html §登录鉴权获得 Session
+		//   token     格式为 "QQBot {AccessToken}"
+		//   intents   本次连接要接收的事件位
+		//   shard     两元素数组 [shard_id, num_shards]
+		//   properties 目前无实际作用（同页原文），按示例填 $os/$browser/$device
+		identify := map[string]any{
+			"op": opIdentify,
+			"d": map[string]any{
+				"token":   "QQBot " + token,
+				"intents": g.intents(),
+				"shard":   g.shard,
+				"properties": map[string]string{
+					"$os":      "linux",
+					"$browser": "xbot",
+					"$device":  "xbot",
+				},
+			},
+		}
+		if err := writeJSONFrame(conn, identify); err != nil {
+			return false, fmt.Errorf("send identify: %w", err)
+		}
 	}
 
-	// ── 3. 等 READY ──
-	// READY 之前也可能先来 op=9（凭据/会话失效），必须处理。
+	// ── 3. 等 READY（Identify）或 RESUMED（Resume）──
+	// 两者之前也可能先来 op=9（凭据/会话失效），必须处理。
 	// 出处：event-emit.html §登录鉴权获得 Session（Ready Event 示例：
 	// op=0, t="READY", d.session_id）；opcode.html（9 = Invalid Session）。
 	if err := conn.SetReadDeadline(time.Now().Add(helloTimeout)); err != nil {
 		return false, fmt.Errorf("set read deadline: %w", err)
 	}
+waitLoop:
 	for {
 		env, err = readEnvelope(conn)
 		if err != nil {
@@ -296,8 +327,10 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 			}
 			g.drainEarlyDispatch(ctx, env)
 		case opInvalidSess:
+			// op=9：identify/resume 参数有错 → 会话作废，重取 token 后重新 Identify。
+			g.clearSession()
 			g.tokens.Invalidate()
-			return false, errors.New("invalid session on identify (op=9): token discarded")
+			return false, errors.New("invalid session (op=9) before READY/RESUMED: session cleared, token discarded")
 		case opHeartbeatACK:
 			continue
 		case opHello:
@@ -305,9 +338,15 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 		default:
 			return false, fmt.Errorf("unexpected op=%d before READY", env.Op)
 		}
-		if env.Type == "READY" {
-			g.logf("gateway READY")
-			break
+		switch env.Type {
+		case "READY":
+			g.captureSessionID(env.D)
+			g.logf("gateway READY (session_id=%s)", g.currentSessionID())
+			break waitLoop
+		case "RESUMED":
+			// Resume 成功：session_id 保持不变（服务端已确认续接）。
+			g.logf("gateway RESUMED (session_id=%s seq=%d)", g.currentSessionID(), g.seq.Load())
+			break waitLoop
 		}
 	}
 
@@ -374,8 +413,10 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 		case opInvalidSess:
 			hbCancel()
 			<-hbDone
+			// 会话作废：清掉 session_id，下次连接只能 Identify（不能 Resume）。
+			g.clearSession()
 			g.tokens.Invalidate()
-			return true, errors.New("invalid session (op=9): token discarded, will reconnect")
+			return true, errors.New("invalid session (op=9): session cleared, token discarded, will re-identify")
 		case opHello:
 			continue
 		default:
@@ -387,7 +428,10 @@ func (g *Gateway) session(ctx context.Context) (ready bool, err error) {
 // drainEarlyDispatch 处理 READY 之前到达的业务事件（官方保证 READY 先到，
 // 但协议没禁止其它 dispatch 抢跑；这里不丢事件）。
 func (g *Gateway) drainEarlyDispatch(ctx context.Context, env gwEnvelope) {
-	if env.Type == "" || env.Type == "READY" {
+	if s := env.Sequence; s > 0 {
+		g.seq.Store(s)
+	}
+	if env.Type == "" || env.Type == "READY" || env.Type == "RESUMED" {
 		return
 	}
 	if g.onEvent != nil {
@@ -428,6 +472,40 @@ func (g *Gateway) heartbeatLoop(ctx context.Context, conn WSConn, interval time.
 			pending = true
 		}
 	}
+}
+
+// currentSessionID 返回当前 session_id（无会话时为空）。
+func (g *Gateway) currentSessionID() string {
+	g.sessionMu.Lock()
+	defer g.sessionMu.Unlock()
+	return g.sessionID
+}
+
+// clearSession 作废当前会话（op=9），下次连接只能 Identify。
+func (g *Gateway) clearSession() {
+	g.sessionMu.Lock()
+	defer g.sessionMu.Unlock()
+	g.sessionID = ""
+}
+
+// captureSessionID 从 READY 的 d.session_id 记录会话 id（Resume 的凭据）。
+//
+// 出处：event-emit.html §登录鉴权获得 Session — Ready Event 示例 d.session_id。
+func (g *Gateway) captureSessionID(data json.RawMessage) {
+	var d struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(data, &d); err != nil {
+		g.logf("gateway: cannot parse READY session_id: %v", err)
+		return
+	}
+	if d.SessionID == "" {
+		g.logf("gateway: READY carried no session_id — reconnect will fall back to identify")
+		return
+	}
+	g.sessionMu.Lock()
+	g.sessionID = d.SessionID
+	g.sessionMu.Unlock()
 }
 
 // seqOrNil 返回心跳 d（没有 seq 时按协议发 null）。

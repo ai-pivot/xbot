@@ -1173,6 +1173,15 @@ func (pm *PluginManager) ReloadAll(ctx context.Context) error {
 		return err
 	}
 
+	// ⛔ 2026-10-26：ReloadAll 原来**没有**重新 wire channel provider。
+	// 后果：`config reload_plugins` 之后插件进程确实换了新二进制（日志有
+	// "Plugin activated"），但 channel 注册表里仍是**上一个插件进程**注册的
+	// provider —— 于是 UI 的渠道配置面板继续显示旧插件的 config_schema
+	// （实测：官方 QQ 版装好了，面板里还是 OneBot 的
+	//  ws_url / reverse_listen / reverse_path / access_token）。
+	// ActivateAll 只负责起进程，provider 必须再 wire 一次才能进注册表。
+	WireChannelProviders(pm)
+
 	// Notify reload listeners asynchronously to avoid blocking the RPC handler
 	// (listeners may push widget updates via WebSocket which can be slow).
 	pm.onReloadMu.Lock()
