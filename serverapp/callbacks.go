@@ -834,7 +834,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 					SortOrder:  c.SortOrder,
 				}
 			}
-			applyWebRunningStatuses(ag, chats)
+			applyWebRunningStatusesFast(ag, chats)
 			return chats, err
 		}
 		if webSQL == nil {
@@ -843,11 +843,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// For non-web channels (admin only): list all tenants in that channel.
 		if channel == "cli" {
 			rows, err := listCLIChatSessions(webSQL, currentChatID)
-			applyWebRunningStatuses(ag, rows)
+			applyWebRunningStatusesFast(ag, rows)
 			return rows, err
 		}
 		rows, err := listTenantsByChannel(webSQL, channel, currentChatID)
-		applyWebRunningStatuses(ag, rows)
+		applyWebRunningStatusesFast(ag, rows)
 		return rows, err
 	}
 	callbacks.SubAgentList = func(senderID string, admin bool) ([]web.UserChatWithPreview, error) {
@@ -872,7 +872,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		for _, s := range ag.ListInteractiveSessions("agent", "") {
 			rows = upsertSubAgentRow(rows, seen, "agent", s)
 		}
-		applyWebRunningStatuses(ag, rows)
+		applyWebRunningStatusesFast(ag, rows)
 		return rows, nil
 	}
 	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool, offset, limit int) (web.SessionTreeResult, error) {
@@ -990,7 +990,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		if err != nil {
 			return web.SessionTreeResult{}, err
 		}
-		applyWebRunningStatuses(ag, subagents)
+		// 同样走快照版：旧版逐行调 HasPendingAskUserFast，内存 miss 时会打库
+		// （GetTenantIDByChannelChatID + LatestAskControlRecord），而后者经
+		// SessionServiceFor 打开该会话的库。子代理有上百个，每次 session-tree
+		// 请求就要开上百个会话库 —— 生产实测 7 分钟内累积 620 个打开的库。
+		applyWebRunningStatusesFast(ag, subagents)
 		result := buildSessionTree(mains, subagents)
 		result.HasMore = hasMore
 		result.NextOffset = nextOffset
