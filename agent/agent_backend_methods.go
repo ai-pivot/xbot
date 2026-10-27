@@ -203,6 +203,12 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 			// Also include goal so the frontend can display it on idle sessions.
 			if a.goalManager != nil {
 				snap.Goal = a.goalManager.GoalInfo(key)
+				if snap.Goal == nil {
+					// ⛔ 审计确证（C5）：无快照分支此前**不注入墓碑**（有快照分支却注入）⇒
+					//   "已清除的目标"在回合结束后又变成"未携带" ⇒ 客户端保留旧值 ⇒
+					//   删掉的目标横幅一直显示。两支必须同语义。
+					snap.Goal = a.goalManager.Tombstone(key)
+				}
 			}
 			return snap
 		}
@@ -212,7 +218,9 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 			if goal := a.goalManager.GoalInfo(key); goal != nil {
 				return &protocol.ProgressEvent{
 					Phase: "done",
-					Todos: []protocol.TodoItem{},
+					// ⛔ 三态（state-gate-11-6 确证-2）：无 todo 记录 ⇒ **nil**（未携带）。
+					//   旧实现硬写 `[]`（= 显式清空）⇒ 会把客户端更权威的本地列表抹掉。
+					Todos: nil,
 					Goal:  goal,
 				}
 			}
@@ -221,16 +229,57 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	}
 	snapshot := v.(*protocol.ProgressEvent)
 	result := *snapshot
+	// ⛔ 审计确证（be-state-1 §3）：快照里的 `Todos` 只是**某一刻的副本**（刷新点仅 3 处），
+	//   而 `TodoManager` 才是真源（内存 + 文件持久化）。旧实现直接返回快照 ⇒ 重连/切会话时
+	//   可能下发**旧 todo 列表**（面板显示滞后）。⇒ 以管理器为准刷新；管理器为空且快照非空时
+	//   保留快照（重启后未水合的窗口，绝不能据此清空）。
+	// ⛔ 审计确证（state-gate-6 C2「busy 棘轮」）：快照的删除发生在回合收尾，而读取可能
+	//   **抓在删除前、送达在删除后**（send-ack-sync / 回前台 / gap 重载）⇒ 一张**已结束**的
+	//   快照会被当成 active 返回 ⇒ 客户端把已结束的 turn 复活成 live，`hasLiveTurn` 恒 true
+	//   ⇒ busy 永远关不掉（看门狗认为"有 live"不动、探针的权威 idle 也被闸门挡）。
+	//   ⇒ 一条服务端规则：快照的 turn **必须仍是当前 turn** 才可作为 active 返回；
+	//   否则降级为 `done`（保留 todos/goal/iteration_history 供客户端水合，但不声明"在跑"）。
+	// ⚠️ 只在**存在会话运行态**时判定（没有运行态 = 从没跑过/已彻底清理，快照可能是测试
+	//   或冷启动水合数据，不能据此降级）。
+	_, hasRunState := a.bgSessionStates.Load(key)
+	if cur := a.getActiveTurnID(key); hasRunState && snapshot.TurnID != 0 && cur != snapshot.TurnID {
+		result.Phase = "done"
+		result.ActiveTools = nil
+		result.StreamingTools = nil
+		result.StreamContent = ""
+		result.StreamDelta = ""
+		result.ReasoningStreamContent = ""
+		result.ReasoningStreamDelta = ""
+	}
 
 	// Merge live stream state (updated by stream callbacks between structured events).
 	// This is the pull-model replacement for stream event push — the client reads
 	// live streaming content via tick pull instead of receiving push events.
 	a.mergeStreamState(key, &result)
 
+	// ⛔ 审计确证（be-state-1 §3）：快照里的 `Todos` 只是**某一刻的副本**（刷新点仅 3 处），
+	//   而 `TodoManager` 才是真源（内存 + 文件持久化）。旧实现直接返回快照 ⇒ 重连/切会话时
+	//   可能下发**旧 todo 列表**（面板滞后）。⇒ 以管理器为准刷新；管理器为空且快照非空时
+	//   保留快照（重启后未水合的窗口绝不能据此清空）。
+	// ⛔ 审计确证（state-gate-9-5）：旧判据 `len(fresh) > 0 || len(result.Todos) == 0` 把
+	//   **「用户已清空」**（管理器有记录但为空）当成「未水合」⇒ 回吐快照里的旧列表
+	//   （todo_write([]) 后切会话/回前台，清空的列表又冒出来）。
+	//   ⇒ 判据改成 **Hydrated**（管理器是否已有该会话的记录，空列表也算有）：
+	//   已水合 ⇒ 一律以管理器为准（包括空）；未水合且快照也空 ⇒ 记录「无 todo」。
+	if fresh := a.GetTodos(ch, chatID); len(fresh) > 0 || a.TodosHydrated(ch, chatID) || len(result.Todos) == 0 {
+		result.Todos = fresh
+	}
+
 	// Always inject the latest goal state (goal may have been set/cleared/completed
 	// via RPC since the snapshot was last refreshed by refreshStructuredTodos).
 	if a.goalManager != nil {
 		result.Goal = a.goalManager.GoalInfo(key)
+		if result.Goal == nil {
+			// ⛔ F16：`Goal` 是 `omitempty`，而"用户已删除目标"与"从来没设过"在快照里
+			//   无法区分 ⇒ 清除只由一次性事件承载，事件丢失后横幅永远清不掉。
+			//   这里回填**墓碑**（`{objective:"", status:"cleared"}`），客户端三态据此清除。
+			result.Goal = a.goalManager.Tombstone(key)
+		}
 	}
 
 	// Agent sessions: correct Phase from authoritative running state.
@@ -496,15 +545,34 @@ func foldProgressIteration(el protocol.ProgressEvent, rec sqlite.IterationRecord
 	return out
 }
 
+// TodosHydrated 报告 TodoManager 是否**已有**该会话的记录（可能是空列表 = 用户已清空）。
+//
+// ⛔ 判据的存在理由（state-gate-9-5 确证）：`len(GetTodos())==0` 有**两种**含义 ——
+// ① 未水合（管理器里没记录，值是未知的）；② 用户确实清空了（记录存在但为空）。
+// 把二者混为一谈会导致"清空的 todo 又冒回来"。`HasTodos` 语义正是"记录存在"。
+func (a *Agent) TodosHydrated(ch, chatID string) bool {
+	if a.todoManager == nil {
+		return false
+	}
+	return a.todoManager.HasTodos(ch + ":" + chatID)
+}
+
 // GetTodos returns the TODO items for the given channel:chatID session.
+//
+// **形状契约（三态，与 `tools.TodoManager.GetTodos` 同源）**：
+//   · 记录存在（含空 = 用户已清空） ⇒ 非 nil（空为 `[]protocol.TodoItem{}`）；
+//   · 记录不存在（未水合/从未写过）   ⇒ **nil**（= "没携带"，前端不得据此清空）。
+// ⛔ 2026-10-21（state-gate-10-6）：旧实现把 `len(items)==0` 折成 `[]`，等于把"无记录"
+//   说成"显式清空"，销毁了下层的三态契约 ⇒ turn_started / `/compress` / 设目标等帧
+//   会显式清空本地面板，随后结构化帧再填回（清单闪空、勾选状态被抹）。
 func (a *Agent) GetTodos(ch, chatID string) []protocol.TodoItem {
 	key := ch + ":" + chatID
 	if a.todoManager == nil {
-		return []protocol.TodoItem{}
+		return nil
 	}
 	items := a.todoManager.GetTodos(key)
-	if len(items) == 0 {
-		return []protocol.TodoItem{}
+	if items == nil {
+		return nil // 无记录 ⇒ nil（与"记录为空"区分开）
 	}
 	result := make([]protocol.TodoItem, len(items))
 	for i, t := range items {
@@ -535,6 +603,25 @@ func (a *Agent) SetTodos(ch, chatID string, items []protocol.TodoItem) {
 // TODO list (plus the goal when one is active). Mirrors emitGoalProgress, but
 // does not require a goal to exist — an edit to the todo list must reach the UI
 // even in a session with no goal.
+// updateSnapshotFields 对**已有的**权威快照做字段级更新（read-modify-write）。
+//
+// ⛔ 审计确证（2026-10-21，后端审计 D1）：todos/goal 这类"只改一个会话级字段"的事件
+//   此前用「新建 payload + Store」**整对象替换** `lastProgressSnapshot`
+//   ⇒ 正在跑的 turn 被抹成 `phase="" / iteration=0`、active_tools/iteration_history 全丢：
+//   · 心跳 live 推送直接跳过（`phase==""` 就 return）；
+//   · 重连 fallback 把降级快照发出去 ⇒ 客户端迭代号回退到 0、工具列表消失；
+//   · `/api/history` 的 active_progress 同样降级 ⇒ 刷新后 live 态丢失。
+//   ⇒ 只改指定字段，其余原样保留；**没有快照就不写**（不能凭空造一个降级快照）。
+func (a *Agent) updateSnapshotFields(key string, mutate func(p *protocol.ProgressEvent)) {
+	if v, ok := a.lastProgressSnapshot.Load(key); ok {
+		if prev, ok2 := v.(*protocol.ProgressEvent); ok2 && prev != nil {
+			clone := *prev
+			mutate(&clone)
+			a.lastProgressSnapshot.Store(key, &clone)
+		}
+	}
+}
+
 func (a *Agent) emitTodosProgress(chName, chatID string) {
 	progressKey := qualifyChatID(chName, chatID)
 	seqPtr := a.progressSeqFor(progressKey)
@@ -557,7 +644,13 @@ func (a *Agent) emitTodosProgress(chName, chatID string) {
 		})
 	}
 	// Keep the snapshot fresh so GetActiveProgress returns the edited list.
-	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
+	// ⛔ D1：**字段级**更新（只覆盖 Todos/Goal），绝不整对象替换（否则会抹掉在飞 turn 的快照）。
+	todos := payload.Todos
+	goal := payload.Goal
+	a.updateSnapshotFields(progressKey, func(p *protocol.ProgressEvent) {
+		p.Todos = todos
+		p.Goal = goal
+	})
 }
 
 // GetGoal returns the goal state for the given channel:chatID session.
@@ -565,7 +658,18 @@ func (a *Agent) GetGoal(ch, chatID string) *protocol.GoalInfo {
 	if a.goalManager == nil {
 		return nil
 	}
-	return a.goalManager.GoalInfo(ch + ":" + chatID)
+	key := ch + ":" + chatID
+	if g := a.goalManager.GoalInfo(key); g != nil {
+		return g
+	}
+	// ⛔ 结构性：`nil` 只能表达"这个通道/会话没有 goal 系统"，**不能**同时表达"用户已清除"——
+	//   否则客户端无法区分「无目标」与「没查到」，只能选择"null 一律不动" ⇒ **远端清除永不收敛**
+	//   （别的客户端清了目标，这边重连/回前台后横幅还在）。⇒ 与 `GetActiveProgress` 同源：
+	//   回填**墓碑**（`{objective:"", status:"cleared"}`），让"已清除"成为线上可表达的状态。
+	if t := a.goalManager.Tombstone(key); t != nil {
+		return t
+	}
+	return nil
 }
 
 // SetGoal sets a goal for the given channel:chatID session.
@@ -594,7 +698,9 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 		Seq:       seq,
 		TurnID:    a.getActiveTurnID(progressKey),
 		Iteration: 0,
-		Todos:     a.GetTodos(ch, chatID),
+		// ⛔ 审计确证（be-state-1 §3）：`ClearGoal` 与 todo 无关，此前却把 `GetTodos()` 塞进帧里
+		//   —— 若该键从未写过 todos，返回 `[]` ⇒ 客户端按「`[]`=显式清空」**清空 todo 面板**
+		//   （快照侧已挡，帧侧漏）。⇒ 不携带 todos（缺失 = 客户端保持旧值）。
 		Goal:      &protocol.GoalInfo{Objective: "", Status: protocol.GoalStatusCleared}, // explicit cleared marker (objective:"" survives GoalInfo's non-omitempty json tag) — Goal: nil is invisible to the frontend (ProgressEvent.Goal omitempty drops the field entirely, indistinguishable from "not carried"), which broke the clear chain (xbotgh CR: "用户删除目标后 GoalBanner 不消失")
 	}
 	if a.channelRange != nil {
@@ -605,7 +711,14 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 			return true
 		})
 	}
-	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
+	// ⛔ D1：字段级更新（只覆盖 Goal/Todos），不整对象替换（否则抹掉在飞 turn 的快照）。
+	// ⛔ 审计确证（state-final-1 确证-5）：`ClearGoal` 是**与 todo 无关**的操作，却把
+	//   `GetTodos()` 也写回快照 —— 若此刻 manager 内存态未水合，这一帧的 `todos: []`
+	//   会因一次"删目标"操作把 todo 面板清空。⇒ 只写 goal 字段。
+	clearGoal := payload.Goal
+	a.updateSnapshotFields(progressKey, func(p *protocol.ProgressEvent) {
+		p.Goal = clearGoal
+	})
 }
 
 // GetExportIterations returns per-iteration records for session export,

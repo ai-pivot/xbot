@@ -629,7 +629,14 @@ func (c *CLIChannel) SendProgress(chatID string, payload *protocol.ProgressEvent
 			oldCopy.SubAgents = append([]protocol.SubAgentInfo(nil), old.SubAgents...)
 			oldCopy.StreamingTools = append([]protocol.ToolProgress(nil), old.StreamingTools...)
 			oldCopy.ToolCalls = append([]protocol.ToolCallSnapshot(nil), old.ToolCalls...)
-			oldCopy.Todos = append([]protocol.TodoItem(nil), old.Todos...)
+			// ⛔ 审计确证（be-state-1 §1）：`append([]T(nil), src...)` 会把**空数组折成 nil** ⇒ JSON `null`。
+	//   `todos` 无 omitempty，客户端按 `null`=未携带 / `[]`=显式清空 区分 ⇒ TUI 侧"清空"被当"没带"。
+	if old.Todos != nil {
+		oldCopy.Todos = make([]protocol.TodoItem, len(old.Todos))
+		copy(oldCopy.Todos, old.Todos)
+	} else {
+		oldCopy.Todos = nil
+	}
 			if old.TokenUsage != nil {
 				tu := *old.TokenUsage
 				oldCopy.TokenUsage = &tu
