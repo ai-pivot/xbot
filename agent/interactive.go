@@ -172,6 +172,31 @@ func (ia *interactiveAgent) compressRatio() float64 {
 // 为什么需要它（2026-10-22 P0：连续两次 spawn lead 会话后报
 // "assert: LLM messages must have exactly one system message; got 0"，会话直接
 // 不可用，只能 unload 重建）：
+// deriveRunBaseContext 返回 interactive session 的 Run 应该挂靠的父 ctx。
+//
+// 唯一权威是 Agent 生命周期（a.agentCtx）。调用方的 ctx **不参与**生命周期决定：
+// 它只能表达「这一刻还值不值得受理这次请求」，不能表达「这个 Run 该活多久」。
+//
+// 违反这条会产生一个非常隐蔽的 bug：调用方自己也是 bg session 时（例如
+// proj.xbot.lead 给首辅发消息），子代理的 Run 会挂在调用方那一轮的 ctx 上；
+// 调用方 turn 一结束 ctx 就 cancel，子代理 Run 跟着 cancel，于是
+// `cancelled == true`，而 interactive.go 里包住 SendSubAgentNotify 的条件
+// `if notifyMgr != nil && !cancelled` 整段被跳过 —— **子代理的最后一条消息
+// 永远不通知父会话**。表现就是「它明明 idle 了，御前却收不到」。
+//
+// unload / TTL / interrupt 仍然能正常取消会话：它们走 runCancel，不依赖这里。
+func (a *Agent) deriveRunBaseContext(caller context.Context) context.Context {
+	if a.agentCtx != nil {
+		return a.agentCtx
+	}
+	// 裸 &Agent{}（测试）没有 agentCtx：保留 caller 的 value，但剥离它的 cancel，
+	// 否则同样的"父 turn 结束就杀掉子代 Run"会在测试里复现。
+	if caller == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(caller)
+}
+
 // SendToInteractiveSession 用 `[ia.systemPrompt] + ia.messages + [user]` 拼装，
 // 而 ia.systemPrompt 的唯一来源是「spawn 时从 cfg.Messages[0] 拷一份」。任何
 // 不经过 spawn 的构造路径（重启恢复、将来新增的 fork/迁移路径）只要漏拷它，
@@ -2554,19 +2579,23 @@ func (a *Agent) SendToInteractiveSession(
 	// the committed OLD turn's slot.
 	ia.cfg.TurnID = cfg.TurnID
 
-	// Derive context from agent lifecycle so the async Run survives
-	// past the caller's tool execution deadline. Without this, a parent
-	// agent's SendMessage tool call would kill the child's Run when the
-	// tool timeout fires.
-	var asyncBase context.Context
-	if ctx.Value(bgSessionCtxKey{}) != nil {
-		asyncBase = ctx
-	} else if a.agentCtx != nil {
-		asyncBase = a.agentCtx
-	} else {
-		asyncBase = context.Background()
-	}
-	runCtx, runCancel := context.WithCancel(asyncBase)
+	// Derive the Run's lifetime from the Agent lifecycle ONLY.
+	//
+	// 这段注释原本就写着「必须从 agent lifecycle 派生，否则父 agent 的
+	// SendMessage 工具调用会在工具超时时杀掉子代理的 Run」——但实现留了一个
+	// `if ctx.Value(bgSessionCtxKey{}) != nil { asyncBase = ctx }` 分支，于是
+	// **当调用方本身也是 bg session 时**（典型：proj.xbot.lead 给首辅发消息），
+	// 子代理的 Run 反而挂在调用方的 ctx 上。
+	//
+	// 后果很具体：调用方那一轮结束 → ctx cancel → 子代理 Run 被 cancel →
+	// `cancelled == true` → interactive.go 里包住 SendSubAgentNotify 的
+	// `if notifyMgr != nil && !cancelled` 整段被跳过 → **子代理 idle 前的最后
+	// 一条消息永远不通知父会话**。这正是皇上报的「他 idle 了但没通知你」。
+	//
+	// 生命周期只能有一个权威来源：a.agentCtx。调用方的 ctx 不参与 ——
+	// 它要表达的只是「这一刻还值不值得受理这次 send」，不是「这个 Run 该活多久」。
+	// unload / TTL / interrupt 仍然能正常取消，它们走的是 runCancel。
+	runCtx, runCancel := context.WithCancel(a.deriveRunBaseContext(ctx))
 	// Mark as bg session context so nested SubAgents detect it and
 	// derive their lifecycle from this session (not a grandparent).
 	runCtx = context.WithValue(runCtx, bgSessionCtxKey{}, true)
