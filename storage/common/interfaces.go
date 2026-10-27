@@ -1,4 +1,4 @@
-package storage
+package common
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"xbot/event"
 	"xbot/llm"
 	"xbot/storage/agentmem"
-	"xbot/storage/sqlite"
 )
 
 // Storage is the top-level entry point. One instance per process.
@@ -20,7 +19,7 @@ type Storage interface {
 	Config() ConfigStore
 	// Cron is the scheduled-job store (cron_jobs). It lives on Storage — not on
 	// ConfigStore — because the scheduler and the Cron tool both need it, and it
-	// must be reachable on every backend (a concrete *sqlite.CronService in those
+	// must be reachable on every backend (a concrete *CronService in those
 	// layers is what made cron disappear on PG).
 	Cron() CronStore
 	// Trigger is the webhook event-trigger store (event_triggers), reached by the
@@ -75,20 +74,20 @@ type SessionStore interface {
 	GetMaxIterationForTurn(tenantID int64, turnID uint64) (int, error)
 
 	// Iteration history
-	AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec sqlite.IterationRecord) error
+	AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec IterationRecord) error
 	// AppendIterationHistories writes many records at once. Fork copies a whole
 	// session's iteration history; a backend where each insert costs a network
 	// round trip must pipeline them (see pgSessionStore).
-	AppendIterationHistories(tenantID int64, recs []sqlite.IterationRecord) error
+	AppendIterationHistories(tenantID int64, recs []IterationRecord) error
 	AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error)
-	GetIterationHistoryByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error)
-	GetIterationHistoryByTurns(tenantID int64, turnIDs []uint64) (map[uint64][]sqlite.IterationRecord, error)
+	GetIterationHistoryByTurn(tenantID int64, turnID uint64) ([]IterationRecord, error)
+	GetIterationHistoryByTurns(tenantID int64, turnIDs []uint64) (map[uint64][]IterationRecord, error)
 	// GetIterationHistoryBeforeRange returns the iterations of a turn that precede
 	// beforeIter, ascending — the windowing endpoint's segment query.
-	GetIterationHistoryBeforeRange(tenantID int64, turnID uint64, beforeIter int) ([]sqlite.IterationRecord, error)
+	GetIterationHistoryBeforeRange(tenantID int64, turnID uint64, beforeIter int) ([]IterationRecord, error)
 	// GetIterationHistoryByNumber locates ONE iteration by (turn, iteration).
 	// Not-found is a normal business result: (zero, false, nil).
-	GetIterationHistoryByNumber(tenantID int64, turnID uint64, iteration int) (sqlite.IterationRecord, bool, error)
+	GetIterationHistoryByNumber(tenantID int64, turnID uint64, iteration int) (IterationRecord, bool, error)
 	// GetSyntheticPairRowsByTurn returns the turn's tool-pair candidate rows
 	// (assistant rows carrying tool_calls + tool results, in id order) used to
 	// repair histories written before synthetic tool pairs were persisted.
@@ -98,11 +97,11 @@ type SessionStore interface {
 	// pair's injection time onto an iteration number. Only those two fields are
 	// populated; content/tools stay zero because anchors are never assembled as
 	// full records.
-	GetIterationAnchorsByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error)
+	GetIterationAnchorsByTurn(tenantID int64, turnID uint64) ([]IterationRecord, error)
 	// LatestAskControlRecord returns the newest ask_question / ask_answer control
 	// record (id + type), or (0, "", nil) when the session has none. This is the
 	// authority for "is a prompt still pending?" after a restart.
-	LatestAskControlRecord(tenantID int64) (int64, sqlite.HistoryRecordType, error)
+	LatestAskControlRecord(tenantID int64) (int64, HistoryRecordType, error)
 
 	// Append-style writes (return the inserted row's stable history id).
 	// AppendMessage differs from AddMessage: it is the append-only history
@@ -116,18 +115,18 @@ type SessionStore interface {
 	AppendCommandMessage(tenantID int64, role, content string) (int64, error)
 
 	// Control / snapshot records (compression, prune, context edit, AskUser).
-	AppendControl(tenantID int64, recordType sqlite.HistoryRecordType, targetHistoryID int64, data any) (int64, error)
-	AppendContextSnapshot(tenantID int64, recordType sqlite.HistoryRecordType, messages []llm.ChatMessage) (int64, error)
+	AppendControl(tenantID int64, recordType HistoryRecordType, targetHistoryID int64, data any) (int64, error)
+	AppendContextSnapshot(tenantID int64, recordType HistoryRecordType, messages []llm.ChatMessage) (int64, error)
 	AppendAskQuestion(tenantID int64, metadata map[string]string) (int64, error)
 	AppendAskAnswer(tenantID int64, answer string) (int64, error)
 	AppendAskAnswerWithUserMessage(tenantID int64, answer string, answerMsg llm.ChatMessage) (int64, error)
-	AppendMasks(tenantID int64, mutations []sqlite.MaskMutation) error
+	AppendMasks(tenantID int64, mutations []MaskMutation) error
 
 	// Iteration history (full set — the bounded/turn-scoped queries above).
-	GetAllIterationHistory(tenantID int64) ([]sqlite.IterationRecord, error)
+	GetAllIterationHistory(tenantID int64) ([]IterationRecord, error)
 
 	// Raw history records (append-only, includes control records).
-	GetFullHistory(tenantID int64) ([]sqlite.HistoryRecord, error)
+	GetFullHistory(tenantID int64) ([]HistoryRecord, error)
 	// GetHistoryBeforeForDisplay returns the display projection (pre-compression
 	// messages included, `[Compacted context]` markers inserted) plus the total
 	// display row count before beforeID.
@@ -135,7 +134,7 @@ type SessionStore interface {
 
 	// Replay reconstructs the LLM-visible context from the append-only history
 	// (control records applied: compression snapshots, masks, context edits).
-	Replay(tenantID int64) (*sqlite.ReplayResult, error)
+	Replay(tenantID int64) (*ReplayResult, error)
 	// RewindToHistoryID truncates history at (and including) a user message,
 	// returning the target message, its 1-based turn index and the restored
 	// prompt-token watermark.
@@ -145,8 +144,8 @@ type SessionStore interface {
 	GetUserMessageCount(tenantID int64) (int, error)
 	// GetTenantUsageBuckets returns time-bucketed usage for the dashboard
 	// (bucket width 60/3600/86400s, tzOffsetMinutes shifts the calendar).
-	GetTenantUsageBuckets(tenantID int64, bucketSeconds int64, count int, tzOffsetMinutes int) ([]sqlite.UsageBucket, error)
-	GetTenantUsageStats(tenantID int64, recentLimit int) (*sqlite.TenantUsageStats, error)
+	GetTenantUsageBuckets(tenantID int64, bucketSeconds int64, count int, tzOffsetMinutes int) ([]UsageBucket, error)
+	GetTenantUsageStats(tenantID int64, recentLimit int) (*TenantUsageStats, error)
 	GetLastUserMessageContextTokens(tenantID int64) (int64, error)
 	// UpdateMessageContentNonDisplayOnly rewrites the Nth non-display-only
 	// message (index aligned with GetAllMessages ordering).
@@ -181,7 +180,7 @@ type TenantStore interface {
 	// Per-session DB metadata (v71)
 	SetTenantDBPath(tenantID int64, dbPath string) error
 	SetTenantMigrated(tenantID int64) error
-	GetTenantDBInfo(tenantID int64) (sqlite.TenantDBInfo, error)
+	GetTenantDBInfo(tenantID int64) (TenantDBInfo, error)
 
 	// Tenant config
 	SetTenantSubscription(channel, chatID, subscriptionID, model string) error
@@ -197,7 +196,7 @@ type TenantStore interface {
 	CreateChat(channel, senderID, label string) (string, error)
 	DeleteChat(channel, senderID, chatID string) error
 	RenameChat(channel, senderID, chatID, label string) error
-	ListUserChats(channel, senderID, currentChatID string, offset, limit int) ([]sqlite.UserChatWithPreview, bool, error)
+	ListUserChats(channel, senderID, currentChatID string, offset, limit int) ([]UserChatWithPreview, bool, error)
 	UpdateChatSortOrders(channel, senderID string, orders map[string]int) error
 	GetSenderForChat(channel, chatID string) (string, error)
 	// GetChatLabel returns the user-assigned label of a session ("" when unset or
@@ -212,12 +211,12 @@ type TenantStore interface {
 	// Tenant / channel discovery (used by the Web channel and its callbacks to
 	// browse sessions without touching a backend-specific SQL handle).
 	ListDistinctChannels() ([]string, error)
-	ListTenants() ([]sqlite.TenantInfo, error)
+	ListTenants() ([]TenantInfo, error)
 
 	// Pending resumes
 	AddPendingResume(channel, chatID, senderID string) error
 	GetSessionSenderID(channel, chatID string) (string, error)
-	ListPendingResumes() ([]sqlite.PendingResume, error)
+	ListPendingResumes() ([]PendingResume, error)
 	ClearPendingResume(channel, chatID string) error
 }
 
@@ -327,17 +326,17 @@ type AgentMemoryStore interface {
 
 // CronStore is the storage seam for scheduled jobs (cron_jobs).
 //
-// It exists so the scheduler and the Cron tool never hold a *sqlite.CronService:
+// It exists so the scheduler and the Cron tool never hold a *CronService:
 // a concrete SQLite type in those layers made cron silently unavailable on the PG
 // backend (the whole wiring block was skipped when the main DB handle was nil).
 type CronStore interface {
-	AddJob(job *sqlite.CronJob) error
+	AddJob(job *CronJob) error
 	RemoveJob(id string) error
 	// GetJob returns (nil, nil) when the job does not exist.
-	GetJob(id string) (*sqlite.CronJob, error)
-	ListJobs() ([]*sqlite.CronJob, error)
-	ListAllJobs() ([]*sqlite.CronJob, error)
-	ListJobsByChannelChatID(channel, chatID string) ([]*sqlite.CronJob, error)
+	GetJob(id string) (*CronJob, error)
+	ListJobs() ([]*CronJob, error)
+	ListAllJobs() ([]*CronJob, error)
+	ListJobsByChannelChatID(channel, chatID string) ([]*CronJob, error)
 	UpdateNextRun(id string, nextRun time.Time) error
 	UpdateLastTrigger(id string, lastTrigger time.Time) error
 	// MigrateFromJSON imports jobs from the legacy cron.json (idempotent: it is a
@@ -348,14 +347,14 @@ type CronStore interface {
 // InteractiveAgentStore is the storage seam for the interactive SubAgent
 // registry (interactive_agents). The agent uses it to rebuild the sub-agent
 // tree after a process restart, so it must work on every backend — a concrete
-// *sqlite.InteractiveAgentService built from `MultiTenantSession.DB()` panics
+// *InteractiveAgentService built from `MultiTenantSession.DB()` panics
 // on PG because there is no SQLite handle at all.
 type InteractiveAgentStore interface {
 	// Upsert inserts or updates one registry row (created_at is preserved).
-	Upsert(rec sqlite.InteractiveAgentRecord) error
-	// Get returns sqlite.ErrInteractiveAgentNotFound when the key is absent.
-	Get(agentKey string) (*sqlite.InteractiveAgentRecord, error)
-	ListChildAgents(parentChannel, parentChatID string) ([]sqlite.InteractiveAgentRecord, error)
+	Upsert(rec InteractiveAgentRecord) error
+	// Get returns ErrInteractiveAgentNotFound when the key is absent.
+	Get(agentKey string) (*InteractiveAgentRecord, error)
+	ListChildAgents(parentChannel, parentChatID string) ([]InteractiveAgentRecord, error)
 	MarkStatus(agentKey, status string, turnID uint64) error
 	// MarkAllRunningAsInterrupted flips every running row to interrupted and
 	// returns the number of rows changed (startup reconcile step 1).
@@ -364,7 +363,7 @@ type InteractiveAgentStore interface {
 	// MarkOrphanedIdleUnloaded flips idle rows whose session no longer exists
 	// (and whose key is not live) to unloaded; returns rows changed.
 	MarkOrphanedIdleUnloaded(liveKeys []string) (int64, error)
-	ListActive(cutoff time.Time, includeUnloaded bool) ([]sqlite.AgentActivity, error)
+	ListActive(cutoff time.Time, includeUnloaded bool) ([]AgentActivity, error)
 }
 
 // WebUserInfo describes a web UI user account (for listing).
@@ -402,21 +401,21 @@ type WebAuthStore interface {
 // SubscriptionBackend manages LLM subscription models and defaults.
 // Embedded into ConfigStore so both backends implement it.
 type SubscriptionBackend interface {
-	GetModel(subID, model string) (*sqlite.SubscriptionModel, error)
-	GetModels(subID string) ([]*sqlite.SubscriptionModel, error)
+	GetModel(subID, model string) (*SubscriptionModel, error)
+	GetModels(subID string) ([]*SubscriptionModel, error)
 	EnsureModel(subID, model string) error
 	SetModelEnabled(subID, model string, enabled bool) error
-	GetUserDefaultModel(senderID string) (*sqlite.UserDefaultModel, error)
+	GetUserDefaultModel(senderID string) (*UserDefaultModel, error)
 	SetUserDefaultModel(senderID, subID, model string) error
-	GetSubscription(id string) (*sqlite.LLMSubscription, error)
-	GetDefault(senderID string) (*sqlite.LLMSubscription, error)
-	ListAllSubscriptions() ([]*sqlite.LLMSubscription, error)
+	GetSubscription(id string) (*LLMSubscription, error)
+	GetDefault(senderID string) (*LLMSubscription, error)
+	ListAllSubscriptions() ([]*LLMSubscription, error)
 	UpsertModel(subID, model string, maxCtx, maxOut int, thinking, apiType string) error
-	List(senderID string) ([]*sqlite.LLMSubscription, error)
-	ListAll() ([]*sqlite.LLMSubscription, error)
+	List(senderID string) ([]*LLMSubscription, error)
+	ListAll() ([]*LLMSubscription, error)
 	SetSubscriptionEnabled(id string, enabled bool) error
-	Add(sub *sqlite.LLMSubscription) error
-	Update(sub *sqlite.LLMSubscription) error
+	Add(sub *LLMSubscription) error
+	Update(sub *LLMSubscription) error
 	Remove(id string) error
 	Rename(id, name string) error
 	SetDefault(id string) error
@@ -424,10 +423,10 @@ type SubscriptionBackend interface {
 	SetModelMaxContext(subID, model string, maxCtx int) error
 	SetModelMaxOutput(subID, model string, maxOut int) error
 	RemoveModel(subID, model string) error
-	Get(id string) (*sqlite.LLMSubscription, error)
+	Get(id string) (*LLMSubscription, error)
 	ClearUserDefaultModel(senderID string) error
 	SetModelVisionConfig(subID, model string, vision bool, visionDetail string) error
-	UpdatePerModelConfigs(id string, configs map[string]sqlite.PerModelConfig) error
+	UpdatePerModelConfigs(id string, configs map[string]PerModelConfig) error
 }
 
 type ConfigStore interface {
@@ -436,11 +435,11 @@ type ConfigStore interface {
 	WebAuthStore
 
 	// LLM subscriptions
-	ListSubscriptions(senderID string) ([]*sqlite.LLMSubscription, error)
-	GetSubscription(id string) (*sqlite.LLMSubscription, error)
-	GetDefaultSubscription(senderID string) (*sqlite.LLMSubscription, error)
-	AddSubscription(sub *sqlite.LLMSubscription) error
-	UpdateSubscription(sub *sqlite.LLMSubscription) error
+	ListSubscriptions(senderID string) ([]*LLMSubscription, error)
+	GetSubscription(id string) (*LLMSubscription, error)
+	GetDefaultSubscription(senderID string) (*LLMSubscription, error)
+	AddSubscription(sub *LLMSubscription) error
+	UpdateSubscription(sub *LLMSubscription) error
 	RemoveSubscription(id string) error
 	SetDefaultSubscription(id string) error
 	RenameSubscription(id, name string) error
@@ -456,16 +455,16 @@ type ConfigStore interface {
 
 	// Token usage
 	RecordUsage(senderID, model string, inputTokens, outputTokens, cachedTokens, convCount, llmCallCount int) error
-	GetUsage(senderID string) (*sqlite.UserTokenUsage, error)
-	GetDailyUsage(senderID string, days int) ([]sqlite.DailyTokenUsage, error)
+	GetUsage(senderID string) (*UserTokenUsage, error)
+	GetDailyUsage(senderID string, days int) ([]DailyTokenUsage, error)
 
 	// Cron
-	AddCronJob(job *sqlite.CronJob) error
+	AddCronJob(job *CronJob) error
 	RemoveCronJob(id string) error
-	GetCronJob(id string) (*sqlite.CronJob, error)
-	ListCronJobsBySender(senderID string) ([]*sqlite.CronJob, error)
-	ListAllCronJobs() ([]*sqlite.CronJob, error)
-	ListCronJobsByChannelChatID(channel, chatID string) ([]*sqlite.CronJob, error)
+	GetCronJob(id string) (*CronJob, error)
+	ListCronJobsBySender(senderID string) ([]*CronJob, error)
+	ListAllCronJobs() ([]*CronJob, error)
+	ListCronJobsByChannelChatID(channel, chatID string) ([]*CronJob, error)
 	UpdateCronNextRun(id string, nextRun time.Time) error
 
 	// Triggers
@@ -478,12 +477,12 @@ type ConfigStore interface {
 	RecordTriggerFire(id string, at time.Time) error
 
 	// Sharing
-	CreateSharedArtifact(a *sqlite.SharedArtifact) error
-	GetSharedArtifact(token string) (*sqlite.SharedArtifact, error)
+	CreateSharedArtifact(a *SharedArtifact) error
+	GetSharedArtifact(token string) (*SharedArtifact, error)
 	RevokeSharedArtifact(token string, createdBy int64) error
-	ListSharedArtifactsByCreator(createdBy int64) ([]sqlite.SharedArtifact, error)
-	GetAllUsage() ([]sqlite.UserTokenUsage, error)
-	GetDailyUsageSummary(senderID string, days int) ([]sqlite.DailyTokenUsage, error)
+	ListSharedArtifactsByCreator(createdBy int64) ([]SharedArtifact, error)
+	GetAllUsage() ([]UserTokenUsage, error)
+	GetDailyUsageSummary(senderID string, days int) ([]DailyTokenUsage, error)
 
 	// Push delivery targets (push_targets)
 	PushStore

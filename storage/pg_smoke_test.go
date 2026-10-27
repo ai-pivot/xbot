@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 	"time"
+	"xbot/storage/pg"
 
 	"xbot/llm"
 	"xbot/storage/sqlite"
@@ -20,7 +21,7 @@ func TestPGStorage_Smoke(t *testing.T) {
 	defer cancel()
 
 	// 1. Open + init schema
-	store, err := NewPGStorage(ctx, dsn)
+	store, err := pg.NewPGStorage(ctx, dsn)
 	if err != nil {
 		t.Fatalf("NewPGStorage: %v", err)
 	}

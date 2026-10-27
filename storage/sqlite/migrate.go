@@ -1,4 +1,4 @@
-package storage
+package sqlite
 
 import (
 	"bufio"
@@ -13,7 +13,6 @@ import (
 	"xbot/config"
 	"xbot/llm"
 	log "xbot/logger"
-	"xbot/storage/sqlite"
 )
 
 const (
@@ -35,15 +34,15 @@ func MigrateFromFileStorage(workDir, dbPath string) error {
 	log.Info("Starting migration from file-based storage to SQLite")
 
 	// Open SQLite database
-	db, err := sqlite.Open(dbPath)
+	db, err := Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
 
-	tenantSvc := sqlite.NewTenantService(db)
-	sessionSvc := sqlite.NewSessionService(db)
-	memorySvc := sqlite.NewMemoryService(db)
+	tenantSvc := NewTenantService(db)
+	sessionSvc := NewSessionService(db)
+	memorySvc := NewMemoryService(db)
 
 	// Get or create the CLI tenant
 	tenantID, err := tenantSvc.GetOrCreateTenantID(CLITenantChannel, CLITenantChatID)
@@ -92,7 +91,7 @@ func MigrateFromFileStorage(workDir, dbPath string) error {
 }
 
 // migrateSessionMessages migrates session messages from JSONL to SQLite
-func migrateSessionMessages(sessionPath string, tenantID int64, sessionSvc *sqlite.SessionService) error {
+func migrateSessionMessages(sessionPath string, tenantID int64, sessionSvc *SessionService) error {
 	f, err := os.Open(sessionPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -133,7 +132,7 @@ func migrateSessionMessages(sessionPath string, tenantID int64, sessionSvc *sqli
 }
 
 // migrateMemoryFiles migrates MEMORY.md and HISTORY.md to SQLite
-func migrateMemoryFiles(memoryPath, historyPath string, tenantID int64, memorySvc *sqlite.MemoryService) error {
+func migrateMemoryFiles(memoryPath, historyPath string, tenantID int64, memorySvc *MemoryService) error {
 	// Migrate long-term memory
 	if _, err := os.Stat(memoryPath); err == nil {
 		content, err := os.ReadFile(memoryPath)
@@ -240,14 +239,14 @@ const (
 // Called once at startup if long_term_memory or event_history tables have data
 // but the target MD files don't exist yet.
 func MigrateMemoryToFiles(dbPath string) {
-	db, err := sqlite.Open(dbPath)
+	db, err := Open(dbPath)
 	if err != nil {
 		log.WithError(err).Warn("Failed to open database for memory file migration")
 		return
 	}
 	defer db.Close()
 
-	memorySvc := sqlite.NewMemoryService(db)
+	memorySvc := NewMemoryService(db)
 	ctx := context.Background()
 
 	// Get all tenant IDs that have memory data
@@ -298,7 +297,7 @@ func MigrateMemoryToFiles(dbPath string) {
 }
 
 // getDistinctTenantIDs returns all distinct tenant IDs from long_term_memory and event_history.
-func getDistinctTenantIDs(ctx context.Context, db *sqlite.DB) []int64 {
+func getDistinctTenantIDs(ctx context.Context, db *DB) []int64 {
 	conn := db.Conn()
 	rows, err := conn.QueryContext(ctx, "SELECT DISTINCT tenant_id FROM long_term_memory UNION SELECT DISTINCT tenant_id FROM event_history")
 	if err != nil {

@@ -7,27 +7,8 @@ import (
 )
 
 // UserTokenUsage represents a user's cumulative token usage.
-type UserTokenUsage struct {
-	SenderID          string `json:"sender_id"`
-	InputTokens       int64  `json:"input_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	TotalTokens       int64  `json:"total_tokens"`
-	CachedTokens      int64  `json:"cached_tokens"`
-	ConversationCount int64  `json:"conversation_count"`
-	LLMCallCount      int64  `json:"llm_call_count"`
-}
 
 // DailyTokenUsage represents token usage for a specific day+model.
-type DailyTokenUsage struct {
-	Date              string `json:"date"` // YYYY-MM-DD
-	SenderID          string `json:"sender_id"`
-	Model             string `json:"model"`
-	InputTokens       int64  `json:"input_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	CachedTokens      int64  `json:"cached_tokens"`
-	ConversationCount int64  `json:"conversation_count"`
-	LLMCallCount      int64  `json:"llm_call_count"`
-}
 
 // UserTokenUsageService manages per-user token usage persistence.
 type UserTokenUsageService struct {

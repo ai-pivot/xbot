@@ -1,4 +1,4 @@
-package storage
+package pg
 
 import "xbot/internal/textutil"
 

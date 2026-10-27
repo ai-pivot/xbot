@@ -191,22 +191,6 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 }
 
 // TenantInfo contains tenant information
-type TenantInfo struct {
-	ID             int64
-	Channel        string
-	ChatID         string
-	Label          string `json:"label,omitempty"`
-	SubscriptionID string `json:"subscription_id,omitempty"`
-	Model          string `json:"model,omitempty"`
-	CreatedAt      time.Time
-	LastActiveAt   time.Time
-	// Preview is the last user/assistant message preview maintained by the
-	// write paths (tenants.preview). The cross-session list reads this column
-	// instead of joining session_messages (v71: one session, one DB).
-	Preview string `json:"preview,omitempty"`
-	// SortOrder is the user-defined sidebar order from user_chats (0 = unset).
-	SortOrder int `json:"sort_order,omitempty"`
-}
 
 // SetTenantSubscription persists the session→subscription mapping to the tenants table.
 // This is the backend source of truth for which subscription a session uses.
@@ -360,10 +344,6 @@ func (s *TenantService) ClearSubscriptionFromTenants(subID string) error {
 // session_messages，预览由写入路径维护到这一列）。这些方法全部操作主库。
 
 // TenantDBInfo 是会话库注册信息（tenants 行的会话库三列）。
-type TenantDBInfo struct {
-	DBPath   string // 会话库相对路径（相对主库目录；空 = 尚未分配）
-	Migrated bool   // 会话数据是否已迁移到会话库（false = 主库 session_messages 仍是权威）
-}
 
 // GetTenantDBInfo reads the per-session-DB registry columns for a tenant.
 func (s *TenantService) GetTenantDBInfo(tenantID int64) (TenantDBInfo, error) {

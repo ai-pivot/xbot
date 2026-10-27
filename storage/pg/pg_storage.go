@@ -1,4 +1,4 @@
-package storage
+package pg
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"xbot/event"
 	log "xbot/logger"
+	"xbot/storage/common"
 )
 
 // pgStorage implements Storage for PostgreSQL.
@@ -37,6 +38,14 @@ func NewPGStorage(ctx context.Context, dsn string) (Storage, error) {
 		return nil, fmt.Errorf("init pg schema: %w", err)
 	}
 
+	return NewPGStorageWithPool(pool)
+}
+
+// NewPGStorageWithPool wires every PG store onto an existing pool. Exported so
+// tests (and embedding callers that own pool lifecycle) can construct the
+// backend without a second connection. A nil field panics on first use, so this
+// is also the single wiring guard.
+func NewPGStorageWithPool(pool *pgxpool.Pool) (Storage, error) {
 	pg := &pgStorage{pool: pool}
 	pg.tenant = newPGTenantStore(pool)
 	pg.memory = newPGMemoryStore(pool)
@@ -88,7 +97,7 @@ func (s *pgStorage) CopySessionFrom(dstTenantID, srcTenantID int64) (int, error)
 		return 0, fmt.Errorf("copy session: open destination: %w", err)
 	}
 
-	msgs, err := copySessionMessages(src, dst, srcTenantID, dstTenantID)
+	msgs, err := common.CopySessionMessages(src, dst, srcTenantID, dstTenantID)
 	if err != nil {
 		return 0, fmt.Errorf("copy session: %w", err)
 	}

@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"xbot/storage/pg"
+
 	"xbot/llm"
 )
 
@@ -53,7 +55,7 @@ func newPGTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("test pgxpool: %v", err)
 	}
 
-	if err := initPGSchema(ctx, pool); err != nil {
+	if err := pg.InitPGSchema(ctx, pool); err != nil {
 		t.Fatalf("initPGSchema: %v", err)
 	}
 
@@ -75,30 +77,12 @@ func newPGTestPool(t *testing.T) *pgxpool.Pool {
 func newPGTestStorage(t *testing.T) Storage {
 	t.Helper()
 	pool := newPGTestPool(t)
-	store, err := NewPGStorageWithPool(pool)
+	store, err := pg.NewPGStorageWithPool(pool)
 	if err != nil {
 		t.Fatalf("NewPGStorageWithPool: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
 	return store
-}
-
-// NewPGStorageWithPool creates a PG Storage from an existing pool (for testing).
-// In production, NewPGStorage creates its own pool.
-//
-// Every store must be wired here — a nil field panics on first use, and the
-// contract suite calls each accessor, so this is also a wiring guard.
-func NewPGStorageWithPool(pool *pgxpool.Pool) (Storage, error) {
-	pg := &pgStorage{pool: pool}
-	pg.tenant = newPGTenantStore(pool)
-	pg.memory = newPGMemoryStore(pool)
-	pg.config = newPGConfigStore(pool)
-	pg.cron = newPGCronStore(pool)
-	pg.trigger = newPGTriggerStore(pool)
-	pg.oauth = newPGOAuthTokenStore(pool)
-	pg.agents = newPGInteractiveAgentStore(pool)
-	pg.session = newPGSessionStore(pool)
-	return pg, nil
 }
 
 // initPGSchemaInSchema creates all tables in a specific schema.

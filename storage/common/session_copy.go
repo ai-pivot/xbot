@@ -1,4 +1,4 @@
-package storage
+package common
 
 import (
 	"fmt"
@@ -24,7 +24,7 @@ import (
 // So the rows go through the process by design. What is worth optimising is the
 // write side (one batched insert) and, where a backend can, the pure-copy half
 // (iteration_history) — see each backend's CopySessionFrom.
-func copySessionMessages(src, dst SessionStore, srcTenantID, dstTenantID int64) ([]llm.ChatMessage, error) {
+func CopySessionMessages(src, dst SessionStore, srcTenantID, dstTenantID int64) ([]llm.ChatMessage, error) {
 	msgs, err := src.GetAllMessages(srcTenantID)
 	if err != nil {
 		return nil, fmt.Errorf("read source messages: %w", err)
@@ -49,7 +49,7 @@ func copySessionMessages(src, dst SessionStore, srcTenantID, dstTenantID int64) 
 // no replay view, no derivation. Backends that can express it as
 // `INSERT … SELECT` should (PG does); backends whose sessions live in separate
 // files read and append instead (SQLite v71).
-func copySessionIterations(src, dst SessionStore, srcTenantID, dstTenantID int64) error {
+func CopySessionIterations(src, dst SessionStore, srcTenantID, dstTenantID int64) error {
 	recs, err := src.GetAllIterationHistory(srcTenantID)
 	if err != nil {
 		// Iteration detail is a rendering nicety, not context data — the forked

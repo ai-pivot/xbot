@@ -9,7 +9,7 @@ implementations (SQLite adapter + native PG), one contract test suite that both 
 backend-specific concept. They depend only on the `storage.*` interfaces, so the same
 call sites serve SQLite (default) and PostgreSQL (`storage.type = "pg"`).
 
-## The five interfaces
+## The interfaces
 
 `storage.Storage` is the single top-level entry point (one instance per process):
 
@@ -47,14 +47,27 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
 
 ## Files
 
-- `storage/interfaces.go` — the interfaces (single source of truth for the method set)
-- `storage/sqlite_adapter.go` — thin wrappers over the existing `storage/sqlite` services
-  (`sqliteSessionStore` / `sqliteTenantStore` / `sqliteMemoryStore` / `sqliteConfigStore`);
-  `NewSQLiteStorage`, `NewSQLiteConfigStore`, `NewSQLiteTenantStore`, `NewSQLiteMemoryStore`
-- `storage/pg_storage.go` — `NewPGStorage(ctx, dsn)` / `NewPGStorageWithPool(pool)`
-- `storage/pg_schema.go` — `initPGSchema(ctx, pool)` — idempotent DDL for all tables
-- `storage/pg_{session,tenant,memory,config}.go` — the PG implementations
-- `storage/pg_interactive_agents.go` — PG `InteractiveAgentStore` (restart recovery registry)
+Production code is split by responsibility (the root `storage` package is a thin
+compatibility facade so the ~50 existing import sites keep compiling):
+
+- `storage/common/interfaces.go` — the interfaces (single source of truth for the method set)
+- `storage/common/types.go` — backend-neutral value types shared by both backends
+  (`IterationRecord`, `HistoryRecord`, `CronJob`, `LLMSubscription`, tenant/chat DTOs, …)
+- `storage/common/session_copy.go` — replay-aware session copy helpers
+- `storage/sqlite/` — the SQLite implementation: existing low-level services, plus
+  `adapter.go` (`NewSQLiteStorage` / `NewSQLiteConfigStore` / `NewSQLiteTenantStore` /
+  `NewSQLiteMemoryStore`) and `migrate.go`. `common_aliases.go` keeps `sqlite.X`
+  value-type aliases for existing callers.
+- `storage/pg/` — the PostgreSQL implementation (`pg_storage.go`, `pg_schema.go`,
+  `pg_{session,tenant,memory,config}.go`, `pg_interactive_agents.go`, …)
+- `storage/facade.go` — public re-exports + backend constructors
+  (`storage.NewSQLiteStorage`, `storage.NewPGStorage`, `storage.MigrateIfNeeded`, …)
+- `storage/contract_*.go` / `storage/pg_*_test.go` — cross-backend contract suite and
+  backend-specific tests
+
+Dependency direction: `common` imports **no** backend; `sqlite` and `pg` import
+`common`; the root facade imports both. Never make `common` import `sqlite`/`pg`
+(that is the import cycle the split exists to prevent).
 
 ## Wiring
 

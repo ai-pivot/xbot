@@ -1,4 +1,4 @@
-package storage
+package sqlite
 
 import (
 	"context"
@@ -12,18 +12,18 @@ import (
 	"xbot/event"
 	log "xbot/logger"
 	"xbot/storage/agentmem"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // ─── Compile-time assertions: existing SQLite types satisfy the interfaces ───
 
 // SessionService satisfies SessionStore (all methods already match).
-// The only gap: SessionService methods use the concrete *sqlite.DB for
+// The only gap: SessionService methods use the concrete *DB for
 // historyLock internally — that's an implementation detail, not on the
 // interface.
 
 // TenantStore is satisfied by a composition of TenantService + ChatService +
-// pending_resume methods on *sqlite.DB.
+// pending_resume methods on *DB.
 
 // MemoryStore is satisfied by a composition of CoreMemoryService + MemoryService.
 
@@ -31,11 +31,11 @@ import (
 
 // ─── SQLite adapter: wraps existing services to satisfy the interfaces ───
 
-// sqliteSessionStore wraps *sqlite.SessionService to satisfy SessionStore.
+// sqliteSessionStore wraps *SessionService to satisfy SessionStore.
 // Zero overhead: the concrete type already has all methods; this just
 // bridges the type system.
 type sqliteSessionStore struct {
-	*sqlite.SessionService
+	*SessionService
 }
 
 // Compile-time check.
@@ -44,15 +44,15 @@ var _ SessionStore = (*sqliteSessionStore)(nil)
 // ─── TenantStore ───
 
 type sqliteTenantStore struct {
-	tenants *sqlite.TenantService
-	chats   *sqlite.ChatService
-	db      *sqlite.DB // for pending_resume methods (AddPendingResume etc.)
+	tenants *TenantService
+	chats   *ChatService
+	db      *DB // for pending_resume methods (AddPendingResume etc.)
 }
 
-func NewSQLiteTenantStore(db *sqlite.DB) TenantStore {
+func NewSQLiteTenantStore(db *DB) TenantStore {
 	return &sqliteTenantStore{
-		tenants: sqlite.NewTenantService(db),
-		chats:   sqlite.NewChatService(db),
+		tenants: NewTenantService(db),
+		chats:   NewChatService(db),
 		db:      db,
 	}
 }
@@ -81,7 +81,7 @@ func (s *sqliteTenantStore) SetTenantDBPath(tenantID int64, dbPath string) error
 func (s *sqliteTenantStore) SetTenantMigrated(tenantID int64) error {
 	return s.tenants.SetTenantMigrated(tenantID)
 }
-func (s *sqliteTenantStore) GetTenantDBInfo(tenantID int64) (sqlite.TenantDBInfo, error) {
+func (s *sqliteTenantStore) GetTenantDBInfo(tenantID int64) (TenantDBInfo, error) {
 	return s.tenants.GetTenantDBInfo(tenantID)
 }
 func (s *sqliteTenantStore) SetTenantSubscription(channel, chatID, subscriptionID, model string) error {
@@ -117,7 +117,7 @@ func (s *sqliteTenantStore) DeleteChat(channel, senderID, chatID string) error {
 func (s *sqliteTenantStore) RenameChat(channel, senderID, chatID, label string) error {
 	return s.chats.RenameChat(channel, senderID, chatID, label)
 }
-func (s *sqliteTenantStore) ListUserChats(channel, senderID, currentChatID string, offset, limit int) ([]sqlite.UserChatWithPreview, bool, error) {
+func (s *sqliteTenantStore) ListUserChats(channel, senderID, currentChatID string, offset, limit int) ([]UserChatWithPreview, bool, error) {
 	return s.chats.ListUserChats(channel, senderID, currentChatID, offset, limit)
 }
 func (s *sqliteTenantStore) UpdateChatSortOrders(channel, senderID string, orders map[string]int) error {
@@ -148,7 +148,7 @@ func (s *sqliteTenantStore) ListDistinctChannels() ([]string, error) {
 	}
 	return channels, rows.Err()
 }
-func (s *sqliteTenantStore) ListTenants() ([]sqlite.TenantInfo, error) {
+func (s *sqliteTenantStore) ListTenants() ([]TenantInfo, error) {
 	return s.tenants.ListTenants()
 }
 func (s *sqliteTenantStore) AddPendingResume(channel, chatID, senderID string) error {
@@ -157,7 +157,7 @@ func (s *sqliteTenantStore) AddPendingResume(channel, chatID, senderID string) e
 func (s *sqliteTenantStore) GetSessionSenderID(channel, chatID string) (string, error) {
 	return s.db.GetSessionSenderID(channel, chatID)
 }
-func (s *sqliteTenantStore) ListPendingResumes() ([]sqlite.PendingResume, error) {
+func (s *sqliteTenantStore) ListPendingResumes() ([]PendingResume, error) {
 	return s.db.ListPendingResumes()
 }
 func (s *sqliteTenantStore) ClearPendingResume(channel, chatID string) error {
@@ -170,25 +170,25 @@ var _ TenantStore = (*sqliteTenantStore)(nil)
 // ─── MemoryStore ───
 
 type sqliteMemoryStore struct {
-	core  *sqlite.CoreMemoryService
-	mem   *sqlite.MemoryService
-	agent *sqlite.AgentMemoryService
+	core  *CoreMemoryService
+	mem   *MemoryService
+	agent *AgentMemoryService
 }
 
-func NewSQLiteMemoryStore(db *sqlite.DB) MemoryStore {
+func NewSQLiteMemoryStore(db *DB) MemoryStore {
 	return &sqliteMemoryStore{
-		core:  sqlite.NewCoreMemoryService(db),
-		mem:   sqlite.NewMemoryService(db),
-		agent: sqlite.NewAgentMemoryService(db),
+		core:  NewCoreMemoryService(db),
+		mem:   NewMemoryService(db),
+		agent: NewAgentMemoryService(db),
 	}
 }
 
 // NewSQLiteMemoryStoreFromConn builds a MemoryStore from a raw *sql.DB (tests and
 // callers that hold only a connection). The core-memory and event-history
-// services need the wrapped *sqlite.DB, so those stay nil — only the
+// services need the wrapped *DB, so those stay nil — only the
 // agent-memory seam is guaranteed usable through this constructor.
 func NewSQLiteMemoryStoreFromConn(conn *sql.DB) MemoryStore {
-	return &sqliteMemoryStore{agent: sqlite.NewAgentMemoryServiceFromConn(conn)}
+	return &sqliteMemoryStore{agent: NewAgentMemoryServiceFromConn(conn)}
 }
 
 // ── AgentMemoryStore (official xbot provider) — delegate to the sqlite service ──
@@ -326,45 +326,45 @@ var _ MemoryStore = (*sqliteMemoryStore)(nil)
 // ─── ConfigStore ───
 
 type sqliteConfigStore struct {
-	subs     *sqlite.LLMSubscriptionService
-	profile  *sqlite.UserProfileService
-	settings *sqlite.UserSettingsService
-	tokens   *sqlite.UserTokenUsageService
-	cron     *sqlite.CronService
-	trigger  *sqlite.TriggerService
-	share    *sqlite.ShareService
-	db       *sqlite.DB // for RecordUsage which needs *sql.DB
+	subs     *LLMSubscriptionService
+	profile  *UserProfileService
+	settings *UserSettingsService
+	tokens   *UserTokenUsageService
+	cron     *CronService
+	trigger  *TriggerService
+	share    *ShareService
+	db       *DB // for RecordUsage which needs *sql.DB
 	webAuth  WebAuthStore
 }
 
-func NewSQLiteConfigStore(db *sqlite.DB) ConfigStore {
+func NewSQLiteConfigStore(db *DB) ConfigStore {
 	return &sqliteConfigStore{
-		subs:     sqlite.NewLLMSubscriptionService(db),
-		profile:  sqlite.NewUserProfileService(db),
-		settings: sqlite.NewUserSettingsService(db),
-		tokens:   sqlite.NewUserTokenUsageService(db),
-		cron:     sqlite.NewCronService(db),
-		trigger:  sqlite.NewTriggerService(db),
-		share:    sqlite.NewShareService(db),
+		subs:     NewLLMSubscriptionService(db),
+		profile:  NewUserProfileService(db),
+		settings: NewUserSettingsService(db),
+		tokens:   NewUserTokenUsageService(db),
+		cron:     NewCronService(db),
+		trigger:  NewTriggerService(db),
+		share:    NewShareService(db),
 		db:       db,
 		webAuth:  NewSQLiteWebAuthStoreFromConn(db.Conn()),
 	}
 }
 
 // LLM subscriptions
-func (s *sqliteConfigStore) ListSubscriptions(senderID string) ([]*sqlite.LLMSubscription, error) {
+func (s *sqliteConfigStore) ListSubscriptions(senderID string) ([]*LLMSubscription, error) {
 	return s.subs.List(senderID)
 }
-func (s *sqliteConfigStore) GetSubscription(id string) (*sqlite.LLMSubscription, error) {
+func (s *sqliteConfigStore) GetSubscription(id string) (*LLMSubscription, error) {
 	return s.subs.Get(id)
 }
-func (s *sqliteConfigStore) GetDefaultSubscription(senderID string) (*sqlite.LLMSubscription, error) {
+func (s *sqliteConfigStore) GetDefaultSubscription(senderID string) (*LLMSubscription, error) {
 	return s.subs.GetDefault(senderID)
 }
-func (s *sqliteConfigStore) AddSubscription(sub *sqlite.LLMSubscription) error {
+func (s *sqliteConfigStore) AddSubscription(sub *LLMSubscription) error {
 	return s.subs.Add(sub)
 }
-func (s *sqliteConfigStore) UpdateSubscription(sub *sqlite.LLMSubscription) error {
+func (s *sqliteConfigStore) UpdateSubscription(sub *LLMSubscription) error {
 	return s.subs.Update(sub)
 }
 func (s *sqliteConfigStore) RemoveSubscription(id string) error {
@@ -401,36 +401,36 @@ func (s *sqliteConfigStore) DeleteUserSetting(channel, senderID, key string) err
 func (s *sqliteConfigStore) RecordUsage(senderID, model string, inputTokens, outputTokens, cachedTokens, convCount, llmCallCount int) error {
 	return s.tokens.RecordUsage(s.db.Conn(), senderID, model, inputTokens, outputTokens, cachedTokens, convCount, llmCallCount)
 }
-func (s *sqliteConfigStore) GetUsage(senderID string) (*sqlite.UserTokenUsage, error) {
+func (s *sqliteConfigStore) GetUsage(senderID string) (*UserTokenUsage, error) {
 	return s.tokens.GetUsage(senderID)
 }
-func (s *sqliteConfigStore) GetDailyUsage(senderID string, days int) ([]sqlite.DailyTokenUsage, error) {
+func (s *sqliteConfigStore) GetDailyUsage(senderID string, days int) ([]DailyTokenUsage, error) {
 	return s.tokens.GetDailyUsage(senderID, days)
 }
-func (s *sqliteConfigStore) GetDailyUsageSummary(senderID string, days int) ([]sqlite.DailyTokenUsage, error) {
+func (s *sqliteConfigStore) GetDailyUsageSummary(senderID string, days int) ([]DailyTokenUsage, error) {
 	return s.tokens.GetDailyUsageSummary(senderID, days)
 }
-func (s *sqliteConfigStore) GetAllUsage() ([]sqlite.UserTokenUsage, error) {
+func (s *sqliteConfigStore) GetAllUsage() ([]UserTokenUsage, error) {
 	return s.tokens.GetAllUsage()
 }
 
 // Cron
-func (s *sqliteConfigStore) AddCronJob(job *sqlite.CronJob) error {
+func (s *sqliteConfigStore) AddCronJob(job *CronJob) error {
 	return s.cron.AddJob(job)
 }
 func (s *sqliteConfigStore) RemoveCronJob(id string) error {
 	return s.cron.RemoveJob(id)
 }
-func (s *sqliteConfigStore) GetCronJob(id string) (*sqlite.CronJob, error) {
+func (s *sqliteConfigStore) GetCronJob(id string) (*CronJob, error) {
 	return s.cron.GetJob(id)
 }
-func (s *sqliteConfigStore) ListCronJobsBySender(senderID string) ([]*sqlite.CronJob, error) {
+func (s *sqliteConfigStore) ListCronJobsBySender(senderID string) ([]*CronJob, error) {
 	return s.cron.ListJobsBySender(senderID)
 }
-func (s *sqliteConfigStore) ListAllCronJobs() ([]*sqlite.CronJob, error) {
+func (s *sqliteConfigStore) ListAllCronJobs() ([]*CronJob, error) {
 	return s.cron.ListAllJobs()
 }
-func (s *sqliteConfigStore) ListCronJobsByChannelChatID(channel, chatID string) ([]*sqlite.CronJob, error) {
+func (s *sqliteConfigStore) ListCronJobsByChannelChatID(channel, chatID string) ([]*CronJob, error) {
 	return s.cron.ListJobsByChannelChatID(channel, chatID)
 }
 func (s *sqliteConfigStore) UpdateCronNextRun(id string, nextRun time.Time) error {
@@ -461,10 +461,10 @@ func (s *sqliteConfigStore) RecordTriggerFire(id string, at time.Time) error {
 }
 
 // Sharing
-func (s *sqliteConfigStore) CreateSharedArtifact(a *sqlite.SharedArtifact) error {
+func (s *sqliteConfigStore) CreateSharedArtifact(a *SharedArtifact) error {
 	return s.share.Create(a)
 }
-func (s *sqliteConfigStore) GetSharedArtifact(token string) (*sqlite.SharedArtifact, error) {
+func (s *sqliteConfigStore) GetSharedArtifact(token string) (*SharedArtifact, error) {
 	a, err := s.share.Get(token)
 	if a == nil {
 		return nil, nil // not-found/revoked → (nil, nil) — matches PG and the contract
@@ -474,7 +474,7 @@ func (s *sqliteConfigStore) GetSharedArtifact(token string) (*sqlite.SharedArtif
 func (s *sqliteConfigStore) RevokeSharedArtifact(token string, createdBy int64) error {
 	return s.share.Revoke(token, createdBy)
 }
-func (s *sqliteConfigStore) ListSharedArtifactsByCreator(createdBy int64) ([]sqlite.SharedArtifact, error) {
+func (s *sqliteConfigStore) ListSharedArtifactsByCreator(createdBy int64) ([]SharedArtifact, error) {
 	return s.share.ListByCreator(createdBy)
 }
 
@@ -721,10 +721,10 @@ func (s *sqliteConfigStore) CountWebUsers() (int, error) {
 // Compile-time check.
 
 // SubscriptionBackend wrappers (delegate to sub service)
-func (s *sqliteConfigStore) GetModel(subID, model string) (*sqlite.SubscriptionModel, error) {
+func (s *sqliteConfigStore) GetModel(subID, model string) (*SubscriptionModel, error) {
 	return s.subs.GetModel(subID, model)
 }
-func (s *sqliteConfigStore) GetModels(subID string) ([]*sqlite.SubscriptionModel, error) {
+func (s *sqliteConfigStore) GetModels(subID string) ([]*SubscriptionModel, error) {
 	return s.subs.GetModels(subID)
 }
 func (s *sqliteConfigStore) EnsureModel(subID, model string) error {
@@ -733,34 +733,34 @@ func (s *sqliteConfigStore) EnsureModel(subID, model string) error {
 func (s *sqliteConfigStore) SetModelEnabled(subID, model string, enabled bool) error {
 	return s.subs.SetModelEnabled(subID, model, enabled)
 }
-func (s *sqliteConfigStore) GetUserDefaultModel(senderID string) (*sqlite.UserDefaultModel, error) {
+func (s *sqliteConfigStore) GetUserDefaultModel(senderID string) (*UserDefaultModel, error) {
 	return s.subs.GetUserDefaultModel(senderID)
 }
 func (s *sqliteConfigStore) SetUserDefaultModel(senderID, subID, model string) error {
 	return s.subs.SetUserDefaultModel(senderID, subID, model)
 }
-func (s *sqliteConfigStore) GetDefault(senderID string) (*sqlite.LLMSubscription, error) {
+func (s *sqliteConfigStore) GetDefault(senderID string) (*LLMSubscription, error) {
 	return s.subs.GetDefault(senderID)
 }
 func (s *sqliteConfigStore) UpsertModel(subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
 	return s.subs.UpsertModel(subID, model, maxCtx, maxOut, thinking, apiType)
 }
-func (s *sqliteConfigStore) List(senderID string) ([]*sqlite.LLMSubscription, error) {
+func (s *sqliteConfigStore) List(senderID string) ([]*LLMSubscription, error) {
 	return s.subs.List(senderID)
 }
-func (s *sqliteConfigStore) ListAll() ([]*sqlite.LLMSubscription, error) {
+func (s *sqliteConfigStore) ListAll() ([]*LLMSubscription, error) {
 	return s.subs.ListAll()
 }
-func (s *sqliteConfigStore) ListAllSubscriptions() ([]*sqlite.LLMSubscription, error) {
+func (s *sqliteConfigStore) ListAllSubscriptions() ([]*LLMSubscription, error) {
 	return s.subs.ListAll()
 }
 
-func (s *sqliteConfigStore) Add(sub *sqlite.LLMSubscription) error    { return s.subs.Add(sub) }
-func (s *sqliteConfigStore) Update(sub *sqlite.LLMSubscription) error { return s.subs.Update(sub) }
-func (s *sqliteConfigStore) Remove(id string) error                   { return s.subs.Remove(id) }
-func (s *sqliteConfigStore) Rename(id, name string) error             { return s.subs.Rename(id, name) }
-func (s *sqliteConfigStore) SetDefault(id string) error               { return s.subs.SetDefault(id) }
-func (s *sqliteConfigStore) SetModel(id, model string) error          { return s.subs.SetModel(id, model) }
+func (s *sqliteConfigStore) Add(sub *LLMSubscription) error    { return s.subs.Add(sub) }
+func (s *sqliteConfigStore) Update(sub *LLMSubscription) error { return s.subs.Update(sub) }
+func (s *sqliteConfigStore) Remove(id string) error            { return s.subs.Remove(id) }
+func (s *sqliteConfigStore) Rename(id, name string) error      { return s.subs.Rename(id, name) }
+func (s *sqliteConfigStore) SetDefault(id string) error        { return s.subs.SetDefault(id) }
+func (s *sqliteConfigStore) SetModel(id, model string) error   { return s.subs.SetModel(id, model) }
 func (s *sqliteConfigStore) SetModelMaxContext(subID, model string, maxCtx int) error {
 	return s.subs.SetModelMaxContext(subID, model, maxCtx)
 }
@@ -770,7 +770,7 @@ func (s *sqliteConfigStore) SetModelMaxOutput(subID, model string, maxOut int) e
 func (s *sqliteConfigStore) RemoveModel(subID, model string) error {
 	return s.subs.RemoveModel(subID, model)
 }
-func (s *sqliteConfigStore) Get(id string) (*sqlite.LLMSubscription, error) { return s.subs.Get(id) }
+func (s *sqliteConfigStore) Get(id string) (*LLMSubscription, error) { return s.subs.Get(id) }
 func (s *sqliteConfigStore) ClearUserDefaultModel(senderID string) error {
 	return s.subs.ClearUserDefaultModel(senderID)
 }
@@ -778,7 +778,7 @@ func (s *sqliteConfigStore) ClearUserDefaultModel(senderID string) error {
 func (s *sqliteConfigStore) SetModelVisionConfig(subID, model string, vision bool, visionDetail string) error {
 	return s.subs.SetModelVisionConfig(subID, model, vision, visionDetail)
 }
-func (s *sqliteConfigStore) UpdatePerModelConfigs(id string, configs map[string]sqlite.PerModelConfig) error {
+func (s *sqliteConfigStore) UpdatePerModelConfigs(id string, configs map[string]PerModelConfig) error {
 	return s.subs.UpdatePerModelConfigs(id, configs)
 }
 
@@ -789,7 +789,7 @@ var _ ConfigStore = (*sqliteConfigStore)(nil)
 // sqliteStorage implements Storage for the SQLite backend.
 // It wraps a main DB + per-session DB pool (v71 one-session-one-DB).
 type sqliteStorage struct {
-	mainDB    *sqlite.DB
+	mainDB    *DB
 	tenant    TenantStore
 	memory    MemoryStore
 	config    ConfigStore
@@ -805,7 +805,7 @@ type sqliteStorage struct {
 // The caller provides the main DB handle and a function to open/create
 // per-session stores (wired to the v71 per-session DB pool).
 func NewSQLiteStorage(
-	mainDB *sqlite.DB,
+	mainDB *DB,
 	sessionFactory func(tenantID int64) (SessionStore, error),
 	close func() error,
 ) Storage {
@@ -814,8 +814,8 @@ func NewSQLiteStorage(
 		tenant:    NewSQLiteTenantStore(mainDB),
 		memory:    NewSQLiteMemoryStore(mainDB),
 		config:    NewSQLiteConfigStore(mainDB),
-		cron:      sqlite.NewCronService(mainDB),
-		trigger:   sqlite.NewTriggerService(mainDB),
+		cron:      NewCronService(mainDB),
+		trigger:   NewTriggerService(mainDB),
 		oauth:     &sqliteOAuthTokenStore{db: mainDB},
 		agents:    newSQLiteInteractiveAgentStore(mainDB),
 		sessionFn: sessionFactory,
@@ -852,11 +852,11 @@ func (s *sqliteStorage) CopySessionFrom(dstTenantID, srcTenantID int64) (int, er
 	if err != nil {
 		return 0, fmt.Errorf("copy session: open destination: %w", err)
 	}
-	msgs, err := copySessionMessages(src, dst, srcTenantID, dstTenantID)
+	msgs, err := common.CopySessionMessages(src, dst, srcTenantID, dstTenantID)
 	if err != nil {
 		return 0, fmt.Errorf("copy session: %w", err)
 	}
-	if err := copySessionIterations(src, dst, srcTenantID, dstTenantID); err != nil {
+	if err := common.CopySessionIterations(src, dst, srcTenantID, dstTenantID); err != nil {
 		log.WithError(err).Warn("copy session: iteration history copy failed (skipped)")
 	}
 	return len(msgs), nil
@@ -869,11 +869,11 @@ var _ Storage = (*sqliteStorage)(nil)
 // the backend-neutral InteractiveAgentStore. The concrete service already has
 // the exact method set; this wrapper only bridges the type system.
 type sqliteInteractiveAgentStore struct {
-	*sqlite.InteractiveAgentService
+	*InteractiveAgentService
 }
 
-func newSQLiteInteractiveAgentStore(db *sqlite.DB) InteractiveAgentStore {
-	return &sqliteInteractiveAgentStore{sqlite.NewInteractiveAgentService(db.Conn())}
+func newSQLiteInteractiveAgentStore(db *DB) InteractiveAgentStore {
+	return &sqliteInteractiveAgentStore{NewInteractiveAgentService(db.Conn())}
 }
 
 var _ InteractiveAgentStore = (*sqliteInteractiveAgentStore)(nil)
@@ -883,7 +883,7 @@ var _ InteractiveAgentStore = (*sqliteInteractiveAgentStore)(nil)
 // original oauth.SQLiteStorage (encrypt when a key is configured, decrypt on read,
 // unix-second expiry) so both backends behave identically.
 type sqliteOAuthTokenStore struct {
-	db *sqlite.DB
+	db *DB
 }
 
 func (s *sqliteOAuthTokenStore) GetOAuthToken(provider, channel, chatID string) (*OAuthToken, error) {

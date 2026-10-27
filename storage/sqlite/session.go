@@ -569,37 +569,6 @@ func (s *SessionService) LatestPreview(tenantID int64) (string, error) {
 // IterationRecord is a structured iteration history entry (v54+).
 // Replaces the Detail JSON blob — every intermediate assistant message now
 // has its iteration data in a dedicated table row, not just the final message.
-type IterationRecord struct {
-	MessageID int64  `json:"message_id"`
-	TurnID    uint64 `json:"turn_id"`
-	Iteration int    `json:"iteration"`
-	Content   string `json:"content"`
-	Reasoning string `json:"reasoning"`
-	Tools     string `json:"tools"` // JSON array of tool snapshots
-	// Tokens is the per-iteration completion-token count (not cumulative).
-	Tokens int64 `json:"tokens"`
-	// TTFTMs is the time-to-first-token for this iteration's LLM stream.
-	TTFTMs int64 `json:"ttft_ms"`
-	// TokensPerSec is the average generation speed for this iteration.
-	TokensPerSec int64 `json:"tokens_per_sec"`
-	// TotalMs is the total stream duration for this iteration.
-	TotalMs int64 `json:"total_ms"`
-	// TPOTMs is the time-per-output-token (ms) for this iteration's LLM stream.
-	TPOTMs int64 `json:"tpot_ms"`
-	// InputTokens is the prompt tokens of this iteration's LLM call(s) (v59).
-	InputTokens int64 `json:"input_tokens"`
-	// CachedTokens is the prompt-cache hit tokens of this iteration's LLM call(s) (v59).
-	CachedTokens int64 `json:"cached_tokens"`
-	// Model is the LLM model used for this iteration (v59).
-	Model string `json:"model"`
-	// SubscriptionID is the owning subscription of the model (v62,
-	// model-subscription integration: the model never travels alone).
-	SubscriptionID string `json:"subscription_id"`
-	// CreatedAt = 该迭代记录落库时间（DB created_at，解析为 time.Time）。
-	// 用于把「turn 中间发生的压缩」（compress 记录的 created_at）定位到
-	// **它之后的迭代号** —— 压缩在迭代边界触发，渲染在迭代之间。
-	CreatedAt time.Time `json:"created_at,omitempty"`
-}
 
 // AppendIterationHistory inserts a single iteration record linked to a message.
 func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec IterationRecord) error {
@@ -975,62 +944,11 @@ func (s *SessionService) GetAllIterationHistory(tenantID int64) ([]IterationReco
 
 // UsageModelRow is a per-(subscription, model) usage breakdown
 // (GROUP BY subscription_id, model — v62 model-subscription integration).
-type UsageModelRow struct {
-	SubscriptionID string  `json:"subscription_id"`
-	Model          string  `json:"model"`
-	Iterations     int64   `json:"iterations"`
-	Turns          int64   `json:"turns"`
-	InputTokens    int64   `json:"input_tokens"`
-	OutputTokens   int64   `json:"output_tokens"`
-	CachedTokens   int64   `json:"cached_tokens"`
-	AvgTTFTMs      float64 `json:"avg_ttft_ms"`
-	AvgTPOTMs      float64 `json:"avg_tpot_ms"`
-}
 
 // UsageIterationRow is a single recent iteration's usage/perf record.
-type UsageIterationRow struct {
-	TurnID         uint64 `json:"turn_id"`
-	Iteration      int    `json:"iteration"`
-	InputTokens    int64  `json:"input_tokens"`
-	OutputTokens   int64  `json:"output_tokens"`
-	CachedTokens   int64  `json:"cached_tokens"`
-	TTFTMs         int64  `json:"ttft_ms"`
-	TPOTMs         int64  `json:"tpot_ms"`
-	TokensPerSec   int64  `json:"tokens_per_sec"`
-	TotalMs        int64  `json:"total_ms"`
-	Model          string `json:"model"`
-	SubscriptionID string `json:"subscription_id"`
-	CreatedAt      string `json:"created_at"`
-}
 
 // TenantUsageStats aggregates a session's usage & performance from
 // iteration_history (plus tenant watermark / metadata).
-type TenantUsageStats struct {
-	// iteration_history aggregates (pre-v59 rows have input_tokens=0 /
-	// cached_tokens=0 / model='' — they still count toward iterations/turns).
-	IterationCount  int64   `json:"iteration_count"`
-	TurnCount       int64   `json:"turn_count"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CachedTokens    int64   `json:"cached_tokens"`
-	LLMTotalMs      int64   `json:"llm_total_ms"`
-	AvgTTFTMs       float64 `json:"avg_ttft_ms"`
-	AvgTPOTMs       float64 `json:"avg_tpot_ms"`
-	AvgTokensPerSec float64 `json:"avg_tokens_per_sec"`
-	// iteration_time_range
-	FirstIterationAt string `json:"first_iteration_at"`
-	LastIterationAt  string `json:"last_iteration_at"`
-	// tenant_state watermark (current context level)
-	LastPromptTokens     int64 `json:"last_prompt_tokens"`
-	LastCompletionTokens int64 `json:"last_completion_tokens"`
-	// tenants metadata
-	CurrentModel      string `json:"current_model"`
-	SessionCreatedAt  string `json:"session_created_at"`
-	SessionLastActive string `json:"session_last_active"`
-	// Breakdowns
-	ByModel          []UsageModelRow     `json:"by_model"`
-	RecentIterations []UsageIterationRow `json:"recent_iterations"`
-}
 
 // GetTenantUsageStats aggregates usage & perf stats for a tenant from
 // iteration_history, tenant_state and tenants. recentLimit caps the
@@ -1130,23 +1048,6 @@ func (s *SessionService) GetTenantUsageStats(tenantID int64, recentLimit int) (*
 // UsageBucket is one fixed-width time bucket of a session's usage, aggregated
 // ENTIRELY inside SQL over the full iteration_history table (no LIMIT — the
 // trend chart must cover the whole history, not just the newest N detail rows).
-type UsageBucket struct {
-	// BucketStart is the bucket's inclusive start as epoch SECONDS, already
-	// shifted into the caller's timezone (tzOffsetMinutes): a day bucket starts
-	// at local midnight, an hour bucket at the local top of the hour.
-	BucketStart int64 `json:"bucket_start"`
-	// InputTokens is the sum of prompt tokens (cache hits included).
-	InputTokens int64 `json:"input_tokens"`
-	// CachedTokens is the sum of prompt-cache hit tokens.
-	CachedTokens int64 `json:"cached_tokens"`
-	// OutputTokens is the sum of generated tokens (iteration_history.tokens).
-	OutputTokens int64 `json:"output_tokens"`
-	// Calls is the number of LLM calls (iteration rows) in the bucket.
-	Calls int64 `json:"calls"`
-	// TTFTMsSum / TotalMsSum are reserved sums (unused by the chart today).
-	TTFTMsSum  int64 `json:"ttft_ms_sum"`
-	TotalMsSum int64 `json:"total_ms_sum"`
-}
 
 // Supported bucket widths (seconds). A closed set on purpose: the width is a
 // SQL divisor, so arbitrary client values must be rejected rather than silently
