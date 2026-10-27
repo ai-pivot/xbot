@@ -336,18 +336,26 @@ func walAnomaly(prevInfo os.FileInfo, curPresent bool, curInfo os.FileInfo) stri
 // suppressWALAnomaly drops anomalies that are a normal consequence of the
 // operation being logged rather than evidence of data loss.
 //
-// A TRUNCATE checkpoint deletes and recreates the -wal file by definition: every
-// frame has already been merged into the main database, so the file starts over
-// with a new inode. Reporting that as "REPLACED ... frames are unreachable" is
-// backwards — there are no frames left to lose. When the previous WAL was
-// already empty (prevSize == 0) there is provably nothing at stake, so the
-// warning is pure noise: on 2026-10-27 a single restart emitted 26 of them, one
-// per session database.
+// Both shapes only ever fire with an EMPTY WAL, and an empty WAL has no frames
+// that could become unreachable:
 //
-// A non-empty WAL is still reported: that is the case where frames really could
-// be stranded, and it must not be silenced.
+//   - close: closing the last connection checkpoints and deletes the -wal file.
+//     Measured 2026-10-20..27: 11,035 occurrences, every one with prevSize=0.
+//   - checkpoint(TRUNCATE): the operation deletes and recreates the file by
+//     design, so the inode changes even though all frames were already merged
+//     into the main database (26 more occurrences on a single restart).
+//
+// prevSize > 0 is never suppressed: that is the case where frames really can be
+// stranded, and it is the 2026-09-17 committed-data-loss signature. The sampled
+// window contains 2 such events (prevSize=107152, where=close) and they must
+// keep their warning — silencing them is exactly how a real incident gets lost
+// in noise.
 func suppressWALAnomaly(anomaly, where string, prevSize int64) string {
-	if anomaly == "replaced" && where == "checkpoint(TRUNCATE)" && prevSize == 0 {
+	if anomaly == "" || prevSize != 0 {
+		return anomaly
+	}
+	switch where {
+	case "close", "checkpoint(TRUNCATE)":
 		return ""
 	}
 	return anomaly
