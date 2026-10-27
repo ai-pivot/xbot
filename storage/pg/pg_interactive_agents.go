@@ -204,7 +204,7 @@ func (s *pgInteractiveAgentStore) MarkOrphanedIdleUnloaded(liveKeys []string) (i
 				ph.WriteByte(',')
 			}
 			ph.WriteByte('$')
-			ph.WriteString(fmt.Sprintf("%d", len(args)+1))
+			fmt.Fprintf(&ph, "%d", len(args)+1)
 			args = append(args, k)
 		}
 		res, err := s.pool.Exec(context.Background(),
