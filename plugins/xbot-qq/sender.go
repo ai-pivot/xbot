@@ -235,7 +235,9 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 		var streamID string
 		for i, chunk := range streamChunks {
 			body := streamBody{
-				InputMode:   "replace",
+				// append：每片是本片增量（打字机切片），服务端按序拼接。
+				// 用 replace 会被平台判 40007「已提交内容不可修改」。
+				InputMode:   "append",
 				InputStream: 1,
 				Index:       i,
 				ContentType: streamContentType(s.Markdown),
@@ -444,10 +446,15 @@ func (s *OutboundSender) SendStreamDelta(ctx context.Context, chatID, delta stri
 	stream := st.streamID
 	s.mu.Unlock()
 
-	// input_mode=replace：ContentRaw 是**当前全量正文**，服务端自行求差；
-	// host 的 stream_content 给的就是累计内容，所以必须用 replace（append 会重复拼接）。
+	// input_mode=append：ContentRaw 是**本片增量**，服务端按序拼接。
+	//
+	// 2026-10-27 真机纠错：先前误用 replace，官方语义是「ContentRaw 为当前全量正文，
+	// 且须以上游已下发前缀 SentContent 开头」；而打字机是**小段切片**，不满足该约束，
+	// 平台直接回 40007「已经提交的消息内容不可修改」，流式完全不可用（日志实测失败 2 次）。
+	// host 侧并不推增量帧（全仓 SendStreamContent 零调用），分片由插件自己切，
+	// 因此必须用 append 逐片追加。
 	body := streamBody{
-		InputMode:   "replace",
+		InputMode:   "append",
 		InputStream: 1,
 		Index:       index,
 		ContentType: streamContentType(s.Markdown),

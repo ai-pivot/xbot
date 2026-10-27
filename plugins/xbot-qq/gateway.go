@@ -141,6 +141,12 @@ type GatewayConfig struct {
 	Sleep func(ctx context.Context, d time.Duration) bool
 }
 
+// rateLimitReconnectDelay 是命中限流（100017）时的最小重连间隔。
+//
+// 限流是临时错误：既不能判 fatal（否则一次限流就要人工 reload 才能恢复），
+// 也不能 2 秒重试一次（持续超限会延长封禁）。取 60s 作为下限。
+const rateLimitReconnectDelay = 60 * time.Second
+
 // Gateway 维护一条到 QQ 网关的长连接，断线自动重连。
 //
 // Run 阻塞直到 ctx 取消；不返回"正常结束"以外的错误 —— 单次连接错误都被
@@ -205,6 +211,13 @@ func (g *Gateway) Run(ctx context.Context) error {
 		delay := g.reconnectPolicy().Backoff(attempt)
 		if delay <= 0 {
 			return fmt.Errorf("qq gateway: giving up after %d attempts: %w", attempt-1, err)
+		}
+		// 限流时把首次退避拉到 60s：
+		// 100017 是临时错误，应该自动恢复（不再判 fatal），但 2s 一次的重试会把
+		// 风控越烧越旺。官方口径是"持续超限会延长封禁"，所以宁等久一点。
+		var rateErr *APIError
+		if errors.As(err, &rateErr) && rateErr.IsRateLimited() && delay < rateLimitReconnectDelay {
+			delay = rateLimitReconnectDelay
 		}
 		if err != nil {
 			g.logf("gateway disconnected (attempt %d): %v; retrying in %s", attempt, err, delay)

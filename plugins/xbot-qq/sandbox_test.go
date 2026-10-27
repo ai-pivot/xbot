@@ -213,10 +213,13 @@ func TestFatalGatewayReasonSandboxHint(t *testing.T) {
 			substr: "沙箱",
 		},
 		{
-			name:   "限流 100017 → 致命",
+			// 2026-10-27 修正：限流是**临时**错误，不再判致命 —— 交给外层退避重连
+			// （限流最小重连间隔 60s，见 rateLimitReconnectDelay）。
+			// 若再判 fatal，一次 100017 就会永久停机、必须人工 reload。
+			name:   "限流 100017 → 非致命（退避重连）",
 			err:    NewAPIError("gateway", 400, `{"message":"接口调用超过频率限制","code":100017,"err_code":40023001}`),
-			fatal:  true,
-			substr: "频率限制",
+			fatal:  false,
+			substr: "",
 		},
 		{
 			name:   "普通 500 → 可重试",

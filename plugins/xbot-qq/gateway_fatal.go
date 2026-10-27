@@ -64,8 +64,12 @@ func FatalGatewayReason(err error) (bool, string) {
 				"若确实已发布，则去 开发设置 → IP 白名单 加上本机出口 IP。" +
 				"本插件已停止重连，改好后 reload 插件即可恢复）"
 		case apiErr.IsRateLimited():
-			return true, "（接口调用超过频率限制 100017：继续重试只会加重风控；" +
-				"本插件已停止重连，等平台限流窗口过去后 reload 插件）"
+			// 2026-10-27 修正：限流是**临时**错误，不能判成 fatal。
+			// 先前把它当"重试无用"，导致一次 100017 就把网关永久停掉，
+			// 必须人工 reload 插件才能恢复 —— 而限流窗口通常几十秒就过去了。
+			// 现在交给外层指数退避重试（退避下限见 reconnectBackoff，已放宽到 60s，
+			// 不会把风控越烧越旺；超过上限次数仍会停，避免无脑刷）。
+			return false, ""
 		}
 		// 401/403 但不是白名单/沙箱码：凭据或权限问题，同样重试无用。
 		if apiErr.Status == 401 || apiErr.Status == 403 {
