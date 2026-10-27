@@ -103,3 +103,35 @@ func TestMarkdownImageTag_FallbackAndClamp(t *testing.T) {
 		t.Fatalf("height collapsed to 0: %q", tag)
 	}
 }
+
+// TestImageReplacementKeepsPosition 钉住「图片必须留在原位」。
+//
+// 2026-10-27 用户实测：旧实现先 extractMarkdownImages 把图从正文删掉，
+// 再统一拼到消息末尾，于是「不管模型把图放在哪一段，图永远显示在最下方」。
+// 改成 ReplaceAllStringFunc 原地替换后，图文相对顺序才和模型写的一致。
+func TestImageReplacementKeepsPosition(t *testing.T) {
+	md := "开头说明\n\n![甲 #100px #100px](/tmp/a.png)\n\n中间段落\n\n![乙 #200px #200px](/tmp/b.png)\n\n结尾"
+	out := imageMarkdownRe.ReplaceAllStringFunc(md, func(m string) string {
+		sub := imageMarkdownRe.FindStringSubmatch(m)
+		// 模拟"上传后拿到平台引用"
+		return markdownImageTag("qqbot-media://image/v1"+sub[1], 100, 100)
+	})
+
+	// 顺序断言：开头 < 甲图 < 中间段落 < 乙图 < 结尾
+	order := []string{"开头说明", "qqbot-media://image/v1/tmp/a.png", "中间段落", "qqbot-media://image/v1/tmp/b.png", "结尾"}
+	last := -1
+	for _, part := range order {
+		i := strings.Index(out, part)
+		if i < 0 {
+			t.Fatalf("missing %q in output:\n%s", part, out)
+		}
+		if i < last {
+			t.Fatalf("%q appeared out of order — images must stay where the model put them:\n%s", part, out)
+		}
+		last = i
+	}
+	// 旧实现的症状：两张图都被挪到最末尾
+	if strings.LastIndex(out, "![") > strings.Index(out, "结尾") {
+		t.Fatalf("an image was moved after the trailing text:\n%s", out)
+	}
+}

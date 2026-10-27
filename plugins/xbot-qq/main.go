@@ -665,7 +665,7 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 		}
 	}
 
-	if imgURLs, rest := extractMarkdownImages(content); len(imgURLs) > 0 {
+	if imageMarkdownRe.MatchString(content) {
 		// 图片走**平台托管**（qqbot-media://），图文同一条 markdown 消息。
 		//
 		// 2026-10-27 定论（用户真机确认）：这是唯一能显示且不过期的路径。
@@ -675,47 +675,48 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 		//     表现一样，因为过期的是转存副本，与我们的 URL 无关。
 		//   · qqbot-media:// → 平台自己托管，90 天滑动过期，每引用一次顺延。
 		//
-		// 因此七牛/S3/自建图床/签名逻辑已全部删除：平台托管之后它们没有用途。
-		//
 		// 语法必须是 `![说明 #宽px #高px](url)` —— 尺寸写在方括号内，
-		// 且说明与 `#` 之间有空格（官方文档示例）。写成 `![图](url) #300px`
-		// 会被当纯文本，渲染出「图 #300px」这种字。
-		var hosted []string
-		for _, u := range imgURLs {
-			data, name, ferr := fetchImageBytes(ctx, u, 64<<20)
+		// 且说明与 `#` 之间有空格（官方文档示例）；只给一个尺寸客户端不渲染。
+		//
+		// **图片必须在原位替换，不能抽出来追加到末尾。**
+		// 旧实现先 extractMarkdownImages 把图从正文删掉、再统一拼到结尾，
+		// 结果是「不管模型把图放在哪一段，用户看到的图永远在消息最下方」
+		// （2026-10-27 用户实测反馈）。这里改成原地替换，保持图文相对顺序。
+		hostedCount := 0
+		failed := 0
+		out := imageMarkdownRe.ReplaceAllStringFunc(content, func(m string) string {
+			sub := imageMarkdownRe.FindStringSubmatch(m)
+			if len(sub) < 2 {
+				return m
+			}
+			src := sub[1]
+			data, name, ferr := fetchImageBytes(ctx, src, 64<<20)
 			if ferr != nil {
-				a.logf("WARN: read image %q failed: %v", u, ferr)
-				continue
+				a.logf("WARN: read image %q failed: %v", src, ferr)
+				failed++
+				return ""
 			}
 			ct := http.DetectContentType(data)
 			if !strings.HasPrefix(ct, "image/") {
-				// 平台只接受 png/jpeg/gif/webp；其它一律按 png 声明，
-				// 由平台在发送时做最终校验。
 				ct = "image/png"
 			}
 			ref, uerr := rt.api.UploadMarkdownImage(ctx, data, name, ct)
 			if uerr != nil {
-				a.logf("WARN: platform image upload failed for %q: %v", u, uerr)
-				continue
+				a.logf("WARN: platform image upload failed for %q: %v", src, uerr)
+				failed++
+				return ""
 			}
 			w, h := imageDimensions(data)
-			a.logf("image hosted: %s (%dx%d) → %s", name, w, h, ref[:min(40, len(ref))])
-			hosted = append(hosted, markdownImageTag(ref, w, h))
-		}
+			a.logf("image hosted in place: %s (%dx%d)", name, w, h)
+			hostedCount++
+			return markdownImageTag(ref, w, h)
+		})
 
-		if len(hosted) > 0 {
-			var b strings.Builder
-			b.WriteString(rest)
-			if rest != "" {
-				b.WriteString("\n\n")
-			}
-			for _, tag := range hosted {
-				b.WriteString(tag + "\n")
-			}
-			merged := strings.TrimSpace(b.String())
+		if hostedCount > 0 {
+			merged := strings.TrimSpace(out)
 			if merged != "" && len([]rune(merged)) <= maxMessageRunes {
 				if _, merr := rt.Send(ctx, chatID, merged); merr == nil {
-					a.logf("outbound images to %q: %d image(s) hosted by platform, merged into ONE markdown message", chatID, len(hosted))
+					a.logf("outbound images to %q: %d image(s) hosted by platform, kept in place (failed=%d)", chatID, hostedCount, failed)
 					if frameID != "" {
 						a.write(enc, okResponse{ID: frameID, Result: "ok"})
 					}
@@ -725,10 +726,10 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 				}
 			}
 		} else {
-			a.logf("WARN: no image could be hosted on the platform; sending text only")
+			a.logf("WARN: no image could be hosted on the platform (failed=%d); sending text without images", failed)
 		}
-		// 图全部上传失败时仍然把正文发出去，不能让整条消息消失。
-		content = rest
+		// 图全部上传失败时仍然把正文发出去（此时图片语法已从正文移除）。
+		content = strings.TrimSpace(out)
 		if content == "" {
 			if frameID != "" {
 				a.write(enc, okResponse{ID: frameID, Result: "ok"})
