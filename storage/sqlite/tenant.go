@@ -363,9 +363,20 @@ func (s *TenantService) GetTenantDBInfo(tenantID int64) (TenantDBInfo, error) {
 	if s == nil || s.db == nil {
 		return TenantDBInfo{}, fmt.Errorf("tenant service not initialized")
 	}
+	// DB.Conn() returns nil once the handle is closed (DB.Close sets conn=nil).
+	// Calling QueryRow on that nil *sql.DB dereferences db.mu inside
+	// database/sql and panics — the crash surfaced from DestroySession →
+	// deleteSessionDBFile when a session was torn down after shutdown had
+	// already closed the main DB. Report it as an error; callers here treat a
+	// failure as "registry unavailable" and skip, which is the correct
+	// behaviour while the process is exiting.
+	conn := s.db.Conn()
+	if conn == nil {
+		return TenantDBInfo{}, fmt.Errorf("main db is closed")
+	}
 	var info TenantDBInfo
 	var migrated int
-	err := s.db.Conn().QueryRow(
+	err := conn.QueryRow(
 		"SELECT COALESCE(db_path, ''), COALESCE(migrated, 0) FROM tenants WHERE id = ?",
 		tenantID,
 	).Scan(&info.DBPath, &migrated)

@@ -227,6 +227,15 @@ func CheckpointCallback(cs *CheckpointState) *CallbackHook {
 // handleCheckpointPre snapshots the file before a FileCreate/FileReplace
 // operation.
 func handleCheckpointPre(ctx context.Context, cs *CheckpointState, e *PreToolUseEvent) {
+	// No store == this session has no rewind support. Only CLI sessions get a
+	// CheckpointStore (see Agent.ensureCheckpointStore), but this hook is
+	// registered globally for every channel. Skip early: staging a snapshot that
+	// can never be persisted would leak pending entries for the whole session and
+	// made handleCheckpointPost panic on the nil store.
+	if cs.Store() == nil {
+		return
+	}
+
 	toolName := e.ToolName_
 	if toolName != "FileCreate" && toolName != "FileReplace" {
 		return
@@ -276,6 +285,13 @@ func handleCheckpointPre(ctx context.Context, cs *CheckpointState, e *PreToolUse
 // handleCheckpointPost confirms the snapshot if the tool succeeded, or
 // discards it on failure.
 func handleCheckpointPost(ctx context.Context, cs *CheckpointState, e *PostToolUseEvent) {
+	// Guard: cs.Store() is nil for every non-CLI channel. Without this the
+	// write below dereferences a nil CheckpointStore interface and panics.
+	store := cs.Store()
+	if store == nil {
+		return
+	}
+
 	toolName := e.ToolName_
 	if toolName != "FileCreate" && toolName != "FileReplace" {
 		return
@@ -308,7 +324,7 @@ func handleCheckpointPost(ctx context.Context, cs *CheckpointState, e *PostToolU
 	}
 
 	// Tool succeeded — write snapshot to store.
-	if writeErr := cs.Store().Write(snap); writeErr != nil {
+	if writeErr := store.Write(snap); writeErr != nil {
 		log.WithError(writeErr).Warn("checkpoint hook: failed to write snapshot")
 	} else {
 		log.WithFields(log.Fields{"turn": snap.TurnIdx, "tool": toolName, "file": snap.FilePath, "existed": snap.Existed}).Debug("checkpoint hook: snapshot saved")

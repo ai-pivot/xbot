@@ -271,7 +271,15 @@ func (db *DB) Close() error {
 	var closeErr error
 	if db.conn != nil {
 		closeErr = db.conn.Close()
-		db.conn = nil
+		// Deliberately NOT setting db.conn = nil: a closed *sql.DB is safe to
+		// call (every method returns sql.ErrDBClosed) whereas a nil one panics
+		// inside database/sql when it locks db.mu. Late goroutines that touch
+		// the database during shutdown — e.g. DestroySession →
+		// deleteSessionDBFile → GetTenantDBInfo, or the background sub-agent
+		// teardown path — used to take the whole process down through a
+		// recovered nil dereference. Keeping the handle turns that class of bug
+		// into an ordinary error the caller can log. Lifecycle is unchanged:
+		// the *sql.DB is owned by this DB struct, so no extra retention.
 		if closeErr != nil {
 			log.WithFields(log.Fields{"path": db.path, "error": closeErr.Error()}).Warn("SQLite close returned error")
 		} else {
@@ -457,6 +465,16 @@ func (db *DB) Conn() *sql.DB {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	return db.conn
+}
+
+// IsClosed reports whether Close has already been called on this handle.
+//
+// After Close, Conn() still returns the (already closed) *sql.DB so that a
+// late caller gets sql.ErrDBClosed instead of dereferencing nil. That means
+// "Conn() == nil" is no longer a valid liveness test — use IsClosed() for
+// that, and keep handling the error from whatever query you run.
+func (db *DB) IsClosed() bool {
+	return db.closed.Load()
 }
 
 // initSchema creates the database schema if it doesn't exist, and runs migrations

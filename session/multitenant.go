@@ -436,9 +436,12 @@ func (m *MultiTenantSession) SetMCPConfigPath(path string) {
 
 // RecordUserTokenUsage records token usage for a user (upsert).
 func (m *MultiTenantSession) RecordUserTokenUsage(senderID, model string, inputTokens, outputTokens, cachedTokens int, conversationCount, llmCallCount int) error {
-	// SQLite 停机期 m.db.Conn() 可能为 nil（PG 路径 m.db 恒为 nil）—— usage 是
-	// 展示性冗余，明确拒绝优于让底层对 nil 连接 panic。
-	if m.db != nil && m.db.Conn() == nil {
+	// SQLite 停机期 m.db 可能已被 Close（PG 路径 m.db 恒为 nil）—— usage 是
+	// 展示性冗余，明确拒绝优于让底层对已关闭/为 nil 的连接 panic。
+	// 注意判据用 IsClosed()：Close 之后 Conn() 仍返回那个已关闭的 *sql.DB
+	// （让调用方拿到 sql.ErrDBClosed 而不是 nil deref），所以 "Conn() == nil"
+	// 不再是可靠的存活检测。
+	if m.db != nil && (m.db.IsClosed() || m.db.Conn() == nil) {
 		return fmt.Errorf("database connection is nil (agent may be shutting down)")
 	}
 	return m.store.Config().RecordUsage(senderID, model, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount)
