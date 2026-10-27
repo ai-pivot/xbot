@@ -1725,9 +1725,33 @@ func sortUserChats(rows []web.UserChatWithPreview) {
 // across offsets (see sortUserChats). Compare parsed time.Time values; equal
 // instants expressed with different offsets tiebreak on SortOrder/CreatedAt.
 func sortSessionTreeMains(rows []web.UserChatWithPreview) {
-	sort.SliceStable(rows, func(i, j int) bool {
+	if len(rows) == 0 {
+		return
+	}
+	// Pre-parse the timestamps ONCE.
+	//
+	// The comparator used to call parseTenantTime twice per comparison, and
+	// parseTenantTime tries up to four layouts with time.Parse. Sorting 705 rows
+	// is ~6,700 comparisons ⇒ ~13,400 parse calls ⇒ tens of thousands of
+	// time.Parse attempts. That was a large share of the endpoint's 639ms p50.
+	// Parsing once per row drops it to 1,410.
+	type sortKey struct{ last, created time.Time }
+	keys := make([]sortKey, len(rows))
+	for i := range rows {
+		keys[i] = sortKey{
+			last:    parseTenantTime(rows[i].LastActive),
+			created: parseTenantTime(rows[i].CreatedAt),
+		}
+	}
+
+	idx := make([]int, len(rows))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		i, j := idx[a], idx[b]
 		// Primary: last_active desc (matches the frontend time buckets).
-		ti, tj := parseTenantTime(rows[i].LastActive), parseTenantTime(rows[j].LastActive)
+		ti, tj := keys[i].last, keys[j].last
 		if !ti.Equal(tj) {
 			return ti.After(tj)
 		}
@@ -1746,8 +1770,15 @@ func sortSessionTreeMains(rows []web.UserChatWithPreview) {
 		if oi != oj {
 			return oi < oj
 		}
-		return parseTenantTime(rows[i].CreatedAt).Before(parseTenantTime(rows[j].CreatedAt))
+		return keys[i].created.Before(keys[j].created)
 	})
+
+	// Apply the permutation in place using a scratch buffer.
+	sorted := make([]web.UserChatWithPreview, len(rows))
+	for i, j := range idx {
+		sorted[i] = rows[j]
+	}
+	copy(rows, sorted)
 }
 
 func parseTenantTime(raw string) time.Time {
