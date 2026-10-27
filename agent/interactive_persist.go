@@ -61,7 +61,13 @@ func (a *Agent) persistInteractiveAgent(ia *interactiveAgent, status string) {
 	parentAgentID := ""
 	if ia.cfg != nil {
 		workspaceRoot = ia.cfg.WorkspaceRoot
-		parentAgentID = ia.cfg.AgentID
+		// cfg.AgentID 由 `parentAgentID + "/" + roleName` 拼成，父 agent 是主会话
+		// 时 parentAgentID 为空，于是值变成 "/court.shoufu"（前导斜杠）。
+		// 这里只清理**落库的展示字段**：不动 cfg.AgentID 本身，因为
+		// engine.go 的 BgSessionKey 规则依赖「AgentID 是否含 /」来区分主 Agent
+		// 与 SubAgent，改了会让子代理的后台任务不再隔离（见
+		// TestBuildToolContext_BgSessionKeyCanonical）。
+		parentAgentID = strings.Trim(ia.cfg.AgentID, "/")
 	}
 
 	rec := sqlite.InteractiveAgentRecord{
@@ -88,15 +94,22 @@ func (a *Agent) persistInteractiveAgent(ia *interactiveAgent, status string) {
 	}
 }
 
-// markPersistedAgentStatus 只更新状态与 turn_id。
+// markPersistedAgentStatus 把会话状态写回注册表。
+//
+// 走 persistInteractiveAgent（全量 upsert）而不是一条 UPDATE status/turn_id：
+// 注册表的字段是**一起**描述“这个子代理现在是什么样”的，分成两条写路径必然
+// 漂移 —— 实际情况是 persistInteractiveAgent 只在 spawn/restore 调用，而
+// MarkStatus 只改 status/turn_id，于是 last_reply 在 spawn 之后**再也没有任何
+// 代码写过**（内存里 ia.lastReply 明明一直有值），last_reply_at 永远停在 spawn
+// 那一刻，UI 和恢复逻辑读到的都是陈旧数据。
+//
+// turnID 保留在签名里是为了让调用点显式表达意图；SubAgent 的 turn 是 untracked
+// （RunConfig.TurnID 注释：0 = SubAgent/tests），因此不写入注册表。
 func (a *Agent) markPersistedAgentStatus(ia *interactiveAgent, status string, turnID uint64) {
 	if ia == nil || a.multiSession == nil {
 		return
 	}
-	key := "agent:" + ia.roleName + "/" + ia.instance
-	if err := a.interactiveAgentSvc().MarkStatus(key, status, turnID); err != nil {
-		log.WithError(err).WithField("agent_key", key).Warn("Failed to mark interactive agent status")
-	}
+	a.persistInteractiveAgent(ia, status)
 }
 
 // restoreInteractiveTree 递归恢复 parent 名下的整棵子代理树。
