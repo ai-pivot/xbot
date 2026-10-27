@@ -1022,7 +1022,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			}
 		}
 		ag.CleanupSessionFiles(channel, chatID)
-		tools.GlobalWorktreeRegistry.CleanupSession(channel + ":" + chatID)
 		session.DeletePersistedCWD(channel, chatID)
 		_ = ag.MultiSession().DestroySession(channel, chatID)
 		return nil

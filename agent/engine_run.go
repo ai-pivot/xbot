@@ -313,7 +313,7 @@ func (s *runState) initProgress() {
 
 // initDynamicInjector sets up the dynamic context injector for CWD change detection.
 func (s *runState) initDynamicInjector() {
-	s.dynamicInjector = NewDynamicContextInjectorWithPeers(
+	s.dynamicInjector = NewDynamicContextInjector(
 		func() string {
 			if s.cfg.Session != nil {
 				if dir := s.cfg.Session.GetCurrentDir(); dir != "" {
@@ -321,9 +321,6 @@ func (s *runState) initDynamicInjector() {
 				}
 			}
 			return s.cfg.InitialCWD
-		},
-		func() string {
-			return buildPeerContextXML(s.cfg.WorkspaceRoot, s.sessionKey)
 		},
 	)
 }
@@ -2438,7 +2435,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	// --- Dynamic Context injection (CWD change detection) ---
 	s.dynamicInjector.InjectIfNeeded(s.messages)
 
-	// --- Sync CWD to progress (may change via Cd or worktree cleanup) ---
+	// --- Sync CWD to progress (may change via Cd or session directory reset) ---
 	if s.structuredProgress != nil && s.cfg.Session != nil {
 		// M2 锁覆盖：CWD 写与后台 SubAgent 回调的 notifyProgress 并发。
 		s.progressMu.Lock()
@@ -2492,7 +2489,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 			subAgentStatuses = s.cfg.InteractiveCallbacks.ListActiveFn(s.cfg.Channel, s.cfg.ChatID)
 		}
 
-		s.systemReminder = BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
+		s.systemReminder = BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, sessionName, subAgentStatuses)
 	} else {
 		// 非插入轮：清空，让 llmMessages() 完全不拼这个 fake tool pair。
 		// 连续多轮出现同一组「凭空冒出的工具调用 + 结果」会让模型困惑

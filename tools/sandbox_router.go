@@ -413,7 +413,7 @@ var (
 )
 
 // SplitSessionKey splits "channel:chatID" on the FIRST colon (chatIDs may
-// themselves contain colons, e.g. worktree/agent session ids).
+// themselves contain colons, e.g. agent session ids).
 func SplitSessionKey(sessionKey string) (channel, chatID string) {
 	idx := strings.IndexByte(sessionKey, ':')
 	if idx < 0 {

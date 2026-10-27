@@ -9,7 +9,6 @@ import (
 
 	"xbot/llm"
 	"xbot/protocol"
-	"xbot/tools"
 )
 
 // wrapCDATA 100% 防 XML 注入：内容里的 ]]> 拆分为两个 CDATA 区段。
@@ -47,7 +46,6 @@ const systemReminderToolName = "system_reminder"
 
 // BuildSystemReminder builds a system reminder appended to the last tool message.
 // agentID "main" = main Agent, otherwise SubAgent.
-// sessionKey is the unique session identifier (used for worktree peer lookup).
 // sessionName is the current session display name (used to detect auto-generated names needing rename).
 //
 // v5.2 结构：<user-msg> CDATA（不贴 task 标签）+ <goal> + 结构化 <todos> + 4 条 guidelines。
@@ -57,7 +55,6 @@ func BuildSystemReminder(
 	goalInfo *protocol.GoalInfo,
 	agentID string,
 	cwd string,
-	sessionKey string,
 	sessionName string,
 	activeSubAgents []SubAgentStatus,
 ) string {
@@ -118,28 +115,6 @@ func BuildSystemReminder(
 			fmt.Fprintf(&sb, `<todo status=%q id="%d">%s</todo>`, t.Status, i+1, html.EscapeString(t.Text))
 		}
 		sb.WriteString("</todos>")
-	}
-
-	// Peer awareness: show who else is working in the same repo.（仅活跃 worktree + busy）
-	if !isSubAgent && sessionKey != "" {
-		repoPath := ""
-		if entry := tools.GlobalWorktreeRegistry.GetBySession(sessionKey); entry != nil {
-			repoPath = entry.RepoPath
-		}
-		peers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
-		var activePeers []*tools.WorktreeEntry
-		for _, p := range peers {
-			if p.WorktreeDir != "" && p.Busy {
-				activePeers = append(activePeers, p)
-			}
-		}
-		if len(activePeers) > 0 {
-			sb.WriteString("<peers>")
-			for _, p := range activePeers {
-				fmt.Fprintf(&sb, "<peer role=%q branch=%q>%s</peer>", p.Role, p.Branch, html.EscapeString(shortenPeerName(p.SessionKey)))
-			}
-			sb.WriteString("</peers>")
-		}
 	}
 
 	// Active SubAgents（当前执行中 vs 空闲）
@@ -238,12 +213,4 @@ func extractUserGoal(content string) string {
 		goal = string(runes[:500]) + "..."
 	}
 	return goal
-}
-
-// shortenPeerName shortens a session key for display in peer list.
-func shortenPeerName(sessionKey string) string {
-	if idx := strings.LastIndex(sessionKey, ":"); idx > 0 {
-		return sessionKey[idx+1:]
-	}
-	return sessionKey
 }

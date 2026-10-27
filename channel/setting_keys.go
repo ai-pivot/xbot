@@ -137,9 +137,6 @@ var AllSettingDefs = []SettingDef{
 	{Key: "chat_max_width", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Max chat width in columns", ValidValues: "0-200", DefaultValue: "0"},
 	{Key: "chat_center", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermTransient, AIDescription: "Center chat area", ValidValues: "true|false", DefaultValue: "false"},
 
-	// ── Worktree isolation ──
-	{Key: "auto_worktree", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Automatically create isolated git worktrees for each session (no shared workspace)", ValidValues: "true|false", DefaultValue: "false"},
-
 	// ── Agent behavior ──
 	// allow_self_compact registers the compact_context tool so the agent can
 	// trigger a context compression itself (agent-initiated compaction). The

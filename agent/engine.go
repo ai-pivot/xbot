@@ -96,8 +96,6 @@ type RunConfig struct {
 	InitialCWD          string        // 初始当前工作目录（宿主机路径，用于 SubAgent 继承父 Agent 的 CWD）
 	InitialGroupID      string        // 群组 ID（SubAgent 继承，用于 SendMessage 跨群校验）
 	InitialGroupMembers []string      // 群组成员列表（用于 system prompt 注入）
-	// IsWorktreeIsolated indicates this agent runs in an isolated git worktree.
-	IsWorktreeIsolated bool
 
 	// === 循环控制 ===
 	MaxOutputTokens int // 0 = 使用 LLM client 默认值
@@ -406,8 +404,6 @@ type RunConfig struct {
 	// PeerMessageFn sends peer-to-peer messages between CLI sessions.
 	// Used by SendMessage tool for busy/idle routing.
 	PeerMessageFn func(targetSessionKey, message string) string
-	// AutoWorktreeEnabled controls whether Worktree(init) can create worktrees.
-	AutoWorktreeEnabled bool
 	// IterationLoopDetection enables the iteration-loop breaker (consecutive
 	// identical iterations → duplicate tool calls replaced with a fake LOOP
 	// DETECTED result, repeated loops force-terminate the Run). Experimental —
@@ -1297,8 +1293,6 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		PreferredSandbox:     cfg.PreferredSandbox,
 		Sandbox:              resolvedSandbox,
 		DataDir:              cfg.DataDir,
-		IsWorktreeIsolated:   cfg.IsWorktreeIsolated,
-		AutoWorktreeEnabled:  cfg.AutoWorktreeEnabled,
 		PeerMessageFn:        cfg.PeerMessageFn,
 
 		// 注入入站消息

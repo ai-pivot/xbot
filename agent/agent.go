@@ -1632,13 +1632,12 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		// 会话状态永停在 waiting/running ⇒ 输入框卡 busy（用户 2026-09-28：
 		// 「askuser 在被用户取消后，前端还是渲染为 busy」）。
 		//
-		// ss.busy 仍显式复位（幂等）以覆盖旧版残留 busy=true 的窗口；worktree 的
-		// busy 标记同理。SenderID: session owner —— 漏填时对 web 渠道走无过滤
+		// ss.busy 仍显式复位（幂等）以覆盖旧版残留 busy=true 的窗口。
+		// SenderID: session owner —— 漏填时对 web 渠道走无过滤
 		// fan-out 分支（广播给所有用户，多用data署下暴露会话元数据）。取消者 = 会话 owner。
 		if state, ok := a.bgSessionStates.Load(cancelKey); ok {
 			state.(*bgSessionState).busy.Store(false)
 		}
-		tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
 		a.emitSessionIdleIfNoActiveRun(cancelKey, msg.Channel, msg.ChatID, msg.SenderID)
 		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
@@ -2001,10 +2000,6 @@ type Config struct {
 	PluginEnabled         bool     // Enable plugin system
 	PluginDirs            []string // Additional plugin directories
 	PluginDisabledPlugins []string // Plugin IDs to disable
-
-	// AutoWorktree enables automatic git worktree creation when multiple
-	// sessions share the same repo. Set from config.Agent.Experimental.AutoWorktree.
-	AutoWorktree bool
 
 	// CLISenderID is the sender_id used for CLI channel DB operations (default: "cli_user").
 	CLISenderID string
@@ -3549,9 +3544,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 
 			// Mark session busy so chatWorker skips notification drain
 			ss.busy.Store(true)
-			// 同步 worktree registry：该 session 正在迭代中（peer 协作提示依据，
-			// busy/idle = 是否在迭代中，而非时间推断）。
-			tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), true)
 			// Invariant: busy ⇒ no pending AskUser. A turn starting while the
 			// session still holds a pending prompt means the user moved on (or
 			// a stale entry survived a race) — the prompt is moot and must be
@@ -3643,7 +3635,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			case sem <- struct{}{}:
 			case <-ctx.Done():
 				ss.busy.Store(false)
-				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return false
 			}
 
@@ -3770,7 +3761,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				// pending bg notifications in the interrupted turn, without starting a
 				// fresh bg-notification turn after the cancel ack.
 				ss.busy.Store(false)
-				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return true
 			}
 
@@ -3792,7 +3782,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				// append succeeds. Put any unacknowledged items back before retrying.
 				a.requeueDrainedBgNotifications(chatKey)
 				ss.busy.Store(false)
-				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				a.drainAndProcessNotifications(chatKey)
 				return true
 			}
@@ -3865,12 +3854,10 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				// property is preserved by handleBgNotifySignal's pending check,
 				// not by busy.
 				ss.busy.Store(false)
-				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return true
 			}
 			ss.clearDrainedThisRun()
 			ss.busy.Store(false)
-			tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 			a.drainAndProcessNotifications(chatKey)
 			return true
 		}()
@@ -4410,31 +4397,6 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	sessKey := qualifyChatID(msg.Channel, msg.ChatID)
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.workspaceRoot(sbUID)
-	detectDir := tenantSession.GetCurrentDir()
-	if detectDir == "" {
-		detectDir = workspaceRoot
-	}
-	// Peer awareness / auto worktree: register this session for collaboration.
-	// When auto_worktree is enabled, every session gets its own git worktree (no primary).
-	// When disabled, RegisterPeer provides lightweight in-memory session tracking.
-	// UserContext already resolved settings in middleware — read from there.
-	// AutoDetectAndInit is idempotent: returns existing entry if session already registered.
-	if userCtx != nil && userCtx.GetSettingBool("auto_worktree") {
-		if tools.GlobalWorktreeRegistry.GetBySession(sessKey) == nil {
-			if entry, created := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
-				// Only override CWD for brand new worktrees (first creation).
-				// On restart, AutoDetectAndInit returns existing entry with created=false,
-				// so the user's last CWD (restored by loadPersistedCWD) is preserved —
-				// even if they Cd'd out of the worktree.
-				if created {
-					tenantSession.SetCurrentDir(entry.WorktreeDir)
-				}
-			}
-		}
-	} else {
-		tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)
-	}
-
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.
 	history = llm.SanitizeMessages(history)
@@ -4454,42 +4416,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 		promptWorkDir = ws
 	}
 
-	// For worktree sessions, override promptWorkDir with the worktree path.
-	// The system prompt shows promptWorkDir as the main "工作目录", so the
-	// agent must see the worktree path here to know where it's working.
-	//
-	// SAFETY: Verify the worktree actually belongs to this session.
-	// A stale worktree path from a deleted/recreated session must NOT
-	// be used — it would put the agent in an orphaned directory.
 	cwd := tenantSession.GetCurrentDir()
-	if cwd != "" && strings.Contains(cwd, ".xbot-worktrees") {
-		// Verify ownership: the worktree must be registered to this session
-		if wtEntry := tools.GlobalWorktreeRegistry.GetBySession(sessKey); wtEntry != nil && wtEntry.WorktreeDir != "" {
-			// CWD must be inside the registered worktree (or exactly match it)
-			if cwd == wtEntry.WorktreeDir || strings.HasPrefix(cwd, wtEntry.WorktreeDir+string(os.PathSeparator)) {
-				promptWorkDir = cwd
-			} else {
-				// CWD points to a DIFFERENT worktree than what's registered.
-				// This is a stale state leak — reset to workspace root.
-				log.WithFields(log.Fields{
-					"session":    sessKey,
-					"cwd":        cwd,
-					"registered": wtEntry.WorktreeDir,
-				}).Warn("CWD points to unowned worktree, resetting to workspace root")
-				tenantSession.SetCurrentDir(workspaceRoot)
-				cwd = workspaceRoot
-			}
-		} else {
-			// No worktree registered for this session, but CWD is in a worktree.
-			// This is a stale state leak from a previous session — reset.
-			log.WithFields(log.Fields{
-				"session": sessKey,
-				"cwd":     cwd,
-			}).Warn("Session has worktree CWD but no registry entry, resetting to workspace root")
-			tenantSession.SetCurrentDir(workspaceRoot)
-			cwd = workspaceRoot
-		}
-	}
 
 	mc := NewMessageContext(
 		letta.WithUserID(ctx, msg.SenderID),

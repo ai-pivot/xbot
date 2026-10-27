@@ -1410,11 +1410,8 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		// Clean up offload files for the deleted session.
 		h.Ag.CleanupSessionFiles(p.Channel, p.ChatID)
-		// Clean up worktree registration + physical git worktree.
-		sessionKey := p.Channel + ":" + p.ChatID
-		tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
 		// Clean up persisted CWD so a future session with the same chatID
-		// does not inherit a stale worktree directory.
+		// does not inherit a stale directory.
 		session.DeletePersistedCWD(p.Channel, p.ChatID)
 		// Destroy tenant session (closes MCP, removes from cache).
 		_ = h.Ag.MultiSession().DestroySession(p.Channel, p.ChatID)

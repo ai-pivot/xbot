@@ -94,7 +94,7 @@ func Build(ctx context.Context, shell bool, command string, args []string,
 
 	// Validate the working directory BEFORE handing the command to exec.
 	// os/exec performs chdir in the child, so a missing Dir (session cwd deleted
-	// by a machine migration / worktree cleanup / tmp reclamation) surfaces as
+	// by a machine migration / tmp directory reclamation) surfaces as
 	//   fork/exec /usr/bin/zsh: no such file or directory
 	// — which blames the shell binary instead of the real cause, and leaves the
 	// agent unable to recover (issue #457). Fail here with the actionable cause.

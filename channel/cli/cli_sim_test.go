@@ -3176,7 +3176,7 @@ func TestSimMultilineNoBogusBreak(t *testing.T) {
 	scenario := SimScenario{
 		Config: SimConfig{Width: 120, Height: 30},
 		Steps: []SimStep{
-			{Action: "agent_msg", Content: "分析结果：这两处改动 feat 分支是旧版，master #67 已经做了相反方向的修正（更正确），所以不应该合并。\n\n1. CWD key：master #67 用 SHA256(channel:chatID)，feat 分支用 tenantID → #67 修复了多会话 CWD 互覆盖的问题\n2. cleanGitEnv：master #67 加上了，feat 分支移除了 → #67 修复了 worktree GIT_DIR 泄漏\n3. removeLastToolSummary guard：master #67 加上了，feat 分支没有 → #67 修复了 Ctrl+C 迭代丢失\n\n所以这三个都不需要 cherry-pick 进 PR。"},
+			{Action: "agent_msg", Content: "分析结果：这两处改动 feat 分支是旧版，master #67 已经做了相反方向的修正（更正确），所以不应该合并。\n\n1. CWD key：master #67 用 SHA256(channel:chatID)，feat 分支用 tenantID → #67 修复了多会话 CWD 互覆盖的问题\n2. cleanGitEnv：master #67 加上了，feat 分支移除了 → #67 修复了 独立副本 GIT_DIR 泄漏\n3. removeLastToolSummary guard：master #67 加上了，feat 分支没有 → #67 修复了 Ctrl+C 迭代丢失\n\n所以这三个都不需要 cherry-pick 进 PR。"},
 			{Action: "snapshot", Label: "multiline_no_bogus_break"},
 			// These identifiers must NOT be split by word-wrap or bogus \n handling
 			{Action: "assert", NotContains: "1. C\nWD key"},

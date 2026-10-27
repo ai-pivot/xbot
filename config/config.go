@@ -288,10 +288,6 @@ type Config struct {
 
 // ExperimentalConfig holds experimental features that may change or be removed.
 type ExperimentalConfig struct {
-	// AutoWorktree enables automatic git worktree creation when multiple agents
-	// work on the same repo. Default: false (opt-in experimental).
-	AutoWorktree bool `json:"auto_worktree,omitempty"`
-
 	// IterationLoopDetection enables the iteration-loop breaker: when
 	// consecutive iterations produce byte-for-byte identical content +
 	// tool_calls, duplicate calls are replaced with a fake "LOOP DETECTED"

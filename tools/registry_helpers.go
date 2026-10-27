@@ -255,7 +255,5 @@ func DefaultRegistry(memoryProvider string) *Registry {
 	// DownloadFileTool 和 WebSearchTool 需要凭证注入，在 main.go 中注册
 	// WebSearch: always available (requires TAVILY_API_KEY)
 	r.RegisterCore(NewFetchTool())
-	// WorktreeTool — multi-agent workspace isolation via git worktrees
-	r.RegisterCore(&WorktreeTool{})
 	return r
 }

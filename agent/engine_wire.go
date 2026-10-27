@@ -164,10 +164,6 @@ func (a *Agent) buildBaseRunConfig(
 		// 循环控制
 		MaxOutputTokens: maxOutputTokens,
 
-		// Auto worktree: read via GetEffectiveSetting — the single correct
-		// read path for user-scoped settings. Same source as /settings panel.
-		AutoWorktreeEnabled: userCtx.GetSettingBool("auto_worktree"),
-
 		// Iteration-loop breaker: experimental, default off — must be enabled
 		// via config.Agent.Experimental.IterationLoopDetection.
 		IterationLoopDetection: a.iterationLoopDetection,
@@ -375,8 +371,7 @@ func (a *Agent) buildMainRunConfig(
 	// 从 tenant session 获取租户 ID，用于 per-tenant 工具可见性
 	cfg.TenantID = tenantSession.TenantID()
 
-	// Use session CWD for InitialCWD (may differ from a.workDir for worktree sessions).
-	// AutoDetectAndInit in buildPrompt already set the correct CWD on tenantSession.
+	// Use session CWD for InitialCWD (may differ from a.workDir when the user Cd'd).
 	if cwd := tenantSession.GetCurrentDir(); cwd != "" {
 		cfg.InitialCWD = cwd
 	}
@@ -593,18 +588,11 @@ func filterSubAgentTools(subTools *tools.Registry, allowedTools []string, caps t
 }
 
 // resolveSubAgentCWD 解析子 Agent 的当前工作目录。
-// 继承父 Agent 的 CWD，无则默认 workDir。同时检测 worktree 隔离。
-func resolveSubAgentCWD(parentCtx *tools.ToolContext, workDir string) (cwd string, newWorkDir string, isWorktreeIsolated bool) {
+// 继承父 Agent 的 CWD，无则默认 workDir。
+func resolveSubAgentCWD(parentCtx *tools.ToolContext, workDir string) (cwd string) {
 	cwd = parentCtx.CurrentDir
 	if cwd == "" {
 		cwd = workDir
-	}
-	isWorktreeIsolated = parentCtx.IsWorktreeIsolated
-	if strings.Contains(cwd, ".xbot-worktrees") {
-		newWorkDir = cwd
-		isWorktreeIsolated = true
-	} else {
-		newWorkDir = workDir
 	}
 	return
 }
@@ -710,7 +698,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
 
 	// CWD 继承父 Agent 的当前目录，无则默认 workDir
-	cwd, workDir, isWorktreeIsolated := resolveSubAgentCWD(parentCtx, workDir)
+	cwd := resolveSubAgentCWD(parentCtx, workDir)
 	cwdPart := "\n- 当前目录：" + cwd
 
 	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）。
@@ -846,7 +834,6 @@ func (a *Agent) buildSubAgentRunConfig(
 		//   - RefreshPluginWorkDir：按 (channel, chatID) 刷新插件 workdir —— SubAgent
 		//     的 CWD 与父会话不同，接上会把父会话的插件窗口刷成 SubAgent 的目录
 		//     （跨会话污染，AGENTS.md 的 workdir race 同类问题）。
-		//   - AutoWorktreeEnabled：只被主 Agent 的 buildPrompt 使用，SubAgent 不走。
 		//   - FeishuUserID：仅用于 buildToolContext 里的 sandbox 解析，而 SubAgent
 		//     继承的是已经解析好的 parentCtx.Sandbox。
 
@@ -880,11 +867,6 @@ func (a *Agent) buildSubAgentRunConfig(
 		InitialGroupID:      parentCtx.GroupID,
 		InitialGroupMembers: parentCtx.GroupMembers,
 
-		// Worktree isolation: if the parent is in a worktree, rewrite
-		// WorkspaceRoot to the worktree path and enable isolation.
-		// (Already computed above before system prompt construction.)
-		IsWorktreeIsolated: isWorktreeIsolated,
-
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
 		// Agent-lifecycle background tasks (async Pre/Post compress memory hooks
@@ -904,13 +886,6 @@ func (a *Agent) buildSubAgentRunConfig(
 		SubAgentSem:               userCtx.SubAgentSem,
 
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
-	}
-
-	// If the SubAgent's CWD is inside a worktree directory,
-	// rewrite WorkspaceRoot to the worktree path for path isolation.
-	// (workDir was already rewritten above before system prompt construction.)
-	if isWorktreeIsolated {
-		cfg.WorkspaceRoot = workDir
 	}
 
 	// Per-user token usage tracking：SubAgent 的 token 消耗归属原始用户

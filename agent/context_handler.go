@@ -14,7 +14,6 @@ import (
 	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage/sqlite"
-	"xbot/tools"
 	"xbot/version"
 )
 
@@ -337,7 +336,7 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 	fmt.Fprintf(&sb, "| Request ID 前缀 | `%s-%s-N` |\n", sessionID, turnTag)
 	fmt.Fprintf(&sb, "| Tenant ID | %d |\n", tenantSession.TenantID())
 
-	// 会话状态（最后活跃 / 最大 Turn / 是否迭代中 / worktree）
+	// 会话状态（最后活跃 / 最大 Turn / 是否迭代中）
 	if la := tenantSession.LastActive(); !la.IsZero() {
 		fmt.Fprintf(&sb, "| 最后活跃 | %s |\n", la.Format("2006-01-02 15:04:05"))
 	}
@@ -353,13 +352,6 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 			}
 		}
 	}
-	if entry := tools.GlobalWorktreeRegistry.GetBySession(sessionID); entry != nil && entry.WorktreeDir != "" {
-		fmt.Fprintf(&sb, "| Worktree | `%s` |\n", entry.WorktreeDir)
-		if entry.Branch != "" {
-			fmt.Fprintf(&sb, "| 分支 | %s |\n", entry.Branch)
-		}
-	}
-
 	// CWD
 	if cwd := tenantSession.GetCurrentDir(); cwd != "" {
 		fmt.Fprintf(&sb, "| 工作目录 | `%s` |\n", cwd)

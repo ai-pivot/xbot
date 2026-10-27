@@ -24,7 +24,6 @@ var toolGeneratingHints = map[string]string{
 	"SubAgent":       "deciding…",
 	"SendMessage":    "wording…",
 	"Cd":             "navigating…",
-	"Worktree":       "branching…",
 	"config":         "tuning…",
 	"Cron":           "scheduling…",
 	"TodoWrite":      "organizing…",

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"strconv"
-	"strings"
 
 	"xbot/channel"
 	"xbot/channel/cli"
@@ -66,12 +65,6 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Agent.MemoryProvider = value },
 	},
 	"tavily_api_key": {}, // Stored in user_settings; WebSearchTool reads dynamically
-
-	"auto_worktree": {
-		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.Agent.Experimental.AutoWorktree = strings.ToLower(value) == "true"
-		},
-	},
 
 	// allow_self_compact: registers/unregisters the compact_context tool LIVE
 	// (server_core.go registers it at boot from config.json — saveServerConfig
