@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,9 +29,17 @@ import (
 // （接口里 force_verify_image_resource 参数即"图片转存"，说明 markdown 支持图片）。
 // 而 QQ 的 /files 上传只返回 file_info（内部标识，不是 URL），本地图拿不到公网地址，
 // 因此需要先把图落到我们自己的 CDN 上，再嵌进 markdown。
+// defaultQiniuUploadHost 是七牛的全局上传入口。区域不对时服务端会在 400 里
+// 明确给出正确域名，uploadRaw 会自动纠正并重试。
+const defaultQiniuUploadHost = "upload.qiniup.com"
+
 type qiniuUploader struct {
 	ak, sk, bucket, domain string
-	logf                   func(string, ...any)
+	// host 是上传入口；空 = 用 defaultQiniuUploadHost。配置项 QINIU_UPLOAD_HOST
+	// 可显式指定，400 incorrect region 时也会被自动纠正并记住。
+	host string
+	mu   sync.Mutex
+	logf func(string, ...any)
 }
 
 // newQiniuFromEnvFile 从 k=v 文件读取七牛配置（默认复用 qiniu skill 的 secrets.env）。
@@ -60,7 +69,11 @@ func newQiniuFromEnvFile(path string, logf func(string, ...any)) *qiniuUploader 
 		sk:     kv["QINIU_SK"],
 		bucket: kv["QINIU_BUCKET"],
 		domain: strings.TrimRight(kv["QINIU_DOMAIN"], "/"),
-		logf:   logf,
+		// 上传入口默认走全局域名；某些 bucket 落在特定区域（xbot-1 在 up-as0），
+		// 全局域名会返回 400 incorrect region。允许配置覆盖，另外 400 时也会
+		// 自动纠正（见 uploadRaw），两条路都能自愈。
+		host: strings.TrimSpace(kv["QINIU_UPLOAD_HOST"]),
+		logf: logf,
 	}
 	if u.ak == "" || u.sk == "" || u.bucket == "" || u.domain == "" {
 		return nil
@@ -103,21 +116,96 @@ func (u *qiniuUploader) uploadRaw(ctx context.Context, data []byte, name string)
 	}
 	mw.Close()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://upload.qiniup.com", &buf)
+	payload := buf.Bytes()
+	contentType := mw.FormDataContentType()
+
+	// 第一次用配置的 host（或全局默认）。
+	host := u.uploadHostOf()
+	status, body, err := u.postUpload(ctx, host, contentType, payload)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	// 区域不对时七牛在 400 里直接告诉我们该用哪个域名：
+	//   {"error":"incorrect region, please use up-as0.qiniup.com, bucket is: xbot-1"}
+	// 官方 SDK 的标准做法就是解析它并重试一次，而不是让人手改配置。这条路径
+	// 2026-10-27 实测踩过：硬编码 upload.qiniup.com 对 xbot-1 永久 400，
+	// 图片一条都发不出去，还被静默降级成 media-per-message。
+	if status/100 != 2 {
+		if corrected := regionHostFromError(body); corrected != "" && corrected != host {
+			u.logf("qiniu: region mismatch, retrying upload against %s", corrected)
+			u.setUploadHost(corrected)
+			if st2, b2, err2 := u.postUpload(ctx, corrected, contentType, payload); err2 == nil {
+				status, body = st2, b2
+			} else {
+				u.logf("qiniu: retry against %s failed: %v", corrected, err2)
+			}
+		}
+	}
+	if status/100 != 2 {
+		return "", fmt.Errorf("qiniu upload HTTP %d: %.200s", status, body)
+	}
+	return u.domain + "/" + key, nil
+}
+
+// postUpload 发一次 multipart 上传，返回状态码与响应体。
+func (u *qiniuUploader) postUpload(ctx context.Context, host, contentType string, payload []byte) (int, []byte, error) {
+	if !strings.Contains(host, "://") {
+		host = "https://" + host
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, host, bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode/100 != 2 {
-		return "", fmt.Errorf("qiniu upload HTTP %d: %.200s", resp.StatusCode, body)
+	return resp.StatusCode, body, nil
+}
+
+// regionHostFromError 从七牛的 400 响应里取出「please use <host>」。
+// 找不到返回 ""。
+func regionHostFromError(body []byte) string {
+	const marker = "please use "
+	s := string(body)
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return ""
 	}
-	return u.domain + "/" + key, nil
+	rest := strings.TrimSpace(s[i+len(marker):])
+	// 有些响应带引号：please use "up-z1.qiniup.com", bucket is: ...
+	// 先把前导引号剥掉，否则下面第一个字符就是引号，直接截成空串。
+	// 响应体是原始 JSON 文本，引号在字节层是反斜杠+引号（\"），两者都要剥。
+	rest = strings.TrimLeft(rest, "\\\"'")
+	end := strings.IndexAny(rest, ",}\r\n \t\"'\\")
+	if end < 0 {
+		end = len(rest)
+	}
+	host := strings.TrimSpace(rest[:end])
+	if !strings.Contains(host, ".") {
+		return ""
+	}
+	return host
+}
+
+// uploadHostOf 返回当前生效的上传入口（配置优先，否则七牛全局域名）。
+func (u *qiniuUploader) uploadHostOf() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.host != "" {
+		return u.host
+	}
+	return defaultQiniuUploadHost
+}
+
+// setUploadHost 记录自动纠正后的入口，本次进程内后续上传直接复用。
+func (u *qiniuUploader) setUploadHost(h string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.host = h
 }
 
 // uploadFile 读取本地路径或 http(s) 源，上传后返回公网 URL。
