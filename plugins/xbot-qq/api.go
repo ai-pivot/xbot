@@ -288,8 +288,13 @@ type MessageMedia struct {
 
 // sendMarkdown 以 msg_type=2 发送 Markdown 消息（content 留空，官方硬约束）。
 func (c *APIClient) sendMarkdown(ctx context.Context, op, path, markdown, msgID string, msgSeq uint32) (*SentMessage, error) {
-	// 正文里真的含图片语法时才开「图片转存」，否则不额外引入平台侧行为。
-	verifyImg := strings.Contains(markdown, "![")
+	// ⚠️ force_verify_image_resource **不是**"启用图片"的开关，官方定义是：
+	//   是否校验图片转存结果，当为 true 时，如果出现图片转存失败，则会返回错误，
+	//   **消息不会发送**。默认为 false。
+	// 图片转存在 false 时同样会发生 —— 开了它只会让"转存失败"升级成"整条拒发"。
+	// 2026-10-27 我误以为它是开关并置 true，结果图片转存稍有问题就整条消息都不发，
+	// 用户侧表现为"连消息都收不到"。所以这里**永远传 false**（即默认行为）。
+	verifyImg := false
 	body := messageBody{
 		MsgType:  MsgTypeMarkdown,
 		Markdown: &MessageMarkdown{Content: markdown, ForceVerifyImageResource: verifyImg},
