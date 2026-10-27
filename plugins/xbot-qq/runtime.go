@@ -60,6 +60,9 @@ func newRuntime(cfg Config, deps runtimeDeps, logf func(string, ...any)) *channe
 	gw.cfg = GatewayConfig{Reconnect: deps.reconnect, Sleep: deps.sleep, Intents: cfg.Intents, WSURLOverride: cfg.WSURL}
 	sender := NewOutboundSender(deps.api)
 	// 发送器自己也要能报 ERROR（配额耗尽必须留痕，见 sender.go）。
+	if ac, ok := deps.api.(*APIClient); ok && ac != nil {
+		ac.logf = logf
+	}
 	sender.logErr = logf
 	sender.Markdown = cfg.Markdown
 	sender.Stream = cfg.Stream
@@ -81,6 +84,11 @@ func (r *channelRuntime) Send(ctx context.Context, chatID, content string) (*Sen
 // SendStreamDelta 转发一段增量文本到私聊流式接口（群聊自动忽略）。
 func (r *channelRuntime) SendStreamDelta(ctx context.Context, chatID, delta string, final bool) (bool, error) {
 	return r.sender.SendStreamDelta(ctx, chatID, delta, final)
+}
+
+// SendImages 上传并发送 markdown 里抽出的图片（富媒体 msg_type=7）。
+func (r *channelRuntime) SendImages(ctx context.Context, chatID string, urls []string) (int, error) {
+	return r.sender.SendImages(ctx, chatID, urls)
 }
 
 // RememberInbound 记录被动回复锚点。

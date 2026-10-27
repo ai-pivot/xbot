@@ -212,3 +212,57 @@ func TestReplyMsgIdxStringTolerated(t *testing.T) {
 		t.Fatalf("数字序号引用未匹配: %+v", in2.Reply)
 	}
 }
+
+// TestQuotedAttachmentsAreIngested 引用里的附件必须被下载注入。
+//
+// 2026-10-27 真机：用户「引用一条带图的消息 + @机器人」，当前消息的
+// attachments 为空、图片在 msg_elements[].attachments 里。只取 d.Attachments
+// ⇒ agent 只看到一行占位文字，拿不到图（用户原话：图片本身没有传过来）。
+// 本用例锁住：引用元素的附件要合并进 Inbound.Attachments。
+func TestQuotedAttachmentsAreIngested(t *testing.T) {
+	payload := json.RawMessage(`{
+		"id":"M-QA-1","content":"<@BOT1> 这张图里是什么","group_openid":"G1",
+		"author":{"member_openid":"U1","username":"someone"},
+		"mentions":[{"id":"BOT1","member_openid":"BOT1","bot":true}],
+		"message_type":103,
+		"message_scene":{"ext":["ref_msg_idx=REF-9"]},
+		"msg_elements":[{
+			"msg_idx":"REF-9","content":"","author":{"member_openid":"U2"},
+			"attachments":[{"url":"https://example.com/q.png","filename":"q.png","content_type":"image/png","size":123,"width":10,"height":10}]
+		}]
+	}`)
+	in, ok, err := ParseInbound(EventGroupMessageCreate, payload)
+	if err != nil || !ok {
+		t.Fatalf("ok=%t err=%v", ok, err)
+	}
+	if in.Reply == nil {
+		t.Fatalf("应识别引用块")
+	}
+	if len(in.Attachments) != 1 {
+		t.Fatalf("引用里的附件必须合并进来，实际 %d 个", len(in.Attachments))
+	}
+	if in.Attachments[0].DownloadURL() != "https://example.com/q.png" {
+		t.Fatalf("附件 url 不对: %q", in.Attachments[0].DownloadURL())
+	}
+
+	// 当前消息自己带附件时，两者去重合并
+	payload2 := json.RawMessage(`{
+		"id":"M-QA-2","content":"<@BOT1> 对比这两张","group_openid":"G1",
+		"author":{"member_openid":"U1"},
+		"mentions":[{"id":"BOT1","member_openid":"BOT1","bot":true}],
+		"message_type":103,
+		"message_scene":{"ext":["ref_msg_idx=REF-9"]},
+		"attachments":[{"url":"https://example.com/now.png","content_type":"image/png"}],
+		"msg_elements":[{
+			"msg_idx":"REF-9","content":"","author":{"member_openid":"U2"},
+			"attachments":[{"url":"https://example.com/q.png","content_type":"image/png"}]
+		}]
+	}`)
+	in2, ok2, err2 := ParseInbound(EventGroupMessageCreate, payload2)
+	if err2 != nil || !ok2 {
+		t.Fatalf("ok=%t err=%v", ok2, err2)
+	}
+	if len(in2.Attachments) != 2 {
+		t.Fatalf("当前附件 + 引用附件应合并为 2 个，实际 %d", len(in2.Attachments))
+	}
+}

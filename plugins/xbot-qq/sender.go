@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -84,6 +85,10 @@ type MessageAPI interface {
 	SendGroupMarkdown(ctx context.Context, groupOpenID, markdown, msgID string, msgSeq uint32) (*SentMessage, error)
 	// StreamC2C 发一片私聊流式消息（仅私聊；群聊官方无流式接口）。
 	StreamC2C(ctx context.Context, userOpenID string, body streamBody) (*SentMessage, error)
+	// UploadImage 让平台下载转存图片，返回 file_info。
+	UploadImage(ctx context.Context, chatID, imageURL string) (string, error)
+	// SendMedia 以 msg_type=7 发送富媒体（图片）消息。
+	SendMedia(ctx context.Context, chatID, fileInfo, msgID string, msgSeq uint32) (*SentMessage, error)
 }
 
 // msgAnchor 记录某个会话最后一条入站消息，用作被动回复锚点。
@@ -507,4 +512,50 @@ func splitForStream(content string, pieces, minRunes int) []string {
 		out = append(out, string(r[i:end]))
 	}
 	return out
+}
+
+// imageMarkdownRe 匹配 markdown 图片语法 ![alt](url)。
+var imageMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\((https?://[^)\s]+)\)`)
+
+// extractMarkdownImages 抽出 markdown 里的图片 URL，并返回移除图片后的正文。
+//
+// 为什么要移除：QQ 的 markdown 子集**不渲染外链图片**，保留原样只会显示成
+// 一段 `![alt](url)` 文本。正确做法是把图片走富媒体通道（msg_type=7）单独发。
+func extractMarkdownImages(md string) (urls []string, rest string) {
+	matches := imageMarkdownRe.FindAllStringSubmatch(md, -1)
+	for _, m := range matches {
+		urls = append(urls, m[1])
+	}
+	rest = imageMarkdownRe.ReplaceAllString(md, "")
+	rest = strings.TrimSpace(rest)
+	return urls, rest
+}
+
+// SendImages 把 markdown 里的图片逐张上传并以富媒体消息发出。
+//
+// 流程（官方）：POST /v2/{groups|users}/.../files  file_type=1 + url + srv_send_msg=false
+//
+//	→ 平台自行下载转存，返回 file_info
+//	→ 再发 msg_type=7 + media.file_info 走**被动回复**（不占主动消息频次）
+//
+// 返回成功发出的张数。
+func (s *OutboundSender) SendImages(ctx context.Context, chatID string, urls []string) (int, error) {
+	if len(urls) == 0 {
+		return 0, nil
+	}
+	anchor := s.passiveMsgID(chatID)
+	sent := 0
+	for _, u := range urls {
+		info, err := s.api.UploadImage(ctx, chatID, u)
+		if err != nil {
+			s.logErr("ERROR: image upload failed url=%s: %v", u, err)
+			continue
+		}
+		if _, err := s.api.SendMedia(ctx, chatID, info, anchor, s.nextSeq(chatID, anchor)); err != nil {
+			s.logErr("ERROR: image send failed url=%s: %v", u, err)
+			continue
+		}
+		sent++
+	}
+	return sent, nil
 }

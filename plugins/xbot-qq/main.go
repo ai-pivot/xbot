@@ -629,8 +629,30 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	// 图片：QQ 的 markdown **不渲染外链图片**，`![](url)` 只会显示成一段文本。
+	// 所以先把图抽出来走富媒体通道（msg_type=7），再发剩下的文本。
+	//
+	// 流程：POST .../files {file_type:1,url,srv_send_msg:false} → file_info
+	//       → msg_type=7 + media.file_info 走被动回复（不占主动消息频次）
+	if imgURLs, rest := extractMarkdownImages(content); len(imgURLs) > 0 {
+		if n, ierr := rt.SendImages(ctx, chatID, imgURLs); ierr != nil {
+			a.logf("outbound images to %q: sent=%d/%d err=%v", chatID, n, len(imgURLs), ierr)
+		} else {
+			a.logf("outbound images to %q: sent=%d/%d", chatID, n, len(imgURLs))
+		}
+		content = rest
+		if content == "" {
+			// 纯图片消息：不需要再发文本
+			if frameID != "" {
+				a.write(enc, okResponse{ID: frameID, Result: "ok"})
+			}
+			return
+		}
+	}
+
 	msg, err := rt.Send(ctx, chatID, content)
 	if err != nil {
 		a.logf("outbound to %q failed: %v", chatID, err)

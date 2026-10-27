@@ -32,12 +32,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -156,6 +159,8 @@ type APIClient struct {
 	baseURL string
 	// sandbox 记录当前环境，只用于日志与错误提示（请求走 baseURL）。
 	sandbox bool
+	// logf 可选日志钩子（由 runtime 注入，便于把上传失败写进插件日志）。
+	logf func(format string, args ...any)
 }
 
 // NewAPIClient 构造客户端（默认沙箱环境）。
@@ -231,8 +236,15 @@ type messageBody struct {
 	MsgType int    `json:"msg_type"`
 	// Markdown 仅在 msg_type=2 时填写；此时 Content 必须为空（官方硬约束）。
 	Markdown *MessageMarkdown `json:"markdown,omitempty"`
-	MsgID    string           `json:"msg_id,omitempty"`
-	MsgSeq   uint32           `json:"msg_seq"`
+	// Media 仅在 msg_type=7 时填写（富媒体）。
+	Media  *MessageMedia `json:"media,omitempty"`
+	MsgID  string        `json:"msg_id,omitempty"`
+	MsgSeq uint32        `json:"msg_seq"`
+}
+
+// MessageMedia 是 msg_type=7（富媒体）的内容体；file_info 来自 UploadImage。
+type MessageMedia struct {
+	FileInfo string `json:"file_info"`
 }
 
 // sendMarkdown 以 msg_type=2 发送 Markdown 消息（content 留空，官方硬约束）。
@@ -356,3 +368,155 @@ func (c *APIClient) StreamC2C(ctx context.Context, userOpenID string, body strea
 	}
 	return &out, nil
 }
+
+// ── 富媒体（图片）发送 ──
+//
+// 出处：《上传富媒体素材》POST /v2/{groups|users}/{openid}/files
+//
+//	file_type   1=图片 2=视频 3=语音 4=文件
+//	url         媒体 URL（http 开头），**平台会自行下载并转存** —— 不用传二进制
+//	srv_send_msg false = 仅返回 file_info，用于随后在消息里引用（不占主动消息频次）
+//	             true  = 直接发送，但**会占用主动消息频次**（多数应用无此权限，40034105）
+//
+// 因此正确姿势：先 srv_send_msg=false 拿 file_info，再用 msg_type=7 的 media
+// 字段做**被动回复**。下面两个方法即为此设计。
+type uploadResp struct {
+	FileUUID string `json:"file_uuid"`
+	FileInfo string `json:"file_info"`
+	TTL      int    `json:"ttl"`
+	ID       string `json:"id"`
+}
+
+// uploadBinaryLimit 是 file_data 直传的大小上限（官方：5M 以内）。
+const uploadBinaryLimit = 5 << 20
+
+// UploadImage 上传一张图片，返回 file_info（供 SendMedia 使用）。
+//
+// 优先**直传二进制**（file_data，base64）：因为图片来源常常是签名 URL / 内网地址，
+// 平台侧没有我们的凭据，`url` 方式会下载失败（表现为 400 或 file_info 为空）。
+// 超过 5MB 时才退回 url 方式（让平台去下）。
+func (c *APIClient) UploadImage(ctx context.Context, chatID, imageURL string) (string, error) {
+	groupOpenID, userOpenID, err := parseChatID(chatID)
+	if err != nil {
+		return "", err
+	}
+	path := "/v2/users/" + userOpenID + "/files"
+	if groupOpenID != "" {
+		path = "/v2/groups/" + groupOpenID + "/files"
+	}
+	body := map[string]any{
+		"file_type":    1, // 图片
+		"srv_send_msg": false,
+	}
+	// 先尝试本地读取（http(s) 抓取或本地文件），拿得到就走二进制直传。
+	if data, name, ferr := fetchImageBytes(ctx, imageURL, 64<<20); ferr == nil && len(data) > 0 {
+		// 超过 5M 直传上限时先压缩（用户要求：「超 5M 就压缩」）。
+		// 压不动（格式不支持等）才退回 url 方式。
+		if len(data) > uploadBinaryLimit {
+			if small, cname, cerr := compressToLimit(data, uploadBinaryLimit); cerr == nil {
+				if c.cfgLog() != nil {
+					c.cfgLog()("upload_media: compressed %d -> %d bytes (%s)", len(data), len(small), cname)
+				}
+				data = small
+				if cname != "" {
+					name = cname
+				}
+			} else if c.cfgLog() != nil {
+				c.cfgLog()("upload_media: compress failed (%v), falling back to url", cerr)
+			}
+		}
+		body["file_data"] = base64.StdEncoding.EncodeToString(data)
+		body["file_name"] = name
+	} else {
+		// 读不到或超过上限：退回让平台自己下载（仅当 URL 公网可访问时才有效）。
+		if ferr != nil && c.logf != nil {
+			c.logf("upload_media: local read failed (%v), falling back to url", ferr)
+		}
+		body["url"] = imageURL
+		body["file_name"] = fileNameFromURL(imageURL)
+	}
+	var out uploadResp
+	if err := c.do(ctx, "upload_media", http.MethodPost, path, body, &out); err != nil {
+		return "", err
+	}
+	if out.FileInfo == "" {
+		return "", fmt.Errorf("upload_media: empty file_info in response")
+	}
+	return out.FileInfo, nil
+}
+
+// SendMedia 以 msg_type=7（富媒体）发送一条图片消息（被动回复）。
+func (c *APIClient) SendMedia(ctx context.Context, chatID, fileInfo, msgID string, msgSeq uint32) (*SentMessage, error) {
+	groupOpenID, userOpenID, err := parseChatID(chatID)
+	if err != nil {
+		return nil, err
+	}
+	path := "/v2/users/" + userOpenID + "/messages"
+	if groupOpenID != "" {
+		path = "/v2/groups/" + groupOpenID + "/messages"
+	}
+	body := messageBody{
+		MsgType: 7, // 富媒体
+		Media:   &MessageMedia{FileInfo: fileInfo},
+		MsgID:   msgID,
+		MsgSeq:  msgSeq,
+	}
+	var out SentMessage
+	if err := c.do(ctx, "send_media", http.MethodPost, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// fetchImageBytes 读取图片字节：支持 http(s) URL 与本地绝对路径。
+// 返回数据、文件名；超过 limit 直接报错（由调用方退回 url 方式）。
+func fetchImageBytes(ctx context.Context, src string, limit int) ([]byte, string, error) {
+	if strings.HasPrefix(src, "/") {
+		fi, err := os.Stat(src)
+		if err != nil {
+			return nil, "", err
+		}
+		if fi.Size() > int64(limit) {
+			return nil, "", fmt.Errorf("local file %d bytes exceeds %d", fi.Size(), limit)
+		}
+		b, err := os.ReadFile(src)
+		return b, filepath.Base(src), err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, "", fmt.Errorf("GET %s: HTTP %d", src, resp.StatusCode)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(b) > limit {
+		return nil, "", fmt.Errorf("remote image exceeds %d bytes", limit)
+	}
+	return b, fileNameFromURL(src), nil
+}
+
+// fileNameFromURL 从 URL 里取文件名，取不到就用固定名（file_name 为必填）。
+func fileNameFromURL(u string) string {
+	if i := strings.LastIndex(u, "/"); i >= 0 && i+1 < len(u) {
+		name := u[i+1:]
+		if j := strings.IndexAny(name, "?#"); j > 0 {
+			name = name[:j]
+		}
+		if name != "" {
+			return name
+		}
+	}
+	return "image.png"
+}
+
+// cfgLog 返回日志钩子（可能为 nil）。
+func (c *APIClient) cfgLog() func(string, ...any) { return c.logf }

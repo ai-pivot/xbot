@@ -45,6 +45,14 @@ func (f *fakeMessageAPI) StreamC2C(_ context.Context, userOpenID string, body st
 	return f.record(sentCall{kind: "c2c-stream", target: userOpenID, content: body.ContentRaw, msgID: body.MsgID, seq: body.MsgSeq})
 }
 
+func (f *fakeMessageAPI) UploadImage(_ context.Context, chatID, imageURL string) (string, error) {
+	return "FILEINFO:" + imageURL, nil
+}
+
+func (f *fakeMessageAPI) SendMedia(_ context.Context, chatID, fileInfo, msgID string, seq uint32) (*SentMessage, error) {
+	return f.record(sentCall{kind: "media", target: chatID, content: fileInfo, msgID: msgID, seq: seq})
+}
+
 func (f *fakeMessageAPI) record(c sentCall) (*SentMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -371,5 +379,47 @@ func TestStreamSplitsIntoSeveralPieces(t *testing.T) {
 	}
 	if joined.String() != answer {
 		t.Fatalf("分片拼接与原文不一致：got %d runes, want %d", len([]rune(joined.String())), len([]rune(answer)))
+	}
+}
+
+// TestMarkdownImagesGoThroughMediaChannel markdown 里的图片必须走富媒体通道。
+//
+// QQ 的 markdown 不渲染外链图片，`![](url)` 只会显示成一段文本。正确做法是：
+// 抽出图片 → POST .../files {file_type:1,url,srv_send_msg:false} 拿 file_info
+// → msg_type=7 + media.file_info 发被动回复 → 正文里移除图片语法。
+func TestMarkdownImagesGoThroughMediaChannel(t *testing.T) {
+	md := "这是说明\n\n![截图](https://example.com/a.png)\n\n还有 ![](https://example.com/b.jpg) 结尾"
+	urls, rest := extractMarkdownImages(md)
+	if len(urls) != 2 {
+		t.Fatalf("应抽出 2 张图，实际 %d: %v", len(urls), urls)
+	}
+	if strings.Contains(rest, "![") || strings.Contains(rest, ".png") {
+		t.Fatalf("正文里不应残留图片语法: %q", rest)
+	}
+	if !strings.Contains(rest, "这是说明") || !strings.Contains(rest, "结尾") {
+		t.Fatalf("正文文字丢失: %q", rest)
+	}
+
+	api := &fakeMessageAPI{}
+	s := NewOutboundSender(api)
+	s.RememberInbound("USER-OPENID", "MSG-IMG-1")
+	n, err := s.SendImages(context.Background(), "USER-OPENID", urls)
+	if err != nil || n != 2 {
+		t.Fatalf("SendImages n=%d err=%v", n, err)
+	}
+	calls := api.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("应发 2 条 media，实际 %d", len(calls))
+	}
+	for i, c := range calls {
+		if c.kind != "media" {
+			t.Fatalf("第 %d 条 kind=%s, want media", i, c.kind)
+		}
+		if !strings.HasPrefix(c.content, "FILEINFO:https://example.com/") {
+			t.Fatalf("file_info 不对: %q", c.content)
+		}
+		if c.msgID != "MSG-IMG-1" {
+			t.Fatalf("必须带被动回复锚点，实际 msgID=%q", c.msgID)
+		}
 	}
 }

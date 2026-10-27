@@ -271,6 +271,27 @@ func ParseInbound(eventType string, data json.RawMessage) (Inbound, bool, error)
 			in.Reply = &q
 		}
 	}
+
+	// 引用里的附件也要下载。
+	//
+	// 2026-10-27 真机：用户「引用一条带图的消息 + @机器人」时，**当前消息**
+	// 的 attachments 是空的，图片在被引用那条（msg_elements[].attachments）里。
+	// 只取 d.Attachments ⇒ agent 只看到一行占位、拿不到图，表现为
+	// 「引用消息里的图片没过来」。
+	// 合并策略：先用当前消息的附件；没有则取引用元素的附件；两者都有时去重合并。
+	if in.Reply != nil && len(in.Reply.Attachments) > 0 {
+		seen := make(map[string]bool, len(in.Attachments))
+		for _, at := range in.Attachments {
+			seen[at.DownloadURL()] = true
+		}
+		for _, at := range in.Reply.Attachments {
+			u := at.DownloadURL()
+			if u != "" && !seen[u] {
+				in.Attachments = append(in.Attachments, at)
+				seen[u] = true
+			}
+		}
+	}
 	if in.MessageID == "" {
 		return in, true, fmt.Errorf("%s payload has no message id (d.id required for passive reply)", eventType)
 	}
