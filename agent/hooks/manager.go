@@ -42,6 +42,27 @@ func NewManager(xbotHome, projectDir string) (*Manager, error) {
 		return nil, fmt.Errorf("load hooks config: %w", err)
 	}
 
+	m := newManagerWithConfig(layers, config, xbotHome, projectDir)
+	return m, nil
+}
+
+// NewEmptyManager returns a Manager with NO hooks loaded but every default
+// executor registered, so it is safe to call from a degraded start-up path.
+//
+// 为什么需要它：hooks.json 语法/结构错误时 NewManager 返回 (nil, err)，而调用方
+// agent.New() 原先只打一条 WARN 再"重试"——同一个函数、同一份输入，必然同样
+// 失败 —— 于是 hookManager 为 nil，紧接着 RegisterBuiltin 就 nil deref panic。
+// 实测触发方式：hooks.json 写成 {"hooks":[]}（数组无法反序列化成
+// map[string][]EventGroup），进程退出码 2。
+//
+// 配置坏了应该只让 hooks 失效，不该让整个 agent 起不来。
+func NewEmptyManager(xbotHome, projectDir string) *Manager {
+	return newManagerWithConfig(nil, &HookConfig{Hooks: make(map[string][]EventGroup)}, xbotHome, projectDir)
+}
+
+// newManagerWithConfig 是唯一的构造实现，两个入口共用，避免默认执行器
+// 注册逻辑在两条路径上漂移。
+func newManagerWithConfig(layers []*ConfigLayer, config *HookConfig, xbotHome, projectDir string) *Manager {
 	m := &Manager{
 		config:     config,
 		layers:     layers,
@@ -50,12 +71,10 @@ func NewManager(xbotHome, projectDir string) (*Manager, error) {
 		xbotHome:   xbotHome,
 		projectDir: projectDir,
 	}
-
 	// Register default executors.
 	m.executors["command"] = NewCommandExecutor(xbotHome, projectDir)
 	m.executors["http"] = NewHTTPExecutor()
-
-	return m, nil
+	return m
 }
 
 // ---------------------------------------------------------------------------

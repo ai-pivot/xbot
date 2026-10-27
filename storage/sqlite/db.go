@@ -270,7 +270,16 @@ func (db *DB) Close() error {
 	// 引用计数永久泄漏、锁永不释放（比不修更糟）。
 	var closeErr error
 	if db.conn != nil {
-		closeErr = db.conn.Close()
+		// 共享连接池：这里只释放**本 handle 的引用**，只有最后一个持有者
+		// 才会真正 Close。否则一个短连接（migrate / tokenDB / 某个即开即关的
+		// 调用点）关库时，SQLite 会认为「这一连接集的最后一条连接结束了」并
+		// checkpoint + unlink -wal，而常驻池仍持有那个 fd —— 后续写入只能落进
+		// 一个没有目录项的 inode（2026-10-27 生产实证：4MB/1015 帧）。
+		if db.path == ":memory:" {
+			closeErr = db.conn.Close()
+		} else {
+			closeErr = releaseSharedConn(db.path)
+		}
 		// Deliberately NOT setting db.conn = nil: a closed *sql.DB is safe to
 		// call (every method returns sql.ErrDBClosed) whereas a nil one panics
 		// inside database/sql when it locks db.mu. Late goroutines that touch

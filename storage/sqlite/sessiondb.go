@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	log "xbot/logger"
@@ -163,7 +164,83 @@ func OpenSessionDB(path string) (*DB, error) {
 // 连接池）。maxIdleConns / maxIdleTime 由调用方按访问模式调优（主库 4/0，会话库
 // 1/5min）。数据安全告警（0 字节 / 非 SQLite 头 / 同级备份）只在主库 Open 报——
 // 会话库由宿主管理生命周期（删除即删文件），不需要那套启动告警。
-func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, error) {
+// ── 进程内按路径共享 *sql.DB（与 flock 同一套引用计数）──
+//
+// 为什么必须共享：Open() 在进程内被多处独立调用（serverapp 的 sharedDB /
+// tokenDB、storage.MigrateMemoryToFiles、session.MultiTenant）。flock 早已按路径
+// 复用（见 acquireDBLock），但 sql.DB **没有** —— 每次 Open 都新建一套连接池。
+// 后果是三合一的，生产 2026-10-27 实测：
+//
+//	· fd 随打开的库数膨胀：2440 个 .db fd，而磁盘上只有 1358 个会话库
+//	· **某个短连接 Close 时，SQLite 认为「这一连接集的最后一个连接关掉了」，
+//	  checkpoint 并 unlink 掉 -wal —— 而常驻池仍持有它**。那些帧只能写进一个
+//	  已经没有目录项的 inode（实测 4MB / 1015 帧，2 个池共 8 个 fd 指向它）
+//	· 关停要逐个 close 这些多余连接，把停机拖到 52s
+//
+// 共享之后同一路径全进程只有一个 *sql.DB，上面三件事一起消失。
+//
+// :memory: 不参与共享 —— 每个 :memory: 库天然相互独立，共享会让不同测试
+// 看到彼此的数据。
+var sharedConns = struct {
+	mu sync.Mutex
+	m  map[string]*sharedConn
+}{m: make(map[string]*sharedConn)}
+
+type sharedConn struct {
+	conn *sql.DB
+	refs int
+}
+
+// acquireSharedConn returns the process-wide *sql.DB for path, creating it on
+// first use. Every successful call must be paired with releaseSharedConn.
+func acquireSharedConn(path string, maxIdleConns int, maxIdleTime time.Duration) (*sql.DB, error) {
+	sharedConns.mu.Lock()
+	defer sharedConns.mu.Unlock()
+	if e, ok := sharedConns.m[path]; ok {
+		e.refs++
+		return e.conn, nil
+	}
+	conn, err := openRawConn(path, maxIdleConns, maxIdleTime)
+	if err != nil {
+		return nil, err
+	}
+	sharedConns.m[path] = &sharedConn{conn: conn, refs: 1}
+	return conn, nil
+}
+
+// releaseSharedConn drops one reference; the underlying pool is closed only when
+// the last holder releases it. Returns the Close error of that final close.
+func releaseSharedConn(path string) error {
+	sharedConns.mu.Lock()
+	defer sharedConns.mu.Unlock()
+	e, ok := sharedConns.m[path]
+	if !ok {
+		return nil
+	}
+	e.refs--
+	if e.refs > 0 {
+		log.WithFields(log.Fields{"path": path, "refs": e.refs}).
+			Debug("Database connection still referenced elsewhere; not closing the pool")
+		return nil
+	}
+	delete(sharedConns.m, path)
+	return e.conn.Close()
+}
+
+// sharedConnRefs reports the current reference count for path (0 = not open).
+// Used by tests and by shutdown diagnostics.
+func sharedConnRefs(path string) int {
+	sharedConns.mu.Lock()
+	defer sharedConns.mu.Unlock()
+	if e, ok := sharedConns.m[path]; ok {
+		return e.refs
+	}
+	return 0
+}
+
+// openRawConn creates a fresh connection pool. It does NOT touch the shared
+// registry — acquireSharedConn is the only caller.
+func openRawConn(path string, maxIdleConns int, maxIdleTime time.Duration) (*sql.DB, error) {
 	if path != ":memory:" {
 		dir := filepath.Dir(path)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -199,6 +276,21 @@ func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, 
 		}
 	}
 	enablePersistWAL(conn)
+	return conn, nil
+}
+
+func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, error) {
+	var conn *sql.DB
+	var err error
+	if path == ":memory:" {
+		// 每个 :memory: 库天然独立，不能共享。
+		conn, err = openRawConn(path, maxIdleConns, maxIdleTime)
+	} else {
+		conn, err = acquireSharedConn(path, maxIdleConns, maxIdleTime)
+	}
+	if err != nil {
+		return nil, err
+	}
 	db := &DB{conn: conn, path: path}
 	db.logWALState("open")
 	return db, nil

@@ -2390,8 +2390,12 @@ func New(cfg Config) (*Agent, error) {
 		hookManager: func() *hooks.Manager {
 			mgr, err := hooks.NewManager(cfg.XbotHome, cfg.WorkDir)
 			if err != nil {
-				log.WithError(err).Warn("Failed to load hooks config, using empty manager")
-				mgr, _ = hooks.NewManager(cfg.XbotHome, cfg.WorkDir)
+				// 配置坏了只让 hooks 失效，不能让整个 agent 起不来。
+				// 旧实现打一条 WARN 后又调了一次 NewManager —— 同参数同输入必然
+				// 同样失败，于是这里返回 nil，紧接着 5b 段 RegisterBuiltin 就
+				// nil deref panic（实测：hooks.json 写成 {"hooks":[]}，退出码 2）。
+				log.WithError(err).Warn("Failed to load hooks config — continuing with an empty hook manager; hooks stay disabled until the file is fixed")
+				return hooks.NewEmptyManager(cfg.XbotHome, cfg.WorkDir)
 			}
 			return mgr
 		}(),

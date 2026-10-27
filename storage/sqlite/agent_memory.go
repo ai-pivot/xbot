@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS xbot_short_term_memories (
 );
 CREATE INDEX IF NOT EXISTS idx_xbot_stm_user ON xbot_short_term_memories(user_id);
 CREATE INDEX IF NOT EXISTS idx_xbot_stm_session ON xbot_short_term_memories(session_id);
+-- tenant_id 是每条记忆的归属列，按租户清理/统计都走它。生产库靠手工补过这个
+-- 索引（2026-10-27 schema drift 审计发现），代码里一直没有 —— 结果任何全新部署
+-- 都会比生产慢一倍以上，而且没人会发现。这里补齐，幂等。
+CREATE INDEX IF NOT EXISTS idx_xbot_stm_tenant ON xbot_short_term_memories(tenant_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS xbot_short_term_memories_fts USING fts5(
     summary, key_topics,
@@ -96,6 +100,9 @@ CREATE TABLE IF NOT EXISTS xbot_long_term_memories (
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_user ON xbot_long_term_memories(user_id);
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_type ON xbot_long_term_memories(type);
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_heat ON xbot_long_term_memories(heat_score);
+-- 同上：生产有、代码无。审计判据是同一条——全新库建完后该索引必须存在且被
+-- 按 tenant_id 的查询命中。
+CREATE INDEX IF NOT EXISTS idx_xbot_ltm_tenant ON xbot_long_term_memories(tenant_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS xbot_long_term_memories_fts USING fts5(
     content, keywords, tags, search_text,
