@@ -144,7 +144,29 @@ func (u *qiniuUploader) uploadRaw(ctx context.Context, data []byte, name string)
 	if status/100 != 2 {
 		return "", fmt.Errorf("qiniu upload HTTP %d: %.200s", status, body)
 	}
-	return u.domain + "/" + key, nil
+
+	// 私有空间：裸 URL 一律 401（even 带 query 也可能被 CDN 回源鉴权拦掉）。
+	// 必须按七牛下载凭证算法现算签名 URL：
+	//   to_sign = "<domain>/<key>?e=<deadline>"    ← **必须含域名**
+	//   token   = urlsafe_base64(hmac_sha1(sk, to_sign))   ← **保留 = 填充**
+	//   url     = "<to_sign>&token=<ak>:<token>"
+	// 2026-10-27 踩坑：漏掉 to_sign 里的域名前缀，导致签名恒 401，且 CDN 报的是
+	// "origin auth return status: 401"（看起来像 CDN 配置问题，极具误导性）。
+	return u.signedURL(key, signedURLTTL), nil
+}
+
+// signedURLTTL 签名有效期。QQ 平台拿到 URL 后会在几秒内下载转存，
+// 但同一条 markdown 可能在客户端被重新拉取，所以给足余量。
+const signedURLTTL = 7 * 24 * time.Hour
+
+// signedURL 生成七牛私有空间的下载凭证 URL。
+func (u *qiniuUploader) signedURL(key string, ttl time.Duration) string {
+	deadline := time.Now().Add(ttl).Unix()
+	toSign := fmt.Sprintf("%s/%s?e=%d", u.domain, key, deadline)
+	mac := hmac.New(sha1.New, []byte(u.sk))
+	mac.Write([]byte(toSign))
+	token := base64.URLEncoding.EncodeToString(mac.Sum(nil)) // 保留 = 填充
+	return fmt.Sprintf("%s&token=%s:%s", toSign, u.ak, token)
 }
 
 // postUpload 发一次 multipart 上传，返回状态码与响应体。
