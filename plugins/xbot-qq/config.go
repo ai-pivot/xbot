@@ -43,24 +43,8 @@ const (
 	KeyMarkdown = "render_markdown"
 	// KeyStream 控制**私聊**回复是否走流式（边生成边显示），默认开启。
 	KeyStream = "stream_c2c"
-	// KeyQiniuEnv 是七牛凭据文件路径（k=v）。配置后图片会先传七牛拿公网 URL，
 	// 再以 markdown 图文混排一条发出；未配置则退回富媒体分条发送。
-	// KeyQiniuEnv 已废弃（兼容保留）：指向七牛 k=v 文件。
-	KeyQiniuEnv = "qiniu_env"
 
-	// ── 可插拔图床（对齐 xbot Storage Provider：qiniu|s3|aliyun|cos|local）──
-	KeyCDNProvider   = "cdn_provider"
-	KeyCDNPublicBase = "cdn_public_base"
-	KeyQiniuAK       = "qiniu_ak"
-	KeyQiniuSK       = "qiniu_sk"
-	KeyQiniuBucket   = "qiniu_bucket"
-	KeyQiniuDomain   = "qiniu_domain"
-	KeyQiniuRegion   = "qiniu_region"
-	KeyS3AK          = "s3_ak"
-	KeyS3SK          = "s3_sk"
-	KeyS3Bucket      = "s3_bucket"
-	KeyS3Region      = "s3_region"
-	KeyS3Endpoint    = "s3_endpoint"
 )
 
 // Config 是 QQ 渠道的运行时配置。
@@ -87,10 +71,6 @@ type Config struct {
 	Markdown bool
 	// Stream 为 true 时私聊回复走 stream_messages 分片发送。
 	Stream bool
-	// QiniuEnv 旧版七牛凭据文件路径（兼容保留）。
-	QiniuEnv string
-	// CDN 图床配置：为空表示不做托管（图文分条发送）。
-	CDN hosterConfig
 }
 
 // ParseConfig 把 host 推来的字符串键值解析成 Config。
@@ -126,21 +106,6 @@ func ParseConfig(raw map[string]string) Config {
 		WSURL:     get(KeyWSURL),
 		Markdown:  markdown,
 		Stream:    stream,
-		QiniuEnv:  get(KeyQiniuEnv),
-		CDN: hosterConfig{
-			Provider:    get(KeyCDNProvider),
-			PublicBase:  get(KeyCDNPublicBase),
-			QiniuAK:     get(KeyQiniuAK),
-			QiniuSK:     get(KeyQiniuSK),
-			QiniuBucket: get(KeyQiniuBucket),
-			QiniuDomain: get(KeyQiniuDomain),
-			QiniuRegion: get(KeyQiniuRegion),
-			S3AK:        get(KeyS3AK),
-			S3SK:        get(KeyS3SK),
-			S3Bucket:    get(KeyS3Bucket),
-			S3Region:    get(KeyS3Region),
-			S3Endpoint:  get(KeyS3Endpoint),
-		},
 	}
 }
 

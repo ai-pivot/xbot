@@ -29,7 +29,10 @@ type channelRuntime struct {
 	cfg    Config
 	gw     *Gateway
 	sender *OutboundSender
-	logf   func(string, ...any)
+	// api 供出站侧上传 markdown 图片到平台（qqbot-media://）。
+	// 平台托管取代了原来的外部图床，这是唯一需要 API 的图相关能力。
+	api  *APIClient
+	logf func(string, ...any)
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -59,6 +62,10 @@ func newRuntime(cfg Config, deps runtimeDeps, logf func(string, ...any)) *channe
 	// 这样切换「群聊(1<<25) / 频道(1<<30)」只需要改配置 + reload，不必重新编译。
 	gw.cfg = GatewayConfig{Reconnect: deps.reconnect, Sleep: deps.sleep, Intents: cfg.Intents, WSURLOverride: cfg.WSURL}
 	sender := NewOutboundSender(deps.api)
+	var apiClient *APIClient
+	if ac, ok := deps.api.(*APIClient); ok {
+		apiClient = ac
+	}
 	// 发送器自己也要能报 ERROR（配额耗尽必须留痕，见 sender.go）。
 	if ac, ok := deps.api.(*APIClient); ok && ac != nil {
 		ac.logf = logf
@@ -68,25 +75,11 @@ func newRuntime(cfg Config, deps runtimeDeps, logf func(string, ...any)) *channe
 	sender.Stream = cfg.Stream
 	// 350ms/片 × 3 片 ≈ 1 秒：客户端能明显看到"逐渐长出来"，又不会拖太久。
 	sender.streamDelay = 350 * time.Millisecond
-	// 图文混排：配置了七牛就把图先传 CDN，再以 markdown 一条发出；
-	// 没配置则 sender.uploader 为 nil，走原来的富媒体分条发送。
-	// 图床（可插拔，对齐 xbot Storage Provider）：provider=qiniu|s3|aliyun|cos|local。
-	// 未配置 → uploader 为 nil → 退回"图片单独一条 + 文字单独一条"。
-	if h, herr := NewHoster(cfg.CDN, logf); herr != nil {
-		logf("WARN: cdn provider %q misconfigured: %v — falling back to media-per-message", cfg.CDN.Provider, herr)
-	} else if h != nil {
-		sender.uploader = h
-		logf("cdn hoster enabled: provider=%s", h.Name())
-	} else if qe := cfg.QiniuEnv; qe != "" {
-		if u := newQiniuFromEnvFile(qe, logf); u != nil {
-			sender.uploader = u
-			logf("cdn hoster enabled (legacy qiniu_env): bucket=%s domain=%s", u.bucket, u.domain)
-		}
-	}
 	return &channelRuntime{
 		cfg:    cfg,
 		gw:     gw,
 		sender: sender,
+		api:    apiClient,
 		logf:   logf,
 	}
 }
@@ -100,14 +93,6 @@ func (r *channelRuntime) Send(ctx context.Context, chatID, content string) (*Sen
 func (r *channelRuntime) SendStreamDelta(ctx context.Context, chatID, delta string, final bool) (bool, error) {
 	return r.sender.SendStreamDelta(ctx, chatID, delta, final)
 }
-
-// UploadImagesToCDN 把图片传到 CDN 拿公网 URL（未配置 CDN 时返回 nil）。
-func (r *channelRuntime) UploadImagesToCDN(ctx context.Context, urls []string) []string {
-	return r.sender.UploadImagesToCDN(ctx, urls)
-}
-
-// HasCDN 报告是否配置了 CDN（决定图文能否混排成一条）。
-func (r *channelRuntime) HasCDN() bool { return r.sender.uploader != nil }
 
 // SendFiles 上传并发送 markdown 里抽出的文件（富媒体 file_type=4）。
 func (r *channelRuntime) SendFiles(ctx context.Context, chatID string, files [][2]string) (int, error) {

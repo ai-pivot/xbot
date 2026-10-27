@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -343,9 +344,8 @@ func (a *app) handleChannelConfig(ctx context.Context, enc *json.Encoder, f fram
 	rt.Start(ctx, func(eventCtx context.Context, ev GatewayEvent) {
 		a.handleGatewayEvent(enc, eventCtx, ev)
 	})
-	a.logf("qq channel started: env=%s base=%s app_id=%s allow=%s cdn_provider=%q cdn_keys=%d",
-		EnvName(cfg.Sandbox), APIBaseHost(cfg.Sandbox), cfg.AppID, cfg.Allow,
-		cfg.CDN.Provider, countNonEmpty(cfg.CDN.State(), cfg.CDN.QiniuAK, cfg.CDN.S3AK))
+	a.logf("qq channel started: env=%s base=%s app_id=%s allow=%s images=platform-hosted(qqbot-media://)",
+		EnvName(cfg.Sandbox), APIBaseHost(cfg.Sandbox), cfg.AppID, cfg.Allow)
 }
 
 // declareChannelPrompt 把渠道专属提示词声明给 host。
@@ -666,71 +666,66 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 	}
 
 	if imgURLs, rest := extractMarkdownImages(content); len(imgURLs) > 0 {
-		// 图片一律走**富媒体通道**（msg_type=7）单独发，绝不再拼回 markdown。
+		// 图片走**平台托管**（qqbot-media://），图文同一条 markdown 消息。
 		//
-		// 2026-10-27 生产事故：这里原来在配了 CDN 时把 URL 拼成 `![](url)` 塞进正文，
-		// 理由写的是「图文同一条消息」。但 QQ 的 markdown 子集**不渲染外链图片**，
-		// 客户端只会显示成一段 `![](...)` 文本（多数情况下干脆什么都不显示），
-		// 于是用户看到 bot 说「图片来了」却没有任何图。
+		// 2026-10-27 定论（用户真机确认）：这是唯一能显示且不过期的路径。
 		//
-		// CDN 的作用只是把本地路径变成**平台能拉取**的公网 URL；
-		// 图最终的投递方式必须是 msg_type=7 + media.file_info。
-		// 两者是串联关系，不是二选一。
+		//   · 外部图床 / 公网 URL（含签名 URL）→ 平台会「下载转存」，转存副本
+		//     有自己的时效，客户端最终显示「资源已过期」。7 天签名和 10 年签名
+		//     表现一样，因为过期的是转存副本，与我们的 URL 无关。
+		//   · qqbot-media:// → 平台自己托管，90 天滑动过期，每引用一次顺延。
 		//
-		// 代价：图文变成两条消息（QQ 的 msg_type=7 与 content 互斥，官方硬约束）。
-		// 能看见图 >> 强行混排。
-		urls := imgURLs
-		if rt.HasCDN() {
-			if pub := rt.UploadImagesToCDN(ctx, imgURLs); len(pub) > 0 {
-				urls = pub
-				a.logf("cdn upload ok for %q: %d url(s)", chatID, len(pub))
-			} else {
-				a.logf("WARN: cdn upload produced 0 urls, trying original urls")
+		// 因此七牛/S3/自建图床/签名逻辑已全部删除：平台托管之后它们没有用途。
+		//
+		// 语法必须是 `![说明 #宽px #高px](url)` —— 尺寸写在方括号内，
+		// 且说明与 `#` 之间有空格（官方文档示例）。写成 `![图](url) #300px`
+		// 会被当纯文本，渲染出「图 #300px」这种字。
+		var hosted []string
+		for _, u := range imgURLs {
+			data, name, ferr := fetchImageBytes(ctx, u, 64<<20)
+			if ferr != nil {
+				a.logf("WARN: read image %q failed: %v", u, ferr)
+				continue
 			}
+			ct := http.DetectContentType(data)
+			if !strings.HasPrefix(ct, "image/") {
+				// 平台只接受 png/jpeg/gif/webp；其它一律按 png 声明，
+				// 由平台在发送时做最终校验。
+				ct = "image/png"
+			}
+			ref, uerr := rt.api.UploadMarkdownImage(ctx, data, name, ct)
+			if uerr != nil {
+				a.logf("WARN: platform image upload failed for %q: %v", u, uerr)
+				continue
+			}
+			hosted = append(hosted, ref)
 		}
 
-		// ── 首选：markdown 图文同一条（msg_type=2）──
-		//
-		// 官方《Markdown 消息》明确支持 markdown 内放图片：
-		//   「对于 markdown 消息内的图片资源，请使用可在公网访问的资源 url，
-		//     开放平台会下载转存该资源。」
-		//   语法：![说明](url) #宽px #高px   （宽高可选）
-		// 且 2026/04/23 起单聊/群聊的自定义 markdown 已对**所有机器人**开放，
-		// 不需要申请模板。
-		//
-		// 之前两次失败的原因（都已修正）：
-		//   1) 用裸的 ![](url)：alt 为空，客户端不渲染 → 改为 ![图片](url)
-		//   2) 把 force_verify_image_resource 当成"启用图片"置 true：
-		//      它的真实语义是"转存失败则整条消息不发送"，于是消息直接消失。
-		var b strings.Builder
-		b.WriteString(rest)
-		if rest != "" {
-			b.WriteString("\n\n")
-		}
-		for _, u := range urls {
-			b.WriteString("![图片](" + u + ")\n")
-		}
-		merged := strings.TrimSpace(b.String())
-
-		if merged != "" && len([]rune(merged)) <= maxMessageRunes {
-			if _, merr := rt.Send(ctx, chatID, merged); merr == nil {
-				a.logf("outbound images to %q: %d image(s) merged into ONE markdown message (msg_type=2, CDN url)", chatID, len(urls))
-				if frameID != "" {
-					a.write(enc, okResponse{ID: frameID, Result: "ok"})
+		if len(hosted) > 0 {
+			var b strings.Builder
+			b.WriteString(rest)
+			if rest != "" {
+				b.WriteString("\n\n")
+			}
+			for _, ref := range hosted {
+				b.WriteString("![图片 #300px](" + ref + ")\n")
+			}
+			merged := strings.TrimSpace(b.String())
+			if merged != "" && len([]rune(merged)) <= maxMessageRunes {
+				if _, merr := rt.Send(ctx, chatID, merged); merr == nil {
+					a.logf("outbound images to %q: %d image(s) hosted by platform, merged into ONE markdown message", chatID, len(hosted))
+					if frameID != "" {
+						a.write(enc, okResponse{ID: frameID, Result: "ok"})
+					}
+					return
+				} else {
+					a.logf("WARN: markdown send with platform images failed (%v) — sending text only", merr)
 				}
-				return
-			} else {
-				a.logf("WARN: markdown image merge failed (%v) — falling back to media messages", merr)
 			}
-		}
-
-		// ── 兜底：富媒体分条（msg_type=7）──
-		// markdown 被平台拒（权限/内容超长）时才走这条：图、文各一条。
-		if n, ierr := rt.SendImages(ctx, chatID, urls); ierr != nil {
-			a.logf("outbound images to %q: sent=%d/%d err=%v", chatID, n, len(urls), ierr)
 		} else {
-			a.logf("outbound images to %q: sent=%d/%d (media msg_type=7 fallback)", chatID, n, len(urls))
+			a.logf("WARN: no image could be hosted on the platform; sending text only")
 		}
+		// 图全部上传失败时仍然把正文发出去，不能让整条消息消失。
 		content = rest
 		if content == "" {
 			if frameID != "" {

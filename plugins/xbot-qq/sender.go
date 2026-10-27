@@ -114,9 +114,6 @@ type OutboundSender struct {
 	// 后续一律走普通 messages。理由：官方口径「持续超限会延长封禁」，而流式只是
 	// 体验优化，宁可退化成一次性发送，也不能把机器人打成风控。
 	streamDisabled bool
-	// uploader 非空时，图片先传 CDN 拿公网 URL，再以 markdown 图文混排一条发出。
-	// 为空则退回"富媒体分条发送"（图一条、文一条）。
-	uploader Hoster
 	// streamDelay 是流式片之间的间隔（打字机效果的节奏）。
 	streamDelay time.Duration
 	api         MessageAPI
@@ -634,32 +631,4 @@ func (s *OutboundSender) SendFiles(ctx context.Context, chatID string, files [][
 		sent++
 	}
 	return sent, nil
-}
-
-// UploadImagesToCDN 把图片逐张传到 CDN，返回公网 URL（顺序与输入一致，失败的跳过）。
-//
-// 用途：QQ 的 msg_type=7（富媒体）与 content 互斥，无法图 + 文一条；
-// 而 msg_type=2 的 markdown 支持图片（接口参数 force_verify_image_resource
-// 即"图片转存"）。所以配置了 CDN 时，把图传上去拿 URL，再由调用方拼进 markdown，
-// 实现"图文同一条消息"。
-func (s *OutboundSender) UploadImagesToCDN(ctx context.Context, urls []string) []string {
-	if s.uploader == nil || len(urls) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(urls))
-	for _, u := range urls {
-		// Hoster 只有 Upload([]byte)，这里负责"取字节 + 取文件名"。
-		data, name, ferr := fetchImageBytes(ctx, u, 64<<20)
-		if ferr != nil {
-			s.logErr("ERROR: cdn upload fetch failed src=%s: %v", u, ferr)
-			continue
-		}
-		pub, err := s.uploader.Upload(ctx, data, name)
-		if err != nil {
-			s.logErr("ERROR: cdn upload failed src=%s: %v", u, err)
-			continue
-		}
-		out = append(out, pub)
-	}
-	return out
 }
