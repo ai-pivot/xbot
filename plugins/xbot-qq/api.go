@@ -59,8 +59,18 @@ const MsgTypeText = 0
 const MsgTypeMarkdown = 2
 
 // MessageMarkdown 是 msg_type=2 时的 markdown 内容体。
+//
+// ForceVerifyImageResource 是「图片转存」开关：置 true 时，平台会把 markdown
+// 里 ![](url) 指向的图片抓取并转存到自己的 CDN 上，然后在客户端渲染成真图。
+// 不开这个参数的话，QQ 只把 `![](...)` 当普通文本发出去（客户端显示成一段字，
+// 或者什么都不显示）—— 2026-10-27 线上「bot 说图片来了却没图」就是这么来的。
+//
+// 限制：url 必须公网可达（所以本地路径必须先传图床拿公网 URL）。
 type MessageMarkdown struct {
 	Content string `json:"content,omitempty"`
+	// ForceVerifyImageResource 见上。omitempty 会让 false 被省略，
+	// 保持与旧客户端行为一致。
+	ForceVerifyImageResource bool `json:"force_verify_image_resource,omitempty"`
 }
 
 // SentMessage 是发消息接口的响应。
@@ -278,7 +288,14 @@ type MessageMedia struct {
 
 // sendMarkdown 以 msg_type=2 发送 Markdown 消息（content 留空，官方硬约束）。
 func (c *APIClient) sendMarkdown(ctx context.Context, op, path, markdown, msgID string, msgSeq uint32) (*SentMessage, error) {
-	body := messageBody{MsgType: MsgTypeMarkdown, Markdown: &MessageMarkdown{Content: markdown}, MsgID: msgID, MsgSeq: msgSeq}
+	// 正文里真的含图片语法时才开「图片转存」，否则不额外引入平台侧行为。
+	verifyImg := strings.Contains(markdown, "![")
+	body := messageBody{
+		MsgType:  MsgTypeMarkdown,
+		Markdown: &MessageMarkdown{Content: markdown, ForceVerifyImageResource: verifyImg},
+		MsgID:    msgID,
+		MsgSeq:   msgSeq,
+	}
 	var out SentMessage
 	if err := c.do(ctx, op, http.MethodPost, path, body, &out); err != nil {
 		return nil, err

@@ -685,14 +685,45 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 				urls = pub
 				a.logf("cdn upload ok for %q: %d url(s)", chatID, len(pub))
 			} else {
-				// CDN 全部失败时仍尝试原始 URL（可能是本来就公网可达的来源）。
-				a.logf("WARN: cdn upload produced 0 urls, sending original urls as media")
+				a.logf("WARN: cdn upload produced 0 urls, trying original urls")
 			}
 		}
+
+		// ── 首选：图文混排（msg_type=2 + markdown.force_verify_image_resource）──
+		//
+		// QQ 的 markdown 是**支持图片**的，前提是开「图片转存」参数并给公网 URL。
+		// 旧代码在注释里写了这个方案却从未实现字段，于是图永远渲染不出来
+		// （2026-10-27 线上：bot 说「图片来了」，客户端什么都没有）。
+		//
+		// 混排失败（平台拒绝 / 内容超长被切块）才退到富媒体分条：
+		// msg_type=7 与 content 互斥是官方硬约束，那条路只能图、文各一条。
+		var b strings.Builder
+		b.WriteString(rest)
+		if rest != "" {
+			b.WriteString("\n")
+		}
+		for _, u := range urls {
+			b.WriteString("![](" + u + ")\n")
+		}
+		merged := strings.TrimSpace(b.String())
+
+		if merged != "" && len([]rune(merged)) <= maxMessageRunes {
+			if _, merr := rt.Send(ctx, chatID, merged); merr == nil {
+				a.logf("outbound images to %q: %d image(s) merged into ONE markdown message (force_verify_image_resource)", chatID, len(urls))
+				if frameID != "" {
+					a.write(enc, okResponse{ID: frameID, Result: "ok"})
+				}
+				return
+			} else {
+				a.logf("WARN: markdown image merge failed (%v) — falling back to media messages", merr)
+			}
+		}
+
+		// ── 兜底：富媒体分条 ──
 		if n, ierr := rt.SendImages(ctx, chatID, urls); ierr != nil {
 			a.logf("outbound images to %q: sent=%d/%d err=%v", chatID, n, len(urls), ierr)
 		} else {
-			a.logf("outbound images to %q: sent=%d/%d (media msg_type=7)", chatID, n, len(urls))
+			a.logf("outbound images to %q: sent=%d/%d (media msg_type=7 fallback)", chatID, n, len(urls))
 		}
 		content = rest
 		if content == "" {
