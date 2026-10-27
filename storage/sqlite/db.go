@@ -336,26 +336,39 @@ func walAnomaly(prevInfo os.FileInfo, curPresent bool, curInfo os.FileInfo) stri
 // suppressWALAnomaly drops anomalies that are a normal consequence of the
 // operation being logged rather than evidence of data loss.
 //
-// Both shapes only ever fire with an EMPTY WAL, and an empty WAL has no frames
-// that could become unreachable:
+// ⚠️ 2026-10-27 修正：上一版把 `checkpoint(TRUNCATE)` 也放进抑制范围，理由是
+// "TRUNCATE 会删掉并重建 -wal，inode 变化是设计内行为"。**那个理由是错的，而且
+// 它掩盖了一起正在发生的事故。**
 //
-//   - close: closing the last connection checkpoints and deletes the -wal file.
-//     Measured 2026-10-20..27: 11,035 occurrences, every one with prevSize=0.
-//   - checkpoint(TRUNCATE): the operation deletes and recreates the file by
-//     design, so the inode changes even though all frames were already merged
-//     into the main database (26 more occurrences on a single restart).
+// 现场证据（生产 pid 1024363）：
 //
-// prevSize > 0 is never suppressed: that is the case where frames really can be
-// stranded, and it is the 2026-09-17 committed-data-loss signature. The sampled
-// window contains 2 such events (prevSize=107152, where=close) and they must
-// keep their warning — silencing them is exactly how a real incident gets lost
-// in noise.
+//	fd 11,14,16,...(8 个) → xbot.db-wal (deleted)  inode 2908514, 4,181,832 B
+//	磁盘上的 -wal                                  inode 2930465, size = 0
+//
+// 即：**一个 4MB、含已提交帧的 WAL 被 unlink，进程仍持着它；磁盘上换了一个空
+// inode。** 而 prevSize 只记录**上一次采样**时的大小 —— 如果上次采样时 WAL 恰好
+// 是 0，中间写满 4MB、然后被 unlink，那么 `prevSize == 0` 成立，这条本该报警的
+// REPLACED 就被静默吞掉了。用采样值判断"有没有帧可丢"根本不可靠。
+//
+// 所以规则收紧为：**inode 变了（replaced）一律不抑制**。文件被换掉就是要查的
+// 信号，宁可每次重启多 1000 条告警，也不能让一次真事故躺在噪声里。
+//
+// 仅保留一种抑制：`missing` + `close` + `prevSize == 0`。关库时删除 -wal 是
+// SQLite 的规定语义（最后一个连接关闭会 checkpoint 并 unlink），而且关库前必然
+// 已经 checkpoint 过；此时文件不存在、上次采样也是空，没有任何帧可失去。
+// prevSize > 0 的 missing 仍然照报（采样窗口里就有 2 条 prevSize=107152 的真事件）。
 func suppressWALAnomaly(anomaly, where string, prevSize int64) string {
-	if anomaly == "" || prevSize != 0 {
+	if anomaly == "" {
 		return anomaly
 	}
-	switch where {
-	case "close", "checkpoint(TRUNCATE)":
+	// replaced = inode 变了。任何情况下都不抑制 —— 这正是上面那 4MB 事故的形态。
+	if anomaly == "replaced" {
+		return anomaly
+	}
+	if prevSize != 0 {
+		return anomaly
+	}
+	if anomaly == "missing" && where == "close" {
 		return ""
 	}
 	return anomaly
