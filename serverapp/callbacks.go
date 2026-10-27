@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"xbot/agent"
@@ -875,6 +876,44 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		applyWebRunningStatuses(ag, rows)
 		return rows, nil
 	}
+	// sessionTreeCache coalesces the heavy part of /api/session-tree.
+	//
+	// Every call used to re-read all tenants (705 non-agent rows), run nine
+	// per-channel queries, sort in memory and paginate. The sidebar polls this
+	// endpoint, so concurrent polls serialised behind each other: six
+	// simultaneous requests measured 33s EACH on 2026-10-26T16:20, and p99 for
+	// the endpoint was 13.6s against a 100ms budget.
+	//
+	// The row set only changes when a session is created, renamed or used, so a
+	// short TTL removes the stampede while staying visually instant. Runtime
+	// state (Running / Status / WorkDir) is NOT cached — applyWebRunningStatuses
+	// still runs per request, but only over the returned page.
+	var (
+		sessionTreeCacheMu   sync.Mutex
+		sessionTreeCacheAt   time.Time
+		sessionTreeCacheRows []web.UserChatWithPreview
+	)
+	const sessionTreeCacheTTL = 2 * time.Second
+	// cachesIsCurrent is stripped before caching: it depends on the caller's
+	// current selection and is recomputed on every request.
+	treeCacheGet := func() ([]web.UserChatWithPreview, bool) {
+		sessionTreeCacheMu.Lock()
+		defer sessionTreeCacheMu.Unlock()
+		if sessionTreeCacheRows == nil || time.Since(sessionTreeCacheAt) > sessionTreeCacheTTL {
+			return nil, false
+		}
+		// Copy: the caller rewrites IsCurrent in place.
+		out := make([]web.UserChatWithPreview, len(sessionTreeCacheRows))
+		copy(out, sessionTreeCacheRows)
+		return out, true
+	}
+	treeCachePut := func(rows []web.UserChatWithPreview) {
+		sessionTreeCacheMu.Lock()
+		defer sessionTreeCacheMu.Unlock()
+		sessionTreeCacheRows = rows
+		sessionTreeCacheAt = time.Now()
+	}
+
 	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool, offset, limit int) (web.SessionTreeResult, error) {
 		var mains []web.UserChatWithPreview
 
@@ -884,72 +923,83 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// v63 single-operator: always use the full cross-channel view.
 		// (The non-admin per-sender pagination path was removed — there is
 		// no non-admin user in single-operator mode.)
-		channels, err := store.Tenant().ListDistinctChannels()
-		if err != nil {
-			return web.SessionTreeResult{}, err
-		}
-		for _, ch := range channels {
-			if ch == "agent" {
-				continue
+		//
+		// Cache hit skips the nine per-channel queries, the 705-row build and
+		// the sort entirely. IsCurrent is NOT part of the cached data (it
+		// depends on the caller), so it is recomputed below on every request.
+		if cached, ok := treeCacheGet(); ok {
+			mains = cached
+		} else {
+			channels, err := store.Tenant().ListDistinctChannels()
+			if err != nil {
+				return web.SessionTreeResult{}, err
 			}
-			if ch == "cli" {
-				if webSQL == nil {
+			for _, ch := range channels {
+				if ch == "agent" {
 					continue
 				}
-				cliCurrent := ""
-				if current.Channel == "cli" {
-					cliCurrent = current.ChatID
-				}
-				cliChats, err := listCLIChatSessions(webSQL, cliCurrent)
-				if err != nil {
-					return web.SessionTreeResult{}, err
-				}
-				mains = appendMissingSessionRows(mains, cliChats)
-				continue
-			}
-			chCurrent := ""
-			if current.Channel == ch {
-				chCurrent = current.ChatID
-			}
-			var tenants []web.UserChatWithPreview
-			if webSQL != nil {
-				tenants, err = listTenantsByChannel(webSQL, ch, chCurrent)
-			} else {
-				// PG path: use TenantStore
-				allTenants, tErr := store.Tenant().ListTenants()
-				if tErr != nil {
-					log.WithError(tErr).WithField("channel", ch).Warn("Failed to list tenants")
-					continue
-				}
-				for _, t := range allTenants {
-					if t.Channel != ch {
+				if ch == "cli" {
+					if webSQL == nil {
 						continue
 					}
-					tenants = append(tenants, web.UserChatWithPreview{
-						ChatID:     t.ChatID,
-						Channel:    t.Channel,
-						Label:      t.Label,
-						LastActive: t.LastActiveAt.Format(time.RFC3339),
-						Preview:    "",
-						IsCurrent:  t.ChatID == chCurrent,
-					})
+					// currentChatID is intentionally "" here: the cached row set must
+					// not depend on the caller's selection. IsCurrent is applied below.
+					cliChats, err := listCLIChatSessions(webSQL, "")
+					if err != nil {
+						return web.SessionTreeResult{}, err
+					}
+					mains = appendMissingSessionRows(mains, cliChats)
+					continue
 				}
+				var tenants []web.UserChatWithPreview
+				if webSQL != nil {
+					tenants, err = listTenantsByChannel(webSQL, ch, "")
+				} else {
+					// PG path: use TenantStore
+					allTenants, tErr := store.Tenant().ListTenants()
+					if tErr != nil {
+						log.WithError(tErr).WithField("channel", ch).Warn("Failed to list tenants")
+						continue
+					}
+					for _, t := range allTenants {
+						if t.Channel != ch {
+							continue
+						}
+						tenants = append(tenants, web.UserChatWithPreview{
+							ChatID:     t.ChatID,
+							Channel:    t.Channel,
+							Label:      t.Label,
+							LastActive: t.LastActiveAt.Format(time.RFC3339),
+							Preview:    "",
+							IsCurrent:  false,
+						})
+					}
+				}
+				if err != nil {
+					log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
+					continue
+				}
+				mains = appendMissingSessionRows(mains, tenants)
 			}
-			if err != nil {
-				log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
-				continue
-			}
-			mains = appendMissingSessionRows(mains, tenants)
+
+			// Sort + paginate BEFORE probing per-row runtime state.
+			// sortSessionTreeMains only needs LastActive/SortOrder/CreatedAt, and
+			// appendMissingSessionRows only reads Channel/ChatID — neither depends on
+			// Running/Status/WorkDir. Probing all ~1300 tenant rows (3 map lookups +
+			// a session cache lookup each) cost 400–700ms per request and made
+			// /api/session-tree the slowest endpoint in the log; only the rows that
+			// are actually returned need it.
+			sortSessionTreeMains(mains)
+			// Cache the ordered row set — IsCurrent is always false in it and is
+			// recomputed per caller just below.
+			treeCachePut(mains)
 		}
 
-		// Sort + paginate BEFORE probing per-row runtime state.
-		// sortSessionTreeMains only needs LastActive/SortOrder/CreatedAt, and
-		// appendMissingSessionRows only reads Channel/ChatID — neither depends on
-		// Running/Status/WorkDir. Probing all ~1300 tenant rows (3 map lookups +
-		// a session cache lookup each) cost 400–700ms per request and made
-		// /api/session-tree the slowest endpoint in the log; only the rows that
-		// are actually returned need it.
-		sortSessionTreeMains(mains)
+		// IsCurrent depends on THIS caller's selection, so it is never cached.
+		for i := range mains {
+			mains[i].IsCurrent = mains[i].Channel == current.Channel && mains[i].ChatID == current.ChatID
+		}
+
 		total := len(mains)
 		if limit < 0 {
 			limit = total
