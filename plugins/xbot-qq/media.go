@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -137,4 +138,79 @@ func filepathExt(name string) string {
 		return name[i:]
 	}
 	return ""
+}
+
+// imageDimensions 从图片字节里读出像素宽高。
+//
+// 为什么需要：QQ 的 markdown 图片语法要求**两个尺寸都给**——
+// `![说明 #宽px #高px](url)`。只写一个（`![图 #300px]`）时客户端不渲染，
+// 表现为「消息发出去了但没图」，且平台侧完全无错（2026-10-27 实测差异）。
+//
+// 只支持 png/gif/jpeg（平台允许的格式里这三种最常见），读不出时返回 0,0。
+func imageDimensions(data []byte) (int, int) {
+	if len(data) < 24 {
+		return 0, 0
+	}
+	// PNG: 8 字节签名 + IHDR，宽高在 offset 16..24（大端）
+	if data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' {
+		w := int(binary.BigEndian.Uint32(data[16:20]))
+		h := int(binary.BigEndian.Uint32(data[20:24]))
+		return w, h
+	}
+	// GIF: "GIF87a"/"GIF89a"，宽高在 offset 6..10（小端）
+	if len(data) >= 10 && data[0] == 'G' && data[1] == 'I' && data[2] == 'F' {
+		w := int(binary.LittleEndian.Uint16(data[6:8]))
+		h := int(binary.LittleEndian.Uint16(data[8:10]))
+		return w, h
+	}
+	// JPEG: 扫 SOFn 段
+	if data[0] == 0xFF && data[1] == 0xD8 {
+		i := 2
+		for i+9 < len(data) {
+			if data[i] != 0xFF {
+				i++
+				continue
+			}
+			marker := data[i+1]
+			if marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7) {
+				i += 2
+				continue
+			}
+			if i+3 >= len(data) {
+				break
+			}
+			segLen := int(binary.BigEndian.Uint16(data[i+2 : i+4]))
+			// SOF0..SOF15，排除 DHT(C4)/JPG(C8)/DAC(CC)
+			if marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
+				if i+9 < len(data) {
+					h := int(binary.BigEndian.Uint16(data[i+5 : i+7]))
+					w := int(binary.BigEndian.Uint16(data[i+7 : i+9]))
+					return w, h
+				}
+				break
+			}
+			i += 2 + segLen
+		}
+	}
+	return 0, 0
+}
+
+// markdownImageTag 生成 QQ 能渲染的 markdown 图片标签。
+//
+// 两个尺寸都要给（见 imageDimensions 注释）。读不出尺寸时退到一个保守默认值，
+// 宁可显示得小一点，也不能因为缺尺寸导致整张图不渲染。
+func markdownImageTag(ref string, w, h int) string {
+	if w <= 0 || h <= 0 {
+		w, h = 300, 200
+	}
+	// 限个上限：超大图在手机上会撑爆，按 600px 宽等比缩放。
+	const maxW = 600
+	if w > maxW {
+		h = h * maxW / w
+		w = maxW
+	}
+	if h < 1 {
+		h = 1
+	}
+	return fmt.Sprintf("![图片 #%dpx #%dpx](%s)", w, h, ref)
 }

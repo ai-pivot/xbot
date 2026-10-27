@@ -698,7 +698,9 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 				a.logf("WARN: platform image upload failed for %q: %v", u, uerr)
 				continue
 			}
-			hosted = append(hosted, ref)
+			w, h := imageDimensions(data)
+			a.logf("image hosted: %s (%dx%d) → %s", name, w, h, ref[:min(40, len(ref))])
+			hosted = append(hosted, markdownImageTag(ref, w, h))
 		}
 
 		if len(hosted) > 0 {
@@ -707,8 +709,8 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 			if rest != "" {
 				b.WriteString("\n\n")
 			}
-			for _, ref := range hosted {
-				b.WriteString("![图片 #300px](" + ref + ")\n")
+			for _, tag := range hosted {
+				b.WriteString(tag + "\n")
 			}
 			merged := strings.TrimSpace(b.String())
 			if merged != "" && len([]rune(merged)) <= maxMessageRunes {
