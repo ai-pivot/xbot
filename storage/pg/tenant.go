@@ -12,15 +12,15 @@ import (
 	"xbot/storage/sqlite"
 )
 
-type pgTenantStore struct {
+type tenantStore struct {
 	pool *pgxpool.Pool
 }
 
-func newPGTenantStore(pool *pgxpool.Pool) TenantStore {
-	return &pgTenantStore{pool: pool}
+func newTenantStore(pool *pgxpool.Pool) TenantStore {
+	return &tenantStore{pool: pool}
 }
 
-func (s *pgTenantStore) GetOrCreateTenantID(channel, chatID string) (int64, error) {
+func (s *tenantStore) GetOrCreateTenantID(channel, chatID string) (int64, error) {
 	ctx := context.Background()
 	var id int64
 	err := s.pool.QueryRow(ctx,
@@ -30,7 +30,7 @@ func (s *pgTenantStore) GetOrCreateTenantID(channel, chatID string) (int64, erro
 	return id, err
 }
 
-func (s *pgTenantStore) GetTenantIDByChannelChatID(channel, chatID string) (int64, error) {
+func (s *tenantStore) GetTenantIDByChannelChatID(channel, chatID string) (int64, error) {
 	ctx := context.Background()
 	var id int64
 	err := s.pool.QueryRow(ctx,
@@ -41,7 +41,7 @@ func (s *pgTenantStore) GetTenantIDByChannelChatID(channel, chatID string) (int6
 	return id, err
 }
 
-func (s *pgTenantStore) GetTenantInfo(tenantID int64) (string, string, error) {
+func (s *tenantStore) GetTenantInfo(tenantID int64) (string, string, error) {
 	ctx := context.Background()
 	var ch, cid string
 	err := s.pool.QueryRow(ctx,
@@ -49,13 +49,13 @@ func (s *pgTenantStore) GetTenantInfo(tenantID int64) (string, string, error) {
 	return ch, cid, err
 }
 
-func (s *pgTenantStore) DeleteTenant(tenantID int64) error {
+func (s *tenantStore) DeleteTenant(tenantID int64) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenantID)
 	return err
 }
 
-func (s *pgTenantStore) DeleteTenantHistory(tenantID int64) error {
+func (s *tenantStore) DeleteTenantHistory(tenantID int64) error {
 	ctx := context.Background()
 	if _, err := s.pool.Exec(ctx, `DELETE FROM iteration_history WHERE tenant_id = $1`, tenantID); err != nil {
 		return err
@@ -64,7 +64,7 @@ func (s *pgTenantStore) DeleteTenantHistory(tenantID int64) error {
 	return err
 }
 
-func (s *pgTenantStore) TouchTenantID(channel, chatID string) error {
+func (s *tenantStore) TouchTenantID(channel, chatID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE tenants SET last_active_at = now() WHERE channel = $1 AND chat_id = $2`,
@@ -72,19 +72,19 @@ func (s *pgTenantStore) TouchTenantID(channel, chatID string) error {
 	return err
 }
 
-func (s *pgTenantStore) SetTenantDBPath(tenantID int64, dbPath string) error {
+func (s *tenantStore) SetTenantDBPath(tenantID int64, dbPath string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE tenants SET db_path = $1 WHERE id = $2`, dbPath, tenantID)
 	return err
 }
 
-func (s *pgTenantStore) SetTenantMigrated(tenantID int64) error {
+func (s *tenantStore) SetTenantMigrated(tenantID int64) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE tenants SET migrated = true WHERE id = $1`, tenantID)
 	return err
 }
 
-func (s *pgTenantStore) GetTenantDBInfo(tenantID int64) (sqlite.TenantDBInfo, error) {
+func (s *tenantStore) GetTenantDBInfo(tenantID int64) (sqlite.TenantDBInfo, error) {
 	ctx := context.Background()
 	var info sqlite.TenantDBInfo
 	var migrated bool
@@ -97,7 +97,7 @@ func (s *pgTenantStore) GetTenantDBInfo(tenantID int64) (sqlite.TenantDBInfo, er
 	return info, nil
 }
 
-func (s *pgTenantStore) SetTenantSubscription(channel, chatID, subscriptionID, model string) error {
+func (s *tenantStore) SetTenantSubscription(channel, chatID, subscriptionID, model string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE tenants SET subscription_id = $1, model = $2 WHERE channel = $3 AND chat_id = $4`,
@@ -105,7 +105,7 @@ func (s *pgTenantStore) SetTenantSubscription(channel, chatID, subscriptionID, m
 	return err
 }
 
-func (s *pgTenantStore) GetTenantSubscription(channel, chatID string) (string, string, error) {
+func (s *tenantStore) GetTenantSubscription(channel, chatID string) (string, string, error) {
 	ctx := context.Background()
 	var subID, model string
 	err := s.pool.QueryRow(ctx,
@@ -117,7 +117,7 @@ func (s *pgTenantStore) GetTenantSubscription(channel, chatID string) (string, s
 	return subID, model, err
 }
 
-func (s *pgTenantStore) SetTenantRunner(channel, chatID, runnerID string) error {
+func (s *tenantStore) SetTenantRunner(channel, chatID, runnerID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE tenants SET runner_id = $1 WHERE channel = $2 AND chat_id = $3`,
@@ -125,7 +125,7 @@ func (s *pgTenantStore) SetTenantRunner(channel, chatID, runnerID string) error 
 	return err
 }
 
-func (s *pgTenantStore) GetTenantRunner(channel, chatID string) (string, error) {
+func (s *tenantStore) GetTenantRunner(channel, chatID string) (string, error) {
 	ctx := context.Background()
 	var runnerID string
 	err := s.pool.QueryRow(ctx,
@@ -137,33 +137,33 @@ func (s *pgTenantStore) GetTenantRunner(channel, chatID string) (string, error) 
 	return runnerID, err
 }
 
-func (s *pgTenantStore) ClearSubscriptionFromTenants(subID string) error {
+func (s *tenantStore) ClearSubscriptionFromTenants(subID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE tenants SET subscription_id = '', model = '' WHERE subscription_id = $1`, subID)
 	return err
 }
 
-func (s *pgTenantStore) SetTenantCWD(tenantID int64, cwd string) error {
+func (s *tenantStore) SetTenantCWD(tenantID int64, cwd string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE tenants SET cwd = $1 WHERE id = $2`, cwd, tenantID)
 	return err
 }
 
-func (s *pgTenantStore) GetTenantCWD(tenantID int64) (string, error) {
+func (s *tenantStore) GetTenantCWD(tenantID int64) (string, error) {
 	ctx := context.Background()
 	var cwd string
 	err := s.pool.QueryRow(ctx, `SELECT cwd FROM tenants WHERE id = $1`, tenantID).Scan(&cwd)
 	return cwd, err
 }
 
-func (s *pgTenantStore) SetTenantPreview(tenantID int64, content string) error {
+func (s *tenantStore) SetTenantPreview(tenantID int64, content string) error {
 	ctx := context.Background()
-	_, err := s.pool.Exec(ctx, `UPDATE tenants SET preview = $1 WHERE id = $2`, pgText(content), tenantID)
+	_, err := s.pool.Exec(ctx, `UPDATE tenants SET preview = $1 WHERE id = $2`, sanitizeText(content), tenantID)
 	return err
 }
 
-func (s *pgTenantStore) CreateChat(channel, senderID, label string) (string, error) {
+func (s *tenantStore) CreateChat(channel, senderID, label string) (string, error) {
 	ctx := context.Background()
 	chatID := fmt.Sprintf("chat_%016X", time.Now().UnixNano())
 	_, err := s.pool.Exec(ctx,
@@ -172,7 +172,7 @@ func (s *pgTenantStore) CreateChat(channel, senderID, label string) (string, err
 	return chatID, err
 }
 
-func (s *pgTenantStore) DeleteChat(channel, senderID, chatID string) error {
+func (s *tenantStore) DeleteChat(channel, senderID, chatID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM user_chats WHERE channel = $1 AND sender_id = $2 AND chat_id = $3`,
@@ -180,7 +180,7 @@ func (s *pgTenantStore) DeleteChat(channel, senderID, chatID string) error {
 	return err
 }
 
-func (s *pgTenantStore) RenameChat(channel, senderID, chatID, label string) error {
+func (s *tenantStore) RenameChat(channel, senderID, chatID, label string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE user_chats SET label = $1 WHERE channel = $2 AND sender_id = $3 AND chat_id = $4`,
@@ -188,7 +188,7 @@ func (s *pgTenantStore) RenameChat(channel, senderID, chatID, label string) erro
 	return err
 }
 
-func (s *pgTenantStore) ListUserChats(channel, senderID, currentChatID string, offset, limit int) ([]sqlite.UserChatWithPreview, bool, error) {
+func (s *tenantStore) ListUserChats(channel, senderID, currentChatID string, offset, limit int) ([]sqlite.UserChatWithPreview, bool, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT uc.chat_id, uc.label, uc.created_at, uc.sort_order,
@@ -224,7 +224,7 @@ func (s *pgTenantStore) ListUserChats(channel, senderID, currentChatID string, o
 	return result, hasMore, nil
 }
 
-func (s *pgTenantStore) UpdateChatSortOrders(channel, senderID string, orders map[string]int) error {
+func (s *tenantStore) UpdateChatSortOrders(channel, senderID string, orders map[string]int) error {
 	ctx := context.Background()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -241,7 +241,7 @@ func (s *pgTenantStore) UpdateChatSortOrders(channel, senderID string, orders ma
 	return tx.Commit(ctx)
 }
 
-func (s *pgTenantStore) ListDistinctChannels() ([]string, error) {
+func (s *tenantStore) ListDistinctChannels() ([]string, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT channel FROM tenants WHERE chat_id != '_shared' ORDER BY channel`)
@@ -260,7 +260,7 @@ func (s *pgTenantStore) ListDistinctChannels() ([]string, error) {
 	return channels, rows.Err()
 }
 
-func (s *pgTenantStore) ListTenants() ([]sqlite.TenantInfo, error) {
+func (s *tenantStore) ListTenants() ([]sqlite.TenantInfo, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT t.id, t.channel, t.chat_id, COALESCE(c.label, '') AS label,
@@ -287,7 +287,7 @@ func (s *pgTenantStore) ListTenants() ([]sqlite.TenantInfo, error) {
 	return tenants, rows.Err()
 }
 
-func (s *pgTenantStore) GetSenderForChat(channel, chatID string) (string, error) {
+func (s *tenantStore) GetSenderForChat(channel, chatID string) (string, error) {
 	ctx := context.Background()
 	var senderID string
 	err := s.pool.QueryRow(ctx,
@@ -301,7 +301,7 @@ func (s *pgTenantStore) GetSenderForChat(channel, chatID string) (string, error)
 
 // GetChatOwner resolves the channel and sender owning a session. chat_id is unique
 // in practice, so the lookup spans channels; empty results mean "not registered".
-func (s *pgTenantStore) GetChatOwner(chatID string) (string, string, error) {
+func (s *tenantStore) GetChatOwner(chatID string) (string, string, error) {
 	ctx := context.Background()
 	var channel, senderID string
 	err := s.pool.QueryRow(ctx,
@@ -318,7 +318,7 @@ func (s *pgTenantStore) GetChatOwner(chatID string) (string, string, error) {
 
 // GetChatLabel returns the user-assigned label of a session ("" when unset or
 // unknown) — the backend-agnostic replacement for the direct user_chats SELECT.
-func (s *pgTenantStore) GetChatLabel(channel, chatID string) (string, error) {
+func (s *tenantStore) GetChatLabel(channel, chatID string) (string, error) {
 	ctx := context.Background()
 	var label string
 	err := s.pool.QueryRow(ctx,
@@ -334,7 +334,7 @@ func (s *pgTenantStore) GetChatLabel(channel, chatID string) (string, error) {
 	return label, nil
 }
 
-func (s *pgTenantStore) AddPendingResume(channel, chatID, senderID string) error {
+func (s *tenantStore) AddPendingResume(channel, chatID, senderID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO pending_resumes (channel, chat_id, sender_id, content)
@@ -344,7 +344,7 @@ func (s *pgTenantStore) AddPendingResume(channel, chatID, senderID string) error
 	return err
 }
 
-func (s *pgTenantStore) GetSessionSenderID(channel, chatID string) (string, error) {
+func (s *tenantStore) GetSessionSenderID(channel, chatID string) (string, error) {
 	ctx := context.Background()
 	var senderID string
 	err := s.pool.QueryRow(ctx,
@@ -356,7 +356,7 @@ func (s *pgTenantStore) GetSessionSenderID(channel, chatID string) (string, erro
 	return senderID, err
 }
 
-func (s *pgTenantStore) ListPendingResumes() ([]sqlite.PendingResume, error) {
+func (s *tenantStore) ListPendingResumes() ([]sqlite.PendingResume, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT channel, chat_id, sender_id, created_at::text FROM pending_resumes`)
@@ -375,7 +375,7 @@ func (s *pgTenantStore) ListPendingResumes() ([]sqlite.PendingResume, error) {
 	return result, nil
 }
 
-func (s *pgTenantStore) ClearPendingResume(channel, chatID string) error {
+func (s *tenantStore) ClearPendingResume(channel, chatID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `DELETE FROM pending_resumes WHERE channel = $1 AND chat_id = $2`, channel, chatID)
 	return err

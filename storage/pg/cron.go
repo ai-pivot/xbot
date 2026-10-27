@@ -16,30 +16,30 @@ import (
 	"xbot/storage/sqlite"
 )
 
-// pgCronStore implements CronStore on PostgreSQL.
+// cronStore implements CronStore on PostgreSQL.
 //
 // The semantics mirror sqlite.CronService exactly (same ordering, same nil-on-
 // missing, same legacy-import guard) so the scheduler behaves identically on both
 // backends. Timestamps are native TIMESTAMPTZ here rather than the RFC3339 strings
 // SQLite stores.
-type pgCronStore struct {
+type cronStore struct {
 	pool *pgxpool.Pool
 }
 
-func newPGCronStore(pool *pgxpool.Pool) *pgCronStore {
-	return &pgCronStore{pool: pool}
+func newCronStore(pool *pgxpool.Pool) *cronStore {
+	return &cronStore{pool: pool}
 }
 
-// pgCronColumns is the shared projection. Nullable TEXT columns are COALESCEd:
+// cronColumns is the shared projection. Nullable TEXT columns are COALESCEd:
 // cron_expr/at are NULL for interval jobs, and scanning NULL into a plain string
 // fails. last_trigger stays nullable (it is scanned into *time.Time).
-const pgCronColumns = `id, message, channel, chat_id, COALESCE(sender_id, ''),
+const cronColumns = `id, message, channel, chat_id, COALESCE(sender_id, ''),
 	COALESCE(cron_expr, ''), COALESCE(every_seconds, 0), COALESCE(delay_seconds, 0),
 	COALESCE(at, ''), created_at, next_run, last_trigger, one_shot`
 
-// scanPGCronJob reads one row. cron_expr/at are nullable, so they are COALESCEd —
+// scanCronJob reads one row. cron_expr/at are nullable, so they are COALESCEd —
 // scanning NULL into a plain string fails.
-func scanPGCronJob(row pgx.Row) (*sqlite.CronJob, error) {
+func scanCronJob(row pgx.Row) (*sqlite.CronJob, error) {
 	job := &sqlite.CronJob{}
 	var createdAt, nextRun time.Time
 	var lastTrigger *time.Time
@@ -55,7 +55,7 @@ func scanPGCronJob(row pgx.Row) (*sqlite.CronJob, error) {
 	return job, nil
 }
 
-func (s *pgCronStore) AddJob(job *sqlite.CronJob) error {
+func (s *cronStore) AddJob(job *sqlite.CronJob) error {
 	ctx := context.Background()
 	var cronExpr, at *string
 	if job.CronExpr != "" {
@@ -76,7 +76,7 @@ func (s *pgCronStore) AddJob(job *sqlite.CronJob) error {
 	return nil
 }
 
-func (s *pgCronStore) RemoveJob(id string) error {
+func (s *cronStore) RemoveJob(id string) error {
 	ctx := context.Background()
 	if _, err := s.pool.Exec(ctx, `DELETE FROM cron_jobs WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("delete cron job: %w", err)
@@ -84,10 +84,10 @@ func (s *pgCronStore) RemoveJob(id string) error {
 	return nil
 }
 
-func (s *pgCronStore) GetJob(id string) (*sqlite.CronJob, error) {
+func (s *cronStore) GetJob(id string) (*sqlite.CronJob, error) {
 	ctx := context.Background()
-	job, err := scanPGCronJob(s.pool.QueryRow(ctx,
-		`SELECT `+pgCronColumns+` FROM cron_jobs WHERE id = $1`, id))
+	job, err := scanCronJob(s.pool.QueryRow(ctx,
+		`SELECT `+cronColumns+` FROM cron_jobs WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -98,9 +98,9 @@ func (s *pgCronStore) GetJob(id string) (*sqlite.CronJob, error) {
 }
 
 // listJobs is the shared query body: an optional WHERE plus an ORDER BY clause.
-func (s *pgCronStore) listJobs(where, orderBy string, args ...any) ([]*sqlite.CronJob, error) {
+func (s *cronStore) listJobs(where, orderBy string, args ...any) ([]*sqlite.CronJob, error) {
 	ctx := context.Background()
-	query := `SELECT ` + pgCronColumns + ` FROM cron_jobs`
+	query := `SELECT ` + cronColumns + ` FROM cron_jobs`
 	if where != "" {
 		query += ` WHERE ` + where
 	}
@@ -112,7 +112,7 @@ func (s *pgCronStore) listJobs(where, orderBy string, args ...any) ([]*sqlite.Cr
 	defer rows.Close()
 	var jobs []*sqlite.CronJob
 	for rows.Next() {
-		job, err := scanPGCronJob(rows)
+		job, err := scanCronJob(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan cron job row: %w", err)
 		}
@@ -122,20 +122,20 @@ func (s *pgCronStore) listJobs(where, orderBy string, args ...any) ([]*sqlite.Cr
 }
 
 // ListJobs lists every job ordered by creation (the web cron panel's view).
-func (s *pgCronStore) ListJobs() ([]*sqlite.CronJob, error) {
+func (s *cronStore) ListJobs() ([]*sqlite.CronJob, error) {
 	return s.listJobs("", "created_at")
 }
 
 // ListAllJobs orders by next_run — what the scheduler iterates.
-func (s *pgCronStore) ListAllJobs() ([]*sqlite.CronJob, error) {
+func (s *cronStore) ListAllJobs() ([]*sqlite.CronJob, error) {
 	return s.listJobs("", "next_run")
 }
 
-func (s *pgCronStore) ListJobsByChannelChatID(channel, chatID string) ([]*sqlite.CronJob, error) {
+func (s *cronStore) ListJobsByChannelChatID(channel, chatID string) ([]*sqlite.CronJob, error) {
 	return s.listJobs("channel = $1 AND chat_id = $2", "created_at", channel, chatID)
 }
 
-func (s *pgCronStore) UpdateNextRun(id string, nextRun time.Time) error {
+func (s *cronStore) UpdateNextRun(id string, nextRun time.Time) error {
 	ctx := context.Background()
 	if _, err := s.pool.Exec(ctx, `UPDATE cron_jobs SET next_run = $1 WHERE id = $2`, nextRun, id); err != nil {
 		return fmt.Errorf("update cron job next_run: %w", err)
@@ -143,7 +143,7 @@ func (s *pgCronStore) UpdateNextRun(id string, nextRun time.Time) error {
 	return nil
 }
 
-func (s *pgCronStore) UpdateLastTrigger(id string, lastTrigger time.Time) error {
+func (s *cronStore) UpdateLastTrigger(id string, lastTrigger time.Time) error {
 	ctx := context.Background()
 	if _, err := s.pool.Exec(ctx, `UPDATE cron_jobs SET last_trigger = $1 WHERE id = $2`, lastTrigger, id); err != nil {
 		return fmt.Errorf("update cron job last_trigger: %w", err)
@@ -153,7 +153,7 @@ func (s *pgCronStore) UpdateLastTrigger(id string, lastTrigger time.Time) error 
 
 // MigrateFromJSON imports the legacy cron.json once, matching the SQLite rule:
 // if any job already exists the import is skipped, so repeated starts are safe.
-func (s *pgCronStore) MigrateFromJSON(dataDir string) error {
+func (s *cronStore) MigrateFromJSON(dataDir string) error {
 	existing, err := s.ListAllJobs()
 	if err != nil {
 		return fmt.Errorf("check existing jobs: %w", err)

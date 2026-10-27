@@ -13,26 +13,26 @@ import (
 	"xbot/storage/sqlite"
 )
 
-// pgInteractiveAgentStore implements InteractiveAgentStore on PostgreSQL.
+// interactiveAgentStore implements InteractiveAgentStore on PostgreSQL.
 //
 // Semantics mirror sqlite.InteractiveAgentService exactly (same ordering, same
 // last_reply_at rule, same not-found sentinel). Timestamps stay RFC3339 TEXT on
 // purpose: the registry compares and orders them as fixed-width UTC strings
 // (see sqlite.ListActive), so both backends must produce the same values.
-type pgInteractiveAgentStore struct {
+type interactiveAgentStore struct {
 	pool *pgxpool.Pool
 }
 
-func newPGInteractiveAgentStore(pool *pgxpool.Pool) *pgInteractiveAgentStore {
-	return &pgInteractiveAgentStore{pool: pool}
+func newInteractiveAgentStore(pool *pgxpool.Pool) *interactiveAgentStore {
+	return &interactiveAgentStore{pool: pool}
 }
 
-const pgInteractiveAgentColumns = `agent_key, parent_channel, parent_chat_id, role_name, instance,
+const interactiveAgentColumns = `agent_key, parent_channel, parent_chat_id, role_name, instance,
 	group_id, task, background, status, turn_id, model_name, sub_id, origin_user_id,
 	workspace_root, parent_agent_id, last_error, last_reply, last_reply_at,
 	created_at, updated_at`
 
-func scanPGInteractiveAgent(row pgx.Row) (sqlite.InteractiveAgentRecord, error) {
+func scanInteractiveAgent(row pgx.Row) (sqlite.InteractiveAgentRecord, error) {
 	var rec sqlite.InteractiveAgentRecord
 	err := row.Scan(
 		&rec.AgentKey, &rec.ParentChannel, &rec.ParentChatID, &rec.RoleName, &rec.Instance,
@@ -43,7 +43,7 @@ func scanPGInteractiveAgent(row pgx.Row) (sqlite.InteractiveAgentRecord, error) 
 	return rec, err
 }
 
-func (s *pgInteractiveAgentStore) Upsert(rec sqlite.InteractiveAgentRecord) error {
+func (s *interactiveAgentStore) Upsert(rec sqlite.InteractiveAgentRecord) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if rec.CreatedAt == "" {
 		rec.CreatedAt = now
@@ -93,9 +93,9 @@ func (s *pgInteractiveAgentStore) Upsert(rec sqlite.InteractiveAgentRecord) erro
 	return nil
 }
 
-func (s *pgInteractiveAgentStore) Get(agentKey string) (*sqlite.InteractiveAgentRecord, error) {
-	rec, err := scanPGInteractiveAgent(s.pool.QueryRow(context.Background(),
-		`SELECT `+pgInteractiveAgentColumns+` FROM interactive_agents WHERE agent_key = $1`, agentKey))
+func (s *interactiveAgentStore) Get(agentKey string) (*sqlite.InteractiveAgentRecord, error) {
+	rec, err := scanInteractiveAgent(s.pool.QueryRow(context.Background(),
+		`SELECT `+interactiveAgentColumns+` FROM interactive_agents WHERE agent_key = $1`, agentKey))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, sqlite.ErrInteractiveAgentNotFound
 	}
@@ -105,9 +105,9 @@ func (s *pgInteractiveAgentStore) Get(agentKey string) (*sqlite.InteractiveAgent
 	return &rec, nil
 }
 
-func (s *pgInteractiveAgentStore) ListChildAgents(parentChannel, parentChatID string) ([]sqlite.InteractiveAgentRecord, error) {
+func (s *interactiveAgentStore) ListChildAgents(parentChannel, parentChatID string) ([]sqlite.InteractiveAgentRecord, error) {
 	rows, err := s.pool.Query(context.Background(),
-		`SELECT `+pgInteractiveAgentColumns+` FROM interactive_agents
+		`SELECT `+interactiveAgentColumns+` FROM interactive_agents
 		  WHERE parent_channel = $1 AND parent_chat_id = $2
 		  ORDER BY created_at ASC`, parentChannel, parentChatID)
 	if err != nil {
@@ -117,7 +117,7 @@ func (s *pgInteractiveAgentStore) ListChildAgents(parentChannel, parentChatID st
 
 	var out []sqlite.InteractiveAgentRecord
 	for rows.Next() {
-		rec, err := scanPGInteractiveAgent(rows)
+		rec, err := scanInteractiveAgent(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +126,7 @@ func (s *pgInteractiveAgentStore) ListChildAgents(parentChannel, parentChatID st
 	return out, rows.Err()
 }
 
-func (s *pgInteractiveAgentStore) MarkStatus(agentKey, status string, turnID uint64) error {
+func (s *interactiveAgentStore) MarkStatus(agentKey, status string, turnID uint64) error {
 	_, err := s.pool.Exec(context.Background(),
 		`UPDATE interactive_agents SET status = $1, turn_id = $2, updated_at = $3 WHERE agent_key = $4`,
 		status, turnID, time.Now().UTC().Format(time.RFC3339), agentKey)
@@ -136,7 +136,7 @@ func (s *pgInteractiveAgentStore) MarkStatus(agentKey, status string, turnID uin
 	return nil
 }
 
-func (s *pgInteractiveAgentStore) MarkAllRunningAsInterrupted() (int64, error) {
+func (s *interactiveAgentStore) MarkAllRunningAsInterrupted() (int64, error) {
 	res, err := s.pool.Exec(context.Background(),
 		`UPDATE interactive_agents SET status = $1, updated_at = $2 WHERE status = $3`,
 		sqlite.InteractiveAgentInterrupted, time.Now().UTC().Format(time.RFC3339),
@@ -147,7 +147,7 @@ func (s *pgInteractiveAgentStore) MarkAllRunningAsInterrupted() (int64, error) {
 	return res.RowsAffected(), nil
 }
 
-func (s *pgInteractiveAgentStore) MarkUnloadedCascade(agentKey string) error {
+func (s *interactiveAgentStore) MarkUnloadedCascade(agentKey string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.pool.Exec(context.Background(), `
 		WITH RECURSIVE tree(key) AS (
@@ -166,9 +166,9 @@ func (s *pgInteractiveAgentStore) MarkUnloadedCascade(agentKey string) error {
 	return nil
 }
 
-const pgOrphanIdleChunk = 400
+const orphanIdleChunk = 400
 
-func (s *pgInteractiveAgentStore) MarkOrphanedIdleUnloaded(liveKeys []string) (int64, error) {
+func (s *interactiveAgentStore) MarkOrphanedIdleUnloaded(liveKeys []string) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	const stmt = `UPDATE interactive_agents SET status = $1, updated_at = $2
@@ -189,8 +189,8 @@ func (s *pgInteractiveAgentStore) MarkOrphanedIdleUnloaded(liveKeys []string) (i
 	}
 
 	var total int64
-	for start := 0; start < len(liveKeys); start += pgOrphanIdleChunk {
-		end := start + pgOrphanIdleChunk
+	for start := 0; start < len(liveKeys); start += orphanIdleChunk {
+		end := start + orphanIdleChunk
 		if end > len(liveKeys) {
 			end = len(liveKeys)
 		}
@@ -217,7 +217,7 @@ func (s *pgInteractiveAgentStore) MarkOrphanedIdleUnloaded(liveKeys []string) (i
 	return total, nil
 }
 
-func (s *pgInteractiveAgentStore) ListActive(cutoff time.Time, includeUnloaded bool) ([]sqlite.AgentActivity, error) {
+func (s *interactiveAgentStore) ListActive(cutoff time.Time, includeUnloaded bool) ([]sqlite.AgentActivity, error) {
 	query := `SELECT agent_key, role_name, instance, status, updated_at, last_reply_at
 	            FROM interactive_agents
 	           WHERE updated_at >= $1`
@@ -243,4 +243,4 @@ func (s *pgInteractiveAgentStore) ListActive(cutoff time.Time, includeUnloaded b
 	return out, rows.Err()
 }
 
-var _ InteractiveAgentStore = (*pgInteractiveAgentStore)(nil)
+var _ InteractiveAgentStore = (*interactiveAgentStore)(nil)

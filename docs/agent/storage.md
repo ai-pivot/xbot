@@ -58,8 +58,8 @@ compatibility facade so the ~50 existing import sites keep compiling):
   `adapter.go` (`NewSQLiteStorage` / `NewSQLiteConfigStore` / `NewSQLiteTenantStore` /
   `NewSQLiteMemoryStore`) and `migrate.go`. `common_aliases.go` keeps `sqlite.X`
   value-type aliases for existing callers.
-- `storage/pg/` — the PostgreSQL implementation (`pg_storage.go`, `pg_schema.go`,
-  `pg_{session,tenant,memory,config}.go`, `pg_interactive_agents.go`, …)
+- `storage/pg/` — the PostgreSQL implementation (`storage.go`, `schema.go`,
+  `{session,tenant,memory,config}.go`, `interactive_agents.go`, …)
 - `storage/facade.go` — public re-exports + backend constructors
   (`storage.NewSQLiteStorage`, `storage.NewPGStorage`, `storage.MigrateIfNeeded`, …)
 - `storage/contract_*.go` / `storage/pg_*_test.go` — cross-backend contract suite and
@@ -105,7 +105,7 @@ Dependency direction: `common` imports **no** backend; `sqlite` and `pg` import
 
 - **`sql.ErrNoRows` ≠ `pgx.ErrNoRows`.** All PG code must check `pgx.ErrNoRows`; a
   `sql.ErrNoRows` check never fires → the "not found" branch is dead (silent wrong result).
-- **Native `BOOLEAN`, not `INTEGER 0/1` — in BOTH directions.** `pg_schema.go`
+- **Native `BOOLEAN`, not `INTEGER 0/1` — in BOTH directions.** `storage/pg/schema.go`
   declares real `BOOLEAN`, so: scans must target `*bool` (scanning into `*int` fails
   with `cannot scan bool (OID 16) into *int`), predicates must be `= true` / `= false`
   (or `COALESCE(col, false)`), and **writes must use `true`/`false` literals**

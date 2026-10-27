@@ -21,7 +21,7 @@ func TestPGStorage_Smoke(t *testing.T) {
 	defer cancel()
 
 	// 1. Open + init schema
-	store, err := pg.NewPGStorage(ctx, dsn)
+	store, err := pg.NewStorage(ctx, dsn)
 	if err != nil {
 		t.Fatalf("NewPGStorage: %v", err)
 	}

@@ -11,79 +11,79 @@ import (
 	"xbot/storage/agentmem"
 )
 
-// pgMemoryStore implements MemoryStore for PostgreSQL.
-type pgMemoryStore struct {
+// memoryStore implements MemoryStore for PostgreSQL.
+type memoryStore struct {
 	pool  *pgxpool.Pool
-	agent *pgAgentMemoryStore
+	agent *agentMemoryStore
 }
 
-func newPGMemoryStore(pool *pgxpool.Pool) MemoryStore {
-	return &pgMemoryStore{pool: pool, agent: newPGAgentMemoryStore(pool)}
+func newMemoryStore(pool *pgxpool.Pool) MemoryStore {
+	return &memoryStore{pool: pool, agent: newAgentMemoryStore(pool)}
 }
 
 // ── AgentMemoryStore (official xbot provider) — delegate ──
 
-func (s *pgMemoryStore) EnsureAgentMemorySchema(ctx context.Context) error {
+func (s *memoryStore) EnsureAgentMemorySchema(ctx context.Context) error {
 	return s.agent.EnsureAgentMemorySchema(ctx)
 }
-func (s *pgMemoryStore) AddAgentShortTermMemory(ctx context.Context, mem agentmem.ShortTermMemory) (int64, error) {
+func (s *memoryStore) AddAgentShortTermMemory(ctx context.Context, mem agentmem.ShortTermMemory) (int64, error) {
 	return s.agent.AddAgentShortTermMemory(ctx, mem)
 }
-func (s *pgMemoryStore) SearchAgentShortTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.ShortTermMemory, error) {
+func (s *memoryStore) SearchAgentShortTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.ShortTermMemory, error) {
 	return s.agent.SearchAgentShortTermMemories(ctx, q)
 }
-func (s *pgMemoryStore) EvictAgentShortTermMemories(ctx context.Context, userID, tenantID int64, keep int) error {
+func (s *memoryStore) EvictAgentShortTermMemories(ctx context.Context, userID, tenantID int64, keep int) error {
 	return s.agent.EvictAgentShortTermMemories(ctx, userID, tenantID, keep)
 }
-func (s *pgMemoryStore) AddAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) (int64, error) {
+func (s *memoryStore) AddAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) (int64, error) {
 	return s.agent.AddAgentLongTermMemory(ctx, mem)
 }
-func (s *pgMemoryStore) SearchAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
+func (s *memoryStore) SearchAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
 	return s.agent.SearchAgentLongTermMemories(ctx, q)
 }
-func (s *pgMemoryStore) FindAgentDuplicateLongTerm(ctx context.Context, q agentmem.Query) (int64, error) {
+func (s *memoryStore) FindAgentDuplicateLongTerm(ctx context.Context, q agentmem.Query) (int64, error) {
 	return s.agent.FindAgentDuplicateLongTerm(ctx, q)
 }
-func (s *pgMemoryStore) SupersedeAgentLongTerm(ctx context.Context, q agentmem.Query, newID int64) ([]int64, error) {
+func (s *memoryStore) SupersedeAgentLongTerm(ctx context.Context, q agentmem.Query, newID int64) ([]int64, error) {
 	return s.agent.SupersedeAgentLongTerm(ctx, q, newID)
 }
-func (s *pgMemoryStore) ListAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
+func (s *memoryStore) ListAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
 	return s.agent.ListAgentLongTermMemories(ctx, q)
 }
-func (s *pgMemoryStore) GetAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) (agentmem.LongTermMemory, error) {
+func (s *memoryStore) GetAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) (agentmem.LongTermMemory, error) {
 	return s.agent.GetAgentLongTermMemory(ctx, userID, tenantID, id)
 }
-func (s *pgMemoryStore) UpdateAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) error {
+func (s *memoryStore) UpdateAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) error {
 	return s.agent.UpdateAgentLongTermMemory(ctx, mem)
 }
-func (s *pgMemoryStore) DeleteAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) error {
+func (s *memoryStore) DeleteAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) error {
 	return s.agent.DeleteAgentLongTermMemory(ctx, userID, tenantID, id)
 }
-func (s *pgMemoryStore) TouchAgentLongTermMemory(ctx context.Context, id int64) error {
+func (s *memoryStore) TouchAgentLongTermMemory(ctx context.Context, id int64) error {
 	return s.agent.TouchAgentLongTermMemory(ctx, id)
 }
-func (s *pgMemoryStore) DecayAgentLongTerm(ctx context.Context, userID, tenantID int64, halfLifeDays, forgetThreshold float64) error {
+func (s *memoryStore) DecayAgentLongTerm(ctx context.Context, userID, tenantID int64, halfLifeDays, forgetThreshold float64) error {
 	return s.agent.DecayAgentLongTerm(ctx, userID, tenantID, halfLifeDays, forgetThreshold)
 }
-func (s *pgMemoryStore) PruneAgentLongTerm(ctx context.Context, userID, tenantID int64, maxEntries int) error {
+func (s *memoryStore) PruneAgentLongTerm(ctx context.Context, userID, tenantID int64, maxEntries int) error {
 	return s.agent.PruneAgentLongTerm(ctx, userID, tenantID, maxEntries)
 }
-func (s *pgMemoryStore) ListAgentLongTermMissingSearchText(ctx context.Context, userID, tenantID int64, limit int) ([]agentmem.LongTermMemory, error) {
+func (s *memoryStore) ListAgentLongTermMissingSearchText(ctx context.Context, userID, tenantID int64, limit int) ([]agentmem.LongTermMemory, error) {
 	return s.agent.ListAgentLongTermMissingSearchText(ctx, userID, tenantID, limit)
 }
-func (s *pgMemoryStore) SetAgentLongTermSearchText(ctx context.Context, id int64, searchText string) error {
+func (s *memoryStore) SetAgentLongTermSearchText(ctx context.Context, id int64, searchText string) error {
 	return s.agent.SetAgentLongTermSearchText(ctx, id, searchText)
 }
-func (s *pgMemoryStore) AddAgentLongTermMemoryWithSupersede(ctx context.Context, mem agentmem.LongTermMemory, terms []string) (int64, []int64, error) {
+func (s *memoryStore) AddAgentLongTermMemoryWithSupersede(ctx context.Context, mem agentmem.LongTermMemory, terms []string) (int64, []int64, error) {
 	return s.agent.AddAgentLongTermMemoryWithSupersede(ctx, mem, terms)
 }
-func (s *pgMemoryStore) SetAgentLongTermFilePath(ctx context.Context, id int64, filePath string) error {
+func (s *memoryStore) SetAgentLongTermFilePath(ctx context.Context, id int64, filePath string) error {
 	return s.agent.SetAgentLongTermFilePath(ctx, id, filePath)
 }
 
 // ── Core memory blocks ──
 
-func (s *pgMemoryStore) InitBlocks(tenantID int64, userID string) error {
+func (s *memoryStore) InitBlocks(tenantID int64, userID string) error {
 	ctx := context.Background()
 	for _, name := range []string{"persona", "human", "working_context"} {
 		_, err := s.pool.Exec(ctx,
@@ -98,7 +98,7 @@ func (s *pgMemoryStore) InitBlocks(tenantID int64, userID string) error {
 	return nil
 }
 
-func (s *pgMemoryStore) GetBlock(tenantID int64, blockName, userID string) (string, int, error) {
+func (s *memoryStore) GetBlock(tenantID int64, blockName, userID string) (string, int, error) {
 	ctx := context.Background()
 	var content string
 	var charLimit int
@@ -112,17 +112,17 @@ func (s *pgMemoryStore) GetBlock(tenantID int64, blockName, userID string) (stri
 	return content, charLimit, err
 }
 
-func (s *pgMemoryStore) SetBlock(tenantID int64, blockName, content, userID string) error {
+func (s *memoryStore) SetBlock(tenantID int64, blockName, content, userID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO core_memory_blocks (tenant_id, block_name, user_id, content, char_limit)
 		 VALUES ($1, $2, $3, $4, 2000)
 		 ON CONFLICT (tenant_id, block_name, user_id) DO UPDATE SET content = $4, updated_at = now()`,
-		tenantID, blockName, userID, pgText(content))
+		tenantID, blockName, userID, sanitizeText(content))
 	return err
 }
 
-func (s *pgMemoryStore) GetAllBlocks(tenantID int64, userID string) (map[string]string, error) {
+func (s *memoryStore) GetAllBlocks(tenantID int64, userID string) (map[string]string, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT block_name, content FROM core_memory_blocks
@@ -143,7 +143,7 @@ func (s *pgMemoryStore) GetAllBlocks(tenantID int64, userID string) (map[string]
 	return result, nil
 }
 
-func (s *pgMemoryStore) ClearBlock(tenantID int64, blockName, userID string) error {
+func (s *memoryStore) ClearBlock(tenantID int64, blockName, userID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE core_memory_blocks SET content = '', updated_at = now()
@@ -152,7 +152,7 @@ func (s *pgMemoryStore) ClearBlock(tenantID int64, blockName, userID string) err
 	return err
 }
 
-func (s *pgMemoryStore) ClearAllBlocks(tenantID int64, userID string) error {
+func (s *memoryStore) ClearAllBlocks(tenantID int64, userID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE core_memory_blocks SET content = '', updated_at = now()
@@ -163,7 +163,7 @@ func (s *pgMemoryStore) ClearAllBlocks(tenantID int64, userID string) error {
 
 // ── Long-term memory + state ──
 
-func (s *pgMemoryStore) ReadLongTerm(ctx context.Context, tenantID int64) (string, error) {
+func (s *memoryStore) ReadLongTerm(ctx context.Context, tenantID int64) (string, error) {
 	var content string
 	err := s.pool.QueryRow(ctx,
 		`SELECT content FROM long_term_memory WHERE tenant_id = $1`, tenantID).Scan(&content)
@@ -173,7 +173,7 @@ func (s *pgMemoryStore) ReadLongTerm(ctx context.Context, tenantID int64) (strin
 	return content, err
 }
 
-func (s *pgMemoryStore) WriteLongTerm(ctx context.Context, tenantID int64, content string) error {
+func (s *memoryStore) WriteLongTerm(ctx context.Context, tenantID int64, content string) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO long_term_memory (tenant_id, content) VALUES ($1, $2)
 		 ON CONFLICT (tenant_id) DO UPDATE SET content = $2, updated_at = now()`,
@@ -181,12 +181,12 @@ func (s *pgMemoryStore) WriteLongTerm(ctx context.Context, tenantID int64, conte
 	return err
 }
 
-func (s *pgMemoryStore) ClearLongTerm(ctx context.Context, tenantID int64) error {
+func (s *memoryStore) ClearLongTerm(ctx context.Context, tenantID int64) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM long_term_memory WHERE tenant_id = $1`, tenantID)
 	return err
 }
 
-func (s *pgMemoryStore) GetState(ctx context.Context, tenantID int64) (int, error) {
+func (s *memoryStore) GetState(ctx context.Context, tenantID int64) (int, error) {
 	var lastConsolidated int
 	err := s.pool.QueryRow(ctx,
 		`SELECT last_consolidated FROM tenant_state WHERE tenant_id = $1`, tenantID).Scan(&lastConsolidated)
@@ -196,7 +196,7 @@ func (s *pgMemoryStore) GetState(ctx context.Context, tenantID int64) (int, erro
 	return lastConsolidated, err
 }
 
-func (s *pgMemoryStore) SetState(ctx context.Context, tenantID int64, lastConsolidated int) error {
+func (s *memoryStore) SetState(ctx context.Context, tenantID int64, lastConsolidated int) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO tenant_state (tenant_id, last_consolidated) VALUES ($1, $2)
 		 ON CONFLICT (tenant_id) DO UPDATE SET last_consolidated = $2`,
@@ -206,13 +206,13 @@ func (s *pgMemoryStore) SetState(ctx context.Context, tenantID int64, lastConsol
 
 // ── Event history ──
 
-func (s *pgMemoryStore) AppendHistory(ctx context.Context, tenantID int64, entry string) error {
+func (s *memoryStore) AppendHistory(ctx context.Context, tenantID int64, entry string) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO event_history (tenant_id, entry) VALUES ($1, $2)`, tenantID, entry)
 	return err
 }
 
-func (s *pgMemoryStore) GetHistoryEntries(ctx context.Context, tenantID int64, limit int) ([]string, error) {
+func (s *memoryStore) GetHistoryEntries(ctx context.Context, tenantID int64, limit int) ([]string, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT entry FROM event_history WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2`,
 		tenantID, limit)
@@ -234,7 +234,7 @@ func (s *pgMemoryStore) GetHistoryEntries(ctx context.Context, tenantID int64, l
 // GetHistoryEntriesInRange returns event_history rows within [start, end], newest
 // first (limit <= 0 means 20) — the PG peer of the SQLite implementation: same
 // defaulting and ordering, so recall behaves identically on both backends.
-func (s *pgMemoryStore) GetHistoryEntriesInRange(ctx context.Context, tenantID int64, start, end time.Time, limit int) ([]HistoryEntry, error) {
+func (s *memoryStore) GetHistoryEntriesInRange(ctx context.Context, tenantID int64, start, end time.Time, limit int) ([]HistoryEntry, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -260,20 +260,20 @@ func (s *pgMemoryStore) GetHistoryEntriesInRange(ctx context.Context, tenantID i
 	return entries, nil
 }
 
-func (s *pgMemoryStore) ClearHistory(ctx context.Context, tenantID int64) error {
+func (s *memoryStore) ClearHistory(ctx context.Context, tenantID int64) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM event_history WHERE tenant_id = $1`, tenantID)
 	return err
 }
-func (s *pgMemoryStore) GetHistoryCount(ctx context.Context, tenantID int64) (int64, error) {
+func (s *memoryStore) GetHistoryCount(ctx context.Context, tenantID int64) (int64, error) {
 	var count int64
 	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM event_history WHERE tenant_id = $1`, tenantID).Scan(&count)
 	return count, err
 }
-func (s *pgMemoryStore) ClearState(ctx context.Context, tenantID int64) error {
+func (s *memoryStore) ClearState(ctx context.Context, tenantID int64) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM tenant_state WHERE tenant_id = $1`, tenantID)
 	return err
 }
-func (s *pgMemoryStore) SetTokenState(ctx context.Context, tenantID int64, promptTokens, completionTokens int64) error {
+func (s *memoryStore) SetTokenState(ctx context.Context, tenantID int64, promptTokens, completionTokens int64) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO tenant_state (tenant_id, last_prompt_tokens, last_completion_tokens)
 		 VALUES ($1, $2, $3)
@@ -282,7 +282,7 @@ func (s *pgMemoryStore) SetTokenState(ctx context.Context, tenantID int64, promp
 	return err
 }
 
-func (s *pgMemoryStore) GetTokenState(ctx context.Context, tenantID int64) (int64, int64, error) {
+func (s *memoryStore) GetTokenState(ctx context.Context, tenantID int64) (int64, int64, error) {
 	var promptTokens, completionTokens int64
 	err := s.pool.QueryRow(ctx,
 		`SELECT last_prompt_tokens, last_completion_tokens FROM tenant_state WHERE tenant_id = $1`,
@@ -292,6 +292,6 @@ func (s *pgMemoryStore) GetTokenState(ctx context.Context, tenantID int64) (int6
 	}
 	return promptTokens, completionTokens, err
 }
-func (s *pgMemoryStore) SetPersonaIsolation(enabled bool) {
+func (s *memoryStore) SetPersonaIsolation(enabled bool) {
 	// no-op for PG (persona isolation is an SQLite CoreMemoryService concept)
 }

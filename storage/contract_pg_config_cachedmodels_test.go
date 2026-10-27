@@ -28,9 +28,9 @@ func TestPGSubscriptionCachedModels(t *testing.T) {
 	pool := newPGTestPool(t)
 	ctx := context.Background()
 
-	store, err := pg.NewPGStorageWithPool(pool)
+	store, err := pg.NewStorageWithPool(pool)
 	if err != nil {
-		t.Fatalf("NewPGStorageWithPool: %v", err)
+		t.Fatalf("NewStorageWithPool: %v", err)
 	}
 	cs := store.Config()
 

@@ -14,21 +14,21 @@ import (
 	log "xbot/logger"
 )
 
-// pgOAuthTokenStore implements OAuthTokenStore on PostgreSQL.
+// oauthTokenStore implements OAuthTokenStore on PostgreSQL.
 //
 // Credential handling matches the SQLite implementation exactly: values are
 // written through crypto.Encrypt when a key is configured and decrypted on read
 // (a decrypt failure means the value was stored in plaintext, which is the
 // supported fallback). scopes/raw are JSON text in both backends.
-type pgOAuthTokenStore struct {
+type oauthTokenStore struct {
 	pool *pgxpool.Pool
 }
 
-func newPGOAuthTokenStore(pool *pgxpool.Pool) *pgOAuthTokenStore {
-	return &pgOAuthTokenStore{pool: pool}
+func newOAuthTokenStore(pool *pgxpool.Pool) *oauthTokenStore {
+	return &oauthTokenStore{pool: pool}
 }
 
-func (s *pgOAuthTokenStore) GetOAuthToken(provider, channel, chatID string) (*OAuthToken, error) {
+func (s *oauthTokenStore) GetOAuthToken(provider, channel, chatID string) (*OAuthToken, error) {
 	ctx := context.Background()
 	var accessToken, refreshToken, scopesJSON, rawJSON string
 	var expiresAt time.Time
@@ -78,7 +78,7 @@ func (s *pgOAuthTokenStore) GetOAuthToken(provider, channel, chatID string) (*OA
 	}, nil
 }
 
-func (s *pgOAuthTokenStore) SetOAuthToken(provider, channel, chatID string, token *OAuthToken) error {
+func (s *oauthTokenStore) SetOAuthToken(provider, channel, chatID string, token *OAuthToken) error {
 	ctx := context.Background()
 	scopesJSON, _ := json.Marshal(token.Scopes)
 	rawJSON, _ := json.Marshal(token.Raw)
@@ -117,7 +117,7 @@ func (s *pgOAuthTokenStore) SetOAuthToken(provider, channel, chatID string, toke
 	return nil
 }
 
-func (s *pgOAuthTokenStore) DeleteOAuthToken(provider, channel, chatID string) error {
+func (s *oauthTokenStore) DeleteOAuthToken(provider, channel, chatID string) error {
 	ctx := context.Background()
 	if _, err := s.pool.Exec(ctx,
 		`DELETE FROM oauth_tokens WHERE provider = $1 AND channel = $2 AND chat_id = $3`,
@@ -127,7 +127,7 @@ func (s *pgOAuthTokenStore) DeleteOAuthToken(provider, channel, chatID string) e
 	return nil
 }
 
-func (s *pgOAuthTokenStore) CleanupExpiredOAuthTokens(cutoff time.Time) error {
+func (s *oauthTokenStore) CleanupExpiredOAuthTokens(cutoff time.Time) error {
 	ctx := context.Background()
 	tag, err := s.pool.Exec(ctx, `DELETE FROM oauth_tokens WHERE expires_at < $1`, cutoff)
 	if err != nil {

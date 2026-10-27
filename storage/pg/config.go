@@ -13,8 +13,8 @@ import (
 	"xbot/storage/sqlite"
 )
 
-// pgConfigStore implements ConfigStore for PostgreSQL.
-type pgConfigStore struct {
+// configStore implements ConfigStore for PostgreSQL.
+type configStore struct {
 	pool *pgxpool.Pool
 }
 
@@ -26,13 +26,13 @@ func cachedModelsJSON(sub *sqlite.LLMSubscription) string {
 	return string(b)
 }
 
-func newPGConfigStore(pool *pgxpool.Pool) ConfigStore {
-	return &pgConfigStore{pool: pool}
+func newConfigStore(pool *pgxpool.Pool) ConfigStore {
+	return &configStore{pool: pool}
 }
 
 // ── LLM subscriptions ──
 
-func (s *pgConfigStore) ListSubscriptions(senderID string) ([]*sqlite.LLMSubscription, error) {
+func (s *configStore) ListSubscriptions(senderID string) ([]*sqlite.LLMSubscription, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, sender_id, name, provider, base_url, api_key, model,
@@ -61,7 +61,7 @@ func (s *pgConfigStore) ListSubscriptions(senderID string) ([]*sqlite.LLMSubscri
 	return result, nil
 }
 
-func (s *pgConfigStore) GetSubscription(id string) (*sqlite.LLMSubscription, error) {
+func (s *configStore) GetSubscription(id string) (*sqlite.LLMSubscription, error) {
 	ctx := context.Background()
 	sub := &sqlite.LLMSubscription{}
 	var cachedModelsStr sql.NullString
@@ -90,7 +90,7 @@ func (s *pgConfigStore) GetSubscription(id string) (*sqlite.LLMSubscription, err
 	return sub, nil
 }
 
-func (s *pgConfigStore) GetDefaultSubscription(senderID string) (*sqlite.LLMSubscription, error) {
+func (s *configStore) GetDefaultSubscription(senderID string) (*sqlite.LLMSubscription, error) {
 	ctx := context.Background()
 	sub := &sqlite.LLMSubscription{}
 	var cachedModelsStr sql.NullString
@@ -114,7 +114,7 @@ func (s *pgConfigStore) GetDefaultSubscription(senderID string) (*sqlite.LLMSubs
 	return sub, err
 }
 
-func (s *pgConfigStore) AddSubscription(sub *sqlite.LLMSubscription) error {
+func (s *configStore) AddSubscription(sub *sqlite.LLMSubscription) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO user_llm_subscriptions
@@ -136,7 +136,7 @@ func (s *pgConfigStore) AddSubscription(sub *sqlite.LLMSubscription) error {
 // back must not wipe the cache. (The previous code passed `sub.CachedModels`
 // straight into this TEXT column, so pgx encoded a nil []string as SQL NULL and the
 // NOT NULL column rejected the statement — SQLSTATE 23502 on every edit.)
-func (s *pgConfigStore) UpdateSubscription(sub *sqlite.LLMSubscription) error {
+func (s *configStore) UpdateSubscription(sub *sqlite.LLMSubscription) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE user_llm_subscriptions SET
@@ -150,13 +150,13 @@ func (s *pgConfigStore) UpdateSubscription(sub *sqlite.LLMSubscription) error {
 	return err
 }
 
-func (s *pgConfigStore) RemoveSubscription(id string) error {
+func (s *configStore) RemoveSubscription(id string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `DELETE FROM user_llm_subscriptions WHERE id = $1`, id)
 	return err
 }
 
-func (s *pgConfigStore) SetDefaultSubscription(id string) error {
+func (s *configStore) SetDefaultSubscription(id string) error {
 	ctx := context.Background()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -177,13 +177,13 @@ func (s *pgConfigStore) SetDefaultSubscription(id string) error {
 	return tx.Commit(ctx)
 }
 
-func (s *pgConfigStore) RenameSubscription(id, name string) error {
+func (s *configStore) RenameSubscription(id, name string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE user_llm_subscriptions SET name=$1, updated_at=now() WHERE id=$2`, name, id)
 	return err
 }
 
-func (s *pgConfigStore) SetSubscriptionEnabled(id string, enabled bool) error {
+func (s *configStore) SetSubscriptionEnabled(id string, enabled bool) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE user_llm_subscriptions SET enabled=$1, updated_at=now() WHERE id=$2`, enabled, id)
 	return err
@@ -191,7 +191,7 @@ func (s *pgConfigStore) SetSubscriptionEnabled(id string, enabled bool) error {
 
 // ── User profile + settings ──
 
-func (s *pgConfigStore) GetUserProfile(senderID string) (string, string, error) {
+func (s *configStore) GetUserProfile(senderID string) (string, string, error) {
 	ctx := context.Background()
 	var name, profile string
 	err := s.pool.QueryRow(ctx,
@@ -202,7 +202,7 @@ func (s *pgConfigStore) GetUserProfile(senderID string) (string, string, error) 
 	return name, profile, err
 }
 
-func (s *pgConfigStore) SaveUserProfile(senderID, name, profile string) error {
+func (s *configStore) SaveUserProfile(senderID, name, profile string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO user_profiles (sender_id, name, profile) VALUES ($1, $2, $3)
@@ -211,7 +211,7 @@ func (s *pgConfigStore) SaveUserProfile(senderID, name, profile string) error {
 	return err
 }
 
-func (s *pgConfigStore) GetUserSettings(channel, senderID string) (map[string]string, error) {
+func (s *configStore) GetUserSettings(channel, senderID string) (map[string]string, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT key, value FROM user_settings WHERE channel = $1 AND sender_id = $2`,
@@ -231,17 +231,17 @@ func (s *pgConfigStore) GetUserSettings(channel, senderID string) (map[string]st
 	return result, nil
 }
 
-func (s *pgConfigStore) SetUserSetting(channel, senderID, key, value string) error {
+func (s *configStore) SetUserSetting(channel, senderID, key, value string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO user_settings (channel, sender_id, key, value, updated_at)
 		 VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (channel, sender_id, key) DO UPDATE SET value=$4, updated_at=$5`,
-		channel, senderID, key, pgText(value), time.Now().Unix())
+		channel, senderID, key, sanitizeText(value), time.Now().Unix())
 	return err
 }
 
-func (s *pgConfigStore) DeleteUserSetting(channel, senderID, key string) error {
+func (s *configStore) DeleteUserSetting(channel, senderID, key string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM user_settings WHERE channel = $1 AND sender_id = $2 AND key = $3`,
@@ -251,7 +251,7 @@ func (s *pgConfigStore) DeleteUserSetting(channel, senderID, key string) error {
 
 // ── Token usage ──
 
-func (s *pgConfigStore) RecordUsage(senderID, model string, inputTokens, outputTokens, cachedTokens, convCount, llmCallCount int) error {
+func (s *configStore) RecordUsage(senderID, model string, inputTokens, outputTokens, cachedTokens, convCount, llmCallCount int) error {
 	ctx := context.Background()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -291,7 +291,7 @@ func (s *pgConfigStore) RecordUsage(senderID, model string, inputTokens, outputT
 	return tx.Commit(ctx)
 }
 
-func (s *pgConfigStore) GetUsage(senderID string) (*sqlite.UserTokenUsage, error) {
+func (s *configStore) GetUsage(senderID string) (*sqlite.UserTokenUsage, error) {
 	ctx := context.Background()
 	u := &sqlite.UserTokenUsage{}
 	err := s.pool.QueryRow(ctx,
@@ -306,10 +306,10 @@ func (s *pgConfigStore) GetUsage(senderID string) (*sqlite.UserTokenUsage, error
 	return u, err
 }
 
-func (s *pgConfigStore) GetDailyUsageSummary(senderID string, days int) ([]sqlite.DailyTokenUsage, error) {
+func (s *configStore) GetDailyUsageSummary(senderID string, days int) ([]sqlite.DailyTokenUsage, error) {
 	return s.GetDailyUsage(senderID, days)
 }
-func (s *pgConfigStore) GetAllUsage() ([]sqlite.UserTokenUsage, error) {
+func (s *configStore) GetAllUsage() ([]sqlite.UserTokenUsage, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT sender_id, input_tokens, output_tokens, total_tokens, cached_tokens, conversation_count, llm_call_count
@@ -328,7 +328,7 @@ func (s *pgConfigStore) GetAllUsage() ([]sqlite.UserTokenUsage, error) {
 	}
 	return result, nil
 }
-func (s *pgConfigStore) GetDailyUsage(senderID string, days int) ([]sqlite.DailyTokenUsage, error) {
+func (s *configStore) GetDailyUsage(senderID string, days int) ([]sqlite.DailyTokenUsage, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT date, sender_id, model, input_tokens, output_tokens,
@@ -355,7 +355,7 @@ func (s *pgConfigStore) GetDailyUsage(senderID string, days int) ([]sqlite.Daily
 
 // ── Cron ──
 
-func (s *pgConfigStore) AddCronJob(job *sqlite.CronJob) error {
+func (s *configStore) AddCronJob(job *sqlite.CronJob) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO cron_jobs (id, message, channel, chat_id, sender_id, cron_expr,
@@ -367,13 +367,13 @@ func (s *pgConfigStore) AddCronJob(job *sqlite.CronJob) error {
 	return err
 }
 
-func (s *pgConfigStore) RemoveCronJob(id string) error {
+func (s *configStore) RemoveCronJob(id string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `DELETE FROM cron_jobs WHERE id = $1`, id)
 	return err
 }
 
-func (s *pgConfigStore) GetCronJob(id string) (*sqlite.CronJob, error) {
+func (s *configStore) GetCronJob(id string) (*sqlite.CronJob, error) {
 	ctx := context.Background()
 	job := &sqlite.CronJob{}
 	err := s.pool.QueryRow(ctx,
@@ -389,7 +389,7 @@ func (s *pgConfigStore) GetCronJob(id string) (*sqlite.CronJob, error) {
 	return job, err
 }
 
-func (s *pgConfigStore) ListCronJobsBySender(senderID string) ([]*sqlite.CronJob, error) {
+func (s *configStore) ListCronJobsBySender(senderID string) ([]*sqlite.CronJob, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, message, channel, chat_id, sender_id, cron_expr,
@@ -402,7 +402,7 @@ func (s *pgConfigStore) ListCronJobsBySender(senderID string) ([]*sqlite.CronJob
 	return scanCronJobs(rows)
 }
 
-func (s *pgConfigStore) ListAllCronJobs() ([]*sqlite.CronJob, error) {
+func (s *configStore) ListAllCronJobs() ([]*sqlite.CronJob, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, message, channel, chat_id, sender_id, cron_expr,
@@ -415,7 +415,7 @@ func (s *pgConfigStore) ListAllCronJobs() ([]*sqlite.CronJob, error) {
 	return scanCronJobs(rows)
 }
 
-func (s *pgConfigStore) ListCronJobsByChannelChatID(channel, chatID string) ([]*sqlite.CronJob, error) {
+func (s *configStore) ListCronJobsByChannelChatID(channel, chatID string) ([]*sqlite.CronJob, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, message, channel, chat_id, sender_id, cron_expr,
@@ -428,7 +428,7 @@ func (s *pgConfigStore) ListCronJobsByChannelChatID(channel, chatID string) ([]*
 	return scanCronJobs(rows)
 }
 
-func (s *pgConfigStore) UpdateCronNextRun(id string, nextRun time.Time) error {
+func (s *configStore) UpdateCronNextRun(id string, nextRun time.Time) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE cron_jobs SET next_run = $1 WHERE id = $2`, nextRun, id)
 	return err
@@ -450,7 +450,7 @@ func scanCronJobs(rows pgxRows) ([]*sqlite.CronJob, error) {
 
 // ── Triggers ──
 
-func (s *pgConfigStore) AddTrigger(t *event.Trigger) error {
+func (s *configStore) AddTrigger(t *event.Trigger) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO event_triggers (id, name, event_type, channel, chat_id,
@@ -461,13 +461,13 @@ func (s *pgConfigStore) AddTrigger(t *event.Trigger) error {
 	return err
 }
 
-func (s *pgConfigStore) RemoveTrigger(id string) error {
+func (s *configStore) RemoveTrigger(id string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `DELETE FROM event_triggers WHERE id = $1`, id)
 	return err
 }
 
-func (s *pgConfigStore) GetTrigger(id string) (*event.Trigger, error) {
+func (s *configStore) GetTrigger(id string) (*event.Trigger, error) {
 	ctx := context.Background()
 	t := &event.Trigger{}
 	err := s.pool.QueryRow(ctx,
@@ -482,7 +482,7 @@ func (s *pgConfigStore) GetTrigger(id string) (*event.Trigger, error) {
 	return t, err
 }
 
-func (s *pgConfigStore) ListTriggersByEventType(eventType string) ([]*event.Trigger, error) {
+func (s *configStore) ListTriggersByEventType(eventType string) ([]*event.Trigger, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, name, event_type, channel, chat_id, sender_id,
@@ -495,7 +495,7 @@ func (s *pgConfigStore) ListTriggersByEventType(eventType string) ([]*event.Trig
 	return scanTriggers(rows)
 }
 
-func (s *pgConfigStore) ListTriggersBySender(senderID string) ([]*event.Trigger, error) {
+func (s *configStore) ListTriggersBySender(senderID string) ([]*event.Trigger, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, name, event_type, channel, chat_id, sender_id,
@@ -508,13 +508,13 @@ func (s *pgConfigStore) ListTriggersBySender(senderID string) ([]*event.Trigger,
 	return scanTriggers(rows)
 }
 
-func (s *pgConfigStore) UpdateTriggerEnabled(id string, enabled bool) error {
+func (s *configStore) UpdateTriggerEnabled(id string, enabled bool) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE event_triggers SET enabled = $1 WHERE id = $2`, enabled, id)
 	return err
 }
 
-func (s *pgConfigStore) RecordTriggerFire(id string, at time.Time) error {
+func (s *configStore) RecordTriggerFire(id string, at time.Time) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE event_triggers SET last_fired = $1, fire_count = fire_count + 1 WHERE id = $2`, at, id)
@@ -536,7 +536,7 @@ func scanTriggers(rows pgxRows) ([]*event.Trigger, error) {
 
 // ── Sharing ──
 
-func (s *pgConfigStore) CreateSharedArtifact(a *sqlite.SharedArtifact) error {
+func (s *configStore) CreateSharedArtifact(a *sqlite.SharedArtifact) error {
 	ctx := context.Background()
 	if a.Token == "" {
 		a.Token = fmt.Sprintf("share_%d_%d", time.Now().UnixNano(), a.CreatedBy)
@@ -548,7 +548,7 @@ func (s *pgConfigStore) CreateSharedArtifact(a *sqlite.SharedArtifact) error {
 	return err
 }
 
-func (s *pgConfigStore) GetSharedArtifact(token string) (*sqlite.SharedArtifact, error) {
+func (s *configStore) GetSharedArtifact(token string) (*sqlite.SharedArtifact, error) {
 	ctx := context.Background()
 	a := &sqlite.SharedArtifact{}
 	err := s.pool.QueryRow(ctx,
@@ -562,7 +562,7 @@ func (s *pgConfigStore) GetSharedArtifact(token string) (*sqlite.SharedArtifact,
 	return a, err
 }
 
-func (s *pgConfigStore) RevokeSharedArtifact(token string, createdBy int64) error {
+func (s *configStore) RevokeSharedArtifact(token string, createdBy int64) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE shared_artifacts SET revoked_at = now()
@@ -570,7 +570,7 @@ func (s *pgConfigStore) RevokeSharedArtifact(token string, createdBy int64) erro
 	return err
 }
 
-func (s *pgConfigStore) ListSharedArtifactsByCreator(createdBy int64) ([]sqlite.SharedArtifact, error) {
+func (s *configStore) ListSharedArtifactsByCreator(createdBy int64) ([]sqlite.SharedArtifact, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT token, plugin_id, content_type, payload, title, created_at::text, created_by
@@ -598,7 +598,7 @@ func (s *pgConfigStore) ListSharedArtifactsByCreator(createdBy int64) ([]sqlite.
 // no LastInsertId), TIMESTAMPTZ created_at cast to text so it scans into a
 // plain string like the SQLite adapter does.
 
-func (s *pgConfigStore) CreateWebUser(username, hashedPassword string) (int64, error) {
+func (s *configStore) CreateWebUser(username, hashedPassword string) (int64, error) {
 	ctx := context.Background()
 	var id int64
 	err := s.pool.QueryRow(ctx,
@@ -610,7 +610,7 @@ func (s *pgConfigStore) CreateWebUser(username, hashedPassword string) (int64, e
 	return id, nil
 }
 
-func (s *pgConfigStore) GetWebUserForLogin(username string) (int64, string, error) {
+func (s *configStore) GetWebUserForLogin(username string) (int64, string, error) {
 	ctx := context.Background()
 	var id int64
 	var hashed string
@@ -622,7 +622,7 @@ func (s *pgConfigStore) GetWebUserForLogin(username string) (int64, string, erro
 	return id, hashed, nil
 }
 
-func (s *pgConfigStore) ListWebUsers() ([]WebUserInfo, error) {
+func (s *configStore) ListWebUsers() ([]WebUserInfo, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, username, created_at::text FROM web_users ORDER BY id`)
@@ -644,7 +644,7 @@ func (s *pgConfigStore) ListWebUsers() ([]WebUserInfo, error) {
 	return users, nil
 }
 
-func (s *pgConfigStore) DeleteWebUser(username string) error {
+func (s *configStore) DeleteWebUser(username string) error {
 	ctx := context.Background()
 	tag, err := s.pool.Exec(ctx, `DELETE FROM web_users WHERE username = $1`, username)
 	if err != nil {
@@ -656,7 +656,7 @@ func (s *pgConfigStore) DeleteWebUser(username string) error {
 	return nil
 }
 
-func (s *pgConfigStore) CountWebUsers() (int, error) {
+func (s *configStore) CountWebUsers() (int, error) {
 	ctx := context.Background()
 	var n int
 	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM web_users`).Scan(&n); err != nil {
@@ -666,7 +666,7 @@ func (s *pgConfigStore) CountWebUsers() (int, error) {
 }
 
 // SubscriptionBackend
-func (s *pgConfigStore) GetModel(subID, model string) (*sqlite.SubscriptionModel, error) {
+func (s *configStore) GetModel(subID, model string) (*sqlite.SubscriptionModel, error) {
 	ctx := context.Background()
 	m := &sqlite.SubscriptionModel{}
 	err := s.pool.QueryRow(ctx,
@@ -679,7 +679,7 @@ func (s *pgConfigStore) GetModel(subID, model string) (*sqlite.SubscriptionModel
 	}
 	return m, err
 }
-func (s *pgConfigStore) GetModels(subID string) ([]*sqlite.SubscriptionModel, error) {
+func (s *configStore) GetModels(subID string) ([]*sqlite.SubscriptionModel, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, enabled, vision, vision_detail
@@ -699,7 +699,7 @@ func (s *pgConfigStore) GetModels(subID string) ([]*sqlite.SubscriptionModel, er
 	}
 	return result, nil
 }
-func (s *pgConfigStore) EnsureModel(subID, model string) error {
+func (s *configStore) EnsureModel(subID, model string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO subscription_models (id, subscription_id, model, enabled)
@@ -708,14 +708,14 @@ func (s *pgConfigStore) EnsureModel(subID, model string) error {
 		fmt.Sprintf("%s-%s", subID, model), subID, model)
 	return err
 }
-func (s *pgConfigStore) SetModelEnabled(subID, model string, enabled bool) error {
+func (s *configStore) SetModelEnabled(subID, model string, enabled bool) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE subscription_models SET enabled = $1 WHERE subscription_id = $2 AND model = $3`,
 		enabled, subID, model)
 	return err
 }
-func (s *pgConfigStore) GetUserDefaultModel(senderID string) (*sqlite.UserDefaultModel, error) {
+func (s *configStore) GetUserDefaultModel(senderID string) (*sqlite.UserDefaultModel, error) {
 	ctx := context.Background()
 	m := &sqlite.UserDefaultModel{}
 	err := s.pool.QueryRow(ctx,
@@ -726,7 +726,7 @@ func (s *pgConfigStore) GetUserDefaultModel(senderID string) (*sqlite.UserDefaul
 	}
 	return m, err
 }
-func (s *pgConfigStore) SetUserDefaultModel(senderID, subID, model string) error {
+func (s *configStore) SetUserDefaultModel(senderID, subID, model string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO user_default_model (sender_id, subscription_id, model)
@@ -735,7 +735,7 @@ func (s *pgConfigStore) SetUserDefaultModel(senderID, subID, model string) error
 		senderID, subID, model)
 	return err
 }
-func (s *pgConfigStore) ListAllSubscriptions() ([]*sqlite.LLMSubscription, error) {
+func (s *configStore) ListAllSubscriptions() ([]*sqlite.LLMSubscription, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, sender_id, name, provider, base_url, api_key, model,
@@ -764,16 +764,16 @@ func (s *pgConfigStore) ListAllSubscriptions() ([]*sqlite.LLMSubscription, error
 	return result, nil
 }
 
-func (s *pgConfigStore) GetDefault(senderID string) (*sqlite.LLMSubscription, error) {
+func (s *configStore) GetDefault(senderID string) (*sqlite.LLMSubscription, error) {
 	return s.GetDefaultSubscription(senderID)
 }
-func (s *pgConfigStore) List(senderID string) ([]*sqlite.LLMSubscription, error) {
+func (s *configStore) List(senderID string) ([]*sqlite.LLMSubscription, error) {
 	return s.ListSubscriptions(senderID)
 }
-func (s *pgConfigStore) ListAll() ([]*sqlite.LLMSubscription, error) {
+func (s *configStore) ListAll() ([]*sqlite.LLMSubscription, error) {
 	return s.ListAllSubscriptions()
 }
-func (s *pgConfigStore) UpsertModel(subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
+func (s *configStore) UpsertModel(subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, enabled)
@@ -783,40 +783,40 @@ func (s *pgConfigStore) UpsertModel(subID, model string, maxCtx, maxOut int, thi
 	return err
 }
 
-func (s *pgConfigStore) Add(sub *sqlite.LLMSubscription) error    { return s.AddSubscription(sub) }
-func (s *pgConfigStore) Update(sub *sqlite.LLMSubscription) error { return s.UpdateSubscription(sub) }
-func (s *pgConfigStore) Remove(id string) error                   { return s.RemoveSubscription(id) }
-func (s *pgConfigStore) Rename(id, name string) error             { return s.RenameSubscription(id, name) }
-func (s *pgConfigStore) SetDefault(id string) error               { return s.SetDefaultSubscription(id) }
-func (s *pgConfigStore) SetModel(id, model string) error {
+func (s *configStore) Add(sub *sqlite.LLMSubscription) error    { return s.AddSubscription(sub) }
+func (s *configStore) Update(sub *sqlite.LLMSubscription) error { return s.UpdateSubscription(sub) }
+func (s *configStore) Remove(id string) error                   { return s.RemoveSubscription(id) }
+func (s *configStore) Rename(id, name string) error             { return s.RenameSubscription(id, name) }
+func (s *configStore) SetDefault(id string) error               { return s.SetDefaultSubscription(id) }
+func (s *configStore) SetModel(id, model string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE user_llm_subscriptions SET model = $1, updated_at = now() WHERE id = $2`, model, id)
 	return err
 }
-func (s *pgConfigStore) SetModelMaxContext(subID, model string, maxCtx int) error {
+func (s *configStore) SetModelMaxContext(subID, model string, maxCtx int) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE subscription_models SET max_context = $1 WHERE subscription_id = $2 AND model = $3`, maxCtx, subID, model)
 	return err
 }
-func (s *pgConfigStore) SetModelMaxOutput(subID, model string, maxOut int) error {
+func (s *configStore) SetModelMaxOutput(subID, model string, maxOut int) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE subscription_models SET max_output_tokens = $1 WHERE subscription_id = $2 AND model = $3`, maxOut, subID, model)
 	return err
 }
-func (s *pgConfigStore) RemoveModel(subID, model string) error {
+func (s *configStore) RemoveModel(subID, model string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `DELETE FROM subscription_models WHERE subscription_id = $1 AND model = $2`, subID, model)
 	return err
 }
-func (s *pgConfigStore) Get(id string) (*sqlite.LLMSubscription, error) { return s.GetSubscription(id) }
-func (s *pgConfigStore) ClearUserDefaultModel(senderID string) error {
+func (s *configStore) Get(id string) (*sqlite.LLMSubscription, error) { return s.GetSubscription(id) }
+func (s *configStore) ClearUserDefaultModel(senderID string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `DELETE FROM user_default_model WHERE sender_id = $1`, senderID)
 	return err
 }
 
-func (s *pgConfigStore) SetModelVisionConfig(subID, model string, vision bool, visionDetail string) error {
+func (s *configStore) SetModelVisionConfig(subID, model string, vision bool, visionDetail string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `UPDATE subscription_models SET vision = $1, vision_detail = $2 WHERE subscription_id = $3 AND model = $4`, vision, visionDetail, subID, model)
 	return err
@@ -826,7 +826,7 @@ func (s *pgConfigStore) SetModelVisionConfig(subID, model string, vision bool, v
 // the same contract as SQLite: the provided map is the complete new set (rows
 // absent from it are dropped, missing rows are created), and api_type carries
 // cfg.APIType (thinking_mode is not part of PerModelConfig).
-func (s *pgConfigStore) UpdatePerModelConfigs(id string, configs map[string]sqlite.PerModelConfig) error {
+func (s *configStore) UpdatePerModelConfigs(id string, configs map[string]sqlite.PerModelConfig) error {
 	ctx := context.Background()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

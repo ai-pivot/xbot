@@ -136,18 +136,18 @@ func MigrateMemoryToFiles(dbPath string) { sqlite.MigrateMemoryToFiles(dbPath) }
 
 // ─── PostgreSQL convenience constructors ───
 
-// NewPGStorage creates a Storage backed by PostgreSQL.
+// NewStorage creates a Storage backed by PostgreSQL.
 func NewPGStorage(ctx context.Context, dsn string) (Storage, error) {
-	return pg.NewPGStorage(ctx, dsn)
+	return pg.NewStorage(ctx, dsn)
 }
 
-// NewPGStorageWithPool wires a PG Storage onto an existing pool (tests /
+// NewStorageWithPool wires a PG Storage onto an existing pool (tests /
 // embedding callers that own pool lifecycle).
 func NewPGStorageWithPool(pool *pgxpool.Pool) (Storage, error) {
-	return pg.NewPGStorageWithPool(pool)
+	return pg.NewStorageWithPool(pool)
 }
 
-// InitPGSchema applies the PG schema (idempotent). See storage/pg.
+// InitSchema applies the PG schema (idempotent). See storage/pg.
 func InitPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
-	return pg.InitPGSchema(ctx, pool)
+	return pg.InitSchema(ctx, pool)
 }

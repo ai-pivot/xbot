@@ -12,7 +12,7 @@ import (
 
 // ─── Push targets (push_targets) — PostgreSQL backend ───
 
-func (s *pgConfigStore) UpsertPushTarget(t *PushTarget) error {
+func (s *configStore) UpsertPushTarget(t *PushTarget) error {
 	if t == nil {
 		return fmt.Errorf("nil push target")
 	}
@@ -44,7 +44,7 @@ ON CONFLICT (provider, address) DO UPDATE SET
 	return nil
 }
 
-func (s *pgConfigStore) DeletePushTarget(userID int64, provider, address string) error {
+func (s *configStore) DeletePushTarget(userID int64, provider, address string) error {
 	_, err := s.pool.Exec(context.Background(),
 		`DELETE FROM push_targets WHERE user_id = $1 AND provider = $2 AND address = $3`,
 		userID, provider, address)
@@ -54,7 +54,7 @@ func (s *pgConfigStore) DeletePushTarget(userID int64, provider, address string)
 	return nil
 }
 
-func (s *pgConfigStore) DeletePushTargetByID(id int64) error {
+func (s *configStore) DeletePushTargetByID(id int64) error {
 	_, err := s.pool.Exec(context.Background(),
 		`DELETE FROM push_targets WHERE id = $1`, id)
 	if err != nil {
@@ -63,7 +63,7 @@ func (s *pgConfigStore) DeletePushTargetByID(id int64) error {
 	return nil
 }
 
-func (s *pgConfigStore) ListPushTargetsBySender(senderID string) ([]PushTarget, error) {
+func (s *configStore) ListPushTargetsBySender(senderID string) ([]PushTarget, error) {
 	rows, err := s.pool.Query(context.Background(), `
 SELECT id, user_id, sender_id, provider, platform, address, metadata,
        device_name, app_version, created_at, last_seen_at
@@ -95,7 +95,7 @@ FROM push_targets WHERE sender_id = $1 ORDER BY id`, senderID)
 	return out, nil
 }
 
-func (s *pgConfigStore) TouchPushTargets(ids []int64, at time.Time) error {
+func (s *configStore) TouchPushTargets(ids []int64, at time.Time) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -109,7 +109,7 @@ func (s *pgConfigStore) TouchPushTargets(ids []int64, at time.Time) error {
 
 // ─── Push settings (push_settings) ───
 
-func (s *pgConfigStore) GetPushSettings() (string, error) {
+func (s *configStore) GetPushSettings() (string, error) {
 	var raw string
 	err := s.pool.QueryRow(context.Background(),
 		`SELECT config FROM push_settings WHERE id = 1`).Scan(&raw)
@@ -122,7 +122,7 @@ func (s *pgConfigStore) GetPushSettings() (string, error) {
 	return raw, nil
 }
 
-func (s *pgConfigStore) SavePushSettings(blob string) error {
+func (s *configStore) SavePushSettings(blob string) error {
 	_, err := s.pool.Exec(context.Background(), `
 INSERT INTO push_settings (id, config, updated_at) VALUES (1, $1, now())
 ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = now()`, blob)

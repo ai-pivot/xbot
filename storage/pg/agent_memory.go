@@ -13,7 +13,7 @@ import (
 	"xbot/storage/agentmem"
 )
 
-// pgAgentMemoryStore implements AgentMemoryStore on PostgreSQL.
+// agentMemoryStore implements AgentMemoryStore on PostgreSQL.
 //
 // Full-text search uses a generated `search_tsv` column + GIN index with
 // to_tsvector('simple', ...). No extension is needed: PG's 'simple' config treats
@@ -23,12 +23,12 @@ import (
 // Ranking direction is adapted HERE: SQLite bm25() is negative (lower = better)
 // while PG ts_rank is positive (higher = better). The provider only ever sees
 // best-first ordered results.
-type pgAgentMemoryStore struct {
+type agentMemoryStore struct {
 	pool *pgxpool.Pool
 }
 
-func newPGAgentMemoryStore(pool *pgxpool.Pool) *pgAgentMemoryStore {
-	return &pgAgentMemoryStore{pool: pool}
+func newAgentMemoryStore(pool *pgxpool.Pool) *agentMemoryStore {
+	return &agentMemoryStore{pool: pool}
 }
 
 // dedupRankThreshold mirrors the SQLite bm25 threshold (-6.0) on the ts_rank
@@ -36,12 +36,12 @@ func newPGAgentMemoryStore(pool *pgxpool.Pool) *pgAgentMemoryStore {
 const dedupRankThreshold = 0.05
 
 // EnsureAgentMemorySchema is a no-op on PG: the tables are part of
-// initPGSchema, which runs once when the storage is created (idempotent DDL).
-func (s *pgAgentMemoryStore) EnsureAgentMemorySchema(ctx context.Context) error { return nil }
+// initSchema, which runs once when the storage is created (idempotent DDL).
+func (s *agentMemoryStore) EnsureAgentMemorySchema(ctx context.Context) error { return nil }
 
 // ── Short-term memories ──
 
-func (s *pgAgentMemoryStore) AddAgentShortTermMemory(ctx context.Context, mem agentmem.ShortTermMemory) (int64, error) {
+func (s *agentMemoryStore) AddAgentShortTermMemory(ctx context.Context, mem agentmem.ShortTermMemory) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO xbot_short_term_memories (user_id, tenant_id, session_id, summary, key_topics)
@@ -53,7 +53,7 @@ func (s *pgAgentMemoryStore) AddAgentShortTermMemory(ctx context.Context, mem ag
 	return id, nil
 }
 
-func (s *pgAgentMemoryStore) SearchAgentShortTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.ShortTermMemory, error) {
+func (s *agentMemoryStore) SearchAgentShortTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.ShortTermMemory, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 5
@@ -73,7 +73,7 @@ func (s *pgAgentMemoryStore) SearchAgentShortTermMemories(ctx context.Context, q
 			FROM xbot_short_term_memories
 			WHERE user_id = $1 AND search_tsv @@ $2::tsquery
 			ORDER BY ts_rank(search_tsv, $2::tsquery) DESC LIMIT $3`,
-			q.UserID, pgTSQuery(q.Terms, q.Join), limit)
+			q.UserID, tsQuery(q.Terms, q.Join), limit)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("search agent short-term memories: %w", err)
@@ -91,7 +91,7 @@ func (s *pgAgentMemoryStore) SearchAgentShortTermMemories(ctx context.Context, q
 	return out, rows.Err()
 }
 
-func (s *pgAgentMemoryStore) EvictAgentShortTermMemories(ctx context.Context, userID, tenantID int64, keep int) error {
+func (s *agentMemoryStore) EvictAgentShortTermMemories(ctx context.Context, userID, tenantID int64, keep int) error {
 	if keep <= 0 {
 		keep = 5
 	}
@@ -109,11 +109,11 @@ func (s *pgAgentMemoryStore) EvictAgentShortTermMemories(ctx context.Context, us
 
 // ── Long-term memories ──
 
-const pgAgentLongTermCols = `id, user_id, tenant_id, type, content, keywords, tags, source_session,
+const agentLongTermCols = `id, user_id, tenant_id, type, content, keywords, tags, source_session,
 	importance, heat_score, access_count, created_at, last_accessed_at, file_path,
 	search_text, scope, COALESCE(superseded_by, 0)`
 
-func (s *pgAgentMemoryStore) AddAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) (int64, error) {
+func (s *agentMemoryStore) AddAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) (int64, error) {
 	scope := mem.Scope
 	if scope == "" {
 		scope = "global"
@@ -131,9 +131,9 @@ func (s *pgAgentMemoryStore) AddAgentLongTermMemory(ctx context.Context, mem age
 	return id, nil
 }
 
-// pgAgentOrderSQL maps the neutral ordering onto PG. Relevance flips to DESC
+// agentOrderSQL maps the neutral ordering onto PG. Relevance flips to DESC
 // because ts_rank is higher-is-better (bm25 is the opposite on SQLite).
-func pgAgentOrderSQL(order agentmem.Order, hasQuery bool) string {
+func agentOrderSQL(order agentmem.Order, hasQuery bool) string {
 	switch order {
 	case agentmem.OrderRelevance:
 		if hasQuery {
@@ -147,7 +147,7 @@ func pgAgentOrderSQL(order agentmem.Order, hasQuery bool) string {
 	}
 }
 
-func (s *pgAgentMemoryStore) SearchAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
+func (s *agentMemoryStore) SearchAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 5
@@ -177,12 +177,12 @@ func (s *pgAgentMemoryStore) SearchAgentLongTermMemories(ctx context.Context, q 
 	if hasQuery {
 		argn++
 		where = append(where, fmt.Sprintf("search_tsv @@ $%d::tsquery", argn))
-		args = append(args, pgTSQuery(q.Terms, q.Join))
+		args = append(args, tsQuery(q.Terms, q.Join))
 		rankExpr = fmt.Sprintf("ts_rank(search_tsv, $%d::tsquery) AS relevance", argn)
 	}
-	query := `SELECT ` + pgAgentLongTermCols + `, ` + rankExpr + `
+	query := `SELECT ` + agentLongTermCols + `, ` + rankExpr + `
 	          FROM xbot_long_term_memories WHERE ` + strings.Join(where, " AND ") + `
-	          ORDER BY ` + pgAgentOrderSQL(q.Order, hasQuery) + fmt.Sprintf(` LIMIT $%d`, argn+1)
+	          ORDER BY ` + agentOrderSQL(q.Order, hasQuery) + fmt.Sprintf(` LIMIT $%d`, argn+1)
 	args = append(args, limit)
 
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -190,10 +190,10 @@ func (s *pgAgentMemoryStore) SearchAgentLongTermMemories(ctx context.Context, q 
 		return nil, fmt.Errorf("search agent long-term memories: %w", err)
 	}
 	defer rows.Close()
-	return scanPGAgentLongTerm(rows)
+	return scanAgentLongTerm(rows)
 }
 
-func scanPGAgentLongTerm(rows pgx.Rows) ([]agentmem.LongTermMemory, error) {
+func scanAgentLongTerm(rows pgx.Rows) ([]agentmem.LongTermMemory, error) {
 	var out []agentmem.LongTermMemory
 	for rows.Next() {
 		var m agentmem.LongTermMemory
@@ -207,7 +207,7 @@ func scanPGAgentLongTerm(rows pgx.Rows) ([]agentmem.LongTermMemory, error) {
 	return out, rows.Err()
 }
 
-func (s *pgAgentMemoryStore) FindAgentDuplicateLongTerm(ctx context.Context, q agentmem.Query) (int64, error) {
+func (s *agentMemoryStore) FindAgentDuplicateLongTerm(ctx context.Context, q agentmem.Query) (int64, error) {
 	if len(q.Terms) == 0 {
 		return 0, nil
 	}
@@ -219,7 +219,7 @@ func (s *pgAgentMemoryStore) FindAgentDuplicateLongTerm(ctx context.Context, q a
 		  AND search_tsv @@ $3::tsquery
 		  AND ts_rank(search_tsv, $3::tsquery) >= $4
 		ORDER BY ts_rank(search_tsv, $3::tsquery) DESC LIMIT 1
-	`, q.UserID, q.SourceSession, pgTSQuery(q.Terms, agentmem.JoinAll), dedupRankThreshold).Scan(&id)
+	`, q.UserID, q.SourceSession, tsQuery(q.Terms, agentmem.JoinAll), dedupRankThreshold).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}
@@ -229,11 +229,11 @@ func (s *pgAgentMemoryStore) FindAgentDuplicateLongTerm(ctx context.Context, q a
 	return id, nil
 }
 
-func (s *pgAgentMemoryStore) SupersedeAgentLongTerm(ctx context.Context, q agentmem.Query, newID int64) ([]int64, error) {
+func (s *agentMemoryStore) SupersedeAgentLongTerm(ctx context.Context, q agentmem.Query, newID int64) ([]int64, error) {
 	if len(q.Terms) == 0 {
 		return nil, nil
 	}
-	tsq := pgTSQuery(q.Terms, agentmem.JoinAll)
+	tsq := tsQuery(q.Terms, agentmem.JoinAll)
 	rows, err := s.pool.Query(ctx, `
 		SELECT id FROM xbot_long_term_memories
 		WHERE user_id = $1 AND scope = 'global' AND superseded_by IS NULL
@@ -269,7 +269,7 @@ func (s *pgAgentMemoryStore) SupersedeAgentLongTerm(ctx context.Context, q agent
 	return superseded, nil
 }
 
-func (s *pgAgentMemoryStore) ListAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
+func (s *agentMemoryStore) ListAgentLongTermMemories(ctx context.Context, q agentmem.Query) ([]agentmem.LongTermMemory, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 20
@@ -283,21 +283,21 @@ func (s *pgAgentMemoryStore) ListAgentLongTermMemories(ctx context.Context, q ag
 		where = append(where, fmt.Sprintf("type = $%d", len(args)+1))
 		args = append(args, q.Type)
 	}
-	query := `SELECT ` + pgAgentLongTermCols + `, 0::float8 AS relevance FROM xbot_long_term_memories
+	query := `SELECT ` + agentLongTermCols + `, 0::float8 AS relevance FROM xbot_long_term_memories
 	          WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ` +
-		pgAgentOrderSQL(q.Order, false) + fmt.Sprintf(` LIMIT $%d`, len(args)+1)
+		agentOrderSQL(q.Order, false) + fmt.Sprintf(` LIMIT $%d`, len(args)+1)
 	args = append(args, limit)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list agent long-term memories: %w", err)
 	}
 	defer rows.Close()
-	return scanPGAgentLongTerm(rows)
+	return scanAgentLongTerm(rows)
 }
 
-func (s *pgAgentMemoryStore) GetAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) (agentmem.LongTermMemory, error) {
+func (s *agentMemoryStore) GetAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) (agentmem.LongTermMemory, error) {
 	var m agentmem.LongTermMemory
-	err := s.pool.QueryRow(ctx, `SELECT `+pgAgentLongTermCols+`, 0::float8 AS relevance
+	err := s.pool.QueryRow(ctx, `SELECT `+agentLongTermCols+`, 0::float8 AS relevance
 		FROM xbot_long_term_memories WHERE id = $1 AND user_id = $2`, id, userID).
 		Scan(&m.ID, &m.UserID, &m.TenantID, &m.Type, &m.Content, &m.Keywords, &m.Tags,
 			&m.SourceSession, &m.Importance, &m.HeatScore, &m.AccessCount, &m.CreatedAt, &m.LastAccessedAt,
@@ -308,7 +308,7 @@ func (s *pgAgentMemoryStore) GetAgentLongTermMemory(ctx context.Context, userID,
 	return m, nil
 }
 
-func (s *pgAgentMemoryStore) UpdateAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) error {
+func (s *agentMemoryStore) UpdateAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE xbot_long_term_memories
 		SET content = $1, keywords = $2, tags = $3, importance = $4, search_text = $5, updated_at = now()
@@ -320,7 +320,7 @@ func (s *pgAgentMemoryStore) UpdateAgentLongTermMemory(ctx context.Context, mem 
 	return nil
 }
 
-func (s *pgAgentMemoryStore) DeleteAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) error {
+func (s *agentMemoryStore) DeleteAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) error {
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM xbot_long_term_memories WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
@@ -329,14 +329,14 @@ func (s *pgAgentMemoryStore) DeleteAgentLongTermMemory(ctx context.Context, user
 	return nil
 }
 
-func (s *pgAgentMemoryStore) TouchAgentLongTermMemory(ctx context.Context, id int64) error {
+func (s *agentMemoryStore) TouchAgentLongTermMemory(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE xbot_long_term_memories
 		SET access_count = access_count + 1, last_accessed_at = now() WHERE id = $1`, id)
 	return err
 }
 
-func (s *pgAgentMemoryStore) DecayAgentLongTerm(ctx context.Context, userID, tenantID int64, halfLifeDays, forgetThreshold float64) error {
+func (s *agentMemoryStore) DecayAgentLongTerm(ctx context.Context, userID, tenantID int64, halfLifeDays, forgetThreshold float64) error {
 	// Same formula as SQLite: heat = importance * exp(-days/halfLife) * log(1+access)
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE xbot_long_term_memories
@@ -354,7 +354,7 @@ func (s *pgAgentMemoryStore) DecayAgentLongTerm(ctx context.Context, userID, ten
 	return nil
 }
 
-func (s *pgAgentMemoryStore) PruneAgentLongTerm(ctx context.Context, userID, tenantID int64, maxEntries int) error {
+func (s *agentMemoryStore) PruneAgentLongTerm(ctx context.Context, userID, tenantID int64, maxEntries int) error {
 	if maxEntries <= 0 {
 		return nil
 	}
@@ -370,29 +370,29 @@ func (s *pgAgentMemoryStore) PruneAgentLongTerm(ctx context.Context, userID, ten
 	return nil
 }
 
-func (s *pgAgentMemoryStore) ListAgentLongTermMissingSearchText(ctx context.Context, userID, tenantID int64, limit int) ([]agentmem.LongTermMemory, error) {
+func (s *agentMemoryStore) ListAgentLongTermMissingSearchText(ctx context.Context, userID, tenantID int64, limit int) ([]agentmem.LongTermMemory, error) {
 	if limit <= 0 {
 		limit = 500
 	}
-	rows, err := s.pool.Query(ctx, `SELECT `+pgAgentLongTermCols+`, 0::float8 AS relevance
+	rows, err := s.pool.Query(ctx, `SELECT `+agentLongTermCols+`, 0::float8 AS relevance
 		FROM xbot_long_term_memories WHERE user_id = $1 AND search_text = '' LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list agent memories missing search_text: %w", err)
 	}
 	defer rows.Close()
-	return scanPGAgentLongTerm(rows)
+	return scanAgentLongTerm(rows)
 }
 
-func (s *pgAgentMemoryStore) SetAgentLongTermSearchText(ctx context.Context, id int64, searchText string) error {
+func (s *agentMemoryStore) SetAgentLongTermSearchText(ctx context.Context, id int64, searchText string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE xbot_long_term_memories SET search_text = $1 WHERE id = $2`, searchText, id)
 	return err
 }
 
-// pgTSQuery renders pre-tokenized terms as a tsquery. Each term is quoted as a
+// tsQuery renders pre-tokenized terms as a tsquery. Each term is quoted as a
 // lexeme (":" escapes are stripped by quoting) and joined with | (any) or &
 // (all) — the PG counterpart of the FTS5 OR/AND expression.
-func pgTSQuery(terms []string, join agentmem.TermJoin) string {
+func tsQuery(terms []string, join agentmem.TermJoin) string {
 	if len(terms) == 0 {
 		return ""
 	}
@@ -422,7 +422,7 @@ var _ = time.Time{}
 // AddAgentLongTermMemoryWithSupersede inserts the memory and supersedes older
 // strongly-matching GLOBAL entries in ONE transaction (same crash-consistency
 // contract as SQLite).
-func (s *pgAgentMemoryStore) AddAgentLongTermMemoryWithSupersede(ctx context.Context, mem agentmem.LongTermMemory, terms []string) (int64, []int64, error) {
+func (s *agentMemoryStore) AddAgentLongTermMemoryWithSupersede(ctx context.Context, mem agentmem.LongTermMemory, terms []string) (int64, []int64, error) {
 	scope := mem.Scope
 	if scope == "" {
 		scope = "global"
@@ -445,7 +445,7 @@ func (s *pgAgentMemoryStore) AddAgentLongTermMemoryWithSupersede(ctx context.Con
 
 	var superseded []int64
 	if scope == "global" && len(terms) > 0 {
-		tsq := pgTSQuery(terms, agentmem.JoinAll)
+		tsq := tsQuery(terms, agentmem.JoinAll)
 		rows, qerr := tx.Query(ctx, `
 			SELECT id FROM xbot_long_term_memories
 			WHERE user_id = $1 AND scope = 'global' AND superseded_by IS NULL
@@ -482,7 +482,7 @@ func (s *pgAgentMemoryStore) AddAgentLongTermMemoryWithSupersede(ctx context.Con
 }
 
 // SetAgentLongTermFilePath records the Markdown mirror path.
-func (s *pgAgentMemoryStore) SetAgentLongTermFilePath(ctx context.Context, id int64, filePath string) error {
+func (s *agentMemoryStore) SetAgentLongTermFilePath(ctx context.Context, id int64, filePath string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE xbot_long_term_memories SET file_path = $1 WHERE id = $2`, filePath, id)
 	return err

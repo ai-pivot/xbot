@@ -29,7 +29,7 @@ func TestPGStorage_SessionStoreSurface(t *testing.T) {
 		t.Skip("set XBOT_PG_TEST_DSN to run the PG session-store surface test")
 	}
 	ctx := context.Background()
-	store, err := pg.NewPGStorage(ctx, dsn)
+	store, err := pg.NewStorage(ctx, dsn)
 	if err != nil {
 		t.Fatalf("NewPGStorage: %v", err)
 	}

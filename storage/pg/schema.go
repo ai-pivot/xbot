@@ -7,11 +7,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// initPGSchema creates all tables in a fresh PG database.
+// initSchema creates all tables in a fresh PG database.
 // PG starts at schema version 73 (same as SQLite current) — no
 // historical migration chain is ported (v1-v72 are SQLite-specific).
 // All DDL is idempotent (CREATE TABLE IF NOT EXISTS).
-func initPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
+func initSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	queries := []string{
 		// ── Tenants (registry) ──
 		`CREATE TABLE IF NOT EXISTS tenants (

@@ -2,7 +2,7 @@ package pg
 
 import "xbot/internal/textutil"
 
-// pgText makes a string safe to send to PostgreSQL.
+// sanitizeText makes a string safe to send to PostgreSQL.
 //
 // PostgreSQL validates encoding on write and rejects the ENTIRE statement when
 // it meets an invalid byte sequence (SQLSTATE 22021), whereas SQLite stores
@@ -22,6 +22,6 @@ import "xbot/internal/textutil"
 // writes and migrated rows stay consistent.
 //
 // Valid input without NUL is returned unchanged and without allocating.
-func pgText(s string) string {
+func sanitizeText(s string) string {
 	return textutil.SanitizeText(s)
 }

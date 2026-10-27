@@ -11,8 +11,8 @@ import (
 	"xbot/storage/common"
 )
 
-// pgStorage implements Storage for PostgreSQL.
-type pgStorage struct {
+// backend implements Storage for PostgreSQL.
+type backend struct {
 	pool    *pgxpool.Pool
 	session SessionStore // per-session or shared (tenant_id-filtered)
 	tenant  TenantStore
@@ -24,51 +24,51 @@ type pgStorage struct {
 	agents  InteractiveAgentStore
 }
 
-// NewPGStorage creates a Storage backed by PostgreSQL.
+// NewStorage creates a Storage backed by PostgreSQL.
 // dsn example: "postgres://user:pass@host:5432/xbot?sslmode=disable"
-func NewPGStorage(ctx context.Context, dsn string) (Storage, error) {
+func NewStorage(ctx context.Context, dsn string) (Storage, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open pg pool: %w", err)
 	}
 
 	// Init schema (idempotent — CREATE IF NOT EXISTS)
-	if err := initPGSchema(ctx, pool); err != nil {
+	if err := initSchema(ctx, pool); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("init pg schema: %w", err)
 	}
 
-	return NewPGStorageWithPool(pool)
+	return NewStorageWithPool(pool)
 }
 
-// NewPGStorageWithPool wires every PG store onto an existing pool. Exported so
+// NewStorageWithPool wires every PG store onto an existing pool. Exported so
 // tests (and embedding callers that own pool lifecycle) can construct the
 // backend without a second connection. A nil field panics on first use, so this
 // is also the single wiring guard.
-func NewPGStorageWithPool(pool *pgxpool.Pool) (Storage, error) {
-	pg := &pgStorage{pool: pool}
-	pg.tenant = newPGTenantStore(pool)
-	pg.memory = newPGMemoryStore(pool)
-	pg.config = newPGConfigStore(pool)
-	pg.cron = newPGCronStore(pool)
-	pg.trigger = newPGTriggerStore(pool)
-	pg.oauth = newPGOAuthTokenStore(pool)
-	pg.agents = newPGInteractiveAgentStore(pool)
-	pg.session = newPGSessionStore(pool) // shared pool, tenant_id-filtered
+func NewStorageWithPool(pool *pgxpool.Pool) (Storage, error) {
+	pg := &backend{pool: pool}
+	pg.tenant = newTenantStore(pool)
+	pg.memory = newMemoryStore(pool)
+	pg.config = newConfigStore(pool)
+	pg.cron = newCronStore(pool)
+	pg.trigger = newTriggerStore(pool)
+	pg.oauth = newOAuthTokenStore(pool)
+	pg.agents = newInteractiveAgentStore(pool)
+	pg.session = newSessionStore(pool) // shared pool, tenant_id-filtered
 	return pg, nil
 }
 
-func (s *pgStorage) Session(tenantID int64) (SessionStore, error) {
+func (s *backend) Session(tenantID int64) (SessionStore, error) {
 	return s.session, nil // single shared pool; tenant_id filtering is per-method
 }
-func (s *pgStorage) Tenant() TenantStore                      { return s.tenant }
-func (s *pgStorage) Memory() MemoryStore                      { return s.memory }
-func (s *pgStorage) Config() ConfigStore                      { return s.config }
-func (s *pgStorage) Cron() CronStore                          { return s.cron }
-func (s *pgStorage) Trigger() event.TriggerStore              { return s.trigger }
-func (s *pgStorage) OAuth() OAuthTokenStore                   { return s.oauth }
-func (s *pgStorage) InteractiveAgents() InteractiveAgentStore { return s.agents }
-func (s *pgStorage) Close() error                             { s.pool.Close(); return nil }
+func (s *backend) Tenant() TenantStore                      { return s.tenant }
+func (s *backend) Memory() MemoryStore                      { return s.memory }
+func (s *backend) Config() ConfigStore                      { return s.config }
+func (s *backend) Cron() CronStore                          { return s.cron }
+func (s *backend) Trigger() event.TriggerStore              { return s.trigger }
+func (s *backend) OAuth() OAuthTokenStore                   { return s.oauth }
+func (s *backend) InteractiveAgents() InteractiveAgentStore { return s.agents }
+func (s *backend) Close() error                             { s.pool.Close(); return nil }
 
 // CopySessionFrom copies a session's conversation into another session.
 //
@@ -87,7 +87,7 @@ func (s *pgStorage) Close() error                             { s.pool.Close(); 
 //
 // Control rows (compression/mask bookkeeping) are already folded into the replayed
 // messages, so nothing about them needs copying.
-func (s *pgStorage) CopySessionFrom(dstTenantID, srcTenantID int64) (int, error) {
+func (s *backend) CopySessionFrom(dstTenantID, srcTenantID int64) (int, error) {
 	src, err := s.Session(srcTenantID)
 	if err != nil {
 		return 0, fmt.Errorf("copy session: open source: %w", err)
@@ -118,11 +118,11 @@ func (s *pgStorage) CopySessionFrom(dstTenantID, srcTenantID int64) (int, error)
 	return len(msgs), nil
 }
 
-var _ Storage = (*pgStorage)(nil)
+var _ Storage = (*backend)(nil)
 
-// InitPGSchema applies the PostgreSQL schema (idempotent). Exported so tooling —
+// InitSchema applies the PostgreSQL schema (idempotent). Exported so tooling —
 // e.g. the SQLite→PG migration command — creates exactly the schema the runtime
 // uses instead of duplicating DDL.
-func InitPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
-	return initPGSchema(ctx, pool)
+func InitSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	return initSchema(ctx, pool)
 }

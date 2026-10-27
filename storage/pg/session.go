@@ -20,30 +20,30 @@ type pgxRows interface {
 	Close()
 }
 
-type pgSessionStore struct {
+type sessionStore struct {
 	pool *pgxpool.Pool
 }
 
-func newPGSessionStore(pool *pgxpool.Pool) SessionStore {
-	return &pgSessionStore{pool: pool}
+func newSessionStore(pool *pgxpool.Pool) SessionStore {
+	return &sessionStore{pool: pool}
 }
 
 // ── Messages ──
 
-func (s *pgSessionStore) AddMessage(tenantID int64, msg llm.ChatMessage) error {
+func (s *sessionStore) AddMessage(tenantID int64, msg llm.ChatMessage) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, s.insertMessageSQL(), s.messageArgs(tenantID, msg)...)
 	return err
 }
 
-func (s *pgSessionStore) AddMessageWithID(tenantID int64, msg llm.ChatMessage) (int64, error) {
+func (s *sessionStore) AddMessageWithID(tenantID int64, msg llm.ChatMessage) (int64, error) {
 	ctx := context.Background()
 	var id int64
 	err := s.pool.QueryRow(ctx, s.insertMessageSQL()+" RETURNING id", s.messageArgs(tenantID, msg)...).Scan(&id)
 	return id, err
 }
 
-func (s *pgSessionStore) insertMessageSQL() string {
+func (s *sessionStore) insertMessageSQL() string {
 	return `INSERT INTO session_messages
 		(tenant_id, role, content, tool_call_id, tool_name, tool_arguments,
 		 tool_calls, detail, reasoning_content, reasoning_items,
@@ -53,11 +53,11 @@ func (s *pgSessionStore) insertMessageSQL() string {
 }
 
 // messageArgs builds the INSERT argument vector. Every free-text column goes
-// through pgText: PostgreSQL rejects the whole statement on an invalid byte
+// through sanitizeText: PostgreSQL rejects the whole statement on an invalid byte
 // sequence (SQLSTATE 22021) where SQLite stored it silently, so a single torn
 // character upstream must not be able to cost a conversation turn. The JSON
 // columns are safe already — encoding/json replaces invalid bytes with U+FFFD.
-func (s *pgSessionStore) messageArgs(tenantID int64, msg llm.ChatMessage) []any {
+func (s *sessionStore) messageArgs(tenantID int64, msg llm.ChatMessage) []any {
 	toolCalls, _ := json.Marshal(msg.ToolCalls)
 	if string(toolCalls) == "null" {
 		toolCalls = []byte("[]")
@@ -67,15 +67,15 @@ func (s *pgSessionStore) messageArgs(tenantID int64, msg llm.ChatMessage) []any 
 		reasoningItems = []byte("[]")
 	}
 	return []any{
-		tenantID, pgText(msg.Role), pgText(msg.Content), pgText(msg.ToolCallID), pgText(msg.ToolName),
-		pgText(msg.ToolArguments), string(toolCalls), pgText(msg.Detail), pgText(msg.ReasoningContent),
+		tenantID, sanitizeText(msg.Role), sanitizeText(msg.Content), sanitizeText(msg.ToolCallID), sanitizeText(msg.ToolName),
+		sanitizeText(msg.ToolArguments), string(toolCalls), sanitizeText(msg.Detail), sanitizeText(msg.ReasoningContent),
 		string(reasoningItems), msg.DisplayOnly, msg.Internal,
 		0, msg.TurnID, msg.Iteration,
 		"message", 0, "", // record_type, target_history_id, record_data (set by caller)
 	}
 }
 
-func (s *pgSessionStore) ReplaceToolMessage(tenantID int64, toolName, toolCallID, content string) error {
+func (s *sessionStore) ReplaceToolMessage(tenantID int64, toolName, toolCallID, content string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE session_messages SET content = $1
@@ -83,13 +83,13 @@ func (s *pgSessionStore) ReplaceToolMessage(tenantID int64, toolName, toolCallID
 		   SELECT id FROM session_messages
 		   WHERE tenant_id = $2 AND tool_name = $3 AND tool_call_id = $4
 		   ORDER BY id DESC LIMIT 1
-		 )`, pgText(content), tenantID, pgText(toolName), pgText(toolCallID))
+		 )`, sanitizeText(content), tenantID, sanitizeText(toolName), sanitizeText(toolCallID))
 	return err
 }
 
 // GetHistory returns the last `limit` LLM-context messages (rows), in
 // chronological order.
-func (s *pgSessionStore) GetHistory(tenantID int64, limit int) ([]llm.ChatMessage, error) {
+func (s *sessionStore) GetHistory(tenantID int64, limit int) ([]llm.ChatMessage, error) {
 	return s.GetHistoryBefore(tenantID, 0, limit)
 }
 
@@ -103,7 +103,7 @@ func (s *pgSessionStore) GetHistory(tenantID int64, limit int) ([]llm.ChatMessag
 // un-masked history to the model — a 3.4MB prompt after a restart where the
 // checkpoint held 10KB (2026-10-20: turn 49's request blew past the 1M-token
 // window and the upstream answered the generic 400 "invalid parameter").
-func (s *pgSessionStore) GetHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
+func (s *sessionStore) GetHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
 	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return nil, err
@@ -137,7 +137,7 @@ func (s *pgSessionStore) GetHistoryBefore(tenantID int64, beforeID int64, limit 
 // GetAllMessages returns every LLM-context message for a tenant — the same
 // Replay() projection SQLite's GetAllMessages returns (compression snapshots
 // folded in, masks/context edits applied, display-only rows excluded).
-func (s *pgSessionStore) GetAllMessages(tenantID int64) ([]llm.ChatMessage, error) {
+func (s *sessionStore) GetAllMessages(tenantID int64) ([]llm.ChatMessage, error) {
 	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return nil, err
@@ -148,7 +148,7 @@ func (s *pgSessionStore) GetAllMessages(tenantID int64) ([]llm.ChatMessage, erro
 // GetMessagesCount returns the number of ACTIVE messages (the LLM-context
 // projection), matching SQLite's checkpoint-aware countActiveMessages: a
 // compressed session reports the snapshot size, not the append-only row count.
-func (s *pgSessionStore) GetMessagesCount(tenantID int64) (int, error) {
+func (s *sessionStore) GetMessagesCount(tenantID int64) (int, error) {
 	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return 0, err
@@ -175,7 +175,7 @@ const displayRowPredicate = `(COALESCE(record_type, 'message') = 'command' OR CO
 // in and masks/context edits are not applied — the UI keeps showing what actually
 // happened. Unlike the LLM-facing reads, this one keeps `command` rows and drops
 // display-only message rows (see displayRowPredicate).
-func (s *pgSessionStore) displayHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
+func (s *sessionStore) displayHistoryBefore(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -224,22 +224,22 @@ func (s *pgSessionStore) displayHistoryBefore(tenantID int64, beforeID int64, li
 	return msgs, nil
 }
 
-func (s *pgSessionStore) Clear(tenantID int64) error {
+func (s *sessionStore) Clear(tenantID int64) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `DELETE FROM session_messages WHERE tenant_id = $1`, tenantID)
 	return err
 }
 
-func (s *pgSessionStore) UpdateMessageContent(tenantID int64, messageIndex int, content string) error {
+func (s *sessionStore) UpdateMessageContent(tenantID int64, messageIndex int, content string) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx,
 		`UPDATE session_messages SET content = $1
 		 WHERE id = (SELECT id FROM session_messages WHERE tenant_id = $2 ORDER BY id ASC LIMIT 1 OFFSET $3)`,
-		pgText(content), tenantID, messageIndex)
+		sanitizeText(content), tenantID, messageIndex)
 	return err
 }
 
-func (s *pgSessionStore) UpdateUserMessageContextTokens(tenantID int64, promptTokens int64) error {
+func (s *sessionStore) UpdateUserMessageContextTokens(tenantID int64, promptTokens int64) error {
 	ctx := context.Background()
 	// COALESCE(display_only, false) = false matches the SQLite contract: command rows
 	// (`!cmd`, role='user' + display_only=1) must never receive the watermark —
@@ -252,7 +252,7 @@ func (s *pgSessionStore) UpdateUserMessageContextTokens(tenantID int64, promptTo
 	return err
 }
 
-func (s *pgSessionStore) GetLastUserMessageContent(tenantID int64) (string, error) {
+func (s *sessionStore) GetLastUserMessageContent(tenantID int64) (string, error) {
 	ctx := context.Background()
 	var content string
 	err := s.pool.QueryRow(ctx,
@@ -267,7 +267,7 @@ func (s *pgSessionStore) GetLastUserMessageContent(tenantID int64) (string, erro
 // rows in session_messages are frequently empty placeholders (tool-only
 // iterations), which made a session_messages-based query return "" and the
 // push body fall back to "本轮回复已完成".
-func (s *pgSessionStore) GetLastAssistantPreview(tenantID int64, maxRunes int) (string, error) {
+func (s *sessionStore) GetLastAssistantPreview(tenantID int64, maxRunes int) (string, error) {
 	ctx := context.Background()
 	var content string
 	err := s.pool.QueryRow(ctx,
@@ -300,7 +300,7 @@ func truncateRunes(s string, maxRunes int) string {
 	return string(r[:maxRunes-3]) + "..."
 }
 
-func (s *pgSessionStore) HasAssistantReplyAfterLastUser(tenantID int64) (bool, error) {
+func (s *sessionStore) HasAssistantReplyAfterLastUser(tenantID int64) (bool, error) {
 	ctx := context.Background()
 	var count int
 	err := s.pool.QueryRow(ctx,
@@ -315,14 +315,14 @@ func (s *pgSessionStore) HasAssistantReplyAfterLastUser(tenantID int64) (bool, e
 
 // ── Turns ──
 
-func (s *pgSessionStore) GetMaxTurnID(tenantID int64) (uint64, error) {
+func (s *sessionStore) GetMaxTurnID(tenantID int64) (uint64, error) {
 	ctx := context.Background()
 	var turnID uint64
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(turn_id), 0) FROM session_messages WHERE tenant_id = $1`, tenantID).Scan(&turnID)
 	return turnID, err
 }
 
-func (s *pgSessionStore) GetLastUserTurnID(tenantID int64) (uint64, error) {
+func (s *sessionStore) GetLastUserTurnID(tenantID int64) (uint64, error) {
 	ctx := context.Background()
 	var turnID uint64
 	err := s.pool.QueryRow(ctx,
@@ -331,7 +331,7 @@ func (s *pgSessionStore) GetLastUserTurnID(tenantID int64) (uint64, error) {
 	return turnID, err
 }
 
-func (s *pgSessionStore) GetMaxIterationForTurn(tenantID int64, turnID uint64) (int, error) {
+func (s *sessionStore) GetMaxIterationForTurn(tenantID int64, turnID uint64) (int, error) {
 	ctx := context.Background()
 	var iter int
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(iteration), 0) FROM iteration_history WHERE tenant_id = $1 AND turn_id = $2`, tenantID, turnID).Scan(&iter)
@@ -349,12 +349,12 @@ const iterationInsertSQL = `INSERT INTO iteration_history
 // queueIterationInsert appends one row to the batch, in the column order above.
 func queueIterationInsert(b *pgx.Batch, tenantID, msgID int64, turnID uint64, rec sqlite.IterationRecord) {
 	b.Queue(iterationInsertSQL,
-		msgID, tenantID, turnID, rec.Iteration, pgText(rec.Content), pgText(rec.Reasoning), pgText(rec.Tools),
+		msgID, tenantID, turnID, rec.Iteration, sanitizeText(rec.Content), sanitizeText(rec.Reasoning), sanitizeText(rec.Tools),
 		rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs,
 		rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)
 }
 
-func (s *pgSessionStore) AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec sqlite.IterationRecord) error {
+func (s *sessionStore) AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec sqlite.IterationRecord) error {
 	return s.AppendIterationHistories(tenantID, []sqlite.IterationRecord{
 		{MessageID: msgID, TurnID: turnID, Iteration: rec.Iteration, Content: rec.Content,
 			Reasoning: rec.Reasoning, Tools: rec.Tools, Tokens: rec.Tokens, TTFTMs: rec.TTFTMs,
@@ -370,7 +370,7 @@ func (s *pgSessionStore) AppendIterationHistory(tenantID int64, msgID int64, tur
 // INSERT per record against a remote PG costs a full network round trip (~50ms):
 // an 800-iteration session spent ~2 minutes on the wire alone. Same rows, same
 // transaction, one batch.
-func (s *pgSessionStore) AppendIterationHistories(tenantID int64, recs []sqlite.IterationRecord) error {
+func (s *sessionStore) AppendIterationHistories(tenantID int64, recs []sqlite.IterationRecord) error {
 	if len(recs) == 0 {
 		return nil
 	}
@@ -398,16 +398,16 @@ func (s *pgSessionStore) AppendIterationHistories(tenantID int64, recs []sqlite.
 	return tx.Commit(ctx)
 }
 
-func (s *pgSessionStore) AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error) {
+func (s *sessionStore) AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error) {
 	ctx := context.Background()
-	tag, err := s.pool.Exec(ctx, `UPDATE iteration_history SET tools = $1 WHERE tenant_id = $2 AND turn_id = $3 AND iteration = $4`, pgText(toolJSON), tenantID, turnID, iteration)
+	tag, err := s.pool.Exec(ctx, `UPDATE iteration_history SET tools = $1 WHERE tenant_id = $2 AND turn_id = $3 AND iteration = $4`, sanitizeText(toolJSON), tenantID, turnID, iteration)
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
 }
 
-func (s *pgSessionStore) GetIterationHistoryByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error) {
+func (s *sessionStore) GetIterationHistoryByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
@@ -419,7 +419,7 @@ func (s *pgSessionStore) GetIterationHistoryByTurn(tenantID int64, turnID uint64
 	return scanIterations(rows)
 }
 
-func (s *pgSessionStore) GetIterationHistoryByTurns(tenantID int64, turnIDs []uint64) (map[uint64][]sqlite.IterationRecord, error) {
+func (s *sessionStore) GetIterationHistoryByTurns(tenantID int64, turnIDs []uint64) (map[uint64][]sqlite.IterationRecord, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
@@ -443,7 +443,7 @@ func (s *pgSessionStore) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 // GetIterationHistoryBeforeRange returns the iterations of a turn that precede
 // beforeIter, ascending — the windowing endpoint's segment query. Same ordering
 // and shape as the SQLite implementation.
-func (s *pgSessionStore) GetIterationHistoryBeforeRange(tenantID int64, turnID uint64, beforeIter int) ([]sqlite.IterationRecord, error) {
+func (s *sessionStore) GetIterationHistoryBeforeRange(tenantID int64, turnID uint64, beforeIter int) ([]sqlite.IterationRecord, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
@@ -460,7 +460,7 @@ func (s *pgSessionStore) GetIterationHistoryBeforeRange(tenantID int64, turnID u
 // Not-found is a normal business result: (zero, false, nil) — the handler turns it
 // into a 404. ORDER BY id ASC LIMIT 1 keeps the same tie-break as SQLite when
 // duplicate rows exist.
-func (s *pgSessionStore) GetIterationHistoryByNumber(tenantID int64, turnID uint64, iteration int) (sqlite.IterationRecord, bool, error) {
+func (s *sessionStore) GetIterationHistoryByNumber(tenantID int64, turnID uint64, iteration int) (sqlite.IterationRecord, bool, error) {
 	ctx := context.Background()
 	var rec sqlite.IterationRecord
 	var createdAt time.Time
@@ -487,7 +487,7 @@ func (s *pgSessionStore) GetIterationHistoryByNumber(tenantID int64, turnID uint
 // (assistant rows carrying tool_calls + tool results, in id order) used to repair
 // histories written before synthetic tool pairs were persisted. The synthetic-name
 // judgement stays in the channel layer — SQL only narrows to candidate rows.
-func (s *pgSessionStore) GetSyntheticPairRowsByTurn(tenantID int64, turnID uint64) ([]llm.ChatMessage, error) {
+func (s *sessionStore) GetSyntheticPairRowsByTurn(tenantID int64, turnID uint64) ([]llm.ChatMessage, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, role, content, COALESCE(tool_call_id, ''), COALESCE(tool_name, ''),
@@ -526,14 +526,14 @@ func (s *pgSessionStore) GetSyntheticPairRowsByTurn(tenantID int64, turnID uint6
 
 // ── v71 lifecycle ──
 
-func (s *pgSessionStore) HasLegacyRows(tenantID int64) (bool, error) {
+func (s *sessionStore) HasLegacyRows(tenantID int64) (bool, error) {
 	ctx := context.Background()
 	var count int
 	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM session_messages WHERE tenant_id = $1`, tenantID).Scan(&count)
 	return count > 0, err
 }
 
-func (s *pgSessionStore) LatestPreview(tenantID int64) (string, error) {
+func (s *sessionStore) LatestPreview(tenantID int64) (string, error) {
 	ctx := context.Background()
 	var preview string
 	err := s.pool.QueryRow(ctx, `SELECT content FROM session_messages WHERE tenant_id = $1 AND role IN ('user','assistant') AND display_only = false ORDER BY id DESC LIMIT 1`, tenantID).Scan(&preview)
@@ -553,7 +553,7 @@ func (s *pgSessionStore) LatestPreview(tenantID int64) (string, error) {
 
 // AppendMessage appends one message and returns its stable history id
 // (same row shape as AddMessageWithID — both route through messageArgs).
-func (s *pgSessionStore) AppendMessage(tenantID int64, msg llm.ChatMessage) (int64, error) {
+func (s *sessionStore) AppendMessage(tenantID int64, msg llm.ChatMessage) (int64, error) {
 	return s.AddMessageWithID(tenantID, msg)
 }
 
@@ -564,7 +564,7 @@ func (s *pgSessionStore) AppendMessage(tenantID int64, msg llm.ChatMessage) (int
 // spent minutes here waiting on the wire rather than on the server. One batch =
 // one round trip, and result order still matches `messages` exactly (pgx returns
 // per-queued-statement results in queue order), so the returned ids are aligned.
-func (s *pgSessionStore) AppendMessages(tenantID int64, messages []llm.ChatMessage) ([]int64, error) {
+func (s *sessionStore) AppendMessages(tenantID int64, messages []llm.ChatMessage) ([]int64, error) {
 	if len(messages) == 0 {
 		return nil, nil
 	}
@@ -612,7 +612,7 @@ func batchInsertIDs(ctx context.Context, tx pgx.Tx, batch *pgx.Batch, n int, ctx
 // AppendMessagesAndAskQuestion atomically persists an AskUser tool exchange and
 // its pending-question control record (target_history_id = the AskUser tool
 // row's id, exactly like SQLite's appendAskQuestionWith).
-func (s *pgSessionStore) AppendMessagesAndAskQuestion(tenantID int64, messages []llm.ChatMessage, metadata map[string]string) ([]int64, int64, error) {
+func (s *sessionStore) AppendMessagesAndAskQuestion(tenantID int64, messages []llm.ChatMessage, metadata map[string]string) ([]int64, int64, error) {
 	toolIndex := -1
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "tool" && messages[i].ToolName == "AskUser" {
@@ -659,19 +659,19 @@ func (s *pgSessionStore) AppendMessagesAndAskQuestion(tenantID int64, messages [
 // AppendCommandMessage persists a `!cmd` / slash input-or-output row: display
 // projection only (display_only=1 + record_type='command'), no turn, never part
 // of the LLM context — so it survives a page refresh (mirrors SQLite).
-func (s *pgSessionStore) AppendCommandMessage(tenantID int64, role, content string) (int64, error) {
+func (s *sessionStore) AppendCommandMessage(tenantID int64, role, content string) (int64, error) {
 	ctx := context.Background()
 	var id int64
 	err := s.pool.QueryRow(ctx, `INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, turn_id)
-		VALUES ($1, $2, $3, true, 'command', 0) RETURNING id`, tenantID, pgText(role), pgText(content)).Scan(&id)
+		VALUES ($1, $2, $3, true, 'command', 0) RETURNING id`, tenantID, sanitizeText(role), sanitizeText(content)).Scan(&id)
 	return id, err
 }
 
 // AppendControl appends a control record. Same guard as SQLite: the control
 // types that own an atomic append path (compress / prune / ask_question /
 // ask_answer / mask) are rejected here — only context_edit travels this way.
-func (s *pgSessionStore) AppendControl(tenantID int64, recordType sqlite.HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
+func (s *sessionStore) AppendControl(tenantID int64, recordType sqlite.HistoryRecordType, targetHistoryID int64, data any) (int64, error) {
 	if recordType != sqlite.HistoryRecordContextEdit {
 		return 0, fmt.Errorf("append control: record type %q requires its atomic append method", recordType)
 	}
@@ -691,7 +691,7 @@ func (s *pgSessionStore) AppendControl(tenantID int64, recordType sqlite.History
 // AppendContextSnapshot appends a compression/prune snapshot control record.
 // The active-message filter matches SQLite (system messages and display-only
 // rows are dropped); snapshot liveness validation is not replicated.
-func (s *pgSessionStore) AppendContextSnapshot(tenantID int64, recordType sqlite.HistoryRecordType, messages []llm.ChatMessage) (int64, error) {
+func (s *sessionStore) AppendContextSnapshot(tenantID int64, recordType sqlite.HistoryRecordType, messages []llm.ChatMessage) (int64, error) {
 	if recordType != sqlite.HistoryRecordCompress && recordType != sqlite.HistoryRecordPrune {
 		return 0, fmt.Errorf("record type %q does not accept a context snapshot", recordType)
 	}
@@ -723,7 +723,7 @@ func (s *pgSessionStore) AppendContextSnapshot(tenantID int64, recordType sqlite
 // as SQLite: refuse when a question is already pending, and target the newest
 // AskUser tool result that is still ACTIVE in the replay (a tool row hidden by a
 // later snapshot/compression must not be re-asked against).
-func (s *pgSessionStore) AppendAskQuestion(tenantID int64, metadata map[string]string) (int64, error) {
+func (s *sessionStore) AppendAskQuestion(tenantID int64, metadata map[string]string) (int64, error) {
 	ctx := context.Background()
 	replay, err := s.Replay(tenantID)
 	if err != nil {
@@ -759,7 +759,7 @@ func (s *pgSessionStore) AppendAskQuestion(tenantID int64, metadata map[string]s
 // SQLite). The "still pending" check is a read of the newest ask_question —
 // PG has no per-tenant history lock, so a concurrent double answer is not
 // serialised away here (documented simplification).
-func (s *pgSessionStore) AppendAskAnswer(tenantID int64, answer string) (int64, error) {
+func (s *sessionStore) AppendAskAnswer(tenantID int64, answer string) (int64, error) {
 	ctx := context.Background()
 	questionID, toolHistoryID, err := s.pendingAskQuestion(ctx, tenantID)
 	if err != nil {
@@ -783,7 +783,7 @@ func (s *pgSessionStore) AppendAskAnswer(tenantID int64, answer string) (int64, 
 // AppendAskAnswerWithUserMessage atomically appends the ask_answer control
 // record AND the answer user message (crash consistency — same contract as
 // SQLite: never an answer control without its user anchor).
-func (s *pgSessionStore) AppendAskAnswerWithUserMessage(tenantID int64, answer string, answerMsg llm.ChatMessage) (int64, error) {
+func (s *sessionStore) AppendAskAnswerWithUserMessage(tenantID int64, answer string, answerMsg llm.ChatMessage) (int64, error) {
 	ctx := context.Background()
 	questionID, toolHistoryID, err := s.pendingAskQuestion(ctx, tenantID)
 	if err != nil {
@@ -818,7 +818,7 @@ func (s *pgSessionStore) AppendAskAnswerWithUserMessage(tenantID int64, answer s
 // pendingAskQuestion resolves the newest ask_question record that has no
 // ask_answer yet, plus the tool row it targets. Returns (0, 0, nil) when there
 // is no pending question.
-func (s *pgSessionStore) pendingAskQuestion(ctx context.Context, tenantID int64) (questionID, toolHistoryID int64, err error) {
+func (s *sessionStore) pendingAskQuestion(ctx context.Context, tenantID int64) (questionID, toolHistoryID int64, err error) {
 	var rawData string
 	err = s.pool.QueryRow(ctx, `SELECT q.id, COALESCE(q.record_data, '')
 		FROM session_messages q
@@ -847,7 +847,7 @@ func (s *pgSessionStore) pendingAskQuestion(ctx context.Context, tenantID int64)
 // id, and every target must still be ACTIVE in the replay — a mask aimed at a row
 // that a snapshot/compression removed is rejected rather than silently recorded.
 // Replay applies the record, so masked content is what the model sees.
-func (s *pgSessionStore) AppendMasks(tenantID int64, mutations []sqlite.MaskMutation) error {
+func (s *sessionStore) AppendMasks(tenantID int64, mutations []sqlite.MaskMutation) error {
 	if len(mutations) == 0 {
 		return nil
 	}
@@ -882,7 +882,7 @@ func (s *pgSessionStore) AppendMasks(tenantID int64, mutations []sqlite.MaskMuta
 // insertControlSQL inserts a control record (role='control', display-only,
 // never LLM context). $1 tenant, $2 record_type, $3 target_history_id (0 NULL),
 // $4 record_data.
-func (s *pgSessionStore) insertControlSQL() string {
+func (s *sessionStore) insertControlSQL() string {
 	return `INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, target_history_id, record_data)
 		VALUES ($1, 'control', '', true, $2, NULLIF($3::bigint, 0), $4)`
@@ -892,7 +892,7 @@ func (s *pgSessionStore) insertControlSQL() string {
 
 // GetAllIterationHistory returns every iteration record for the tenant, ordered
 // by (turn_id, iteration) — the ordering session fork relies on.
-func (s *pgSessionStore) GetAllIterationHistory(tenantID int64) ([]sqlite.IterationRecord, error) {
+func (s *sessionStore) GetAllIterationHistory(tenantID int64) ([]sqlite.IterationRecord, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT turn_id, message_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, created_at
@@ -918,7 +918,7 @@ func (s *pgSessionStore) GetAllIterationHistory(tenantID int64) ([]sqlite.Iterat
 
 // GetFullHistory returns every raw history row (messages, command rows and
 // control records) ordered by id ASC — the append-only record stream.
-func (s *pgSessionStore) GetFullHistory(tenantID int64) ([]sqlite.HistoryRecord, error) {
+func (s *sessionStore) GetFullHistory(tenantID int64) ([]sqlite.HistoryRecord, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, COALESCE(record_type, 'message'), COALESCE(target_history_id, 0), COALESCE(record_data, ''),
@@ -972,7 +972,7 @@ func (s *pgSessionStore) GetFullHistory(tenantID int64) ([]sqlite.HistoryRecord,
 // GetHistoryBeforeForDisplay returns the messages before beforeID plus the total
 // number of history rows before beforeID (so has_more converges at the first
 // page), mirroring the SQLite contract.
-func (s *pgSessionStore) GetHistoryBeforeForDisplay(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, int, error) {
+func (s *sessionStore) GetHistoryBeforeForDisplay(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, int, error) {
 	if limit <= 0 {
 		return nil, 0, nil
 	}
@@ -1007,9 +1007,9 @@ func (s *pgSessionStore) GetHistoryBeforeForDisplay(tenantID int64, beforeID int
 // history through sqlite.ApplyHistoryRecords — the same implementation the
 // SQLite backend uses, so compression snapshots, masks, context edits and
 // AskUser control records can never drift between backends.
-func (s *pgSessionStore) Replay(tenantID int64) (*sqlite.ReplayResult, error) {
+func (s *sessionStore) Replay(tenantID int64) (*sqlite.ReplayResult, error) {
 	ctx := context.Background()
-	checkpointID, hasCheckpoint, err := s.pgLatestCheckpoint(ctx, tenantID)
+	checkpointID, hasCheckpoint, err := s.latestCheckpoint(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1017,16 +1017,16 @@ func (s *pgSessionStore) Replay(tenantID int64) (*sqlite.ReplayResult, error) {
 	if hasCheckpoint {
 		fromHistoryID = checkpointID
 	}
-	records, err := s.pgHistoryRecords(ctx, tenantID, fromHistoryID)
+	records, err := s.historyRecords(ctx, tenantID, fromHistoryID)
 	if err != nil {
 		return nil, err
 	}
 	return sqlite.ApplyHistoryRecords(records, hasCheckpoint)
 }
 
-// pgLatestCheckpoint returns the newest compress/prune snapshot that
+// latestCheckpoint returns the newest compress/prune snapshot that
 // sqlite.ValidCheckpointSnapshot accepts (mirrors SQLite's latestCheckpointWith).
-func (s *pgSessionStore) pgLatestCheckpoint(ctx context.Context, tenantID int64) (int64, bool, error) {
+func (s *sessionStore) latestCheckpoint(ctx context.Context, tenantID int64) (int64, bool, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, COALESCE(record_data, '') FROM session_messages
 		WHERE tenant_id = $1 AND record_type IN ($2, $3) ORDER BY id DESC`,
 		tenantID, string(sqlite.HistoryRecordCompress), string(sqlite.HistoryRecordPrune))
@@ -1052,11 +1052,11 @@ func (s *pgSessionStore) pgLatestCheckpoint(ctx context.Context, tenantID int64)
 	return 0, false, nil
 }
 
-// pgHistoryRecords reads the append-only history rows in id order, building the
+// historyRecords reads the append-only history rows in id order, building the
 // same HistoryRecord shapes getHistoryFromWith produces for SQLite: control rows
 // carry Type/TargetHistoryID/Data, message and command rows also carry the
 // decoded Message (the fold keys everything off those fields).
-func (s *pgSessionStore) pgHistoryRecords(ctx context.Context, tenantID, fromHistoryID int64) ([]sqlite.HistoryRecord, error) {
+func (s *sessionStore) historyRecords(ctx context.Context, tenantID, fromHistoryID int64) ([]sqlite.HistoryRecord, error) {
 	query := `SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
 		       role, content, COALESCE(tool_call_id, ''), COALESCE(tool_name, ''), COALESCE(tool_arguments, ''),
 		       COALESCE(tool_calls, ''), COALESCE(detail, ''), reasoning_content, reasoning_items,
@@ -1146,7 +1146,7 @@ func activeMessageIndexOccurrence(messages []llm.ChatMessage, historyID int64, o
 // RewindToHistoryID truncates the tenant's history at the given user message
 // (iteration_history first, then session_messages) and returns the target
 // message, its 1-based turn index and the restored prompt-token watermark.
-func (s *pgSessionStore) RewindToHistoryID(tenantID, historyID int64) (llm.ChatMessage, int, int64, error) {
+func (s *sessionStore) RewindToHistoryID(tenantID, historyID int64) (llm.ChatMessage, int, int64, error) {
 	if historyID <= 0 {
 		return llm.ChatMessage{}, 0, 0, fmt.Errorf("history_id is required")
 	}
@@ -1215,7 +1215,7 @@ func (s *pgSessionStore) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 // user rows from the Replay() projection, so a compressed session reports the
 // snapshot's user turns instead of every pre-compression row (same contract as
 // SQLite's countActiveMessages(userOnly=true)).
-func (s *pgSessionStore) GetUserMessageCount(tenantID int64) (int, error) {
+func (s *sessionStore) GetUserMessageCount(tenantID int64) (int, error) {
 	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return 0, err
@@ -1231,7 +1231,7 @@ func (s *pgSessionStore) GetUserMessageCount(tenantID int64) (int, error) {
 
 // GetLastUserMessageContextTokens returns the context_tokens watermark of the
 // newest non-display-only user row (0 when absent) — the rewind token restore.
-func (s *pgSessionStore) GetLastUserMessageContextTokens(tenantID int64) (int64, error) {
+func (s *sessionStore) GetLastUserMessageContextTokens(tenantID int64) (int64, error) {
 	ctx := context.Background()
 	var tokens int64
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(context_tokens, 0) FROM session_messages
@@ -1251,7 +1251,7 @@ func (s *pgSessionStore) GetLastUserMessageContextTokens(tenantID int64) (int64,
 // the index is validated (out of range is an error, never a silent no-op), and
 // only the replayed LLM context changes — the raw rows and the display
 // projection keep the original text.
-func (s *pgSessionStore) UpdateMessageContentNonDisplayOnly(tenantID int64, messageIndex int, content string) error {
+func (s *sessionStore) UpdateMessageContentNonDisplayOnly(tenantID int64, messageIndex int, content string) error {
 	replay, err := s.Replay(tenantID)
 	if err != nil {
 		return err
@@ -1283,7 +1283,7 @@ func (s *pgSessionStore) UpdateMessageContentNonDisplayOnly(tenantID int64, mess
 // then the rows are reversed to chronological order). The tenants/tenant_state
 // watermark fields are filled by the caller — after the v71 split those live in
 // the main DB while this store is bound to the session data.
-func (s *pgSessionStore) GetTenantUsageStats(tenantID int64, recentLimit int) (*sqlite.TenantUsageStats, error) {
+func (s *sessionStore) GetTenantUsageStats(tenantID int64, recentLimit int) (*sqlite.TenantUsageStats, error) {
 	ctx := context.Background()
 	stats := &sqlite.TenantUsageStats{}
 	err := s.pool.QueryRow(ctx, `
@@ -1380,7 +1380,7 @@ func scanIterations(rows pgx.Rows) ([]sqlite.IterationRecord, error) {
 // GetIterationAnchorsByTurn returns (iteration, created_at) anchors for every
 // iteration of a turn — the only basis for mapping a synthetic tool pair's
 // injection time onto an iteration number. Only those two fields are populated.
-func (s *pgSessionStore) GetIterationAnchorsByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error) {
+func (s *sessionStore) GetIterationAnchorsByTurn(tenantID int64, turnID uint64) ([]sqlite.IterationRecord, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT iteration, created_at FROM iteration_history
@@ -1405,7 +1405,7 @@ func (s *pgSessionStore) GetIterationAnchorsByTurn(tenantID int64, turnID uint64
 // LatestAskControlRecord returns the newest ask_question / ask_answer control
 // record, or (0, "", nil) when the session has none — the authority for "is a
 // prompt still pending?" after a restart.
-func (s *pgSessionStore) LatestAskControlRecord(tenantID int64) (int64, sqlite.HistoryRecordType, error) {
+func (s *sessionStore) LatestAskControlRecord(tenantID int64) (int64, sqlite.HistoryRecordType, error) {
 	ctx := context.Background()
 	var (
 		id         int64
@@ -1428,7 +1428,7 @@ func (s *pgSessionStore) LatestAskControlRecord(tenantID int64) (int64, sqlite.H
 // GetTenantUsageBuckets returns time-bucketed usage for the dashboard. The bucket
 // maths mirrors SQLite (epoch seconds shifted into the caller's timezone, floored
 // to the bucket width) so both backends produce identical series.
-func (s *pgSessionStore) GetTenantUsageBuckets(tenantID int64, bucketSeconds int64, count int, tzOffsetMinutes int) ([]sqlite.UsageBucket, error) {
+func (s *sessionStore) GetTenantUsageBuckets(tenantID int64, bucketSeconds int64, count int, tzOffsetMinutes int) ([]sqlite.UsageBucket, error) {
 	switch bucketSeconds {
 	case sqlite.UsageBucketMinuteSeconds, sqlite.UsageBucketHourSeconds, sqlite.UsageBucketDaySeconds:
 	default:

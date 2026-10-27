@@ -55,8 +55,8 @@ func newPGTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("test pgxpool: %v", err)
 	}
 
-	if err := pg.InitPGSchema(ctx, pool); err != nil {
-		t.Fatalf("initPGSchema: %v", err)
+	if err := pg.InitSchema(ctx, pool); err != nil {
+		t.Fatalf("initSchema: %v", err)
 	}
 
 	t.Cleanup(func() {
@@ -77,16 +77,16 @@ func newPGTestPool(t *testing.T) *pgxpool.Pool {
 func newPGTestStorage(t *testing.T) Storage {
 	t.Helper()
 	pool := newPGTestPool(t)
-	store, err := pg.NewPGStorageWithPool(pool)
+	store, err := pg.NewStorageWithPool(pool)
 	if err != nil {
-		t.Fatalf("NewPGStorageWithPool: %v", err)
+		t.Fatalf("NewStorageWithPool: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
 	return store
 }
 
 // initPGSchemaInSchema creates all tables in a specific schema.
-// This is a variant of initPGSchema that uses SET search_path for isolation.
+// This is a variant of initSchema that uses SET search_path for isolation.
 
 func TestPGStorageContract(t *testing.T) {
 	RunStorageContractTests(t, newPGTestStorage)

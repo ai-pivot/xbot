@@ -12,22 +12,22 @@ import (
 	"xbot/event"
 )
 
-// pgTriggerStore implements event.TriggerStore on PostgreSQL.
+// triggerStore implements event.TriggerStore on PostgreSQL.
 //
 // Same semantics as sqlite.TriggerService (nil-on-missing, enabled/one_shot as
 // native BOOLEAN, last_fired nullable) so the webhook router behaves identically.
-type pgTriggerStore struct {
+type triggerStore struct {
 	pool *pgxpool.Pool
 }
 
-func newPGTriggerStore(pool *pgxpool.Pool) *pgTriggerStore {
-	return &pgTriggerStore{pool: pool}
+func newTriggerStore(pool *pgxpool.Pool) *triggerStore {
+	return &triggerStore{pool: pool}
 }
 
-const pgTriggerColumns = `id, name, event_type, channel, chat_id, sender_id, message_tpl,
+const triggerColumns = `id, name, event_type, channel, chat_id, sender_id, message_tpl,
 	secret, enabled, one_shot, created_at, last_fired, fire_count`
 
-func scanPGTrigger(row pgx.Row) (*event.Trigger, error) {
+func scanTrigger(row pgx.Row) (*event.Trigger, error) {
 	t := &event.Trigger{}
 	var lastFired *time.Time
 	err := row.Scan(&t.ID, &t.Name, &t.EventType, &t.Channel, &t.ChatID, &t.SenderID,
@@ -39,7 +39,7 @@ func scanPGTrigger(row pgx.Row) (*event.Trigger, error) {
 	return t, nil
 }
 
-func (s *pgTriggerStore) AddTrigger(t *event.Trigger) error {
+func (s *triggerStore) AddTrigger(t *event.Trigger) error {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO event_triggers (id, name, event_type, channel, chat_id, sender_id,
@@ -53,7 +53,7 @@ func (s *pgTriggerStore) AddTrigger(t *event.Trigger) error {
 	return nil
 }
 
-func (s *pgTriggerStore) RemoveTrigger(id string) error {
+func (s *triggerStore) RemoveTrigger(id string) error {
 	ctx := context.Background()
 	if _, err := s.pool.Exec(ctx, `DELETE FROM event_triggers WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("delete event trigger: %w", err)
@@ -62,10 +62,10 @@ func (s *pgTriggerStore) RemoveTrigger(id string) error {
 }
 
 // GetTrigger returns (nil, nil) when the trigger does not exist.
-func (s *pgTriggerStore) GetTrigger(id string) (*event.Trigger, error) {
+func (s *triggerStore) GetTrigger(id string) (*event.Trigger, error) {
 	ctx := context.Background()
-	t, err := scanPGTrigger(s.pool.QueryRow(ctx,
-		`SELECT `+pgTriggerColumns+` FROM event_triggers WHERE id = $1`, id))
+	t, err := scanTrigger(s.pool.QueryRow(ctx,
+		`SELECT `+triggerColumns+` FROM event_triggers WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -75,9 +75,9 @@ func (s *pgTriggerStore) GetTrigger(id string) (*event.Trigger, error) {
 	return t, nil
 }
 
-func (s *pgTriggerStore) listTriggers(where, orderBy string, args ...any) ([]*event.Trigger, error) {
+func (s *triggerStore) listTriggers(where, orderBy string, args ...any) ([]*event.Trigger, error) {
 	ctx := context.Background()
-	query := `SELECT ` + pgTriggerColumns + ` FROM event_triggers`
+	query := `SELECT ` + triggerColumns + ` FROM event_triggers`
 	if where != "" {
 		query += ` WHERE ` + where
 	}
@@ -89,7 +89,7 @@ func (s *pgTriggerStore) listTriggers(where, orderBy string, args ...any) ([]*ev
 	defer rows.Close()
 	var out []*event.Trigger
 	for rows.Next() {
-		t, err := scanPGTrigger(rows)
+		t, err := scanTrigger(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan event trigger row: %w", err)
 		}
@@ -98,15 +98,15 @@ func (s *pgTriggerStore) listTriggers(where, orderBy string, args ...any) ([]*ev
 	return out, rows.Err()
 }
 
-func (s *pgTriggerStore) ListByEventType(eventType string) ([]*event.Trigger, error) {
+func (s *triggerStore) ListByEventType(eventType string) ([]*event.Trigger, error) {
 	return s.listTriggers("event_type = $1 AND enabled = true", "created_at", eventType)
 }
 
-func (s *pgTriggerStore) ListBySender(senderID string) ([]*event.Trigger, error) {
+func (s *triggerStore) ListBySender(senderID string) ([]*event.Trigger, error) {
 	return s.listTriggers("sender_id = $1", "created_at", senderID)
 }
 
-func (s *pgTriggerStore) UpdateEnabled(id string, enabled bool) error {
+func (s *triggerStore) UpdateEnabled(id string, enabled bool) error {
 	ctx := context.Background()
 	if _, err := s.pool.Exec(ctx,
 		`UPDATE event_triggers SET enabled = $1 WHERE id = $2`, enabled, id); err != nil {
@@ -121,7 +121,7 @@ func (s *pgTriggerStore) UpdateEnabled(id string, enabled bool) error {
 // event.Router.dispatchOne, which calls UpdateEnabled after RecordFire) — keeping
 // that out of the store makes both backends behave identically and keeps the
 // store's single job simple.
-func (s *pgTriggerStore) RecordFire(id string, at time.Time) error {
+func (s *triggerStore) RecordFire(id string, at time.Time) error {
 	ctx := context.Background()
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE event_triggers

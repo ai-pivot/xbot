@@ -8,13 +8,13 @@ import (
 	"xbot/llm"
 )
 
-// TestPGTextRepairsTornRun es pins the write-boundary defence. PostgreSQL
+// TestSanitizeTextRepairsTornRun es pins the write-boundary defence. PostgreSQL
 // validates encoding on INSERT and fails the WHOLE statement on a bad byte
 // (SQLSTATE 22021), while SQLite stored the same bytes silently — so a single
 // torn character upstream used to cost an entire conversation turn.
-func TestPGTextRepairsTornRunes(t *testing.T) {
+func TestSanitizeTextRepairsTornRunes(t *testing.T) {
 	valid := "全仓 CREATE TABLE（非 test）"
-	if got := pgText(valid); got != valid {
+	if got := sanitizeText(valid); got != valid {
 		t.Fatalf("valid input changed: %q", got)
 	}
 
@@ -29,13 +29,13 @@ func TestPGTextRepairsTornRunes(t *testing.T) {
 		if utf8.ValidString(bad) {
 			t.Fatalf("fixture must be invalid: %q", bad)
 		}
-		if got := pgText(bad); !utf8.ValidString(got) {
-			t.Fatalf("still invalid after pgText: %q", got)
+		if got := sanitizeText(bad); !utf8.ValidString(got) {
+			t.Fatalf("still invalid after sanitizeText: %q", got)
 		}
 	}
 }
 
-// TestPGTextRepairsNUL pins the other half of the write-boundary defence.
+// TestSanitizeTextRepairsNUL pins the other half of the write-boundary defence.
 // NUL (0x00) IS valid UTF-8, so a UTF-8 validator lets it through — but
 // PostgreSQL text cannot store it and rejects the whole statement with
 //
@@ -43,19 +43,19 @@ func TestPGTextRepairsTornRunes(t *testing.T) {
 //
 // Real production failure: Read on a binary file killed the turn's persistence
 // (8 occurrences in the server log).
-func TestPGTextRepairsNUL(t *testing.T) {
+func TestSanitizeTextRepairsNUL(t *testing.T) {
 	for _, bad := range []string{
 		"before\x00after",
 		"ELF\x7f\x02\x01\x00\x00\x00",
 		"\x00",
 		"中文\x00中文",
 	} {
-		got := pgText(bad)
+		got := sanitizeText(bad)
 		if strings.ContainsRune(got, 0) {
-			t.Fatalf("NUL survived pgText: %q", got)
+			t.Fatalf("NUL survived sanitizeText: %q", got)
 		}
 		if !utf8.ValidString(got) {
-			t.Fatalf("pgText produced invalid UTF-8: %q", got)
+			t.Fatalf("sanitizeText produced invalid UTF-8: %q", got)
 		}
 		if !strings.Contains(got, "before") && strings.HasPrefix(bad, "before") {
 			t.Fatalf("payload lost: %q", got)
@@ -66,7 +66,7 @@ func TestPGTextRepairsNUL(t *testing.T) {
 // TestMessageArgsAreValidUTF8 asserts the arg vector handed to pgx can never
 // carry an invalid byte sequence, whatever the caller passes in.
 func TestMessageArgsAreValidUTF8(t *testing.T) {
-	s := &pgSessionStore{}
+	s := &sessionStore{}
 	msg := llm.ChatMessage{
 		Role:             "tool",
 		Content:          "输出\xe6...\x00binary",
