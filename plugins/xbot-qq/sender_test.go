@@ -53,6 +53,10 @@ func (f *fakeMessageAPI) SendMedia(_ context.Context, chatID, fileInfo, msgID st
 	return f.record(sentCall{kind: "media", target: chatID, content: fileInfo, msgID: msgID, seq: seq})
 }
 
+func (f *fakeMessageAPI) UploadFile(_ context.Context, chatID, fileSrc, fileName string) (string, error) {
+	return "FILE:" + fileName, nil
+}
+
 func (f *fakeMessageAPI) record(c sentCall) (*SentMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -420,6 +424,48 @@ func TestMarkdownImagesGoThroughMediaChannel(t *testing.T) {
 		}
 		if c.msgID != "MSG-IMG-1" {
 			t.Fatalf("必须带被动回复锚点，实际 msgID=%q", c.msgID)
+		}
+	}
+}
+
+// TestMarkdownFilesGoThroughMediaChannel 文件语法必须走富媒体通道（file_type=4）。
+//
+// 用户要求「把发文件功能也加上」。约定语法 `[file:名字.ext](路径或URL)`：
+// 抽出后逐条上传(file_type=4) → msg_type=7 + media.file_info 被动回复。
+// 正文里移除该语法（否则用户只看到一段文字，拿不到文件）。
+func TestMarkdownFilesGoThroughMediaChannel(t *testing.T) {
+	md := "报告已生成\n\n[file:report.pdf](/tmp/report.pdf)\n\n以及 [file:data.csv](https://x.test/d.csv) 完毕"
+	files, rest := extractMarkdownFiles(md)
+	if len(files) != 2 {
+		t.Fatalf("应抽出 2 个文件，实际 %d: %v", len(files), files)
+	}
+	if files[0][0] != "report.pdf" || files[0][1] != "/tmp/report.pdf" {
+		t.Fatalf("第一个文件解析错: %v", files[0])
+	}
+	if strings.Contains(rest, "[file:") || strings.Contains(rest, "report.pdf") {
+		t.Fatalf("正文里不应残留文件语法: %q", rest)
+	}
+	if !strings.Contains(rest, "报告已生成") || !strings.Contains(rest, "完毕") {
+		t.Fatalf("正文文字丢失: %q", rest)
+	}
+
+	api := &fakeMessageAPI{}
+	s := NewOutboundSender(api)
+	s.RememberInbound("USER-OPENID", "MSG-FILE-1")
+	n, err := s.SendFiles(context.Background(), "USER-OPENID", files)
+	if err != nil || n != 2 {
+		t.Fatalf("SendFiles n=%d err=%v", n, err)
+	}
+	calls := api.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("应发 2 条 media，实际 %d", len(calls))
+	}
+	for i, c := range calls {
+		if c.kind != "media" {
+			t.Fatalf("第 %d 条 kind=%s, want media", i, c.kind)
+		}
+		if c.msgID != "MSG-FILE-1" {
+			t.Fatalf("必须带被动回复锚点，实际 %q", c.msgID)
 		}
 	}
 }

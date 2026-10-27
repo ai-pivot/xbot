@@ -637,6 +637,23 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 	//
 	// 流程：POST .../files {file_type:1,url,srv_send_msg:false} → file_info
 	//       → msg_type=7 + media.file_info 走被动回复（不占主动消息频次）
+	// 文件：[file:名称](url|本地路径) → 富媒体 file_type=4。
+	// 放在图片之前处理，避免文件名里带括号干扰图片正则。
+	if fileList, rest := extractMarkdownFiles(content); len(fileList) > 0 {
+		if n, ferr := rt.SendFiles(ctx, chatID, fileList); ferr != nil {
+			a.logf("outbound files to %q: sent=%d/%d err=%v", chatID, n, len(fileList), ferr)
+		} else {
+			a.logf("outbound files to %q: sent=%d/%d", chatID, n, len(fileList))
+		}
+		content = rest
+		if content == "" {
+			if frameID != "" {
+				a.write(enc, okResponse{ID: frameID, Result: "ok"})
+			}
+			return
+		}
+	}
+
 	if imgURLs, rest := extractMarkdownImages(content); len(imgURLs) > 0 {
 		if n, ierr := rt.SendImages(ctx, chatID, imgURLs); ierr != nil {
 			a.logf("outbound images to %q: sent=%d/%d err=%v", chatID, n, len(imgURLs), ierr)

@@ -87,8 +87,10 @@ type MessageAPI interface {
 	StreamC2C(ctx context.Context, userOpenID string, body streamBody) (*SentMessage, error)
 	// UploadImage 让平台下载转存图片，返回 file_info。
 	UploadImage(ctx context.Context, chatID, imageURL string) (string, error)
-	// SendMedia 以 msg_type=7 发送富媒体（图片）消息。
+	// SendMedia 以 msg_type=7 发送富媒体消息（图片/文件均走这里）。
 	SendMedia(ctx context.Context, chatID, fileInfo, msgID string, msgSeq uint32) (*SentMessage, error)
+	// UploadFile 上传文件（file_type=4），返回 file_info。
+	UploadFile(ctx context.Context, chatID, fileSrc, fileName string) (string, error)
 }
 
 // msgAnchor 记录某个会话最后一条入站消息，用作被动回复锚点。
@@ -515,7 +517,7 @@ func splitForStream(content string, pieces, minRunes int) []string {
 }
 
 // imageMarkdownRe 匹配 markdown 图片语法 ![alt](url)。
-var imageMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\((https?://[^)\s]+)\)`)
+var imageMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\((https?://[^)\s]+|/[^)\s]+)\)`)
 
 // extractMarkdownImages 抽出 markdown 里的图片 URL，并返回移除图片后的正文。
 //
@@ -553,6 +555,47 @@ func (s *OutboundSender) SendImages(ctx context.Context, chatID string, urls []s
 		}
 		if _, err := s.api.SendMedia(ctx, chatID, info, anchor, s.nextSeq(chatID, anchor)); err != nil {
 			s.logErr("ERROR: image send failed url=%s: %v", u, err)
+			continue
+		}
+		sent++
+	}
+	return sent, nil
+}
+
+// fileMarkdownRe 匹配文件语法 [file:文件名](url)。
+//
+// 为什么要自定义语法：QQ 的 markdown 里普通链接只显示成可点文字，不会变成
+// 可下载的文件卡片。而富媒体通道(file_type=4)能真正把文件推给用户。
+// 所以约定：`[file:报告.pdf](https://…)` 表示"把这个文件发给我"。
+var fileMarkdownRe = regexp.MustCompile(`\[file:([^\]]+)\]\((https?://[^)\s]+|/[^)\s]+)\)`)
+
+// extractMarkdownFiles 抽出文件语法，返回 (文件名, url) 列表与移除后的正文。
+func extractMarkdownFiles(md string) (files [][2]string, rest string) {
+	for _, m := range fileMarkdownRe.FindAllStringSubmatch(md, -1) {
+		files = append(files, [2]string{m[1], m[2]})
+	}
+	rest = strings.TrimSpace(fileMarkdownRe.ReplaceAllString(md, ""))
+	return files, rest
+}
+
+// SendFiles 上传并以富媒体消息(file_type=4)发送文件。
+//
+// 失败逐条记 ERROR（含文件名与原因），不静默丢 —— 用户必须知道哪个文件没发出去。
+func (s *OutboundSender) SendFiles(ctx context.Context, chatID string, files [][2]string) (int, error) {
+	if len(files) == 0 {
+		return 0, nil
+	}
+	anchor := s.passiveMsgID(chatID)
+	sent := 0
+	for _, f := range files {
+		name, src := f[0], f[1]
+		info, err := s.api.UploadFile(ctx, chatID, src, name)
+		if err != nil {
+			s.logErr("ERROR: file upload failed name=%q src=%q: %v", name, src, err)
+			continue
+		}
+		if _, err := s.api.SendMedia(ctx, chatID, info, anchor, s.nextSeq(chatID, anchor)); err != nil {
+			s.logErr("ERROR: file send failed name=%q: %v", name, err)
 			continue
 		}
 		sent++

@@ -520,3 +520,48 @@ func fileNameFromURL(u string) string {
 
 // cfgLog 返回日志钩子（可能为 nil）。
 func (c *APIClient) cfgLog() func(string, ...any) { return c.logf }
+
+// UploadFile 上传一个**文件**（file_type=4），返回 file_info（供 SendMedia 使用）。
+//
+// 出处：《上传富媒体素材》POST /v2/{groups|users}/{openid}/files
+//
+//	file_type 4 = 文件；file_name 必填；file_data 直传上限 5M。
+//
+// 文件的处理与图片不同：**不做压缩**（压缩会破坏内容）。所以：
+//   - ≤5M：本地读二进制直传
+//   - >5M ：退回 url 方式（由平台去下；仅在公网可达时有效）
+//   - 都不可行：返回明确错误（调用方会把失败原因告诉用户，不静默丢）
+func (c *APIClient) UploadFile(ctx context.Context, chatID, fileSrc, fileName string) (string, error) {
+	groupOpenID, userOpenID, err := parseChatID(chatID)
+	if err != nil {
+		return "", err
+	}
+	path := "/v2/users/" + userOpenID + "/files"
+	if groupOpenID != "" {
+		path = "/v2/groups/" + groupOpenID + "/files"
+	}
+	if fileName == "" {
+		fileName = fileNameFromURL(fileSrc)
+	}
+	body := map[string]any{
+		"file_type":    4, // 文件
+		"srv_send_msg": false,
+		"file_name":    fileName,
+	}
+	if data, _, ferr := fetchImageBytes(ctx, fileSrc, uploadBinaryLimit); ferr == nil && len(data) > 0 {
+		body["file_data"] = base64.StdEncoding.EncodeToString(data)
+	} else {
+		if ferr != nil && c.cfgLog() != nil {
+			c.cfgLog()("upload_file: local read failed (%v) for %q, falling back to url", ferr, fileSrc)
+		}
+		body["url"] = fileSrc
+	}
+	var out uploadResp
+	if err := c.do(ctx, "upload_media", http.MethodPost, path, body, &out); err != nil {
+		return "", err
+	}
+	if out.FileInfo == "" {
+		return "", fmt.Errorf("upload_file: empty file_info in response")
+	}
+	return out.FileInfo, nil
+}

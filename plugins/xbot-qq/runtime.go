@@ -86,6 +86,11 @@ func (r *channelRuntime) SendStreamDelta(ctx context.Context, chatID, delta stri
 	return r.sender.SendStreamDelta(ctx, chatID, delta, final)
 }
 
+// SendFiles 上传并发送 markdown 里抽出的文件（富媒体 file_type=4）。
+func (r *channelRuntime) SendFiles(ctx context.Context, chatID string, files [][2]string) (int, error) {
+	return r.sender.SendFiles(ctx, chatID, files)
+}
+
 // SendImages 上传并发送 markdown 里抽出的图片（富媒体 msg_type=7）。
 func (r *channelRuntime) SendImages(ctx context.Context, chatID string, urls []string) (int, error) {
 	return r.sender.SendImages(ctx, chatID, urls)
