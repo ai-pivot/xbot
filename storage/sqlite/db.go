@@ -333,6 +333,26 @@ func walAnomaly(prevInfo os.FileInfo, curPresent bool, curInfo os.FileInfo) stri
 	return ""
 }
 
+// suppressWALAnomaly drops anomalies that are a normal consequence of the
+// operation being logged rather than evidence of data loss.
+//
+// A TRUNCATE checkpoint deletes and recreates the -wal file by definition: every
+// frame has already been merged into the main database, so the file starts over
+// with a new inode. Reporting that as "REPLACED ... frames are unreachable" is
+// backwards — there are no frames left to lose. When the previous WAL was
+// already empty (prevSize == 0) there is provably nothing at stake, so the
+// warning is pure noise: on 2026-10-27 a single restart emitted 26 of them, one
+// per session database.
+//
+// A non-empty WAL is still reported: that is the case where frames really could
+// be stranded, and it must not be silenced.
+func suppressWALAnomaly(anomaly, where string, prevSize int64) string {
+	if anomaly == "replaced" && where == "checkpoint(TRUNCATE)" && prevSize == 0 {
+		return ""
+	}
+	return anomaly
+}
+
 // logWALState records and logs the state of the <db>-wal file (presence, size,
 // mtime, and whether it disappeared/was replaced since the last observation).
 // Log-only: it changes no behaviour and is safe to call from any goroutine.
@@ -345,7 +365,7 @@ func (db *DB) logWALState(where string) {
 
 	db.walMu.Lock()
 	prevInfo, prevSize := db.lastWALInfo, db.lastWALSize
-	anomaly := walAnomaly(prevInfo, present, fi)
+	anomaly := suppressWALAnomaly(walAnomaly(prevInfo, present, fi), where, prevSize)
 	db.lastWALInfo, db.lastWALSize = fi, 0
 	if present {
 		db.lastWALSize = fi.Size()
