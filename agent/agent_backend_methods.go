@@ -129,6 +129,7 @@ func (a *Agent) setCWD(ch, chatID, dir string, force bool) error {
 }
 
 // IsProcessingByChannel returns true if there is an active Run for the given channel:chatID.
+// IsProcessingByChannel reports whether the session is busy. Pure memory.
 func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 	key := ch + ":" + chatID
 	if _, found := a.chatCancelCh.Load(key); found {
@@ -145,6 +146,62 @@ func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 				ia.mu.Unlock()
 				return running
 			}
+		}
+	}
+	return false
+}
+
+// RuntimeStateSnapshot returns the in-memory busy/waiting session keys in a
+// single pass, so list endpoints can classify N rows with map lookups instead
+// of N round-trips.
+//
+// IsProcessingByChannel is already pure memory, but HasPendingAskUserFast is
+// NOT: on a memory miss it probes the persisted control records (tenant lookup
+// + LatestAskControlRecord, two indexed queries). The session tree called it
+// once per row — with 705 rows that is well over a thousand database
+// round-trips inside one request, which is the bulk of the endpoint's 639ms
+// p50 and the reason six concurrent polls took 33s each.
+//
+// Keys are "channel:chatID" (qualifyChatID).
+//
+// Scope note: this reports the IN-MEMORY state only. A prompt that exists
+// solely in the DB (process restarted while paused) reads as idle here until
+// the session is actually opened — the authoritative check still runs on load.
+// That is the right trade for a listing endpoint; guessing from stale DB rows
+// would be worse than briefly showing idle.
+func (a *Agent) RuntimeStateSnapshot() (running, waiting map[string]bool) {
+	running = make(map[string]bool, 64)
+	waiting = make(map[string]bool, 8)
+	if a == nil {
+		return running, waiting
+	}
+	a.chatCancelCh.Range(func(k, _ any) bool {
+		if s, ok := k.(string); ok {
+			running[s] = true
+		}
+		return true
+	})
+	a.waitingUserSessions.Range(func(k, _ any) bool {
+		if s, ok := k.(string); ok {
+			waiting[s] = true
+		}
+		return true
+	})
+	return running, waiting
+}
+
+// InteractiveSubAgentRunning reports the running flag of an interactive
+// sub-agent session (agent channel). Used by the subagent list, whose row count
+// is small enough that per-row locking is fine.
+func (a *Agent) InteractiveSubAgentRunning(chatID string) bool {
+	if a == nil {
+		return false
+	}
+	if value, ok := a.interactiveSubAgents.Load(chatID); ok {
+		if ia, ok := value.(*interactiveAgent); ok && ia != nil && !ia.isDestroyed() {
+			ia.mu.Lock()
+			defer ia.mu.Unlock()
+			return ia.running
 		}
 	}
 	return false

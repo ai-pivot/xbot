@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"xbot/agent"
@@ -876,44 +875,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		applyWebRunningStatuses(ag, rows)
 		return rows, nil
 	}
-	// sessionTreeCache coalesces the heavy part of /api/session-tree.
-	//
-	// Every call used to re-read all tenants (705 non-agent rows), run nine
-	// per-channel queries, sort in memory and paginate. The sidebar polls this
-	// endpoint, so concurrent polls serialised behind each other: six
-	// simultaneous requests measured 33s EACH on 2026-10-26T16:20, and p99 for
-	// the endpoint was 13.6s against a 100ms budget.
-	//
-	// The row set only changes when a session is created, renamed or used, so a
-	// short TTL removes the stampede while staying visually instant. Runtime
-	// state (Running / Status / WorkDir) is NOT cached — applyWebRunningStatuses
-	// still runs per request, but only over the returned page.
-	var (
-		sessionTreeCacheMu   sync.Mutex
-		sessionTreeCacheAt   time.Time
-		sessionTreeCacheRows []web.UserChatWithPreview
-	)
-	const sessionTreeCacheTTL = 2 * time.Second
-	// cachesIsCurrent is stripped before caching: it depends on the caller's
-	// current selection and is recomputed on every request.
-	treeCacheGet := func() ([]web.UserChatWithPreview, bool) {
-		sessionTreeCacheMu.Lock()
-		defer sessionTreeCacheMu.Unlock()
-		if sessionTreeCacheRows == nil || time.Since(sessionTreeCacheAt) > sessionTreeCacheTTL {
-			return nil, false
-		}
-		// Copy: the caller rewrites IsCurrent in place.
-		out := make([]web.UserChatWithPreview, len(sessionTreeCacheRows))
-		copy(out, sessionTreeCacheRows)
-		return out, true
-	}
-	treeCachePut := func(rows []web.UserChatWithPreview) {
-		sessionTreeCacheMu.Lock()
-		defer sessionTreeCacheMu.Unlock()
-		sessionTreeCacheRows = rows
-		sessionTreeCacheAt = time.Now()
-	}
-
 	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool, offset, limit int) (web.SessionTreeResult, error) {
 		var mains []web.UserChatWithPreview
 
@@ -923,46 +884,50 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// v63 single-operator: always use the full cross-channel view.
 		// (The non-admin per-sender pagination path was removed — there is
 		// no non-admin user in single-operator mode.)
-		//
-		// Cache hit skips the nine per-channel queries, the 705-row build and
-		// the sort entirely. IsCurrent is NOT part of the cached data (it
-		// depends on the caller), so it is recomputed below on every request.
-		if cached, ok := treeCacheGet(); ok {
-			mains = cached
-		} else {
-			channels, err := store.Tenant().ListDistinctChannels()
+		channels, err := store.Tenant().ListDistinctChannels()
+		if err != nil {
+			return web.SessionTreeResult{}, err
+		}
+		// Split channels: cli rows come from the chat-session reader (different
+		// row source), everything else is a tenants query.
+		var tenantChannels []string
+		hasCLI := false
+		for _, ch := range channels {
+			switch ch {
+			case "agent":
+				// Sub-agent tenants are surfaced through the subagent list.
+			case "cli":
+				hasCLI = true
+			default:
+				tenantChannels = append(tenantChannels, ch)
+			}
+		}
+
+		if hasCLI && webSQL != nil {
+			cliChats, err := listCLIChatSessions(webSQL, "")
 			if err != nil {
 				return web.SessionTreeResult{}, err
 			}
-			for _, ch := range channels {
-				if ch == "agent" {
-					continue
-				}
-				if ch == "cli" {
-					if webSQL == nil {
-						continue
-					}
-					// currentChatID is intentionally "" here: the cached row set must
-					// not depend on the caller's selection. IsCurrent is applied below.
-					cliChats, err := listCLIChatSessions(webSQL, "")
-					if err != nil {
-						return web.SessionTreeResult{}, err
-					}
-					mains = appendMissingSessionRows(mains, cliChats)
-					continue
-				}
-				var tenants []web.UserChatWithPreview
-				if webSQL != nil {
-					tenants, err = listTenantsByChannel(webSQL, ch, "")
+			mains = appendMissingSessionRows(mains, cliChats)
+		}
+
+		// ONE query for every remaining channel instead of one per channel.
+		if len(tenantChannels) > 0 {
+			var tenants []web.UserChatWithPreview
+			if webSQL != nil {
+				tenants, err = listTenantsByChannels(webSQL, tenantChannels)
+			} else {
+				// PG path: use TenantStore (already a single full read).
+				allTenants, tErr := store.Tenant().ListTenants()
+				if tErr != nil {
+					log.WithError(tErr).Warn("Failed to list tenants")
 				} else {
-					// PG path: use TenantStore
-					allTenants, tErr := store.Tenant().ListTenants()
-					if tErr != nil {
-						log.WithError(tErr).WithField("channel", ch).Warn("Failed to list tenants")
-						continue
+					want := make(map[string]bool, len(tenantChannels))
+					for _, ch := range tenantChannels {
+						want[ch] = true
 					}
 					for _, t := range allTenants {
-						if t.Channel != ch {
+						if !want[t.Channel] {
 							continue
 						}
 						tenants = append(tenants, web.UserChatWithPreview{
@@ -971,35 +936,25 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 							Label:      t.Label,
 							LastActive: t.LastActiveAt.Format(time.RFC3339),
 							Preview:    "",
-							IsCurrent:  false,
 						})
 					}
 				}
-				if err != nil {
-					log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
-					continue
-				}
+			}
+			if err != nil {
+				log.WithError(err).Warn("Failed to list tenants")
+			} else {
 				mains = appendMissingSessionRows(mains, tenants)
 			}
-
-			// Sort + paginate BEFORE probing per-row runtime state.
-			// sortSessionTreeMains only needs LastActive/SortOrder/CreatedAt, and
-			// appendMissingSessionRows only reads Channel/ChatID — neither depends on
-			// Running/Status/WorkDir. Probing all ~1300 tenant rows (3 map lookups +
-			// a session cache lookup each) cost 400–700ms per request and made
-			// /api/session-tree the slowest endpoint in the log; only the rows that
-			// are actually returned need it.
-			sortSessionTreeMains(mains)
-			// Cache the ordered row set — IsCurrent is always false in it and is
-			// recomputed per caller just below.
-			treeCachePut(mains)
 		}
 
-		// IsCurrent depends on THIS caller's selection, so it is never cached.
-		for i := range mains {
-			mains[i].IsCurrent = mains[i].Channel == current.Channel && mains[i].ChatID == current.ChatID
-		}
-
+		// Sort + paginate BEFORE probing per-row runtime state.
+		// sortSessionTreeMains only needs LastActive/SortOrder/CreatedAt, and
+		// appendMissingSessionRows only reads Channel/ChatID — neither depends on
+		// Running/Status/WorkDir. Probing all ~1300 tenant rows (3 map lookups +
+		// a session cache lookup each) cost 400–700ms per request and made
+		// /api/session-tree the slowest endpoint in the log; only the rows that
+		// are actually returned need it.
+		sortSessionTreeMains(mains)
 		total := len(mains)
 		if limit < 0 {
 			limit = total
@@ -1015,8 +970,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		hasMore = end < total
 		nextOffset = end
 
-		// Runtime state is only needed for the page we return.
-		applyWebRunningStatuses(ag, mains)
+		// Runtime state is only needed for the page we return, and it is
+		// classified from one in-memory snapshot rather than a DB probe per row.
+		applyWebRunningStatusesFast(ag, mains)
 
 		subagents, err := callbacks.SubAgentList(senderID, admin)
 		if err != nil {
@@ -1325,6 +1281,68 @@ func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 	}
 }
 
+// applyWebRunningStatusesFast classifies rows using a precomputed in-memory
+// snapshot instead of probing per row.
+//
+// The original per-row path calls HasPendingAskUserFast, which on a memory miss
+// hits the database (tenant lookup + LatestAskControlRecord). With 705 rows
+// that is >1000 round-trips per request — measured p50 639ms and 33s under six
+// concurrent polls.
+//
+// Behaviour difference on purpose: this uses the in-memory waiting set only.
+// A prompt that exists solely in the DB reads as idle here; the authoritative
+// check still runs when the session is opened. For a listing endpoint that is
+// the correct trade — the alternative is a database round-trip per row.
+func applyWebRunningStatusesFast(ag *agent.Agent, rows []web.UserChatWithPreview) {
+	if ag == nil {
+		for i := range rows {
+			applyWebRunningStatus(ag, &rows[i])
+		}
+		return
+	}
+	running, waiting := ag.RuntimeStateSnapshot()
+	var walk func(row *web.UserChatWithPreview)
+	walk = func(row *web.UserChatWithPreview) {
+		if row == nil {
+			return
+		}
+		ch := row.Channel
+		if ch == "" {
+			ch = "web"
+		}
+		chatID := row.ChatID
+		if row.FullKey != "" && (ch == "agent" || row.Type == "agent") {
+			chatID = row.FullKey
+		}
+		if ch != "agent" && row.Type != "agent" {
+			row.WorkDir = webSessionCWD(ag, ch, chatID)
+		}
+		key := ch + ":" + chatID
+		if ch == "agent" || row.Type == "agent" {
+			// Sub-agents do not register chatCancelCh; their running flag lives
+			// on the interactive session. Row counts here are small.
+			row.Running = ag.InteractiveSubAgentRunning(chatID)
+		} else {
+			row.Running = running[key]
+		}
+		switch {
+		case row.Running:
+			row.Status = "running"
+		case waiting[key]:
+			// Paused for an AskUser answer: NOT running (busy ⇔ iterating).
+			row.Status = "waiting_input"
+		case row.Status == "":
+			row.Status = "idle"
+		}
+		for i := range row.Children {
+			walk(&row.Children[i])
+		}
+	}
+	for i := range rows {
+		walk(&rows[i])
+	}
+}
+
 func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
 	// CWD is restored from the DB (tenants.cwd) when the session is created
 	// (GetOrCreateSession → loadPersistedCWD reads the DB). Read it from the
@@ -1489,6 +1507,82 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 			continue
 		}
 		result = append(result, chat)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tenants: %w", err)
+	}
+	return result, nil
+}
+
+// listTenantsByChannels is the multi-channel form of listTenantsByChannel.
+//
+// /api/session-tree used to call listTenantsByChannel once per distinct channel
+// (9 on the production DB: cli, web, github, feishu, qq, gitlab, chat, echo, tg)
+// — the same row shape queried in a loop over the same table, costing ~9x the
+// necessary round-trips. One IN-list query returns the identical rows; channel
+// ordering is irrelevant because the caller sorts by last_active_at afterwards.
+func listTenantsByChannels(db *sql.DB, channels []string) ([]web.UserChatWithPreview, error) {
+	if len(channels) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(channels))
+	args := make([]any, len(channels))
+	for i, ch := range channels {
+		placeholders[i] = "?"
+		args[i] = ch
+	}
+	rows, err := db.Query(fmt.Sprintf(`
+  SELECT t.channel, t.id, t.chat_id, t.created_at, t.last_active_at,
+          COALESCE((SELECT uc.label FROM user_chats uc
+           WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
+           ORDER BY uc.rowid DESC LIMIT 1),
+           (SELECT uc.label FROM user_chats uc
+           WHERE uc.chat_id = t.chat_id AND uc.label != ''
+           ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
+         COALESCE((SELECT uc.sort_order FROM user_chats uc
+                  WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
+                  ORDER BY uc.rowid DESC LIMIT 1), 0) AS sort_order,
+         COALESCE(t.preview, '') AS preview
+  FROM tenants t
+  WHERE t.channel IN (%s) AND t.chat_id != '_shared'
+  ORDER BY t.last_active_at DESC`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list tenants by channels: %w", err)
+	}
+	defer rows.Close()
+
+	var result []web.UserChatWithPreview
+	for rows.Next() {
+		var tenantID int64
+		var channel, chatID, createdAtStr, lastActiveStr, label string
+		var sortOrder int
+		var preview sql.NullString
+		if err := rows.Scan(&channel, &tenantID, &chatID, &createdAtStr, &lastActiveStr, &label, &sortOrder, &preview); err != nil {
+			log.WithError(err).Warn("Failed to scan tenant row in listTenantsByChannels")
+			continue
+		}
+		previewStr := preview.String
+		if runes := []rune(previewStr); len(runes) > 80 {
+			previewStr = string(runes[:80])
+		}
+		lastActive := parseTenantTime(lastActiveStr)
+		createdAt := parseTenantTime(createdAtStr)
+		if createdAt.IsZero() {
+			createdAt = lastActive
+		}
+		// Sub-agent tenant rows are surfaced through the subagent list instead.
+		if isInteractiveSubAgentTenant(channel, chatID) {
+			continue
+		}
+		result = append(result, web.UserChatWithPreview{
+			ChatID:     chatID,
+			Channel:    channel,
+			Label:      displayLabelForTenant(channel, chatID, label),
+			LastActive: lastActive.Format(time.RFC3339),
+			CreatedAt:  createdAt.Format(time.RFC3339),
+			SortOrder:  sortOrder,
+			Preview:    previewStr,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate tenants: %w", err)
