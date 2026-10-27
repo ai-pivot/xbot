@@ -531,4 +531,19 @@ func ensureStartupSchema(ctx context.Context, db *DB) {
 	if err := NewAgentMemoryService(db).EnsureAgentMemorySchema(ctx); err != nil {
 		log.WithError(err).Warn("Ensure agent memory schema failed; continuing without it")
 	}
+	// 索引兜底（幂等）：这些索引不在迁移链里，老库可能整库缺失，而
+	// initSchema 在 version == schemaVersion 时直接 return，不会补建。
+	//
+	// idx_sm_tenant_turn 是 /api/iteration_detail 的关键路径：
+	// GetSyntheticPairRowsByTurn 按 (tenant_id, turn_id) 过滤 session_messages，
+	// 缺这个索引时 SQLite 只能退到 idx_session_messages_tenant_history
+	// (tenant_id, id) 后全量过滤 —— 单个大会话几十万消息，实测 p50 1676ms。
+	// 部分索引把范围限制在 record_type='message'（占绝大多数行），与查询的
+	// WHERE 前缀一致，EXPLAIN 可验证走的是 SEARCH 而非 SCAN。
+	if _, err := db.Conn().ExecContext(ctx, `
+	CREATE INDEX IF NOT EXISTS idx_sm_tenant_turn
+	    ON session_messages(tenant_id, turn_id, id) WHERE record_type = 'message';
+	`); err != nil {
+		log.WithError(err).Warn("Ensure idx_sm_tenant_turn failed; /api/iteration_detail may stay slow")
+	}
 }
