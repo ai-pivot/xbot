@@ -141,7 +141,10 @@ func TestConfigRedacted(t *testing.T) {
 func TestConfigKeysExcludeOneBot(t *testing.T) {
 	keys := map[string]bool{
 		KeyEnabled: false, KeyAppID: false, KeyAppSecret: false,
-		KeySandbox: false, KeyAllow: false, KeyAdmins: false, KeyIntents: false, KeyMarkdown: false,
+		KeySandbox: false, KeyAllow: false, KeyAdmins: false, KeyIntents: false, KeyMarkdown: false, KeyQiniuEnv: false,
+		KeyCDNProvider: false, KeyCDNPublicBase: false,
+		KeyQiniuAK: false, KeyQiniuSK: false, KeyQiniuBucket: false, KeyQiniuDomain: false, KeyQiniuRegion: false,
+		KeyS3AK: false, KeyS3SK: false, KeyS3Bucket: false, KeyS3Region: false, KeyS3Endpoint: false,
 	}
 	for _, def := range qqChannelDeclaration().ConfigSchema {
 		if _, ok := keys[def.Key]; !ok {
@@ -154,7 +157,7 @@ func TestConfigKeysExcludeOneBot(t *testing.T) {
 			t.Fatalf("declaration missing config key %q", k)
 		}
 	}
-	if len(keys) != 8 {
+	if len(keys) != 21 {
 		t.Fatalf("expected exactly 8 config keys, got %d", len(keys))
 	}
 }

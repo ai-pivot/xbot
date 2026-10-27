@@ -114,6 +114,122 @@ func qqChannelDeclaration() ChannelDeclaration {
 				Category:     "发送",
 			},
 			{
+				Key:   KeyQiniuEnv,
+				Label: "CDN 凭据文件（可选，用于图文混排）",
+				Description: "填一个 k=v 文件路径，含 QINIU_AK / QINIU_SK / QINIU_BUCKET / QINIU_DOMAIN。" +
+					"配置后：图片会先传到 CDN 拿公网 URL，再以 Markdown **图文同一条消息**发出" +
+					"（QQ 的富媒体消息 msg_type=7 与正文 content 互斥，无法混排；" +
+					"而 markdown 支持图片，接口里 force_verify_image_resource 即『图片转存』）。" +
+					"不配置则退回『图片单独一条 + 文字单独一条』。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:   KeyCDNProvider,
+				Label: "图床 provider（图文混排用，留空=关闭）",
+				Description: "留空/local = 关闭：图片单独一条、文字单独一条。" +
+					"填 qiniu / s3 / aliyun / cos 则先把图传到你的对象存储拿公网 URL，" +
+					"再用 Markdown 把**图和文合成一条**发出" +
+					"（QQ 的富媒体消息 msg_type=7 与正文 content 互斥，只有 markdown 能混排）。" +
+					"字段与 xbot 的 Storage Provider 一致：qiniu 用 qiniu_ak/sk/bucket/domain，" +
+					"s3 系用 s3_ak/sk/bucket/region（aliyun/cos 可只填 region，endpoint 自动推导）。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:   KeyCDNPublicBase,
+				Label: "CDN 公共访问前缀（可选）",
+				Description: "覆盖生成 URL 的前缀，例如 https://cdn.example.com。" +
+					"留空时：qiniu 用 qiniu_domain；s3 用 endpoint；aliyun/cos 用 bucket.endpoint。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:          KeyQiniuAK,
+				Label:        "七牛 AccessKey",
+				Description:  "provider=qiniu 时必填。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:          KeyQiniuSK,
+				Label:        "七牛 SecretKey",
+				Description:  "provider=qiniu 时必填。建议用 0600 文件注入，不要明文提交仓库。",
+				Type:         "password",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:          KeyQiniuBucket,
+				Label:        "七牛 Bucket",
+				Description:  "provider=qiniu 时必填。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:          KeyQiniuDomain,
+				Label:        "七牛访问域名",
+				Description:  "provider=qiniu 时必填，如 https://cdn.example.com。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:          KeyQiniuRegion,
+				Label:        "七牛 Region（可选）",
+				Description:  "七牛区域标识（z0/cn-east-1 等）。用自定义域名时可留空。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:          KeyS3AK,
+				Label:        "S3 AccessKey",
+				Description:  "provider=s3/aliyun/cos 时必填。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:          KeyS3SK,
+				Label:        "S3 SecretKey",
+				Description:  "provider=s3/aliyun/cos 时必填。",
+				Type:         "password",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:          KeyS3Bucket,
+				Label:        "S3 Bucket",
+				Description:  "provider=s3/aliyun/cos 时必填。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:   KeyS3Region,
+				Label: "S3 Region",
+				Description: "如 cn-hangzhou（aliyun）/ ap-guangzhou（cos）/ us-east-1（AWS）。" +
+					"provider=aliyun/cos 时用它推导 endpoint。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
+				Key:   KeyS3Endpoint,
+				Label: "S3 Endpoint（可选，优先级最高）",
+				Description: "显式 endpoint，用于 MinIO / Cloudflare R2 / 自建网关。" +
+					"填了就忽略 region 推导。",
+				Type:         "text",
+				DefaultValue: "",
+				Category:     "发送",
+			},
+			{
 				Key:   KeyAllow,
 				Label: "消息白名单",
 				Description: "决定哪些发送者的消息交给 agent。匹配的是 **openid**（不是 QQ 号）；" +

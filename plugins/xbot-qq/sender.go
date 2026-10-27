@@ -110,6 +110,13 @@ type OutboundSender struct {
 	Stream bool
 	// streams 是每条会话的流式分片状态（stream_msg_id / index / 是否已收尾）。
 	streams map[string]*streamState
+	// streamDisabled 是"限频熔断"：一旦某片返回限频错误，本进程内**永久**停用流式，
+	// 后续一律走普通 messages。理由：官方口径「持续超限会延长封禁」，而流式只是
+	// 体验优化，宁可退化成一次性发送，也不能把机器人打成风控。
+	streamDisabled bool
+	// uploader 非空时，图片先传 CDN 拿公网 URL，再以 markdown 图文混排一条发出。
+	// 为空则退回"富媒体分条发送"（图一条、文一条）。
+	uploader Hoster
 	// streamDelay 是流式片之间的间隔（打字机效果的节奏）。
 	streamDelay time.Duration
 	api         MessageAPI
@@ -208,7 +215,7 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 	//   input_state 1=生成中，10=结束；index 从 0 递增；
 	//   stream_msg_id 首片由服务端返回，后续分片必须携带；msg_seq 去重。
 	// 群聊没有流式接口，仍然逐条 messages 发送。
-	if s.Stream && userOpenID != "" && groupOpenID == "" {
+	if s.Stream && !s.streamDisabled && userOpenID != "" && groupOpenID == "" {
 		// 打字机式流式：把答案切成更多小片 + 片间延迟，客户端才会"逐渐长出来"。
 		// 直接用 maxMessageRunes 切片时，常见回答只有 1 片 ⇒ 看起来完全没有流式。
 		// 配额说明：同一 stream_msg_id 的多个分片属于**同一条**消息，
@@ -242,6 +249,13 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 			}
 			sent, err := s.api.StreamC2C(ctx, userOpenID, body)
 			if err != nil {
+				// 限频 → 立刻熔断，并且**不再继续后续片**（继续发只会加深风控）。
+				// 已发出的片算部分内容，剩余交给调用方按普通消息补发。
+				if ae, ok := err.(*APIError); ok && (ae.IsRateLimited() || ae.IsPassiveQuotaExceeded()) {
+					s.streamDisabled = true
+					s.logErr("ERROR: stream rate-limited (%v) — 熔断：本进程内停用流式，后续走普通 messages", err)
+					return last, err
+				}
 				return last, err
 			}
 			last = sent
@@ -447,6 +461,10 @@ func (s *OutboundSender) SendStreamDelta(ctx context.Context, chatID, delta stri
 	}
 	sent, err := s.api.StreamC2C(ctx, userOpenID, body)
 	if err != nil {
+		if ae, ok := err.(*APIError); ok && (ae.IsRateLimited() || ae.IsPassiveQuotaExceeded()) {
+			s.streamDisabled = true
+			s.logErr("ERROR: stream delta rate-limited (%v) — 熔断：后续走普通 messages", err)
+		}
 		return false, err
 	}
 	s.mu.Lock()
@@ -474,7 +492,9 @@ const (
 	// 硬约束：单聊被动回复只有 **4 次**配额（群聊 5 次）。分片再细会直接撞
 	// 40034128（被动回复次数超限），消息被平台拒掉 —— 那比"没有流式"更糟。
 	// 取 3 片留一次余量给最终帧/提示，视觉上仍是"逐渐长出来"。
-	streamPieces   = 3
+	// 2 片：单聊被动回复配额只有 4 次，3 片在实测中会踩到平台限频
+	// （stream_messages 虽按 stream_msg_id 归并，但请求数本身有频率限制）。
+	streamPieces   = 2
 	streamMinRunes = 24
 	// streamSingleShotRunes：短于此长度的回答不切片（一次性发完整）。
 	// 否则 "hi" 会被切成 "h"/"i" 两片，既浪费请求数又显得很傻。
@@ -545,6 +565,10 @@ func (s *OutboundSender) SendImages(ctx context.Context, chatID string, urls []s
 	if len(urls) == 0 {
 		return 0, nil
 	}
+	// 若配置了 CDN：不在这里发，交给 markdown 图文混排（见 UploadImagesToCDN）。
+	if s.uploader != nil {
+		return 0, nil
+	}
 	anchor := s.passiveMsgID(chatID)
 	sent := 0
 	for _, u := range urls {
@@ -601,4 +625,32 @@ func (s *OutboundSender) SendFiles(ctx context.Context, chatID string, files [][
 		sent++
 	}
 	return sent, nil
+}
+
+// UploadImagesToCDN 把图片逐张传到 CDN，返回公网 URL（顺序与输入一致，失败的跳过）。
+//
+// 用途：QQ 的 msg_type=7（富媒体）与 content 互斥，无法图 + 文一条；
+// 而 msg_type=2 的 markdown 支持图片（接口参数 force_verify_image_resource
+// 即"图片转存"）。所以配置了 CDN 时，把图传上去拿 URL，再由调用方拼进 markdown，
+// 实现"图文同一条消息"。
+func (s *OutboundSender) UploadImagesToCDN(ctx context.Context, urls []string) []string {
+	if s.uploader == nil || len(urls) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(urls))
+	for _, u := range urls {
+		// Hoster 只有 Upload([]byte)，这里负责"取字节 + 取文件名"。
+		data, name, ferr := fetchImageBytes(ctx, u, 64<<20)
+		if ferr != nil {
+			s.logErr("ERROR: cdn upload fetch failed src=%s: %v", u, ferr)
+			continue
+		}
+		pub, err := s.uploader.Upload(ctx, data, name)
+		if err != nil {
+			s.logErr("ERROR: cdn upload failed src=%s: %v", u, err)
+			continue
+		}
+		out = append(out, pub)
+	}
+	return out
 }

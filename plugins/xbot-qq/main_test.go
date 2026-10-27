@@ -65,12 +65,15 @@ func TestActivateDeclaresQQChannel(t *testing.T) {
 	for _, item := range schema {
 		keys[item.(map[string]any)["key"].(string)] = true
 	}
-	for _, want := range []string{KeyEnabled, KeyAppID, KeyAppSecret, KeySandbox, KeyAllow, KeyAdmins, KeyIntents, KeyMarkdown} {
+	for _, want := range []string{KeyEnabled, KeyAppID, KeyAppSecret, KeySandbox, KeyAllow, KeyAdmins, KeyIntents, KeyMarkdown, KeyQiniuEnv,
+		KeyCDNProvider, KeyCDNPublicBase,
+		KeyQiniuAK, KeyQiniuSK, KeyQiniuBucket, KeyQiniuDomain, KeyQiniuRegion,
+		KeyS3AK, KeyS3SK, KeyS3Bucket, KeyS3Region, KeyS3Endpoint} {
 		if !keys[want] {
 			t.Fatalf("schema missing key %q (got %v)", want, keys)
 		}
 	}
-	if len(keys) != 8 {
+	if len(keys) != 21 {
 		t.Fatalf("schema has %d keys, want 7 (got %v)", len(keys), keys)
 	}
 }

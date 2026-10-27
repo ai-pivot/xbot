@@ -306,6 +306,16 @@ func (a *app) handleChannelConfig(ctx context.Context, enc *json.Encoder, f fram
 		}
 	}
 
+	// 从 config.json 补齐 host 没推过来的键。
+	//
+	// 为什么需要：host 的 `cfg` 是**启动时**从 config.json 加载的，之后改了文件
+	// 它内存里没有新键（实测：新增的 cdn_provider 系列 host 根本没推，插件只能
+	// 读到空串）。而面板保存配置走的是 set_channel_config RPC，会同步内存，
+	// 但我们用文件直接改的字段就永远不生效。
+	// 这里以文件为准补空值：host 推来的非空值优先（面板实时改的立即生效），
+	// 文件里的值兜底 —— 纯插件实现，不改主模块。
+	mergeConfigFile(raw)
+
 	cfg := ParseConfig(raw)
 	a.setConfig(cfg)
 
@@ -333,8 +343,9 @@ func (a *app) handleChannelConfig(ctx context.Context, enc *json.Encoder, f fram
 	rt.Start(ctx, func(eventCtx context.Context, ev GatewayEvent) {
 		a.handleGatewayEvent(enc, eventCtx, ev)
 	})
-	a.logf("qq channel started: env=%s base=%s app_id=%s allow=%s",
-		EnvName(cfg.Sandbox), APIBaseHost(cfg.Sandbox), cfg.AppID, cfg.Allow)
+	a.logf("qq channel started: env=%s base=%s app_id=%s allow=%s cdn_provider=%q cdn_keys=%d",
+		EnvName(cfg.Sandbox), APIBaseHost(cfg.Sandbox), cfg.AppID, cfg.Allow,
+		cfg.CDN.Provider, countNonEmpty(cfg.CDN.State(), cfg.CDN.QiniuAK, cfg.CDN.S3AK))
 }
 
 // declareChannelPrompt 把渠道专属提示词声明给 host。
@@ -655,18 +666,36 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 	}
 
 	if imgURLs, rest := extractMarkdownImages(content); len(imgURLs) > 0 {
-		if n, ierr := rt.SendImages(ctx, chatID, imgURLs); ierr != nil {
-			a.logf("outbound images to %q: sent=%d/%d err=%v", chatID, n, len(imgURLs), ierr)
-		} else {
-			a.logf("outbound images to %q: sent=%d/%d", chatID, n, len(imgURLs))
-		}
-		content = rest
-		if content == "" {
-			// 纯图片消息：不需要再发文本
-			if frameID != "" {
-				a.write(enc, okResponse{ID: frameID, Result: "ok"})
+		// 有 CDN：把图传上去拿公网 URL，重新拼成 markdown —— 图文**同一条**消息。
+		// 无 CDN：退回富媒体分条（QQ 的 msg_type=7 与 content 互斥，无法混排）。
+		if rt.HasCDN() {
+			if pub := rt.UploadImagesToCDN(ctx, imgURLs); len(pub) > 0 {
+				var b strings.Builder
+				b.WriteString(rest)
+				if rest != "" {
+					b.WriteString("\n")
+				}
+				for _, u := range pub {
+					b.WriteString("![](" + u + ")\n")
+				}
+				content = strings.TrimSpace(b.String())
+				a.logf("outbound images to %q: %d uploaded to CDN, merged into one markdown message", chatID, len(pub))
+			} else {
+				a.logf("WARN: cdn upload produced 0 urls, falling back to media-per-message")
 			}
-			return
+		} else {
+			if n, ierr := rt.SendImages(ctx, chatID, imgURLs); ierr != nil {
+				a.logf("outbound images to %q: sent=%d/%d err=%v", chatID, n, len(imgURLs), ierr)
+			} else {
+				a.logf("outbound images to %q: sent=%d/%d (media, no cdn configured)", chatID, n, len(imgURLs))
+			}
+			content = rest
+			if content == "" {
+				if frameID != "" {
+					a.write(enc, okResponse{ID: frameID, Result: "ok"})
+				}
+				return
+			}
 		}
 	}
 

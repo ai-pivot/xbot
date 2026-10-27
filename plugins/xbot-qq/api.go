@@ -123,6 +123,10 @@ const (
 	errCodeRateLimited = 40023001
 	// codeRateLimited 是同一错误的 code 字段。
 	codeRateLimited = 100017
+	// errCodePassiveQuota 被动回复次数/时间超限（HTTP 400，msg_id 5 分钟或 4 次用尽）。
+	errCodePassiveQuota = 40034128
+	// errCodeActiveMsgNoPerm 主动消息无权限（被动回复窗口已过又没有主动消息权限）。
+	errCodeActiveMsgNoPerm = 40034105
 )
 
 // IsIPNotAllowed 报告是否"接口访问源 IP 不在白名单"。
@@ -137,6 +141,31 @@ func (e *APIError) IsIPNotAllowed() bool {
 		return true
 	}
 	return strings.Contains(e.Message, "白名单")
+}
+
+// IsPassiveQuotaExceeded 报告是否"被动回复次数/时间超限"。
+//
+// 触发条件：同一 msg_id 超过 4 次（单聊）/ 5 次（群聊），或超过 5 分钟有效期。
+// 与 IsRateLimited 一样属于"继续发只会更糟"的错误，应立刻停手而非重试。
+func (e *APIError) IsPassiveQuotaExceeded() bool {
+	if e == nil {
+		return false
+	}
+	if e.ErrCode == errCodePassiveQuota || e.Code == errCodePassiveQuota {
+		return true
+	}
+	return strings.Contains(e.Message, "被动回复")
+}
+
+// IsActiveMsgNoPerm 报告是否"主动消息无权限"（窗口过后又无权限）。
+func (e *APIError) IsActiveMsgNoPerm() bool {
+	if e == nil {
+		return false
+	}
+	if e.ErrCode == errCodeActiveMsgNoPerm || e.Code == errCodeActiveMsgNoPerm {
+		return true
+	}
+	return strings.Contains(e.Message, "主动消息")
 }
 
 // IsRateLimited 报告是否"接口调用超过频率限制"。
