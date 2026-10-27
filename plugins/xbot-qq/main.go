@@ -689,37 +689,17 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 			}
 		}
 
-		// ── 首选：图文混排（msg_type=2 + markdown.force_verify_image_resource）──
+		// ── 一律走富媒体（msg_type=7）分条发送 ──
 		//
-		// QQ 的 markdown 是**支持图片**的，前提是开「图片转存」参数并给公网 URL。
-		// 旧代码在注释里写了这个方案却从未实现字段，于是图永远渲染不出来
-		// （2026-10-27 线上：bot 说「图片来了」，客户端什么都没有）。
+		// 2026-10-27 二次实测结论：给 markdown 加 markdown.force_verify_image_resource
+		// 之后，平台返回 200（`rt.Send` 无错），但客户端**依然不显示图片**，而且
+		// 请求耗时明显上升（平台要去抓图）。也就是说这个参数在 C2C / 群聊场景下
+		// 并不能把 `![](url)` 变成真图。
 		//
-		// 混排失败（平台拒绝 / 内容超长被切块）才退到富媒体分条：
-		// msg_type=7 与 content 互斥是官方硬约束，那条路只能图、文各一条。
-		var b strings.Builder
-		b.WriteString(rest)
-		if rest != "" {
-			b.WriteString("\n")
-		}
-		for _, u := range urls {
-			b.WriteString("![](" + u + ")\n")
-		}
-		merged := strings.TrimSpace(b.String())
-
-		if merged != "" && len([]rune(merged)) <= maxMessageRunes {
-			if _, merr := rt.Send(ctx, chatID, merged); merr == nil {
-				a.logf("outbound images to %q: %d image(s) merged into ONE markdown message (force_verify_image_resource)", chatID, len(urls))
-				if frameID != "" {
-					a.write(enc, okResponse{ID: frameID, Result: "ok"})
-				}
-				return
-			} else {
-				a.logf("WARN: markdown image merge failed (%v) — falling back to media messages", merr)
-			}
-		}
-
-		// ── 兜底：富媒体分条 ──
+		// 所以放弃混排，回到唯一被平台明确支持、且能看见图的通道：
+		// msg_type=7 + media.file_info（图片先传 CDN 拿公网 URL，再由平台转存后下发）。
+		// 代价是图文两条消息 —— 这是 QQ 的硬约束，不是我们的实现问题。
+		//
 		if n, ierr := rt.SendImages(ctx, chatID, urls); ierr != nil {
 			a.logf("outbound images to %q: sent=%d/%d err=%v", chatID, n, len(urls), ierr)
 		} else {
