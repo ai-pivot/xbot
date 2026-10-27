@@ -1110,6 +1110,12 @@ const zhCN = {
     unknown: '未知面板：{{id}}',
   },
   layout: {
+    immersiveEnter: '进入沉浸模式',
+    immersiveExit: '退出沉浸模式',
+    immersiveHint: 'Esc 退出全屏；快捷键仍受系统限制',
+    immersiveUnavailable: '当前浏览器不支持全屏',
+    immersiveNoLock: '已全屏，但未启用键盘锁定；部分快捷键仍由浏览器处理',
+    immersiveFailed: '全屏操作失败，请重试',
     activityBar: '工具面板',
     connected: '已连接',
     connecting: '连接中',
