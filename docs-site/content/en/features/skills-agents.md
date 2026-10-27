@@ -42,7 +42,6 @@ trigger skills explicitly:
 | `plugin-creator` | Create plugins |
 | `hook-creator` | Create lifecycle hooks |
 | `ai-config` | Configure themes, subscriptions, TUI layout |
-| `worktree` | Multi-agent parallel workspace isolation |
 | `orchestrator` | Main-agent orchestration: direction + ~3 parallel sub-agents, no sleep/wait, heavy ops serial |
 
 ### Where Skills Live

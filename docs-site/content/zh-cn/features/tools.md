@@ -158,7 +158,6 @@ xbot 内置 50+ 工具，Agent 在对话中可以随时调用。所有工具默�
 
 | Tool | Description |
 |------|-------------|
-| `Worktree` | Git worktree 多 Agent 工作区隔离。支持 `init`、`cleanup`、`status`。 |
 | `JoinGroup` | 加入 Peer Group 进行异步广播通信 |
 | `LeaveGroup` | 离开 Peer Group |
 | `ListGroupMembers` | 列出 Peer Group 成员 |

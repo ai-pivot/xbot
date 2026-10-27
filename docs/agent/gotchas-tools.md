@@ -44,3 +44,7 @@
   2. **文本管道边界**：`internal/textutil.SanitizeText` = **非法序列 + NUL 一律 → U+FFFD**（合法且无 NUL 时零分配）；`agent.updateToolResultLine`（成功/失败两分支）与 `newSyntheticToolPair` 对所有工具结果统一调用它 ⇒ 模型上下文、SSE、offload 文件、DB 四处同源干净。⛔ `SanitizeUTF8` 保持"只修编码"语义（NUL 合法，不能顺手改它，否则历史迁移语义漂移）。
   3. **存储边界（最后防线）**：`storage.pgText = textutil.SanitizeText`；`cmd/xbot-migrate` 的 `sanitizeUTF8` 同样委托它（否则 SQLite 历史行里的 NUL 会让迁移整表失败）。
 - 守护：`internal/textutil/textutil_test.go`（`SanitizeUTF8` 保留 NUL / `SanitizeText` 去掉）、`storage/pg_sanitize_test.go`、`storage/pg_contract_test.go` 的 `TestPGSessionStoreNULMessageStoredSanitized`（真实 PG：写入 + 读回无 NUL）、`storage/contract_session_test.go` 的 `AddMessage_NULAndInvalidUTF8_DoesNotFail`（双后端）、`tools/read_binary_test.go`、`agent/tool_output_sanitize_test.go`。
+
+## `go:embed embed_skills/*` 自动发现新技能
+
+- **`go:embed embed_skills/*` auto-discovers new skills.** Adding a directory under `tools/embed_skills/` requires zero code changes.

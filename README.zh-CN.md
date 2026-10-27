@@ -206,7 +206,7 @@ Agent 可以在对话中调用这些工具：
 | **上下文** | `context_edit`、`offload_recall`、`recall_masked` |
 | **调度** | `Cron`、`TodoWrite`、`TodoList` |
 | **配置** | `config`、`tui_control` |
-| **协作** | `Worktree`、`EventTrigger` |
+| **协作** | `EventTrigger` |
 | **任务** | `task_status`、`task_kill`、`task_wait`、`task_read` |
 | **其他** | `AskUser`、`ChatHistory`、`ManageTools`、`Skill`、飞书工具 |
 

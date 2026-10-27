@@ -100,7 +100,7 @@
 | `docs/agent/gotchas-plugins.md` | plugin system, web plugin runtime, i18n of plugin manifests |
 | `docs/agent/gotchas-tools.md` | view_image, truncation/retrieval hints, share_file key sanitization |
 | `docs/agent/gotchas-llm.md` | Responses API encrypted reasoning round-trip |
-| `docs/agent/gotchas-install-worktree.md` | one-click setup/release, git worktree isolation |
+| `docs/agent/gotchas-install.md` | one-click setup/release |
 | `docs/agent/gotchas-misc.md` | 2026-09-17 batch (synthetic tools, reminder parsing, CoT) |
 
 ## ⛔ Critical invariants (one-line index — full text in the knowledge files)
@@ -308,11 +308,11 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-plugins.md` — 本地 docker sandbox 已整体删除；
 - ⚠️ `docs/agent/gotchas-plugins.md` — `/goal` 只能在后端 pop 并执行该消息后设置 —— 发送路径禁止乐观写 goal（2026-09-16 用户报告：「发 goal 消息时（点 goal 按钮），即使消息排队也会立刻设置 goal；
 - ⚠️ `docs/agent/gotchas-llm.md` — 跨轮次持久化：`session_messages.reasoning_items`（schema v66 + `migrateV65ToV66`，`tableExists`+`columnExists` 双守卫幂等）+ `appendMessageWith` 写入 / `getHistoryFromWith` 读回。
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — `setup` 能力探针必须只有一处实现，且绝不能用管道喂 grep（2026-09-11 事故：装 stable 静默变成 nightly）。
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — channels 激活修复是 manifest 驱动 + set_if_missing + builtin-only 边界：`fixChannelActivationConfig`（setup.go）只扫 `plugins/builtin/`（setup 自己装的 release 插件）的 plugin.json `contributes.channelProvider.config_schema[].{key:"enabled", d…
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — release.yml 产物矩阵：frontend job 追加 esbuild 插件 web 资产 —— 每个声明 `web.entry` 的插件都要构建，esbuild 产物按插件目录形状落盘 `build/plugin-web/<plugin-id>/web/`（`--splitting` 让该插件的 view 入口共享同一份 rpc/ui 单例 chunk；
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — plugins/package.sh 通用打包：遍历 `plugins/*/plugin.json`（源目录用连字符 `xbot-genui`，插件 ID 用点 `xbot.genui`——tarball 内是 ID 布局，脚本维护 src-dir→ID 映射）；
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — PR CI 覆盖插件模块（独立 `plugins/*/go.mod`）：根模块的 `go build ./...`/`go test ./...` 永远到不了它们（嵌套 module 被 Go 排除），所以此前插件编译失败或自身测试失败只在 release 的 build-plugins job 才暴露（= 发布时）。
+- ⚠️ `docs/agent/gotchas-install.md` — `setup` 能力探针必须只有一处实现，且绝不能用管道喂 grep（2026-09-11 事故：装 stable 静默变成 nightly）。
+- ⚠️ `docs/agent/gotchas-install.md` — channels 激活修复是 manifest 驱动 + set_if_missing + builtin-only 边界：`fixChannelActivationConfig`（setup.go）只扫 `plugins/builtin/`（setup 自己装的 release 插件）的 plugin.json `contributes.channelProvider.config_schema[].{key:"enabled", d…
+- ⚠️ `docs/agent/gotchas-install.md` — release.yml 产物矩阵：frontend job 追加 esbuild 插件 web 资产 —— 每个声明 `web.entry` 的插件都要构建，esbuild 产物按插件目录形状落盘 `build/plugin-web/<plugin-id>/web/`（`--splitting` 让该插件的 view 入口共享同一份 rpc/ui 单例 chunk；
+- ⚠️ `docs/agent/gotchas-install.md` — plugins/package.sh 通用打包：遍历 `plugins/*/plugin.json`（源目录用连字符 `xbot-genui`，插件 ID 用点 `xbot.genui`——tarball 内是 ID 布局，脚本维护 src-dir→ID 映射）；
+- ⚠️ `docs/agent/gotchas-install.md` — PR CI 覆盖插件模块（独立 `plugins/*/go.mod`）：根模块的 `go build ./...`/`go test ./...` 永远到不了它们（嵌套 module 被 Go 排除），所以此前插件编译失败或自身测试失败只在 release 的 build-plugins job 才暴露（= 发布时）。
 - ⚠️ `docs/agent/gotchas-misc.md` — interactive SubAgent 寻址必须经唯一解析器（2026-09-17「全收口」）：所有按 `(role, instance)` 寻址的入口（`SendToInteractiveSession` / `InspectInteractiveSession` / `InterruptInteractiveSession` / `UnloadInteractiveSession` / `ContinueInteractiveSe…
 
 ## Development Principles
