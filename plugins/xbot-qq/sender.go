@@ -178,6 +178,21 @@ func (s *OutboundSender) Send(ctx context.Context, chatID, content string) (*Sen
 		}
 	}
 
+	// ── 主动消息守卫 ──
+	//
+	// 官方：被动回复窗口为 单聊 60 分钟 / 群聊 5 分钟（见 passiveReplyWindow）。
+	// 窗口过了 msg_id 失效，此时再发就变成"主动消息"，而主动消息需要平台单独
+	// 开权限 —— 实测返回 HTTP 400 {"message":"主动消息失败, 无权限","code":40034105}。
+	// 与其白打一次接口（还记一次失败），不如提前拒绝并留痕。
+	if msgID == "" {
+		// 无被动回复锚点（窗口已过：单聊 60 分钟 / 群聊 5 分钟）。
+		// 此时发出去就是"主动消息"，平台多半回
+		//   HTTP 400 {"message":"主动消息失败, 无权限","code":40034105}
+		// 但仍**尝试发送**：某些部署开通了主动消息权限，直接拒绝会误伤正常场景。
+		// 失败时由下面的错误分支把 40034105 翻译成人话。
+		s.logErr("WARN: no passive reply anchor for chat=%s (窗口已过：单聊60min/群聊5min) — attempting anyway, may fail with 40034105 主动消息无权限", chatID)
+	}
+
 	var last *SentMessage
 
 	// ── 私聊流式：把整段回复按片推给 stream_messages ──

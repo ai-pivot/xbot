@@ -163,3 +163,52 @@ func TestQuoteBlockEscapesAuthorAndContent(t *testing.T) {
 		t.Fatalf("author not escaped: %q", block)
 	}
 }
+
+// TestReplyMsgIdxStringTolerated 引用消息的 msg_idx 可能是字符串。
+//
+// 2026-10-27 真机故障：带 reply 的群消息里 msg_elements[].msg_idx 是字符串，
+// 而我们把它声明为 int ⇒ 整条事件解析失败：
+//
+//	json: cannot unmarshal string into Go struct field MsgElement.msg_elements.msg_idx of type int
+//
+// 表现就是「任何带引用/回复的消息都无法处理」。本用例锁住宽松解析。
+func TestReplyMsgIdxStringTolerated(t *testing.T) {
+	// 1) 字符串 msg_idx 不得导致解析失败
+	payload := json.RawMessage(`{
+		"id":"M-REPLY-1","content":"<@BOT1> 这个怎么理解","group_openid":"G1",
+		"author":{"member_openid":"U1","username":"someone"},
+		"mentions":[{"id":"BOT1","member_openid":"BOT1","bot":true}],
+		"message_type":103,
+		"message_scene":{"ext":["ref_msg_idx=REF-123","msg_idx=M-REPLY-1"]},
+		"msg_elements":[
+			{"msg_idx":"REF-123","message_type":0,"content":"被引用的话","author":{"member_openid":"U2","username":"bob"}},
+			{"msg_idx":"7","message_type":0,"content":"","author":{"member_openid":"U1"}}
+		]
+	}`)
+	in, ok, err := ParseInbound(EventGroupMessageCreate, payload)
+	if err != nil || !ok {
+		t.Fatalf("带字符串 msg_idx 的引用消息必须能解析，ok=%t err=%v", ok, err)
+	}
+	if in.ChatID() != "group:G1" || in.SenderOpenID != "U1" {
+		t.Fatalf("会话/发送者解析错误: chat=%q sender=%q", in.ChatID(), in.SenderOpenID)
+	}
+	if in.Reply == nil || !strings.Contains(in.Reply.Content, "被引用的话") {
+		t.Fatalf("应识别到引用块，实际 %+v", in.Reply)
+	}
+
+	// 2) 数字 msg_idx 仍然正常
+	payload2 := json.RawMessage(`{
+		"id":"M-REPLY-2","content":"<@BOT1> 再说一次","group_openid":"G1",
+		"author":{"member_openid":"U1"},
+		"mentions":[{"id":"BOT1","member_openid":"BOT1","bot":true}],
+		"message_scene":{"ext":["ref_msg_idx=5"]},
+		"msg_elements":[{"msg_idx":5,"content":"数字序号的引用","author":{"member_openid":"U2"}}]
+	}`)
+	in2, ok2, err2 := ParseInbound(EventGroupMessageCreate, payload2)
+	if err2 != nil || !ok2 {
+		t.Fatalf("数字 msg_idx 必须能解析，ok=%t err=%v", ok2, err2)
+	}
+	if in2.Reply == nil || !strings.Contains(in2.Reply.Content, "数字序号的引用") {
+		t.Fatalf("数字序号引用未匹配: %+v", in2.Reply)
+	}
+}

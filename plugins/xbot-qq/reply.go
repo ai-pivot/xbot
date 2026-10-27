@@ -18,12 +18,46 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
 // MsgElement 是官方 msg_elements[] 的一个元素（被引用消息的快照）。
+// flexInt 兼容"数字或字符串"的字段。
+//
+// 2026-10-27 真机故障：带 reply（引用）的群消息里，`msg_elements[].msg_idx`
+// 是**字符串**（如 "REF-123"），而我们声明成 int ⇒ 整条事件解析失败：
+//
+//	json: cannot unmarshal string into Go struct field MsgElement.msg_elements.msg_idx of type int
+//
+// 结果：所有引用消息被整类丢弃（表现为"带 reply 的消息无法处理"）。
+// flexInt 同时接受 123 / "123" / 非数字串（后者记 0，不影响其它字段解析）。
+type flexInt int
+
+// UnmarshalJSON 实现宽松解析：数字、引号数字、其它字符串都不报错。
+func (f *flexInt) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	if s[0] == '"' {
+		s = strings.Trim(s, "\"")
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		*f = 0 // 非数字串（如引用消息的 msg_idx）按 0 处理，不能让整条消息失败
+		return nil
+	}
+	*f = flexInt(n)
+	return nil
+}
+
+// MarshalJSON 序列化回数字（便于测试断言与日志）。
+func (f flexInt) MarshalJSON() ([]byte, error) { return []byte(strconv.Itoa(int(f))), nil }
+
 type MsgElement struct {
-	MsgIdx      int                 `json:"msg_idx"`
+	MsgIdx      flexInt             `json:"msg_idx"`
 	MessageType int                 `json:"message_type"`
 	Content     string              `json:"content"`
 	Attachments []MessageAttachment `json:"attachments"`
@@ -71,7 +105,7 @@ func pickQuoted(elements []MsgElement, sceneExt map[string]string) (QuotedMessag
 	}
 	if refIdx := sceneExtInt(sceneExt, "ref_msg_idx"); refIdx != 0 {
 		for _, e := range elements {
-			if e.MsgIdx == refIdx {
+			if int(e.MsgIdx) == refIdx {
 				return toQuoted(e), true
 			}
 		}
@@ -87,7 +121,7 @@ func pickQuoted(elements []MsgElement, sceneExt map[string]string) (QuotedMessag
 
 func toQuoted(e MsgElement) QuotedMessage {
 	return QuotedMessage{
-		MsgIdx:       e.MsgIdx,
+		MsgIdx:       int(e.MsgIdx),
 		AuthorOpenID: e.AuthorID(),
 		Content:      strings.TrimSpace(e.Content),
 		Attachments:  e.Attachments,
