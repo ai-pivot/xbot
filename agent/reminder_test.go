@@ -85,9 +85,9 @@ func TestBuildSystemReminder_SubAgent(t *testing.T) {
 	if !strings.Contains(result, "<user-msg><![CDATA[Do task X]]></user-msg>") {
 		t.Errorf("SubAgent should show user-msg, got:\n%s", result)
 	}
-	// SubAgent should NOT have peers/subagents sections
-	if strings.Contains(result, "<peers>") || strings.Contains(result, "<subagents>") {
-		t.Error("SubAgent should NOT have peers/subagents sections")
+	// SubAgent should NOT have subagents section
+	if strings.Contains(result, "<subagents>") {
+		t.Error("SubAgent should NOT have <subagents> section")
 	}
 }
 

@@ -98,7 +98,8 @@
 | `docs/agent/gotchas-web-frontend.md` | web message store & state machine, streaming/live iteration rules, iteration windowing, virtual list, tool pills, copy menu, sidebar/panel layout, feishu-free web UI contracts |
 | `docs/agent/gotchas-feishu.md` | Feishu channel: CardKit streaming cards + native CoT rendering |
 | `docs/agent/gotchas-plugins.md` | plugin system, web plugin runtime, i18n of plugin manifests |
-| `docs/agent/gotchas-tools.md` | view_image, truncation/retrieval hints, share_file key sanitization |
+| `docs/agent/gotchas-tools.md` | view_image, truncation/retrieval hints, share_file key sanitization, stale session CWD reset |
+| `docs/agent/worktree-legacy-cleanup.md` | runbook: 遗留 `.xbot-worktrees/` 目录与陈旧 CWD 的人工清理（禁止自动 prune） |
 | `docs/agent/gotchas-llm.md` | Responses API encrypted reasoning round-trip |
 | `docs/agent/gotchas-install.md` | one-click setup/release |
 | `docs/agent/gotchas-misc.md` | 2026-09-17 batch (synthetic tools, reminder parsing, CoT) |
@@ -164,6 +165,7 @@ The highest-priority rules, one line each. **Before changing the related code, R
 - ⛔ `docs/agent/gotchas-plugins.md` — runner「所有命令 exit code 2」根治（2026-09-22 用户 P0：ssh-runner 连 GPU 机 1101 后 agent 全部命令失败）。
 - ⛔ `docs/agent/gotchas-tools.md` — 名字不承担唯一性：key 形如 `agent/<uuid>/<name>`，uuid 是每次发布新铸的 ⇒ 不同会话分享同名文件天然各自独立（守护测试断言两次分享 key 不同）。
 - ⚠️ `docs/agent/gotchas-tools.md` — `sandbox exec: fork/exec <shell>: no such file or directory` 往往**不是 shell 缺失**，而是会话 cwd 已被删除（`os/exec` 在子进程 chdir，`*os.PathError.Path` 是 shell 路径）。`cmdbuilder.Build` 现在先 `os.Stat(dir)` 并返回「working directory … use the Cd tool」；本地 none sandbox 不静默 fallback（错误目录里跑 `git`/`rm` 比失败更危险）。守护：`tools/none_sandbox_missing_dir_test.go`。
+- ⛔ `docs/agent/worktree-legacy-cleanup.md` — **遗留 `.xbot-worktrees/` 只能人工清理，禁止自动 prune**（`port-v0521-taizi` 仍被别的会话占用；`git worktree prune` 会清掉在用的登记）。turn 起点由 `agent/stale_cwd.go` 的 `resetStaleCWD` 用 `dirExists(cwd)` 复位陈旧 CWD（只对宿主可见路径生效，沙箱会话跳过）。守护：`agent/stale_cwd_test.go`。
 - ⛔ `docs/agent/gotchas-tools.md` — **二进制工具输出绝不能进文本管道**：NUL（`0x00`）是合法 UTF-8 但 PG `text` 存不了（SQLSTATE 22021 拒绝**整批 INSERT**，代价是整个 turn；SQLite 后端完全看不见）。`Read` 现在拒绝二进制（NUL / 前 8 KiB 非 UTF-8 占比 >25%），`textutil.SanitizeText`（非法序列 **+ NUL** → U+FFFD）在 `pgText`、`cmd/xbot-migrate`、agent 工具结果边界三处统一执行。守护：`tools/read_binary_test.go` / `agent/tool_output_sanitize_test.go` / `storage/pg_contract_test.go`。
 - ⛔ `docs/agent/gotchas-llm.md` — 「要了 reasoning 就必须要摘要」——`encrypted_content` 是给无状态重放用的，用户看不到（2026-09-19 用户报告 gpt-6-astra 在 Web 不显示 reasoning 的根因）。
 - ⛔ `docs/agent/gotchas-misc.md` — 注入型（fake）工具【绝不】在 content 里声明「这不是你调用的工具」（2026-09-17 用户纠正，取代同日早些时候的做法）：`agent.syntheticInjectionNotice()` 已整体删除，`newSyntheticToolPair` 不再给注入工具的结果加任何前缀 —— 注入结果就是一段普通 tool-result 文本（与 Shell/Read 输出同形态）。

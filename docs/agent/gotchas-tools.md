@@ -35,6 +35,7 @@
 - **契约**：① `internal/cmdbuilder.Build` 在赋值 `cmd.Dir` 前 `os.Stat` 校验；缺失/非目录 ⇒ 返回 `working directory %q is not accessible: ...; use the Cd tool to change to an existing directory`（**明确 cwd + 恢复路径**，绝不再出现 `fork/exec`）；② `tools/none_sandbox.go` 的 `setupPipes` 在 `cmd.Start()` 失败且 `cmd.Dir != ""` 时，把 cwd 与可执行文件都写进错误 —— 兜住 stat 与 start 之间的竞态/权限类 chdir 失败（stat 看不出的那种），保留底层原因。
 - **不选 fallback**：本地 none sandbox **不**静默退到 home/祖先目录 —— 在错误的目录里跑 `git`/`rm` 比明确失败危险得多；`Cd` 是设计好的恢复路径。
 - 守护：`tools/none_sandbox_missing_dir_test.go`（`Exec` 与 `noneSandboxExecAsync` 都必须报 cwd 错误、含 `Cd`、不含 `fork/exec`；已存在目录的正常执行不受影响）。
+- **turn 起点复位（2026-10-27 补）**：`agent/stale_cwd.go` 的 `resetStaleCWD` 在 `buildPrompt` 里、任何工具被调用之前，用**与工具无关**的判据 `dirExists(cwd)`（不存在或已不是目录）把持久化 CWD 复位到 `workspaceRoot` 并 WARN。只对宿主可见路径生效（`cwdIsHostPath`：docker/remote/offline 沙箱的 CWD 是沙箱内路径，宿主 `os.Stat` 看不到，不能套用本判据）。守护 `agent/stale_cwd_test.go`（缺失目录 ⇒ 复位且 Shell 可用；存在 ⇒ 原样保留；空 ⇒ 不动；文件冒充目录 ⇒ 复位）。遗留工作树目录的人工处置见 `docs/agent/worktree-legacy-cleanup.md`（**禁止自动 prune**）。
 ## 二进制工具输出绝不能进文本管道（NUL / 非法 UTF-8，2026-10-24 issue #457 根治）
 
 - **现象**：`Read` 读二进制文件（ELF/PNG/tar）后，该轮对话**持久化失败**：`append message batch item 1: ERROR: invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)`。SQLite 后端完全看不见（TEXT 不校验），只有 PG 报错——一条消息带坏字节，**整批 INSERT 被拒**，代价是整个 turn。

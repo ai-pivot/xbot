@@ -338,14 +338,27 @@ func firstNonEmptyLine(s string) string {
 // （用户截图：Next turn 83 + Turn 84–88，既不能立刻发出、也拿不到一次处理完）。
 // 批量成一条同时保证：一个 turn 处理完所有事件、不会挤爆队列。
 func (a *Agent) drainAndProcessNotifications(sessionKey string) {
-	mine := a.takePendingBgNotifications(sessionKey)
-	if len(mine) == 0 {
+	// ⚠️ 校验必须在 take **之前**。
+	//
+	// 2026-10-27 故障：key 有时是 agent 调用链（如
+	// `main/court.shoufu/court.bingbu`），而不是 `channel:chatID`。旧实现先
+	// takePendingBgNotifications 把通知取走，再校验 key，非法就直接 return
+	// —— 通知被**永久吞掉**。表现就是：子代理明明结束了，父会话/御前收不到
+	// 任何完成通知（本次首辅 idle 落库于 08:49:24Z，我却一直没收到）。
+	// 现在：非法 key 走 agent-路径兜底，绝不丢。
+	if strings.Count(sessionKey, ":") == 0 {
+		a.deliverNotificationsByAgentPath(sessionKey)
 		return
 	}
 
 	parts := strings.SplitN(sessionKey, ":", 2)
-	if len(parts) != 2 {
-		log.WithField("session_key", sessionKey).Warn("drainAndProcessNotifications: invalid session key")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		a.deliverNotificationsByAgentPath(sessionKey)
+		return
+	}
+
+	mine := a.takePendingBgNotifications(sessionKey)
+	if len(mine) == 0 {
 		return
 	}
 	channelName, chatID := parts[0], parts[1]
@@ -774,4 +787,78 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	a.addReaction(msg)
 
 	return nil, nil
+}
+
+// deliverNotificationsByAgentPath 处理"key 是 agent 调用链而非会话 key"的通知。
+//
+// key 形如 `main/court.shoufu/court.bingbu`：这是 AgentID 路径（根/父/子），
+// 不是 channel:chatID。通知真正的接收方是**父 agent**（倒数第二段）。
+// 做法：按角色名在 interactiveSubAgents 里找活跃会话，把通知作为一条用户消息
+// 投进去；找不到就记 ERROR 并保留到主会话队列，绝不静默丢弃。
+func (a *Agent) deliverNotificationsByAgentPath(key string) {
+	mine := a.takePendingBgNotifications(key)
+	if len(mine) == 0 {
+		return
+	}
+
+	segs := strings.Split(strings.Trim(key, "/"), "/")
+	parentRole := ""
+	if len(segs) >= 2 {
+		parentRole = segs[len(segs)-2]
+	}
+
+	var targetKey, targetRole, targetInst string
+	if parentRole != "" {
+		a.interactiveSubAgents.Range(func(k, v any) bool {
+			ia, ok := v.(*interactiveAgent)
+			if !ok || ia == nil || ia.roleName != parentRole {
+				return true
+			}
+			ks, _ := k.(string)
+			targetKey, targetRole, targetInst = ks, ia.roleName, ia.instance
+			return false
+		})
+	}
+
+	var b strings.Builder
+	for _, n := range mine {
+		if sn, ok := n.(*tools.SubAgentBgNotify); ok && sn != nil {
+			fmt.Fprintf(&b, "[子代理通知] %s\n", sn.Content)
+			continue
+		}
+		fmt.Fprintf(&b, "[子代理通知] %v\n", n)
+	}
+	body := b.String()
+
+	if targetKey != "" {
+		log.WithFields(log.Fields{
+			"bad_key": key, "parent_role": targetRole,
+			"target_key": targetKey, "count": len(mine),
+		}).Warn("bg notification key was an agent path; routed to parent interactive session")
+		// 让父会话的 Run 循环取到：投递为其 pending 用户消息。
+		a.interactiveSubAgents.Load(targetKey)
+		go func() {
+			_, err := a.SendToInteractiveSession(context.Background(), targetRole, bus.InboundMessage{
+				Channel:  "agent",
+				ChatID:   targetRole + "/" + targetInst,
+				Content:  body,
+				Metadata: map[string]string{"instance_id": targetInst, "bg_notify_recovered": "true"},
+			})
+			if err != nil {
+				log.WithError(err).WithField("target_key", targetKey).
+					Error("bg notification recovery delivery failed")
+			}
+		}()
+		return
+	}
+
+	// 找不到父会话：绝不丢，落到主会话队列并高声告警。
+	log.WithFields(log.Fields{"bad_key": key, "count": len(mine)}).
+		Error("bg notification key unresolvable and no matching parent session; keeping for main session")
+	for _, n := range mine {
+		if sn, ok := n.(*tools.SubAgentBgNotify); ok && sn != nil {
+			sn.Key = "recovered"
+		}
+		a.enqueueBgNotification(n)
+	}
 }

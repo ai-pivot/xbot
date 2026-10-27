@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -1038,6 +1039,27 @@ func (m *BackgroundTaskManager) SendAsyncMessage(n *AsyncMessageNotification) {
 // Safe to call from any goroutine. Drops silently if channel is full or closed.
 func (m *BackgroundTaskManager) SendSubAgentNotify(n *SubAgentBgNotify) {
 	if m.NotifyCh == nil {
+		return
+	}
+	// ── Key 入口校验（fail fast）──
+	//
+	// 2026-10-27 事故：有调用方把 **AgentID 路径**（`main/court.shoufu/court.bingbu`）
+	// 当成会话 key 塞进来。下游 drainAndProcessNotifications 按 `channel:chatID`
+	// 解析失败就把通知**静默丢掉** —— 表现为"子代理结束了，父会话收不到任何通知"。
+	// 这里在**插入时**就拒绝非法 key，并打印调用点（file:line），
+	// 让问题在第一个坏调用处暴露，而不是拖到 drain 阶段变成一行 warning。
+	if n != nil && !strings.Contains(n.Key, ":") {
+		_, file, line, ok := runtime.Caller(1)
+		caller := "?"
+		if ok {
+			caller = fmt.Sprintf("%s:%d", file, line)
+		}
+		log.WithFields(log.Fields{
+			"key":    n.Key,
+			"role":   n.Role,
+			"inst":   n.Instance,
+			"caller": caller,
+		}).Error("SendSubAgentNotify: Key 不是会话 key（必须 channel:chatID）——已拒绝，请修调用方")
 		return
 	}
 	defer func() {

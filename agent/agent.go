@@ -4417,6 +4417,13 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 
 	cwd := tenantSession.GetCurrentDir()
+	// 持久化 CWD 已失效（目录被删/移走/回收）⇒ 复位到 workspaceRoot。
+	// 不做这一步，该会话每一次 Shell 都会硬失败（issue #457 的症状），agent 连
+	// pwd/ls 都跑不了。判据只看"目录是否真的存在"，与任何具体工具无关。
+	// 仅对宿主可见路径生效：沙箱会话的 CWD 是沙箱内路径，宿主看不到。
+	if a.cwdIsHostPath(sessKey) {
+		cwd = resetStaleCWD(tenantSession, sessKey, workspaceRoot)
+	}
 
 	mc := NewMessageContext(
 		letta.WithUserID(ctx, msg.SenderID),

@@ -1293,7 +1293,7 @@ func (m *cliModel) renderInfoBar() string {
 	hasQueue := len(m.messageQueue) > 0
 
 	// Always show the workspace indicator (pinned to left).
-	wsIndicator := fmt.Sprintf("🏠 %s", m.styles.TextMutedSt.Render("main workspace"))
+	wsIndicator := m.renderWorkspaceIndicator()
 
 	var parts []string
 
@@ -1331,6 +1331,32 @@ func (m *cliModel) renderInfoBar() string {
 	return lipgloss.NewStyle().
 		PaddingLeft(2).
 		Render(content)
+}
+
+// renderWorkspaceIndicator returns the workspace status string pinned at the
+// left of the info bar: the session name for named sessions, "main workspace"
+// for the default session.
+//
+// 注：工作树工具已删除，🌿 分支随之消失；但"命名会话显示会话名"是独立于
+// 该工具的行为，不能一并丢掉（否则所有会话都显示 main workspace，用户分不清
+// 自己在哪个会话里）。
+func (m *cliModel) renderWorkspaceIndicator() string {
+	if name := m.sessionDisplayName(); name != "" {
+		return fmt.Sprintf("🏠 %s", m.styles.Accent.Render(name))
+	}
+	return fmt.Sprintf("🏠 %s", m.styles.TextMutedSt.Render("main workspace"))
+}
+
+// sessionDisplayName returns the display name of a named session, or "" for the
+// default session (chatID == workDir).
+func (m *cliModel) sessionDisplayName() string {
+	if m.chatID == "" || m.chatID == m.workDir {
+		return ""
+	}
+	if idx := strings.LastIndex(m.chatID, ":"); idx > 0 && idx+1 < len(m.chatID) {
+		return m.chatID[idx+1:]
+	}
+	return m.chatID
 }
 
 // renderTodoBar renders a compact TODO progress bar between status and input.

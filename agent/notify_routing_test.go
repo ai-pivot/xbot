@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +96,52 @@ func TestParseInteractiveKeyTailForParentKey(t *testing.T) {
 	ch, chat, role, inst := parseInteractiveKeyTail("web:web-4/court.shoufu:main")
 	if ch != "web" || chat != "web-4" || role != "court.shoufu" || inst != "main" {
 		t.Fatalf("解析错误: ch=%q chat=%q role=%q inst=%q", ch, chat, role, inst)
+	}
+}
+
+// TestAgentPathKeyNotificationIsNotDropped 保命测试：key 是 agent 路径时通知不许丢。
+//
+// 2026-10-27 真机故障：首辅 DB 已 idle（08:49:24Z），御前却一直收不到完成通知。
+// 根因：通知的 Key 有时是 **AgentID 路径**（如 `main/court.shoufu/court.bingbu`），
+// 而 drainAndProcessNotifications 是「先 takePending 取走通知 → 再校验 key —— 非法就
+// return」，于是通知被**永久吞掉**（日志只有一行 warning: invalid session key）。
+//
+// 修复：校验提前到 take 之前；非法 key 走 agent-路径兜底（按倒数第二段找父会话），
+// 找不到也不丢，留在队列里并高声告警。
+func TestAgentPathKeyNotificationIsNotDropped(t *testing.T) {
+	a := &Agent{bus: bus.NewMessageBus(), agentCtx: context.Background()}
+
+	const badKey = "main/court.shoufu/court.bingbu"
+	mgr := tools.NewBackgroundTaskManager()
+	a.bgTaskMgr.Store(mgr)
+
+	// 直接入队一条 key 为非法的通知（模拟现场）
+	a.enqueueBgNotification(&tools.SubAgentBgNotify{
+		Key:      badKey,
+		Type:     tools.SubAgentBgNotifyCompleted,
+		Role:     "court.bingbu",
+		Instance: "main",
+		Content:  "任务完成：已删除 overdue 项",
+	})
+
+	// 调用 drain：不允许静默丢弃 —— 通知必须离开该 key 的队列，
+	// 要么被投递出去，要么被保留到别处（"recovered"）。
+	a.drainAndProcessNotifications(badKey)
+
+	if left := a.pendingBgNotifications(badKey); len(left) != 0 {
+		t.Fatalf("非法 key 的通知仍滞留在原队列（%d 条），说明兜底没走通", len(left))
+	}
+	// 兜底路径必须把内容保留在某处（投递到主会话或 "recovered" 队列），不能蒸发：
+	recovered := a.pendingBgNotifications("recovered")
+	select {
+	case msg := <-a.bus.Inbound:
+		if !strings.Contains(msg.Content, "任务完成") {
+			t.Fatalf("投递内容丢失: %q", msg.Content)
+		}
+		return
+	default:
+	}
+	if len(recovered) == 0 {
+		t.Fatal("通知既没投递也没保留 —— 又被吞了")
 	}
 }
