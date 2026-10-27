@@ -1367,6 +1367,11 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		if sessionKey == "" {
 			sessionKey = cfg.Channel + ":" + cfg.ChatID
 		}
+		// 注意：SubAgent 的 BgSessionKey **故意**是 subAgentID（AgentID 路径），
+		// 用于隔离各子代理的后台任务（见 engine_test.go
+		// TestBuildToolContext_BgSessionKeyCanonical）。它不是 channel:chatID，
+		// 下游必须能路由它 —— 由 deliverNotificationsByAgentPath 兜底，
+		// 不要再在这里"修正"成父会话 key（那会破坏隔离）。
 		tc.BgSessionKey = sessionKey
 		// NOTE: OnComplete callback registration moved to Agent.bgNotifyLoop.
 		// Engine no longer registers callbacks per-buildToolContext call.

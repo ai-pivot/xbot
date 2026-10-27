@@ -807,7 +807,7 @@ func (a *Agent) deliverNotificationsByAgentPath(key string) {
 		parentRole = segs[len(segs)-2]
 	}
 
-	var targetKey, targetRole, targetInst string
+	var targetKey, targetRole, targetInst, targetChannel, targetChatID string
 	if parentRole != "" {
 		a.interactiveSubAgents.Range(func(k, v any) bool {
 			ia, ok := v.(*interactiveAgent)
@@ -815,7 +815,14 @@ func (a *Agent) deliverNotificationsByAgentPath(key string) {
 				return true
 			}
 			ks, _ := k.(string)
+			// 从会话 key（web:web-4/court.shoufu:main）还原真实 channel/chatID，
+			// 不能凭空造 "agent:<role>/<inst>" —— 那会创建畸形 tenant。
+			ch, cid, _, _ := parseInteractiveKeyTail(ks)
+			if ch == "" || cid == "" {
+				return true
+			}
 			targetKey, targetRole, targetInst = ks, ia.roleName, ia.instance
+			targetChannel, targetChatID = ch, cid
 			return false
 		})
 	}
@@ -835,12 +842,10 @@ func (a *Agent) deliverNotificationsByAgentPath(key string) {
 			"bad_key": key, "parent_role": targetRole,
 			"target_key": targetKey, "count": len(mine),
 		}).Warn("bg notification key was an agent path; routed to parent interactive session")
-		// 让父会话的 Run 循环取到：投递为其 pending 用户消息。
-		a.interactiveSubAgents.Load(targetKey)
 		go func() {
 			_, err := a.SendToInteractiveSession(context.Background(), targetRole, bus.InboundMessage{
-				Channel:  "agent",
-				ChatID:   targetRole + "/" + targetInst,
+				Channel:  targetChannel,
+				ChatID:   targetChatID,
 				Content:  body,
 				Metadata: map[string]string{"instance_id": targetInst, "bg_notify_recovered": "true"},
 			})
