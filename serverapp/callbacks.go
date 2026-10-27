@@ -904,7 +904,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				if err != nil {
 					return web.SessionTreeResult{}, err
 				}
-				applyWebRunningStatuses(ag, cliChats)
 				mains = appendMissingSessionRows(mains, cliChats)
 				continue
 			}
@@ -940,10 +939,16 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
 				continue
 			}
-			applyWebRunningStatuses(ag, tenants)
 			mains = appendMissingSessionRows(mains, tenants)
 		}
 
+		// Sort + paginate BEFORE probing per-row runtime state.
+		// sortSessionTreeMains only needs LastActive/SortOrder/CreatedAt, and
+		// appendMissingSessionRows only reads Channel/ChatID — neither depends on
+		// Running/Status/WorkDir. Probing all ~1300 tenant rows (3 map lookups +
+		// a session cache lookup each) cost 400–700ms per request and made
+		// /api/session-tree the slowest endpoint in the log; only the rows that
+		// are actually returned need it.
 		sortSessionTreeMains(mains)
 		total := len(mains)
 		if limit < 0 {
@@ -959,6 +964,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		mains = mains[offset:end]
 		hasMore = end < total
 		nextOffset = end
+
+		// Runtime state is only needed for the page we return.
+		applyWebRunningStatuses(ag, mains)
 
 		subagents, err := callbacks.SubAgentList(senderID, admin)
 		if err != nil {
