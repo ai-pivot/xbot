@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 	"time"
-	"xbot/storage/pg"
+	"xbot/storage/internal/pg"
 
 	"xbot/llm"
 	"xbot/storage/sqlite"

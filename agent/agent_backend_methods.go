@@ -9,7 +9,7 @@ import (
 	"xbot/channel"
 	log "xbot/logger"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -392,7 +392,7 @@ type activeProgressToolSnap struct {
 //
 // 类型适配决策（P1）：快照 iteration_history 的元素是 protocol.ProgressEvent
 // （工具在 CompletedTools），而 RegionWindow/MapIterationRecord 的输入是
-// []sqlite.IterationRecord（工具在 Tools JSON 串）——这里只做**输入方向**的最小适配：
+// []common.IterationRecord（工具在 Tools JSON 串）——这里只做**输入方向**的最小适配：
 // 用与 DB 侧同构的 JSON 形状重建 Tools，投影输出仍是 protocol.ProgressEvent
 // （见 foldProgressIteration：把窗口元素重建成 HistoryIteration 会丢元素独有字段）。
 //
@@ -424,7 +424,7 @@ func activeProgressToolsJSON(tools []protocol.ToolProgress) string {
 	return string(b)
 }
 
-// activeProgressRecord 是单条快照迭代 → sqlite.IterationRecord 的适配（只填区域判定
+// activeProgressRecord 是单条快照迭代 → common.IterationRecord 的适配（只填区域判定
 // 与轻字段化真正消费的字段：Iteration/Content/Reasoning/Tools）：
 //   - Content/Reasoning 原样搬运 ⇒ `IsPureToolIteration`（Content==""&&Reasoning==""）
 //     的判定与 DB 路径逐字同构（前端 !it.content 同构，不做 TrimSpace）；
@@ -432,8 +432,8 @@ func activeProgressToolsJSON(tools []protocol.ToolProgress) string {
 //     「busy 快照」与「提交后的历史 reload」两条链路必然一致）；
 //   - 迭代级指标（Tokens/TTFTMs/…）**不搬运**：轻字段化只省略**工具详情**，
 //     迭代级字段留在元素里原样下发，搬进来只会制造第二份真相。
-func activeProgressRecord(it protocol.ProgressEvent) sqlite.IterationRecord {
-	return sqlite.IterationRecord{
+func activeProgressRecord(it protocol.ProgressEvent) common.IterationRecord {
+	return common.IterationRecord{
 		Iteration: it.Iteration,
 		Content:   it.Content,
 		Reasoning: it.Reasoning,
@@ -441,8 +441,8 @@ func activeProgressRecord(it protocol.ProgressEvent) sqlite.IterationRecord {
 	}
 }
 
-func activeProgressRecords(iters []protocol.ProgressEvent) []sqlite.IterationRecord {
-	recs := make([]sqlite.IterationRecord, len(iters))
+func activeProgressRecords(iters []protocol.ProgressEvent) []common.IterationRecord {
+	recs := make([]common.IterationRecord, len(iters))
 	for i := range iters {
 		recs[i] = activeProgressRecord(iters[i])
 	}
@@ -473,7 +473,7 @@ func activeProgressRecords(iters []protocol.ProgressEvent) []sqlite.IterationRec
 // ⚠️ out.CompletedTools **总是新建切片**：迭代历史存在 a.iterationHistories 里，
 // 元素之间共享 CompletedTools 的 backing array —— 原地清字段会污染权威数据
 // （原方法随后返回的快照会变成缺详情，且 DB 之外的 live 路径也读到被改过的工具）。
-func foldProgressIteration(el protocol.ProgressEvent, rec sqlite.IterationRecord) protocol.ProgressEvent {
+func foldProgressIteration(el protocol.ProgressEvent, rec common.IterationRecord) protocol.ProgressEvent {
 	if len(el.CompletedTools) == 0 {
 		return el
 	}
@@ -614,7 +614,7 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 // content (graceful shutdown / benchmark timeout).
 func (a *Agent) GetExportIterations(ch, chatID string) []protocol.ExportedIteration {
 	// 1. Completed iterations from iteration_history (DB authoritative).
-	var records []sqlite.IterationRecord
+	var records []common.IterationRecord
 	if a.multiSession != nil {
 		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
 			if tenantID := sess.TenantID(); tenantID > 0 {

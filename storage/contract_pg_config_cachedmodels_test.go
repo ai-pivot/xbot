@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"xbot/storage/pg"
+	"xbot/storage/internal/pg"
 	"xbot/storage/sqlite"
 )
 

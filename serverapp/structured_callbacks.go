@@ -13,7 +13,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -205,7 +205,7 @@ func buildStructuredEnvelope(senderID string, sel web.SessionSelector, input pro
 }
 
 // toProtocolStructured 把存储行转换为前端可渲染形态。
-func toProtocolStructured(m sqlite.StructuredMessage) *protocol.StructuredMessage {
+func toProtocolStructured(m common.StructuredMessage) *protocol.StructuredMessage {
 	payload := map[string]any{}
 	envelope := map[string]any{}
 	if m.StructuredJSON != "" {
@@ -281,21 +281,21 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 	//
 	// 时序铁律：只在原文写成功之后调用（索引可以有延迟，但绝不能出现「索引里有、
 	// 原文没有」—— 用户点进去会 404）。普通 text 不入索引（见 ActivityKindIndexed）。
-	indexActivity := func(tenantID int64, sel web.SessionSelector, row *sqlite.StructuredMessage, summary string) {
+	indexActivity := func(tenantID int64, sel web.SessionSelector, row *common.StructuredMessage, summary string) {
 		if activityIdx == nil || row == nil {
 			return
 		}
 		kind := row.Kind
 		if kind == "" {
-			kind = sqlite.StructuredKindText
+			kind = common.StructuredKindText
 		}
-		if !sqlite.ActivityKindIndexed(kind) {
+		if !common.ActivityKindIndexed(kind) {
 			return
 		}
 		if strings.TrimSpace(summary) == "" {
 			summary = row.Content
 		}
-		err := activityIdx.Insert(sqlite.ActivityItem{
+		err := activityIdx.Insert(common.ActivityItem{
 			TenantID:   tenantID,
 			ChatID:     sel.ChatID,
 			Channel:    sel.Channel,
@@ -304,7 +304,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			SenderID:   row.SenderID,
 			SenderName: row.SenderName,
 			Summary:    summary,
-			CreatedAt:  sqlite.FormatActivityTime(row.CreatedAt),
+			CreatedAt:  common.FormatActivityTime(row.CreatedAt),
 		})
 		if err != nil {
 			// 派生物失败不影响主流程：丢掉一行索引只是少一条活动，原消息仍在会话库。
@@ -331,7 +331,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		envelope := buildStructuredEnvelope(senderID, sel, input)
 		raw, _ := json.Marshal(envelope)
 		senderName := senderID
-		stored := sqlite.StructuredMessage{
+		stored := common.StructuredMessage{
 			ChatID:         sel.ChatID,
 			Kind:           input.Kind,
 			CorrelationID:  input.CorrelationID,
@@ -429,7 +429,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			return nil, false, 0, err
 		}
 		// afterID > 0 ⇒ 增量补齐（SSE 重连），按 id 升序；否则走分页（id DESC）。
-		var rows []sqlite.StructuredMessage
+		var rows []common.StructuredMessage
 		var more bool
 		var next int64
 		if afterID > 0 {
@@ -614,16 +614,16 @@ func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage
 		if activityIdx == nil || stored == nil {
 			return
 		}
-		if err := activityIdx.Insert(sqlite.ActivityItem{
+		if err := activityIdx.Insert(common.ActivityItem{
 			TenantID:   tenantID,
 			ChatID:     sel.ChatID,
 			Channel:    sel.Channel,
 			MessageID:  stored.ID,
-			Kind:       sqlite.StructuredKindAnswer,
+			Kind:       common.StructuredKindAnswer,
 			SenderID:   stored.SenderID,
 			SenderName: stored.SenderName,
 			Summary:    text,
-			CreatedAt:  sqlite.FormatActivityTime(stored.CreatedAt),
+			CreatedAt:  common.FormatActivityTime(stored.CreatedAt),
 		}); err != nil {
 			log.WithError(err).WithFields(log.Fields{
 				"chat_id": sel.ChatID, "message_id": stored.ID, "kind": "answer",
@@ -656,7 +656,7 @@ func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input prot
 	if err != nil {
 		return err
 	}
-	var target *sqlite.StructuredMessage
+	var target *common.StructuredMessage
 	for i := range rows {
 		if rows[i].CorrelationID == input.CorrelationID {
 			target = &rows[i]

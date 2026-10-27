@@ -10,7 +10,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 
 	"github.com/google/uuid"
 )
@@ -125,7 +125,7 @@ func (t *CronTool) addJob(ctx *ToolContext, p cronParams) (*ToolResult, error) {
 	}
 
 	now := time.Now()
-	job := &sqlite.CronJob{
+	job := &common.CronJob{
 		ID:           fmt.Sprintf("job_%s", uuid.New().String()[:8]),
 		Message:      p.Message,
 		CronExpr:     p.CronExpr,
@@ -186,7 +186,7 @@ func (t *CronTool) listJobs(channel, chatID string) (*ToolResult, error) {
 	}
 
 	// Sort by created time
-	slices.SortFunc(jobs, func(a, b *sqlite.CronJob) int {
+	slices.SortFunc(jobs, func(a, b *common.CronJob) int {
 		return a.CreatedAt.Compare(b.CreatedAt)
 	})
 
@@ -230,7 +230,7 @@ func (t *CronTool) removeJob(jobID, channel, chatID string) (*ToolResult, error)
 	return NewResult(fmt.Sprintf("Job removed: %s", jobID)), nil
 }
 
-func (t *CronTool) scheduleDescription(job *sqlite.CronJob) string {
+func (t *CronTool) scheduleDescription(job *common.CronJob) string {
 	if job.At != "" {
 		return fmt.Sprintf("once at %s", job.At)
 	}

@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // web_structured.go — 结构化消息 + 卡片交互后端（sendmessage-structured 设计）。
@@ -282,15 +282,15 @@ func payloadString(payload map[string]any, key string) string {
 
 func writeStructuredError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, sqlite.ErrStructuredNotFound):
+	case errors.Is(err, common.ErrStructuredNotFound):
 		jsonErrorResponse(w, http.StatusNotFound, "not found")
-	case errors.Is(err, sqlite.ErrAskUserAnswered):
+	case errors.Is(err, common.ErrAskUserAnswered):
 		jsonErrorResponse(w, http.StatusConflict, "already answered")
-	case errors.Is(err, sqlite.ErrAskUserCancelled):
+	case errors.Is(err, common.ErrAskUserCancelled):
 		jsonErrorResponse(w, http.StatusConflict, "cancelled")
-	case errors.Is(err, sqlite.ErrDecisionTargetNotDecidable):
+	case errors.Is(err, common.ErrDecisionTargetNotDecidable):
 		jsonErrorResponse(w, http.StatusConflict, "target is not a decidable report/ask_user")
-	case errors.Is(err, sqlite.ErrDecisionSelfApproval):
+	case errors.Is(err, common.ErrDecisionSelfApproval):
 		jsonErrorResponse(w, http.StatusForbidden, "a department must not approve its own report")
 	case strings.Contains(strings.ToLower(err.Error()), "access denied"):
 		jsonErrorResponse(w, http.StatusForbidden, "access denied")

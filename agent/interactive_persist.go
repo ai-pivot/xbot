@@ -24,7 +24,7 @@ import (
 	"xbot/bus"
 	log "xbot/logger"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -73,7 +73,7 @@ func (a *Agent) persistInteractiveAgent(ia *interactiveAgent, status string) {
 		parentAgentID = ia.cfg.AgentID
 	}
 
-	rec := sqlite.InteractiveAgentRecord{
+	rec := common.InteractiveAgentRecord{
 		AgentKey:      "agent:" + ia.roleName + "/" + ia.instance,
 		ParentChannel: parentChannel,
 		ParentChatID:  parentChatID,
@@ -141,7 +141,7 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 
 	restored := 0
 	for _, rec := range rows {
-		if rec.Status == sqlite.InteractiveAgentUnloaded {
+		if rec.Status == common.InteractiveAgentUnloaded {
 			continue
 		}
 		if err := a.restoreOneAgent(ctx, rec); err != nil {
@@ -164,7 +164,7 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 }
 
 // restoreOneAgent 重建单个子代理并注册 AgentChannel（幂等）。
-func (a *Agent) restoreOneAgent(ctx context.Context, rec sqlite.InteractiveAgentRecord) error {
+func (a *Agent) restoreOneAgent(ctx context.Context, rec common.InteractiveAgentRecord) error {
 	mapKey := interactiveKey(rec.ParentChannel, rec.ParentChatID, rec.RoleName, rec.Instance)
 	if existing, ok := a.interactiveSubAgents.Load(mapKey); ok {
 		// 正在销毁的那一代不挡恢复（墓碑会话没有可用资源）：摘掉后重建。
@@ -282,8 +282,8 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec sqlite.InteractiveAgent
 //
 // 不是恢复成「正在计算」（物理上不可能），而是用与主代理相同的 resume 语义
 // 续上同一个 turn：resume_turn metadata → 同一个 turnID → 内容拼接。
-func (a *Agent) resumeIfPreviouslyRunning(rec sqlite.InteractiveAgentRecord, ia *interactiveAgent) {
-	if rec.Status != sqlite.InteractiveAgentRunning && rec.Status != sqlite.InteractiveAgentInterrupted {
+func (a *Agent) resumeIfPreviouslyRunning(rec common.InteractiveAgentRecord, ia *interactiveAgent) {
+	if rec.Status != common.InteractiveAgentRunning && rec.Status != common.InteractiveAgentInterrupted {
 		return
 	}
 	ia.mu.Lock()
@@ -294,7 +294,7 @@ func (a *Agent) resumeIfPreviouslyRunning(rec sqlite.InteractiveAgentRecord, ia 
 	}
 	key := "agent:" + rec.RoleName + "/" + rec.Instance
 	if svc := a.interactiveAgentSvc(); svc != nil {
-		if err := svc.MarkStatus(key, sqlite.InteractiveAgentInterrupted, rec.TurnID); err != nil {
+		if err := svc.MarkStatus(key, common.InteractiveAgentInterrupted, rec.TurnID); err != nil {
 			log.WithError(err).WithField("agent_key", key).Warn("Restore: failed to mark interrupted")
 		}
 	}

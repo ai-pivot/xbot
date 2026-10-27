@@ -18,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"xbot/storage/common"
-	"xbot/storage/pg"
+	"xbot/storage/internal/pg"
 	"xbot/storage/sqlite"
 )
 

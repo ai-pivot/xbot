@@ -13,7 +13,7 @@ import (
 // the common/sqlite/pg split possible:
 //
 //	storage/common  ← storage/sqlite
-//	storage/common  ← storage/pg
+//	storage/common  ← storage/internal/pg
 //
 // If common imports a backend, that backend's adapter (which imports common)
 // becomes an import cycle. This is a package-level invariant, so keep it
@@ -38,7 +38,7 @@ func TestCommonDoesNotImportBackends(t *testing.T) {
 				continue
 			}
 			switch path {
-			case "xbot/storage/sqlite", "xbot/storage/pg":
+			case "xbot/storage/sqlite", "xbot/storage/internal/pg":
 				t.Errorf("%s imports backend package %q (common must stay backend-agnostic)", file, path)
 			}
 		}

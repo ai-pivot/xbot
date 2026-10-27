@@ -57,20 +57,45 @@ compatibility facade so the ~50 existing import sites keep compiling):
 - `storage/common/types.go` — backend-neutral value types shared by both backends
   (`IterationRecord`, `HistoryRecord`, `CronJob`, `LLMSubscription`, tenant/chat DTOs, …)
 - `storage/common/session_copy.go` — replay-aware session copy helpers
-- `storage/sqlite/` — the SQLite implementation: existing low-level services, plus
+- `storage/sqlite/` — the SQLite implementation: low-level services, plus
   `adapter.go` (`NewSQLiteStorage` / `NewSQLiteConfigStore` / `NewSQLiteTenantStore` /
   `NewSQLiteMemoryStore`) and `migrate.go`. `common_aliases.go` keeps `sqlite.X`
-  value-type aliases for existing callers.
-- `storage/pg/` — the PostgreSQL implementation (`storage.go`, `schema.go`,
-  `{session,tenant,memory,config}.go`, `interactive_agents.go`, …)
+  value-type aliases for SQLite-internal code/tests.
+- `storage/internal/pg/` — the PostgreSQL implementation (`storage.go`, `schema.go`,
+  `{session,tenant,memory,config}.go`, `interactive_agents.go`, …). It is a Go
+  `internal` package: outside `storage/` it is **unimportable**.
 - `storage/facade.go` — public re-exports + backend constructors
   (`storage.NewSQLiteStorage`, `storage.NewPGStorage`, `storage.MigrateIfNeeded`, …)
-- `storage/contract_*.go` / `storage/pg_*_test.go` — cross-backend contract suite and
-  backend-specific tests
+- `storage/contract_*.go` — cross-backend contract suite (`TestSQLiteStorageContract`,
+  `TestPGStorageContract`)
 
-Dependency direction: `common` imports **no** backend; `sqlite` and `pg` import
-`common`; the root facade imports both. Never make `common` import `sqlite`/`pg`
+Dependency direction: `common` imports **no** backend; `sqlite` and `internal/pg`
+import `common`; the root facade imports both. Never make `common` import a backend
 (that is the import cycle the split exists to prevent).
+
+### Import boundary (enforced)
+
+Runtime code must depend on `Storage` / `SessionStore` / `storage/common`, never on a
+concrete backend:
+
+- ✅ `storage`, `storage/common` — public contract + DTOs
+- ✅ `session` — **composition root** (it owns the per-session SQLite DB pool and
+  builds the backend via `storage.NewSQLiteStorage`)
+- ✅ `cmd/xbot-migrate`, `scripts` — migration/dev tooling
+- ✅ `oauth/storage.go` — legacy unused SQLite OAuth implementation (kept for API/tests)
+- ⛔ any other non-test package importing `xbot/storage/sqlite`, `xbot/storage/pg`,
+  or `xbot/storage/internal/pg`
+
+Guards:
+
+- `storage/import_boundary_test.go` — scans every non-test `.go` file in the repo and
+  fails on raw backend imports (the allowlist above is the only exception).
+- `storage/common/import_boundary_test.go` — `common` must not import a backend.
+- `storage/internal/pg` is additionally protected by Go's `internal` rule.
+
+If SQLite is ever made `internal` too, the remaining work is moving the session DB
+pool (`session/sessiondb.go`) into `storage/sqlite` so `session` no longer needs the
+raw handle. Until then, `session` is the single documented composition-root exception.
 
 ## Wiring
 
@@ -102,13 +127,13 @@ Dependency direction: `common` imports **no** backend; `sqlite` and `pg` import
   through `pgText` = `textutil.SanitizeText` (invalid sequences **and** NUL → U+FFFD);
   `cmd/xbot-migrate` uses the same function so migrated rows match runtime writes.
   Do NOT "fix" this by rejecting the write — a lost turn is worse than a U+FFFD.
-  Guard: `storage/pg_sanitize_test.go`,
+  Guard: `storage/internal/pg/sanitize_test.go`,
   `TestPGSessionStoreNULMessageStoredSanitized`, and the shared
   `AddMessage_NULAndInvalidUTF8_DoesNotFail` contract case.
 
 - **`sql.ErrNoRows` ≠ `pgx.ErrNoRows`.** All PG code must check `pgx.ErrNoRows`; a
   `sql.ErrNoRows` check never fires → the "not found" branch is dead (silent wrong result).
-- **Native `BOOLEAN`, not `INTEGER 0/1` — in BOTH directions.** `storage/pg/schema.go`
+- **Native `BOOLEAN`, not `INTEGER 0/1` — in BOTH directions.** `storage/internal/pg/schema.go`
   declares real `BOOLEAN`, so: scans must target `*bool` (scanning into `*int` fails
   with `cannot scan bool (OID 16) into *int`), predicates must be `= true` / `= false`
   (or `COALESCE(col, false)`), and **writes must use `true`/`false` literals**
@@ -143,7 +168,7 @@ Dependency direction: `common` imports **no** backend; `sqlite` and `pg` import
   2026-10-20, so a forked session rendered the source session's `⏰` cron
   notifications where SQLite showed nothing — a bug that looks like "the fork
   received the source's notification" but is purely a projection difference.
-  `displayRowPredicate` in `storage/pg_session.go` is that rule; the contract test
+  `displayRowPredicate` in `storage/internal/pg/session.go` is that rule; the contract test
   `GetHistoryBeforeForDisplay_MatchesReplayDisplay` pins it on both backends.
 - **Round trips, not SQL, dominate on a remote PG.** A single `INSERT` costs one
   network round trip (~50ms on a cross-host link), so any loop that writes "one row
@@ -167,7 +192,7 @@ Dependency direction: `common` imports **no** backend; `sqlite` and `pg` import
   3-byte rune and leaves a 1–2 byte orphan (observed: `0xe6 0x2e 0x2e`). Two rules:
   **never truncate a string that can reach a message or the DB with `s[:n]`** — use
   `internal/textutil` (`TruncateBytes`, `TruncateBytesWithSuffix`, `TruncateRunes`);
-  and treat `pgText()` in `storage/pg_sanitize.go` as the write-boundary backstop, so
+  and treat `pgText()` in `storage/internal/pg/sanitize.go` as the write-boundary backstop, so
   an unforeseen producer (third-party API, PDF/OCR extractor) degrades to U+FFFD
   instead of killing the turn. `encoding/json` already repairs invalid bytes, so JSON
   columns are safe by construction.

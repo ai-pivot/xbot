@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"xbot/storage/pg"
+	"xbot/storage/internal/pg"
 
 	"xbot/llm"
 )

@@ -10,7 +10,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -336,7 +336,7 @@ func WirePluginCrons(pm *PluginManager, cronSvc storage.CronStore) {
 
 		// Add current cron contributions
 		for i, spec := range entry.Context.GetCrons() {
-			job := &sqlite.CronJob{
+			job := &common.CronJob{
 				ID:           fmt.Sprintf("plugin:%s:%d", pluginID, i),
 				Message:      spec.Message,
 				CronExpr:     spec.CronExpr,

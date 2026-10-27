@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // web_group.go — 「Agent 通信指挥室」最小后端。
@@ -81,7 +81,7 @@ func (wc *WebChannel) handleGroupCreate(w http.ResponseWriter, r *http.Request) 
 	group, err := wc.callbacks.GroupCreate(groupMemberAddr(senderID), body.Name, body.Members)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, sqlite.ErrGroupExists) {
+		if errors.Is(err, common.ErrGroupExists) {
 			status = http.StatusConflict
 		}
 		jsonErrorResponse(w, status, err.Error())
@@ -276,11 +276,11 @@ func (wc *WebChannel) registerGroupRoutes(mux *http.ServeMux) {
 
 func groupErrorStatus(err error) int {
 	switch {
-	case errors.Is(err, sqlite.ErrGroupNotFound):
+	case errors.Is(err, common.ErrGroupNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, sqlite.ErrNotGroupMember):
+	case errors.Is(err, common.ErrNotGroupMember):
 		return http.StatusForbidden
-	case errors.Is(err, sqlite.ErrGroupExists):
+	case errors.Is(err, common.ErrGroupExists):
 		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError

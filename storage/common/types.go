@@ -287,6 +287,23 @@ type UserDefaultModel struct {
 	UpdatedAt      time.Time
 }
 
+// UserLLMConfig is the client-construction bag used by LLMFactory and /set-llm.
+type UserLLMConfig struct {
+	ID              string
+	SenderID        string
+	Provider        string
+	BaseURL         string
+	APIKey          string
+	Model           string
+	MaxContext      int
+	MaxOutputTokens int
+	ThinkingMode    string
+	APIType         string
+	OnModelsLoaded  func([]string)
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 // ─── Tenants / chats ───
 
 type UserChatWithPreview struct {
@@ -364,6 +381,29 @@ type DailyTokenUsage struct {
 	CachedTokens      int64  `json:"cached_tokens"`
 	ConversationCount int64  `json:"conversation_count"`
 	LLMCallCount      int64  `json:"llm_call_count"`
+}
+
+// ─── Chat / usage helpers ───
+
+var ErrChatNotFound = errors.New("chat not found")
+
+const (
+	UsageBucketMinuteSeconds int64 = 60
+	UsageBucketHourSeconds   int64 = 3600
+	UsageBucketDaySeconds    int64 = 86400
+)
+
+func UsageBucketSecondsForGranularity(granularity string) (int64, bool) {
+	switch granularity {
+	case "", "minute":
+		return UsageBucketMinuteSeconds, true
+	case "hour":
+		return UsageBucketHourSeconds, true
+	case "day":
+		return UsageBucketDaySeconds, true
+	default:
+		return 0, false
+	}
 }
 
 // ─── Interactive SubAgent registry ───

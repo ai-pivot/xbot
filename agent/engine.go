@@ -18,7 +18,7 @@ import (
 	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/storage/vectordb"
 	"xbot/tools"
 
@@ -1647,7 +1647,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 				return nil
 			}
 			tc.AddSubscriptionFn = func(params tools.SubscriptionCreateParams) (string, error) {
-				sub := &sqlite.LLMSubscription{
+				sub := &common.LLMSubscription{
 					Name:            params.Name,
 					Provider:        params.Provider,
 					BaseURL:         params.BaseURL,
