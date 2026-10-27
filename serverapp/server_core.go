@@ -148,6 +148,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// (SQLite and PG) — this must not be gated on the SQLite handle.
 	if ms := ag.MultiSession(); ms != nil && ms.Store() != nil {
 		wireRunnerBindingStore(ms.Store().Tenant())
+		tools.SetRunnerStore(ms.Store().Runners())
 	}
 
 	// 3. Create RPCTable.

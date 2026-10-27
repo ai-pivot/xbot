@@ -10,22 +10,6 @@ import (
 	"xbot/llm"
 )
 
-// GroupMessageRow 是会话库中一条带群组信封的消息。
-type GroupMessageRow struct {
-	ID            int64
-	GroupID       string
-	Kind          string
-	CorrelationID string
-	SenderType    string
-	SenderID      string
-	SenderName    string
-	Role          string
-	Content       string
-	To            []string
-	Payload       map[string]any
-	CreatedAt     string
-}
-
 // AppendGroupMessage 把一条群消息写入会话库（带 group_id / sender_* 列 +
 // record_data 信封），返回消息 id。写入路径与普通消息一致，因此历史、回放、
 // preview 等既有逻辑全部照常工作。
@@ -42,29 +26,6 @@ func (s *SessionService) AppendGroupMessage(tenantID int64, msg llm.ChatMessage,
 	lock.Lock()
 	defer lock.Unlock()
 	return s.appendMessage(tenantID, msg)
-}
-
-// GroupMessageEnvelope 是写入 record_data 的信封（与 protocol.GroupMessageEnvelope
-// 同形；storage 层不依赖 protocol 包，避免存储层被协议层反向耦合）。
-type GroupMessageEnvelope struct {
-	GroupID       string         `json:"-"`
-	Kind          string         `json:"kind"`
-	CorrelationID string         `json:"correlation_id,omitempty"`
-	To            []string       `json:"to,omitempty"`
-	Payload       map[string]any `json:"payload,omitempty"`
-	SenderType    string         `json:"-"`
-	SenderID      string         `json:"-"`
-	SenderName    string         `json:"-"`
-}
-
-func (e GroupMessageEnvelope) JSON() string {
-	b, _ := json.Marshal(struct {
-		Kind          string         `json:"kind"`
-		CorrelationID string         `json:"correlation_id,omitempty"`
-		To            []string       `json:"to,omitempty"`
-		Payload       map[string]any `json:"payload,omitempty"`
-	}{e.Kind, e.CorrelationID, e.To, e.Payload})
-	return string(b)
 }
 
 // ListGroupMessages 按 group_id + keyset 游标读取当前会话库中的群消息。

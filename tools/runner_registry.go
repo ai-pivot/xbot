@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"xbot/storage/common"
 )
 
 // RunnerState classifies a registry row against the operator's managed set.
@@ -117,6 +119,63 @@ func BuildRunnerRegistry(db *sql.DB, managed []string) (RunnerRegistry, error) {
 
 	// Online status for the whole registry (including orphans, so the
 	// management view can show what is actually up).
+	infos := make([]RunnerInfo, len(registry.Runners))
+	for i := range registry.Runners {
+		infos[i] = registry.Runners[i].RunnerInfo
+	}
+	PopulateRunnerOnlineStatus(infos)
+	for i := range registry.Runners {
+		registry.Runners[i].RunnerInfo = infos[i]
+	}
+	return registry, nil
+}
+
+// BuildRunnerRegistryFromStore is the backend-agnostic variant used by the
+// server: runners come from Storage.Runners(), bindings from TenantStore.
+func BuildRunnerRegistryFromStore(store common.RunnerStore, tenantStore common.TenantStore, managed []string) (RunnerRegistry, error) {
+	if store == nil {
+		return RunnerRegistry{}, fmt.Errorf("runner management not configured")
+	}
+	managedSet := make(map[string]bool, len(managed))
+	for _, name := range managed {
+		if n := strings.TrimSpace(name); n != "" {
+			managedSet[n] = true
+		}
+	}
+	bound := map[string]int{}
+	if tenantStore != nil {
+		tenants, err := tenantStore.ListTenants()
+		if err != nil {
+			return RunnerRegistry{}, fmt.Errorf("read session→runner bindings: %w", err)
+		}
+		for _, t := range tenants {
+			if n := strings.TrimSpace(t.RunnerID); n != "" {
+				bound[n]++
+			}
+		}
+	}
+	rows, err := store.List()
+	if err != nil {
+		return RunnerRegistry{}, err
+	}
+	registry := RunnerRegistry{Runners: make([]RunnerEntry, 0, len(rows))}
+	for _, row := range rows {
+		entry := RunnerEntry{RunnerInfo: row, Managed: managedSet[row.Name]}
+		entry.BoundCount = bound[row.Name]
+		switch {
+		case entry.Managed:
+			entry.State = RunnerStateManaged
+			entry.Selectable = true
+		case runnerConnected(row.Name):
+			entry.State = RunnerStateLive
+			entry.Selectable = true
+		default:
+			entry.State = RunnerStateOrphan
+			entry.Selectable = false
+			registry.Orphans = append(registry.Orphans, row.Name)
+		}
+		registry.Runners = append(registry.Runners, entry)
+	}
 	infos := make([]RunnerInfo, len(registry.Runners))
 	for i := range registry.Runners {
 		infos[i] = registry.Runners[i].RunnerInfo

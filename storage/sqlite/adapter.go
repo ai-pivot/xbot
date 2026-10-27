@@ -797,6 +797,9 @@ type sqliteStorage struct {
 	trigger   event.TriggerStore
 	oauth     OAuthTokenStore
 	agents    InteractiveAgentStore
+	groups    GroupStore
+	activity  ActivityStore
+	runners   RunnerStore
 	sessionFn func(int64) (SessionStore, error)
 	closeFn   func() error
 }
@@ -818,6 +821,9 @@ func NewSQLiteStorage(
 		trigger:   NewTriggerService(mainDB),
 		oauth:     &sqliteOAuthTokenStore{db: mainDB},
 		agents:    newSQLiteInteractiveAgentStore(mainDB),
+		groups:    &sqliteGroupStore{GroupService: NewGroupService(mainDB.Conn())},
+		activity:  &sqliteActivityStore{ActivityIndex: NewActivityIndex(mainDB.Conn())},
+		runners:   newSQLiteRunnerStore(mainDB),
 		sessionFn: sessionFactory,
 		closeFn:   close,
 	}
@@ -833,6 +839,9 @@ func (s *sqliteStorage) Cron() CronStore                          { return s.cro
 func (s *sqliteStorage) Trigger() event.TriggerStore              { return s.trigger }
 func (s *sqliteStorage) OAuth() OAuthTokenStore                   { return s.oauth }
 func (s *sqliteStorage) InteractiveAgents() InteractiveAgentStore { return s.agents }
+func (s *sqliteStorage) Groups() GroupStore                       { return s.groups }
+func (s *sqliteStorage) Activity() ActivityStore                  { return s.activity }
+func (s *sqliteStorage) Runners() RunnerStore                     { return s.runners }
 func (s *sqliteStorage) Close() error                             { return s.closeFn() }
 
 // CopySessionFrom copies a session's conversation into another session.
@@ -877,6 +886,20 @@ func newSQLiteInteractiveAgentStore(db *DB) InteractiveAgentStore {
 }
 
 var _ InteractiveAgentStore = (*sqliteInteractiveAgentStore)(nil)
+
+// sqliteGroupStore adapts *GroupService to the backend-neutral GroupStore.
+type sqliteGroupStore struct {
+	*GroupService
+}
+
+var _ GroupStore = (*sqliteGroupStore)(nil)
+
+// sqliteActivityStore adapts *ActivityIndex to the backend-neutral ActivityStore.
+type sqliteActivityStore struct {
+	*ActivityIndex
+}
+
+var _ ActivityStore = (*sqliteActivityStore)(nil)
 
 // sqliteOAuthTokenStore adapts the SQLite oauth_tokens table to the
 // backend-neutral OAuthTokenStore. It keeps the credential semantics of the

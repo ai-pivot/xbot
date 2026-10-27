@@ -36,6 +36,12 @@ type Storage interface {
 	// `multiSession.DB().Conn()` directly, which dereferences a nil handle on PG
 	// and panics during startup reconcile.
 	InteractiveAgents() InteractiveAgentStore
+	// Groups is the group metadata store (groups / group_members).
+	Groups() GroupStore
+	// Activity is the cross-session activity feed index (activity_index).
+	Activity() ActivityStore
+	// Runners is the managed-runner registry (runners).
+	Runners() RunnerStore
 	// CopySessionFrom copies srcTenantID's conversation history (session_messages
 	// + iteration_history) into dstTenantID, returning the message count. This
 	// exists for session fork, which is a data copy — not an application-level
@@ -50,6 +56,12 @@ type Storage interface {
 // SQLite: bound to a per-session DB file (v71 one-session-one-DB).
 // PG: per-session database or shared connection with tenant_id filtering.
 type SessionStore interface {
+	// Structured messages (report / ask_user / answer / decision / inbox) and
+	// group messages are session-scoped rows; embedding keeps every backend
+	// honest and removes the old `.(*sqlite.SessionService)` capability probe.
+	StructuredStore
+	GroupMessageStore
+
 	// Messages
 	AddMessage(tenantID int64, msg llm.ChatMessage) error
 	AddMessageWithID(tenantID int64, msg llm.ChatMessage) (int64, error)

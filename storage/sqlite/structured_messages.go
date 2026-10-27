@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"xbot/storage/common"
 )
 
 // structured_messages.go — v5 结构化消息存储层（sendmessage-structured 设计 §7）。
@@ -21,94 +23,8 @@ import (
 // LLM 回放通过 role/content 看到 answer/decision（真回调），ask_user/report 则以
 // assistant 文本进入上下文。
 
-const (
-	// StructuredKindText 普通文本（等价旧 message）。
-	StructuredKindText = "text"
-	// StructuredKindAskUser 异步提问卡片。
-	StructuredKindAskUser = "ask_user"
-	// StructuredKindAnswer 对 ask_user 的回答。
-	StructuredKindAnswer = "answer"
-	// StructuredKindReport 报告/汇报。
-	StructuredKindReport = "report"
-	// StructuredKindDecision 批复（准/驳/改）。
-	StructuredKindDecision = "decision"
-	// StructuredKindCommand 控制指令。
-	StructuredKindCommand = "command"
-	// StructuredKindEvent 状态事件。
-	StructuredKindEvent = "event"
-)
+func structuredRole(m StructuredMessage) string { return common.StructuredRole(m) }
 
-// StructuredMessageKinds 是 kind 白名单（API 校验与文档共用）。
-var StructuredMessageKinds = map[string]bool{
-	StructuredKindText:     true,
-	StructuredKindAskUser:  true,
-	StructuredKindAnswer:   true,
-	StructuredKindReport:   true,
-	StructuredKindDecision: true,
-	StructuredKindCommand:  true,
-	StructuredKindEvent:    true,
-}
-
-// 闭环失败的可判别错误（handler 映射为 HTTP 状态码）。
-//
-// 命名沿用最早只有 ask_user 时的 ErrAskUser*，但语义已泛化为「目标行」：
-// answer 闭环的目标是 ask_user 行，decision 闭环的目标是 report 行，
-// 两者共用同一套 CAS（AnswerAskUser / AppendDecision）。
-var (
-	ErrStructuredNotFound = errors.New("structured message not found")
-	ErrAskUserAnswered    = errors.New("target already answered")
-	ErrAskUserCancelled   = errors.New("target already cancelled")
-	// ErrDecisionTargetNotDecidable：批复目标不是可批对象。
-	// 2026-10-22 实测漏洞：reply_to 指向一条 assistant 空行（kind=""）也能"批复成功"，
-	// 因为 CAS 只校验 answered/cancelled，从不校验 kind。批复必须落在 report/ask_user 上。
-	ErrDecisionTargetNotDecidable = errors.New("decision target is not a report or ask_user")
-	// ErrDecisionSelfApproval：不能批自己提交的 report（安全约束）。
-	ErrDecisionSelfApproval = errors.New("a department must not approve its own report")
-	ErrIdempotencyConflict  = errors.New("idempotency key conflict")
-)
-
-// StructuredMessage 是一条结构化消息行的完整形态。
-type StructuredMessage struct {
-	ID             int64
-	ChatID         string
-	Kind           string
-	CorrelationID  string
-	ReplyTo        string
-	IdempotencyKey string
-	StructuredJSON string
-	Direction      string // in | out
-	Answered       bool
-	Cancelled      bool
-
-	Role       string
-	Content    string
-	SenderType string
-	SenderID   string
-	SenderName string
-
-	CreatedAt time.Time
-}
-
-// structuredRole 按 kind 决定行的 role：提问/汇报是 assistant 产出；回答/批复是
-// 用户输入；command/event/text 由调用方显式指定（缺省 user）。
-func structuredRole(m StructuredMessage) string {
-	if m.Role != "" {
-		return m.Role
-	}
-	switch m.Kind {
-	case StructuredKindAskUser, StructuredKindReport:
-		return "assistant"
-	case StructuredKindAnswer, StructuredKindDecision:
-		return "user"
-	default:
-		return "user"
-	}
-}
-
-// AppendStructuredMessage 幂等写入一条结构化消息。
-//
-// 幂等语义：同一 (chat_id, idempotency_key) 重复写入返回**已有行 id**，
-// created=false，不产生第二行。空 key 不参与幂等（每次都写入）。
 func (s *SessionService) AppendStructuredMessage(tenantID int64, m StructuredMessage) (id int64, created bool, err error) {
 	if m.Kind == "" {
 		m.Kind = StructuredKindText

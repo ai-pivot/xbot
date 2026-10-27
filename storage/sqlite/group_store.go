@@ -11,33 +11,6 @@ import (
 
 // ErrGroupNotFound / ErrGroupExists / ErrNotGroupMember 是群组服务的领域错误，
 // Web/Agent 层据此映射 HTTP 状态码或工具错误码。
-var (
-	ErrGroupNotFound  = errors.New("group not found")
-	ErrGroupExists    = errors.New("group already exists")
-	ErrNotGroupMember = errors.New("not a group member")
-)
-
-// GroupRow 是 groups 表的一行。
-type GroupRow struct {
-	ID          string
-	Name        string
-	Owner       string
-	CreatedAt   string
-	MemberCount int
-}
-
-// GroupMemberRow 是 group_members 表的一行。
-type GroupMemberRow struct {
-	GroupID    string
-	MemberAddr string
-	Status     string
-	JoinedAt   string
-	// Name/Role/Instance 由 member_addr 派生，不落库。
-	Name     string
-	Role     string
-	Instance string
-}
-
 // GroupService 是 groups/group_members 两张小表的唯一读写入口。
 //
 // 设计约束（docs/design/group-hardening.md §4）：

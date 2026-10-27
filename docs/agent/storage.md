@@ -23,6 +23,9 @@ type Storage interface {
     Trigger() event.TriggerStore                  // webhook triggers (event_triggers)
     OAuth() OAuthTokenStore                       // OAuth credentials (oauth_tokens)
     InteractiveAgents() InteractiveAgentStore     // interactive SubAgent registry (interactive_agents)
+    Groups() GroupStore                           // group metadata (groups / group_members)
+    Activity() ActivityStore                      // cross-session activity feed (activity_index)
+    Runners() RunnerStore                         // managed runners (runners)
     CopySessionFrom(dst, src int64) (int, error)  // session fork
     Close() error
 }
@@ -410,26 +413,28 @@ nil on PG. They are now reached through `Storage`:
 | `Storage.Trigger()` | `event.TriggerStore` | `event.Router` (webhook dispatch) |
 | `Storage.OAuth()` | `OAuthTokenStore` | `oauth.Manager` via a thin adapter in `serverapp` |
 | `Storage.InteractiveAgents()` | `InteractiveAgentStore` | `agent.ReconcileInteractiveAgentsOnStartup` / restore / persist / unload |
+| `Storage.Groups()` | `GroupStore` | web group endpoints (`/api/groups*`) |
+| `Storage.Activity()` | `ActivityStore` | structured-message activity feed (`/api/activity`) |
+| `Storage.Runners()` | `RunnerStore` | runner CRUD/RPC, token validation, `tools.GetRunnerStore()` |
 
-The interactive registry is the canonical example of why this table matters: the old
-code built `sqlite.NewInteractiveAgentService(multiSession.DB().Conn())`; on PG
-`DB()` is nil, so **startup reconciliation panicked** (`nil pointer dereference` in
-`(*sqlite.DB).Conn`). Guard: `agent/interactive_reconcile_nosqlite_test.go` +
-`storage/contract_interactive_agent_test.go` (runs on PG when `XBOT_PG_TEST_DSN` is set).
+`SessionStore` also embeds `StructuredStore` + `GroupMessageStore`, so structured
+messages (report/ask_user/answer/decision/inbox) and per-session group messages no
+longer depend on a `*sqlite.SessionService` type assertion.
 
 ### Remaining explicitly SQLite-only capabilities
 
-These are **known gaps, not silent fallbacks** — they either return a readable error
-or 501/503 rather than pretending to work:
+Most of the old gaps are now implemented on PG. These are the remaining
+physical/legacy escape hatches:
 
-| Capability | PG behaviour | Why it is not abstracted yet |
+| Capability | PG behaviour | Why it stays SQLite-only |
 |---|---|---|
-| Structured messages (`report`/`ask_user`/`decision`/inbox), group messages | readable error (`structured messages are not supported by this storage backend`) | a SQLite-only `*sqlite.SessionService` extension; needs a `StructuredStore` contract + PG tables |
-| Activity feed (`activity_index`) | callback stays nil → web 503 | derived index of structured messages; meaningless until structured messages exist on PG |
-| Groups (`groups`/`group_members`) | web endpoints return 501 | metadata is simple, but group *messages* depend on the structured store above |
-| Runner management / runner tokens (`tools.GetRunnerTokenDB`) | runner RPCs return `runner management not configured` | whole runner persistence is still a process-global `*sql.DB`; needs a `RunnerStore` contract |
-| Raw SQLite browse helpers (`listTenantsByChannel` etc.) | **functional fallback now**: `TenantStore.ListTenants` supplies the same rows (label/preview/sort order) | kept for SQLite because they can use `rowid` tie-breaks; PG uses the store |
+| Raw SQLite browse helpers (`listTenantsByChannel` etc.) | **functional fallback**: `TenantStore.ListTenants` supplies the same rows (label/preview/sort order/runner id) | kept for SQLite because they can use `rowid` tie-breaks; PG uses the store |
 | WAL checkpoint on shutdown | skipped (no file) | physical SQLite concept |
+| `SessionServiceForSQLite` (legacy synthetic-pair repair / regions endpoints) | explicit error | SQLite-specific SQL; the normal SessionStore paths work on both |
+
+Implemented on PG now: structured messages, groups/groups members, group messages,
+activity index, runner registry/tokens. Contract coverage:
+`storage/contract_feature_parity_test.go` runs against both backends.
 
 Consequences worth knowing:
 

@@ -1726,8 +1726,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 
 	// Inject runner CRUD callbacks (for config tool).
 	// Runner management requires a database — if not configured, callbacks return errors.
-	if db := tools.GetRunnerTokenDB(); db != nil {
-		store := tools.NewRunnerStore(db)
+	if store := tools.GetRunnerStore(); store != nil {
 		tc.RunnerCreate = func(name, mode, dockerImage, workspace, llmProvider, llmAPIKey, llmModel, llmBaseURL string) (string, error) {
 			llm := tools.RunnerLLMSettings{
 				Provider: llmProvider,

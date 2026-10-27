@@ -9,7 +9,11 @@ package sqlite
 // aliased here. Backend-internal types (services, ActivityItem, group rows,
 // structured messages) stay defined in this package.
 
-import "xbot/storage/common"
+import (
+	"time"
+
+	"xbot/storage/common"
+)
 
 // Contract/type aliases. Keeping the unqualified names means the adapter and
 // backend files read the same as before while the canonical definitions live in
@@ -30,6 +34,9 @@ type PushStore = common.PushStore
 type OAuthToken = common.OAuthToken
 type OAuthTokenStore = common.OAuthTokenStore
 type InteractiveAgentStore = common.InteractiveAgentStore
+type GroupStore = common.GroupStore
+type ActivityStore = common.ActivityStore
+type RunnerStore = common.RunnerStore
 
 type HistoryRecordType = common.HistoryRecordType
 
@@ -81,6 +88,62 @@ type DailyTokenUsage = common.DailyTokenUsage
 
 type InteractiveAgentRecord = common.InteractiveAgentRecord
 type AgentActivity = common.AgentActivity
+type RunnerInfo = common.RunnerInfo
+type RunnerLLMSettings = common.RunnerLLMSettings
+
+const (
+	RunnerModeNative = common.RunnerModeNative
+	RunnerModeDocker = common.RunnerModeDocker
+)
+
+func NormalizeRunnerMode(mode string) (string, error) { return common.NormalizeRunnerMode(mode) }
+
+// Structured messages / groups / activity (backend-neutral types live in common;
+// these aliases keep SQLite call sites and the SQLite service methods unchanged).
+type StructuredMessage = common.StructuredMessage
+type GroupMessageRow = common.GroupMessageRow
+type GroupMessageEnvelope = common.GroupMessageEnvelope
+type GroupRow = common.GroupRow
+type GroupMemberRow = common.GroupMemberRow
+type ActivityItem = common.ActivityItem
+
+const (
+	StructuredKindText     = common.StructuredKindText
+	StructuredKindAskUser  = common.StructuredKindAskUser
+	StructuredKindAnswer   = common.StructuredKindAnswer
+	StructuredKindReport   = common.StructuredKindReport
+	StructuredKindDecision = common.StructuredKindDecision
+	StructuredKindCommand  = common.StructuredKindCommand
+	StructuredKindEvent    = common.StructuredKindEvent
+
+	ActivitySummaryMaxRunes = common.ActivitySummaryMaxRunes
+	ActivityLimitDefault    = common.ActivityLimitDefault
+	ActivityLimitMax        = common.ActivityLimitMax
+	ActivityWindowDefault   = common.ActivityWindowDefault
+)
+
+var (
+	StructuredMessageKinds = common.StructuredMessageKinds
+	ActivityIndexedKinds   = common.ActivityIndexedKinds
+
+	ErrStructuredNotFound         = common.ErrStructuredNotFound
+	ErrAskUserAnswered            = common.ErrAskUserAnswered
+	ErrAskUserCancelled           = common.ErrAskUserCancelled
+	ErrDecisionTargetNotDecidable = common.ErrDecisionTargetNotDecidable
+	ErrDecisionSelfApproval       = common.ErrDecisionSelfApproval
+	ErrIdempotencyConflict        = common.ErrIdempotencyConflict
+
+	ErrGroupNotFound  = common.ErrGroupNotFound
+	ErrGroupExists    = common.ErrGroupExists
+	ErrNotGroupMember = common.ErrNotGroupMember
+)
+
+func FormatActivityTime(t time.Time) string                 { return common.FormatActivityTime(t) }
+func ParseActivityTime(s string) (time.Time, error)         { return common.ParseActivityTime(s) }
+func ActivityKindIndexed(kind string) bool                  { return common.ActivityKindIndexed(kind) }
+func TruncateActivitySummary(s string) string               { return common.TruncateActivitySummary(s) }
+func NormalizeActivityLimit(limit int) int                  { return common.NormalizeActivityLimit(limit) }
+func NormalizeActivityWindow(d time.Duration) time.Duration { return common.NormalizeActivityWindow(d) }
 
 const (
 	InteractiveAgentIdle        = common.InteractiveAgentIdle

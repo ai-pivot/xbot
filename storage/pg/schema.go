@@ -53,12 +53,80 @@ func initSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			record_type TEXT NOT NULL DEFAULT 'message',
 			target_history_id INTEGER,
 			record_data TEXT,
+			-- v74/v75/v77: group envelope + structured-message columns (parity
+			-- with SQLite session_messages; existing PG DBs get these via ALTERs
+			-- below).
+			group_id TEXT NOT NULL DEFAULT '',
+			sender_type TEXT NOT NULL DEFAULT '',
+			sender_id TEXT NOT NULL DEFAULT '',
+			sender_name TEXT NOT NULL DEFAULT '',
+			chat_id TEXT NOT NULL DEFAULT '',
+			kind TEXT NOT NULL DEFAULT '',
+			correlation_id TEXT NOT NULL DEFAULT '',
+			reply_to TEXT NOT NULL DEFAULT '',
+			idempotency_key TEXT NOT NULL DEFAULT '',
+			structured_json TEXT NOT NULL DEFAULT '',
+			direction TEXT NOT NULL DEFAULT '',
+			answered BOOLEAN NOT NULL DEFAULT false,
+			cancelled BOOLEAN NOT NULL DEFAULT false,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_tenant_created ON session_messages(tenant_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_tenant_id ON session_messages(tenant_id, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, record_type, target_history_id) WHERE record_type != 'message'`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_tenant_role_id ON session_messages(tenant_id, role, id) WHERE role IN ('user','assistant')`,
+		`CREATE INDEX IF NOT EXISTS ix_sm_group_cursor ON session_messages(group_id, id DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS ux_sm_chat_idempotency ON session_messages(chat_id, idempotency_key) WHERE idempotency_key <> ''`,
+
+		// Additive migrations for existing PG databases (CREATE IF NOT EXISTS
+		// above only helps a fresh database).
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS group_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS sender_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS sender_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS sender_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS chat_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS correlation_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS reply_to TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS idempotency_key TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS structured_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS answered BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS cancelled BOOLEAN NOT NULL DEFAULT false`,
+
+		// ── Groups (metadata only; messages live in each member's session) ──
+		`CREATE TABLE IF NOT EXISTS groups (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			owner TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS group_members (
+			group_id TEXT NOT NULL,
+			member_addr TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'alive',
+			joined_at TEXT NOT NULL,
+			PRIMARY KEY (group_id, member_addr)
+		)`,
+		`CREATE INDEX IF NOT EXISTS ix_group_members_addr ON group_members(member_addr, status)`,
+
+		// ── Cross-session activity feed index ──
+		`CREATE TABLE IF NOT EXISTS activity_index (
+			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			tenant_id BIGINT NOT NULL,
+			chat_id TEXT NOT NULL,
+			channel TEXT NOT NULL,
+			message_id BIGINT NOT NULL,
+			kind TEXT NOT NULL,
+			sender_id TEXT NOT NULL DEFAULT '',
+			sender_name TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			UNIQUE(tenant_id, chat_id, message_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_index(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_chat ON activity_index(chat_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_kind ON activity_index(kind, created_at DESC)`,
 
 		// ── Tenant state ──
 		`CREATE TABLE IF NOT EXISTS tenant_state (

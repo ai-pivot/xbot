@@ -22,14 +22,15 @@ import (
 	"xbot/internal/runnerproto"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/storage/common"
 )
 
 // RemoteSandboxConfig holds configuration for creating a RemoteSandbox.
 type RemoteSandboxConfig struct {
-	Addr           string       // WebSocket listen address (e.g., "0.0.0.0:8080")
-	AuthToken      string       // Optional shared token (legacy; runner tokens are preferred)
-	AllowedOrigins []string     // Allowed WebSocket origins (empty = allow all, for development)
-	RunnerStore    *RunnerStore // Runner registry + token validation
+	Addr           string             // WebSocket listen address (e.g., "0.0.0.0:8080")
+	AuthToken      string             // Optional shared token (legacy; runner tokens are preferred)
+	AllowedOrigins []string           // Allowed WebSocket origins (empty = allow all, for development)
+	RunnerStore    common.RunnerStore // Runner registry + token validation
 }
 
 // RemoteSandboxSyncConfig holds directories to sync to runners on registration.
@@ -73,7 +74,7 @@ type RemoteSandbox struct {
 	// "0.0.0.0:8080"。与 addr（请求的地址）区分：启动自检用它比对"宣告给 runner
 	// 的端口"，避免因端口漂移而**静默**交出死地址（2026-09-18 实机事故根因类别）。
 	boundAddr            string
-	store                *RunnerStore
+	store                common.RunnerStore
 	sessionRunners       *sync.Map // shared with SandboxRouter: "channel:chatID" → runnerName
 	bindingStore         SessionBindingStore
 	pendingMu            sync.Mutex
@@ -611,7 +612,7 @@ func generateID() string {
 func (rs *RemoteSandbox) Name() string { return "remote" }
 
 // SetRunnerStore sets or replaces the runner registry (token validation + names).
-func (rs *RemoteSandbox) SetRunnerStore(store *RunnerStore) {
+func (rs *RemoteSandbox) SetRunnerStore(store common.RunnerStore) {
 	rs.runnersMu.Lock()
 	rs.store = store
 	rs.runnersMu.Unlock()

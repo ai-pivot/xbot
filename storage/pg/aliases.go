@@ -43,6 +43,17 @@ type UserTokenUsage = common.UserTokenUsage
 type DailyTokenUsage = common.DailyTokenUsage
 type InteractiveAgentRecord = common.InteractiveAgentRecord
 type AgentActivity = common.AgentActivity
+type GroupStore = common.GroupStore
+type ActivityStore = common.ActivityStore
+type RunnerStore = common.RunnerStore
+type GroupRow = common.GroupRow
+type GroupMemberRow = common.GroupMemberRow
+type GroupMessageRow = common.GroupMessageRow
+type GroupMessageEnvelope = common.GroupMessageEnvelope
+type StructuredMessage = common.StructuredMessage
+type ActivityItem = common.ActivityItem
+type RunnerInfo = common.RunnerInfo
+type RunnerLLMSettings = common.RunnerLLMSettings
 
 const (
 	HistoryRecordMessage     = common.HistoryRecordMessage

@@ -264,7 +264,8 @@ func (s *tenantStore) ListTenants() ([]sqlite.TenantInfo, error) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
 		`SELECT t.id, t.channel, t.chat_id, COALESCE(c.label, '') AS label,
-		        t.subscription_id, t.model, t.created_at, t.last_active_at,
+		        t.subscription_id, t.model, COALESCE(t.runner_id, '') AS runner_id,
+		        t.created_at, t.last_active_at,
 		        COALESCE(t.preview, '') AS preview, COALESCE(c.sort_order, 0) AS sort_order
 		 FROM tenants t
 		 LEFT JOIN user_chats c ON c.channel = t.channel AND c.chat_id = t.chat_id
@@ -278,7 +279,7 @@ func (s *tenantStore) ListTenants() ([]sqlite.TenantInfo, error) {
 	for rows.Next() {
 		var t sqlite.TenantInfo
 		if err := rows.Scan(&t.ID, &t.Channel, &t.ChatID, &t.Label,
-			&t.SubscriptionID, &t.Model, &t.CreatedAt, &t.LastActiveAt,
+			&t.SubscriptionID, &t.Model, &t.RunnerID, &t.CreatedAt, &t.LastActiveAt,
 			&t.Preview, &t.SortOrder); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}

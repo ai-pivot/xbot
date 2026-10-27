@@ -13,15 +13,18 @@ import (
 
 // backend implements Storage for PostgreSQL.
 type backend struct {
-	pool    *pgxpool.Pool
-	session SessionStore // per-session or shared (tenant_id-filtered)
-	tenant  TenantStore
-	memory  MemoryStore
-	config  ConfigStore
-	cron    CronStore
-	trigger event.TriggerStore
-	oauth   OAuthTokenStore
-	agents  InteractiveAgentStore
+	pool     *pgxpool.Pool
+	session  SessionStore // per-session or shared (tenant_id-filtered)
+	tenant   TenantStore
+	memory   MemoryStore
+	config   ConfigStore
+	cron     CronStore
+	trigger  event.TriggerStore
+	oauth    OAuthTokenStore
+	agents   InteractiveAgentStore
+	groups   GroupStore
+	activity ActivityStore
+	runners  RunnerStore
 }
 
 // NewStorage creates a Storage backed by PostgreSQL.
@@ -54,6 +57,9 @@ func NewStorageWithPool(pool *pgxpool.Pool) (Storage, error) {
 	pg.trigger = newTriggerStore(pool)
 	pg.oauth = newOAuthTokenStore(pool)
 	pg.agents = newInteractiveAgentStore(pool)
+	pg.groups = newGroupStore(pool)
+	pg.activity = newActivityStore(pool)
+	pg.runners = newRunnerStore(pool)
 	pg.session = newSessionStore(pool) // shared pool, tenant_id-filtered
 	return pg, nil
 }
@@ -68,6 +74,9 @@ func (s *backend) Cron() CronStore                          { return s.cron }
 func (s *backend) Trigger() event.TriggerStore              { return s.trigger }
 func (s *backend) OAuth() OAuthTokenStore                   { return s.oauth }
 func (s *backend) InteractiveAgents() InteractiveAgentStore { return s.agents }
+func (s *backend) Groups() GroupStore                       { return s.groups }
+func (s *backend) Activity() ActivityStore                  { return s.activity }
+func (s *backend) Runners() RunnerStore                     { return s.runners }
 func (s *backend) Close() error                             { s.pool.Close(); return nil }
 
 // CopySessionFrom copies a session's conversation into another session.

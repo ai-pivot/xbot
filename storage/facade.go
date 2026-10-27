@@ -40,6 +40,9 @@ type PushStore = common.PushStore
 type OAuthToken = common.OAuthToken
 type OAuthTokenStore = common.OAuthTokenStore
 type InteractiveAgentStore = common.InteractiveAgentStore
+type GroupStore = common.GroupStore
+type ActivityStore = common.ActivityStore
+type RunnerStore = common.RunnerStore
 type HistoryEntry = common.HistoryEntry
 
 // ─── Shared value-type aliases ───

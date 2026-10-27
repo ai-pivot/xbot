@@ -2867,15 +2867,15 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		LLMModel    string `json:"llm_model"`
 		LLMBaseURL  string `json:"llm_base_url"`
 	}) (any, error) {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return nil, fmt.Errorf("runner management not configured")
 		}
 		if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 			router.EnsureRemote()
 		}
 		llm := tools.RunnerLLMSettings{Provider: p.LLMProvider, APIKey: p.LLMAPIKey, Model: p.LLMModel, BaseURL: p.LLMBaseURL}
-		token, err := tools.NewRunnerStore(db).Create(p.Name, p.Mode, p.DockerImage, p.Workspace, llm)
+		token, err := store.Create(p.Name, p.Mode, p.DockerImage, p.Workspace, llm)
 		if err != nil {
 			return nil, err
 		}
@@ -2907,25 +2907,29 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 	t["runner_registry"] = rpc1(func(ctx context.Context, p struct {
 		Managed []string `json:"managed"`
 	}) (any, error) {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return nil, fmt.Errorf("runner management not configured")
 		}
-		return tools.BuildRunnerRegistry(db, p.Managed)
+		var tenantStore storage.TenantStore
+		if h.Ag != nil && h.Ag.MultiSession() != nil && h.Ag.MultiSession().Store() != nil {
+			tenantStore = h.Ag.MultiSession().Store().Tenant()
+		}
+		return tools.BuildRunnerRegistryFromStore(store, tenantStore, p.Managed)
 	})
 
 	// runner_delete removes a runner and drops its live connection.
 	t["runner_delete"] = rpc1void(func(ctx context.Context, p struct {
 		Name string `json:"name"`
 	}) error {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return fmt.Errorf("runner management not configured")
 		}
 		if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 			router.DisconnectRunner(p.Name)
 		}
-		return tools.NewRunnerStore(db).Delete(p.Name)
+		return store.Delete(p.Name)
 	})
 
 	// runner_rename renames a runner (session bindings follow the new name).
@@ -2933,11 +2937,11 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		OldName string `json:"old_name"`
 		NewName string `json:"new_name"`
 	}) error {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return fmt.Errorf("runner management not configured")
 		}
-		return tools.NewRunnerStore(db).Rename(p.OldName, p.NewName)
+		return store.Rename(p.OldName, p.NewName)
 	})
 
 	// runner_session_get reports the machine a session is bound to.

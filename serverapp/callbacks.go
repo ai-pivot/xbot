@@ -32,25 +32,6 @@ import (
 )
 
 // newGroupUUID 生成群组 id 的随机部分（grp_<12 hex>）。
-// groupMessageStore 是本分支新增的「群组消息信封」能力（主库 v74 / 会话库 v5）。
-//
-// master #444 把会话存储抽象成 storage.SessionStore，但该接口没有群组消息方法
-// （PG 后端未实现该特性 ⇒ **未覆盖项**）。这里按能力取用，拿不到就明确报错，
-// 绝不静默降级 —— 静默降级会让群发写进不存在的表，消息凭空蒸发。
-type groupMessageStore interface {
-	AppendGroupMessage(tenantID int64, msg llm.ChatMessage, env sqlite.GroupMessageEnvelope) (int64, error)
-	ListGroupMessages(tenantID int64, groupID string, beforeID int64, limit int) ([]sqlite.GroupMessageRow, bool, int64, error)
-}
-
-// groupMessagesOf 取出群组消息能力；后端不支持时返回可读错误。
-func groupMessagesOf(sess *session.TenantSession) (groupMessageStore, error) {
-	gm, ok := sess.SessionService().(groupMessageStore)
-	if !ok {
-		return nil, fmt.Errorf("group messages are not supported by this storage backend")
-	}
-	return gm, nil
-}
-
 func newGroupUUID() string { return uuid.NewString() }
 
 // runnerCallbacks builds the shared Runner callback closures.
@@ -61,15 +42,15 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			return tools.ListAllRunners()
 		},
 		RunnerCreate: func(name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
 			// Make sure the WebSocket listener is up before the machine dials in.
 			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 				router.EnsureRemote()
 			}
-			token, err := tools.NewRunnerStore(db).Create(name, mode, dockerImage, workspace, llm)
+			token, err := store.Create(name, mode, dockerImage, workspace, llm)
 			if err != nil {
 				return "", err
 			}
@@ -91,28 +72,27 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			return buildRunnerConnectCmd(cfg, name, token, mode, dockerImage, workspace, llm), nil
 		},
 		RunnerDelete: func(name string) error {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return fmt.Errorf("runner management not configured")
 			}
 			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 				router.DisconnectRunner(name)
 			}
-			return tools.NewRunnerStore(db).Delete(name)
+			return store.Delete(name)
 		},
 		RunnerRename: func(oldName, newName string) error {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return fmt.Errorf("runner management not configured")
 			}
-			return tools.NewRunnerStore(db).Rename(oldName, newName)
+			return store.Rename(oldName, newName)
 		},
 		RunnerConnectCmd: func(name string) (string, error) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
-			store := tools.NewRunnerStore(db)
 			info, err := store.Get(name)
 			if err != nil {
 				return "", err
@@ -311,9 +291,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	}
 
 	// ─── Agent 通信指挥室（群组可视化）────────────────────────────────────
-	// 群元数据在主库两张小表；消息仍读调用者自己的会话库（不跨库聚合）。
-	if webDB := ag.MultiSession().DB(); webDB != nil {
-		groupSvc := sqlite.NewGroupService(webDB.Conn())
+	// 群元数据在 groups/group_members（storage.GroupStore，SQLite/PG 同接口）；
+	// 消息仍读调用者自己的会话库（不跨库聚合）。
+	if store != nil && store.Groups() != nil {
+		groupSvc := store.Groups()
 		callbacks.GroupList = func(memberAddr string) ([]protocol.Group, error) {
 			rows, err := groupSvc.ListGroupsFor(context.Background(), memberAddr)
 			if err != nil {
@@ -360,10 +341,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if err != nil {
 				return nil, 0, false, err
 			}
-			gm, gerr := groupMessagesOf(sess)
-			if gerr != nil {
-				return nil, 0, false, gerr
-			}
+			gm := sess.SessionService()
 			rows, hasMore, next, err := gm.ListGroupMessages(sess.TenantID(), groupID, cursor, limit)
 			if err != nil {
 				return nil, 0, false, err
@@ -424,10 +402,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				To: input.To, Payload: input.Payload,
 				SenderType: input.SenderType, SenderID: input.SenderID, SenderName: input.SenderName,
 			}
-			gm, gerr := groupMessagesOf(sess)
-			if gerr != nil {
-				return nil, gerr
-			}
+			gm := sess.SessionService()
 			id, err := gm.AppendGroupMessage(sess.TenantID(), llm.ChatMessage{
 				Role: role, Content: input.Content, SenderType: input.SenderType,
 				SenderID: input.SenderID, SenderName: input.SenderName, Timestamp: now,
@@ -1176,8 +1151,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			}
 		}
 	}
-	if webSQL != nil {
-		activityIdx := sqlite.NewActivityIndex(webSQL)
+	if store != nil && store.Activity() != nil {
+		activityIdx := store.Activity()
 		callbacks.ActivityList = func(limit int, within time.Duration, kinds []string) ([]web.ActivityEntry, bool, error) {
 			rows, hasMore, err := activityIdx.List(limit, within, kinds)
 			if err != nil {

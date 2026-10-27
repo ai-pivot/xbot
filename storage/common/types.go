@@ -308,6 +308,8 @@ type TenantInfo struct {
 	Model          string `json:"model,omitempty"`
 	CreatedAt      time.Time
 	LastActiveAt   time.Time
+	// RunnerID is the session→runner binding (tenants.runner_id).
+	RunnerID string `json:"runner_id,omitempty"`
 	// Preview is the last user/assistant message preview maintained by the
 	// write paths (tenants.preview).
 	Preview string `json:"preview,omitempty"`

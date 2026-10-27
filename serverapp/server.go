@@ -41,8 +41,8 @@ import (
 // routingKey is the session key ("channel:chatID") — with session-scoped runner
 // bindings there is no user-level "active runner" any more.
 func injectProxyLLM(routingKey string, ag *agent.Agent) {
-	db := tools.GetRunnerTokenDB()
-	if db == nil {
+	store := tools.GetRunnerStore()
+	if store == nil {
 		return
 	}
 	router, _ := tools.GetSandbox().(*tools.SandboxRouter)
@@ -53,7 +53,6 @@ func injectProxyLLM(routingKey string, ag *agent.Agent) {
 	if activeName == "" || !router.IsRunnerOnline(activeName) {
 		return
 	}
-	store := tools.NewRunnerStore(db)
 	runners, err := store.List()
 	if err != nil {
 		return
@@ -871,6 +870,7 @@ func Run(args []string) error {
 	}
 	if ms := ag.MultiSession(); ms != nil && ms.Store() != nil {
 		wireRunnerBindingStore(ms.Store().Tenant())
+		tools.SetRunnerStore(ms.Store().Runners())
 	}
 
 	// Backend-agnostic storage layer (SQLite adapter or PG). The web channel and

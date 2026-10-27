@@ -161,6 +161,7 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 	rows, err := conn.Query(
 		`SELECT t.id, t.channel, t.chat_id, COALESCE(c.label, '') as label,
 										COALESCE(t.subscription_id, '') as sub_id, COALESCE(t.model, '') as model,
+										COALESCE(t.runner_id, '') as runner_id,
 										t.created_at, t.last_active_at, COALESCE(t.preview, '') as preview,
 										COALESCE(c.sort_order, 0) as sort_order
 		FROM tenants t
@@ -177,7 +178,7 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 	for rows.Next() {
 		var t TenantInfo
 		var createdAt, lastActiveAt string
-		if err := rows.Scan(&t.ID, &t.Channel, &t.ChatID, &t.Label, &t.SubscriptionID, &t.Model, &createdAt, &lastActiveAt, &t.Preview, &t.SortOrder); err != nil {
+		if err := rows.Scan(&t.ID, &t.Channel, &t.ChatID, &t.Label, &t.SubscriptionID, &t.Model, &t.RunnerID, &createdAt, &lastActiveAt, &t.Preview, &t.SortOrder); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}
 		t.CreatedAt = parseSQLiteTime(createdAt)
