@@ -37,6 +37,34 @@ import (
 )
 
 // ErrLLMGenerate 表示 LLM 生成调用失败（网络、API 4xx/5xx 等）
+// isExternalDependencyFailure reports whether err looks like a network-layer
+// failure to reach an upstream service (model endpoint, remote API) rather than
+// a defect in this process.
+//
+// 判据只看传输层特征串：进程没有任何代码路径能"制造"一次 i/o timeout，
+// 出现它就意味着目标主机/端口不可达。这类事件该被记录、该告警，但不该占用
+// 程序错误（level=error）的信用额度。
+func isExternalDependencyFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, sig := range []string{
+		"i/o timeout",
+		"connection refused",
+		"connection reset by peer",
+		"no such host",
+		"network is unreachable",
+		"tls handshake timeout",
+		"context deadline exceeded",
+	} {
+		if strings.Contains(s, sig) {
+			return true
+		}
+	}
+	return false
+}
+
 var ErrLLMGenerate = errors.New("LLM generate failed")
 
 // assertNoSystemPersist checks that a system message is not being persisted to session.
@@ -3769,7 +3797,17 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			}
 
 			if err != nil {
-				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).WithError(err).Error("Error processing message")
+				// 分类：外部依赖不可达（DNS/TCP 层）是运维问题，不是程序缺陷。
+				// 皇上定的基线是「日志零 error」——若把"订阅指向的集群挂了"也记成
+				// error，那条基线永远红，真正的程序缺陷就被淹在噪声里。所以网络类
+				// 失败记 WARN（仍然带完整 attempts/URL，不静默），其余一律 ERROR。
+				fields := log.Fields{"request_id": msg.RequestID, "chat": chatKey}
+				if isExternalDependencyFailure(err) {
+					log.WithFields(fields).WithError(err).
+						Warn("Error processing message: external dependency unreachable (model endpoint down?) — message still reported to the user")
+				} else {
+					log.WithFields(fields).WithError(err).Error("Error processing message")
+				}
 				// 走 sendMessage 与正常回复同一路径：可 Patch 已发出的进度条为错误内容，避免错误静默不达用户
 				content := formatErrorForUser(err)
 				if sendErr := a.sendMessage(msg.Channel, msg.ChatID, content); sendErr != nil {
