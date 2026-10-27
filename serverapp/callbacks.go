@@ -970,6 +970,18 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		hasMore = end < total
 		nextOffset = end
 
+		// IsCurrent MUST be set here, once, for the rows we return.
+		//
+		// 2026-10-27 回归：IsCurrent 原先由 listTenantsByChannel 逐 channel 设置，
+		// 改成统一的 listTenantsByChannels（不再接收 currentChatID）后，这个赋值
+		// 就没人做了 —— 全 false。前端 useSessionStore.ts:947 靠它恢复当前会话，
+		// 于是冷启动退化成"选中第一行"。门下省探针实测：
+		//   HEAD 82794d3b      → IsCurrent 全 false → FAIL
+		//   对照 d932b2e0      → PASS
+		// 一次性统一赋值比每条来源各自设置更可靠：行可能来自 tenants 查询，也可能
+		// 来自 listCLIChatSessions，还有 PG 路径，任何一条漏设都会重现这个 bug。
+		markCurrentSession(mains, current)
+
 		// Runtime state is only needed for the page we return, and it is
 		// classified from one in-memory snapshot rather than a DB probe per row.
 		applyWebRunningStatusesFast(ag, mains)
@@ -1818,6 +1830,21 @@ func sortUserChats(rows []web.UserChatWithPreview) {
 // (CLI-local "+08:00" vs server "Z") — lexicographic comparison mis-orders
 // across offsets (see sortUserChats). Compare parsed time.Time values; equal
 // instants expressed with different offsets tiebreak on SortOrder/CreatedAt.
+// markCurrentSession sets IsCurrent on exactly the row the caller currently has
+// selected. IsCurrent is a per-caller flag, so it can never be baked into a
+// shared row set — it must be applied to the rows being returned.
+//
+// Regression this fixes (2026-10-27): row construction moved to a single
+// listTenantsByChannels call that no longer receives currentChatID, so the flag
+// silently became false everywhere. The web frontend (useSessionStore.ts:947)
+// restores the active session from it, so cold start degraded to "select the
+// first row". Menxia's probe: HEAD 82794d3b FAIL / d932b2e0 PASS.
+func markCurrentSession(rows []web.UserChatWithPreview, current web.SessionSelector) {
+	for i := range rows {
+		rows[i].IsCurrent = rows[i].Channel == current.Channel && rows[i].ChatID == current.ChatID
+	}
+}
+
 func sortSessionTreeMains(rows []web.UserChatWithPreview) {
 	if len(rows) == 0 {
 		return
