@@ -572,10 +572,12 @@ func (s *OutboundSender) SendImages(ctx context.Context, chatID string, urls []s
 	if len(urls) == 0 {
 		return 0, nil
 	}
-	// 若配置了 CDN：不在这里发，交给 markdown 图文混排（见 UploadImagesToCDN）。
-	if s.uploader != nil {
-		return 0, nil
-	}
+	// 注意：这里**不能**因为"配了 CDN"就返回 0。
+	//
+	// 旧实现有 `if s.uploader != nil { return 0, nil }`，理由是"交给 markdown
+	// 图文混排"。但 QQ 的 markdown 不渲染外链图片，结果是：配了 CDN 的环境里
+	// 图片一张都发不出去（2026-10-27 生产实证，用户看到 bot 说"图片来了"却没有图）。
+	// CDN 只负责把本地路径变成公网 URL，投递仍必须走 msg_type=7。
 	anchor := s.passiveMsgID(chatID)
 	sent := 0
 	for _, u := range urls {

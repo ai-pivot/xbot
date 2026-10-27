@@ -666,36 +666,40 @@ func (a *app) sendOutbound(enc *json.Encoder, frameID, chatID, content string) {
 	}
 
 	if imgURLs, rest := extractMarkdownImages(content); len(imgURLs) > 0 {
-		// 有 CDN：把图传上去拿公网 URL，重新拼成 markdown —— 图文**同一条**消息。
-		// 无 CDN：退回富媒体分条（QQ 的 msg_type=7 与 content 互斥，无法混排）。
+		// 图片一律走**富媒体通道**（msg_type=7）单独发，绝不再拼回 markdown。
+		//
+		// 2026-10-27 生产事故：这里原来在配了 CDN 时把 URL 拼成 `![](url)` 塞进正文，
+		// 理由写的是「图文同一条消息」。但 QQ 的 markdown 子集**不渲染外链图片**，
+		// 客户端只会显示成一段 `![](...)` 文本（多数情况下干脆什么都不显示），
+		// 于是用户看到 bot 说「图片来了」却没有任何图。
+		//
+		// CDN 的作用只是把本地路径变成**平台能拉取**的公网 URL；
+		// 图最终的投递方式必须是 msg_type=7 + media.file_info。
+		// 两者是串联关系，不是二选一。
+		//
+		// 代价：图文变成两条消息（QQ 的 msg_type=7 与 content 互斥，官方硬约束）。
+		// 能看见图 >> 强行混排。
+		urls := imgURLs
 		if rt.HasCDN() {
 			if pub := rt.UploadImagesToCDN(ctx, imgURLs); len(pub) > 0 {
-				var b strings.Builder
-				b.WriteString(rest)
-				if rest != "" {
-					b.WriteString("\n")
-				}
-				for _, u := range pub {
-					b.WriteString("![](" + u + ")\n")
-				}
-				content = strings.TrimSpace(b.String())
-				a.logf("outbound images to %q: %d uploaded to CDN, merged into one markdown message", chatID, len(pub))
+				urls = pub
+				a.logf("cdn upload ok for %q: %d url(s)", chatID, len(pub))
 			} else {
-				a.logf("WARN: cdn upload produced 0 urls, falling back to media-per-message")
+				// CDN 全部失败时仍尝试原始 URL（可能是本来就公网可达的来源）。
+				a.logf("WARN: cdn upload produced 0 urls, sending original urls as media")
 			}
+		}
+		if n, ierr := rt.SendImages(ctx, chatID, urls); ierr != nil {
+			a.logf("outbound images to %q: sent=%d/%d err=%v", chatID, n, len(urls), ierr)
 		} else {
-			if n, ierr := rt.SendImages(ctx, chatID, imgURLs); ierr != nil {
-				a.logf("outbound images to %q: sent=%d/%d err=%v", chatID, n, len(imgURLs), ierr)
-			} else {
-				a.logf("outbound images to %q: sent=%d/%d (media, no cdn configured)", chatID, n, len(imgURLs))
+			a.logf("outbound images to %q: sent=%d/%d (media msg_type=7)", chatID, n, len(urls))
+		}
+		content = rest
+		if content == "" {
+			if frameID != "" {
+				a.write(enc, okResponse{ID: frameID, Result: "ok"})
 			}
-			content = rest
-			if content == "" {
-				if frameID != "" {
-					a.write(enc, okResponse{ID: frameID, Result: "ok"})
-				}
-				return
-			}
+			return
 		}
 	}
 
