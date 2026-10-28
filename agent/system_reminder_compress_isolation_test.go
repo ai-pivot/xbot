@@ -117,3 +117,43 @@ func TestCompressRunConfigDisablesSystemReminder(t *testing.T) {
 		t.Fatalf("压缩 Run 必须 MaxIterations=1（got %d）", cfg.MaxIterations)
 	}
 }
+
+// TestDisableSystemReminderShortCircuitsBeforeBuild —— 钉住「开关判定在构建之前」。
+//
+// 历史（2026-10-28 门下省终审 F1）：commit 44325b6c 的 message 声称本用例已改名
+// 并从 TestDisableSystemReminderBeatsIterationPredicate 补上了 ListActiveFn 断言，
+// 但代码里实际被删掉了（grep 0 命中）—— 声明强于实际。此处按 message 的原话补齐。
+//
+// 原用例为什么是假声明：`iteration == 1` 时谓词本来就为真，即使先判谓词、后判开关，
+// disable 依然会拦住注入，断言照样绿 —— 它钉不住任何顺序。
+//
+// 真正与顺序相关的可观测不变量：disable 命中时**根本不该调用 buildSystemReminder**
+// （它要拉 todo / goal / 子代理状态，ListActiveFn 是跨进程回调，白跑有真实开销）。
+// 这里用 ListActiveFn 计数断言：disable=true 时必须 0 次。
+// 判别力由 guard-mutation-b5.txt 证明（把构建挪到 disable 判定之前 → 本用例红）。
+func TestDisableSystemReminderShortCircuitsBeforeBuild(t *testing.T) {
+	cfg, _ := buildReminderTurnConfig(1)
+	cfg.DisableSystemReminder = true
+	var buildCalls int
+	cfg.InteractiveCallbacks = &InteractiveCallbacks{
+		ListActiveFn: func(channel, chatID string) []SubAgentStatus {
+			buildCalls++
+			return nil
+		},
+	}
+	s := newRunState(cfg)
+	s.initDynamicInjector()
+
+	msgs := s.llmMessages(1)
+	if _, _, present := findSystemReminderInMessages(msgs); present {
+		t.Fatalf("DisableSystemReminder=true 时 iteration 1 仍注入了 reminder")
+	}
+	if len(msgs) != len(s.messages) {
+		t.Fatalf("条数 = %d, want %d（不应附加任何 fake pair）", len(msgs), len(s.messages))
+	}
+	if buildCalls != 0 {
+		t.Fatalf("DisableSystemReminder=true 时仍调用 buildSystemReminder %d 次 —— "+
+			"开关必须在构建之前判定（否则白跑跨进程回调 ListActiveFn）", buildCalls)
+	}
+	t.Logf("disable=true, iteration=1 → %d messages, no reminder, build 调用 0 次", len(msgs))
+}
