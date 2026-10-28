@@ -59,6 +59,12 @@ func findSystemReminderInMessages(msgs []llm.ChatMessage) (text string, paired b
 // mock 每轮返回一个**唯一**工具调用（不复用同参数：即便 loop breaker 默认关闭，
 // 也不给未来的开关留误判空间）。
 func buildReminderTurnConfig(iterations int) (RunConfig, *mockLLM) {
+	return buildReminderTurnConfigStart(0, iterations)
+}
+
+// buildReminderTurnConfigStart 是 buildReminderTurnConfig 的 resume 版本：
+// iterStart>0 时引擎从 iterStart+1 开始编号（engine.go: i := n + s.iterStart）。
+func buildReminderTurnConfigStart(iterStart, iterations int) (RunConfig, *mockLLM) {
 	responses := make([]llm.LLMResponse, 0, iterations)
 	for n := 1; n < iterations; n++ {
 		responses = append(responses, llm.LLMResponse{
@@ -84,6 +90,8 @@ func buildReminderTurnConfig(iterations int) (RunConfig, *mockLLM) {
 		// SessionKey 让 todoKey() 非空（否则 todo 分支直接跳过，测试就测不到
 		// 「空 todo 引导」这条路径）。
 		SessionKey: "web:chat1",
+		// resume turn：引擎首个迭代号 = IterationStart+1
+		IterationStart: iterStart,
 		ToolExecutor: func(_ context.Context, _ llm.ToolCall) (*tools.ToolResult, error) {
 			return &tools.ToolResult{Summary: "ok"}, nil
 		},
@@ -103,20 +111,27 @@ type reminderMatrixRow struct {
 	Text string `json:"-"`
 }
 
-// runReminderMatrix 跑一个 iterations 轮的 turn，返回逐轮矩阵。
+// runReminderMatrix 跑一个 iterations 轮的 turn（iterStart=0），返回逐轮矩阵。
 func runReminderMatrix(t *testing.T, iterations int) []reminderMatrixRow {
 	t.Helper()
-	cfg, mock := buildReminderTurnConfig(iterations)
+	return runReminderMatrixStart(t, 0, iterations)
+}
+
+// runReminderMatrixStart 是 resume 版本：IterationStart=iterStart，
+// 第 idx 次 LLM 请求对应的 iteration 是 iterStart+1+idx。
+func runReminderMatrixStart(t *testing.T, iterStart, iterations int) []reminderMatrixRow {
+	t.Helper()
+	cfg, mock := buildReminderTurnConfigStart(iterStart, iterations)
 	out := Run(context.Background(), cfg)
 	if out.Error != nil {
-		t.Fatalf("%d 轮 turn 运行失败: %v", iterations, out.Error)
+		t.Fatalf("iterStart=%d, %d 轮 turn 运行失败: %v", iterStart, iterations, out.Error)
 	}
 	if len(mock.calls) != iterations {
 		t.Fatalf("LLM 请求次数 = %d, want %d（矩阵无法对齐 iteration）", len(mock.calls), iterations)
 	}
 	rows := make([]reminderMatrixRow, 0, iterations)
 	for idx, call := range mock.calls {
-		iter := idx + 1
+		iter := iterStart + 1 + idx
 		text, paired, present := findSystemReminderInMessages(call.Messages)
 		row := reminderMatrixRow{Iteration: iter, Present: present, Paired: paired, TextLen: len(text), Text: text}
 		if present {
@@ -534,5 +549,139 @@ func TestSystemReminderHTTPBody(t *testing.T) {
 	// 首轮 body 必须真的带着工具定义（否则「模型该用 TodoWrite」无从谈起）
 	if !strings.Contains(dumps[0].Body, `"tools"`) {
 		t.Error("首轮 body 不含 tools 字段 —— 请求构造异常")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// G1（2026-10-28 御前定稿）：resume turn 的首轮注入 + 六行参数化矩阵
+// ---------------------------------------------------------------------------
+
+// TestSystemReminderInjectionMatrixParameterized 覆盖六种 iterStart。
+//
+// 规则：首轮 = iterStart+1 必插；其后每 10 轮一次；首轮与下一个 10k **相邻**时
+// 跳过该 10k（否则会连续两轮注入，破「任意相邻两轮不同时注入」的硬不变量）。
+// 每行统一跑 20 轮（从 iterStart+1 起），因此 30/40 不会进入窗口。
+func TestSystemReminderInjectionMatrixParameterized(t *testing.T) {
+	cases := []struct {
+		iterStart int
+		want      []int
+	}{
+		{0, []int{1, 10, 20}},
+		{1, []int{2, 10, 20}},
+		{4, []int{5, 10, 20}},
+		{8, []int{9, 20}},   // 10 与首轮 9 相邻 → 跳过
+		{18, []int{19, 30}}, // 20 与首轮 19 相邻 → 跳过
+		{9, []int{10, 20}},  // 首轮正好是 10，重合只算一次
+	}
+	for _, c := range cases {
+		rows := runReminderMatrixStart(t, c.iterStart, 20)
+		var hits []int
+		for _, r := range rows {
+			if r.Present {
+				hits = append(hits, r.Iteration)
+				if !r.Paired || r.TextLen == 0 {
+					t.Errorf("iterStart=%d iteration %d: reminder 不完整（paired=%v len=%d）",
+						c.iterStart, r.Iteration, r.Paired, r.TextLen)
+				}
+			}
+		}
+		if fmt.Sprint(hits) != fmt.Sprint(c.want) {
+			t.Errorf("iterStart=%d 注入点 = %v, want %v", c.iterStart, hits, c.want)
+		}
+		// 相邻轮不变量对每种 iterStart 都必须成立
+		prev := false
+		for _, r := range rows {
+			if r.Present && prev {
+				t.Fatalf("iterStart=%d iteration %d 与上一轮连续注入 —— 违反「相邻两轮不得同时注入」", c.iterStart, r.Iteration)
+			}
+			prev = r.Present
+		}
+		t.Logf("iterStart=%d → 注入点 %v（20 轮，无相邻）", c.iterStart, hits)
+	}
+}
+
+// TestSystemReminderAdjacentSkipOnResume 是六行表中的两行（8/18）的独立守卫：
+// 跳过相邻 10k 的规则若被删掉，这里会红（9、10 或 19、20 连续两轮注入）。
+func TestSystemReminderAdjacentSkipOnResume(t *testing.T) {
+	for _, iterStart := range []int{8, 18} {
+		first := iterStart + 1
+		rows := runReminderMatrixStart(t, iterStart, 20)
+		if len(rows) != 20 {
+			t.Fatalf("iterStart=%d: 行数 = %d", iterStart, len(rows))
+		}
+		// 首轮必须注入
+		if !rows[0].Present {
+			t.Fatalf("iterStart=%d: 首轮 %d 未注入 reminder", iterStart, first)
+		}
+		// 下一个 10k（= first+1）必须被跳过
+		if rows[1].Present {
+			t.Fatalf("iterStart=%d: iteration %d（首轮的相邻 10k）仍注入了 —— 会连续两轮注入", iterStart, rows[1].Iteration)
+		}
+		t.Logf("iterStart=%d: 首轮 %d 注入，相邻 10k %d 已跳过", iterStart, first, first+1)
+	}
+}
+
+// TestSystemReminderHTTPBodyResumeTurn 用真实 llm.NewOpenAILLM + httptest 捕获
+// iterStart=1 的 resume turn 请求体：iteration 2（首轮）必须含 fake pair，
+// 3/4 不含。与 iterStart=0 的那份（req-bodies-3turn.txt）成对留证。
+func TestSystemReminderHTTPBodyResumeTurn(t *testing.T) {
+	dumpDir := os.Getenv("XBOT_REQ_DUMP_DIR")
+	if dumpDir == "" {
+		t.Skip("XBOT_REQ_DUMP_DIR 未设置 —— 跳过 resume HTTP body 证据测试")
+	}
+
+	srv, dumpsFn := fakeChatCompletionServer(t, 2 /* 前两轮 tool_call，第三轮收尾 */)
+	client := llm.NewOpenAILLM(llm.OpenAIConfig{
+		BaseURL:      srv.URL + "/v1",
+		APIKey:       "test-key",
+		DefaultModel: "test-model",
+		APIType:      llm.APITypeChatCompletions,
+	})
+
+	out := Run(context.Background(), RunConfig{
+		LLMClient:      client,
+		Model:          "test-model",
+		Tools:          newTestRegistry(),
+		Messages:       baseMessages(),
+		AgentID:        "main",
+		Channel:        "web",
+		ChatID:         "chat1",
+		SessionKey:     "web:chat1",
+		Stream:         false,
+		IterationStart: 1, // resume turn：首个迭代号 = 2
+		ToolExecutor: func(_ context.Context, _ llm.ToolCall) (*tools.ToolResult, error) {
+			return &tools.ToolResult{Summary: "ok"}, nil
+		},
+	})
+	if out.Error != nil {
+		t.Fatalf("run: %v", out.Error)
+	}
+
+	dumps := dumpsFn()
+	if len(dumps) != 3 {
+		t.Fatalf("上游收到 %d 条请求，期望 3（resume turn 3 轮）", len(dumps))
+	}
+	var sb strings.Builder
+	for _, d := range dumps {
+		fmt.Fprintf(&sb, "===== request #%d (iteration %d, iterStart=1) =====\n%s\n\n", d.Index+1, d.Index+2, d.Body)
+	}
+	if err := os.MkdirAll(dumpDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dumpDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dumpDir, "req-bodies-resume-3turn.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatalf("write req-bodies-resume-3turn.txt: %v", err)
+	}
+
+	for _, d := range dumps {
+		iter := d.Index + 2
+		found, paired, text := reminderInBody(t, d.Body)
+		t.Logf("iteration %d: system_reminder in body = %v (paired=%v, len=%d)", iter, found, paired, len(text))
+		want := iter == 2 // resume turn 的首轮
+		if found != want {
+			t.Errorf("iteration %d: HTTP body 里 system_reminder = %v, want %v", iter, found, want)
+		}
+		if found && !paired {
+			t.Errorf("iteration %d: body 里只有 assistant tool_call，没有对应 tool 结果", iter)
+		}
 	}
 }

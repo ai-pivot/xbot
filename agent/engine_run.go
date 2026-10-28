@@ -812,7 +812,7 @@ func (s *runState) llmMessages(iteration int) []llm.ChatMessage {
 	if s.cfg.DisableSystemReminder {
 		return s.messages
 	}
-	if !shouldInsertSystemReminder(iteration) {
+	if !shouldInsertSystemReminder(iteration, s.iterStart) {
 		return s.messages
 	}
 	reminder := s.buildSystemReminder()
@@ -2437,20 +2437,41 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 const systemReminderInsertEvery = 10
 
 // shouldInsertSystemReminder 决定本轮（iteration）是否把 system_reminder 这个
-// fake tool pair 拼进 LLM 上下文：**首轮必插**（iteration == 1），其后每
-// systemReminderInsertEvery 轮插一次（10、20、30…）。序列是 1, 10, 20, 30 …
-// —— 保持稀疏，其余轮次完全不出现。
+// fake tool pair 拼进 LLM 上下文。
 //
-// 为什么首轮必须插：reminder 承载 todo / goal / cwd / 子代理状态的摘要，是模型
-// 「知道该用 TodoWrite 建计划」的最早时机。旧实现只在 iteration%10==0 时插入，
-// 首轮（iteration=1）拿不到任何提醒 —— 而引擎的迭代号是 1 基（engine.go 的
-// `i := n + s.iterStart`），10 基整除集天然把第 1 轮排除在外，与设计意图不符。
+// 规则（2026-10-28 御前定稿，G1）：
+//  1. **本次 Run 的第一轮必插** —— 引擎迭代号是 1 基，且 resume turn 从
+//     iterStart+1 起（engine.go: `i := n + s.iterStart`），所以「第一轮」是
+//     `iteration == iterStart + 1`，不是写死的 1。
+//  2. 其后每 systemReminderInsertEvery（10）轮插一次：10、20、30…
+//  3. **首轮与下一个 10k 相邻时，跳过那个 10k**（只有相邻才跳）。
+//     例：iterStart=8 → 首轮 9，10 与 9 相邻 ⇒ 注入点 9、20；
+//         iterStart=18 → 首轮 19，20 相邻 ⇒ 19、30；
+//         iterStart=9 → 首轮正好是 10 ⇒ 重合只算一次，10、20。
+//
+// 为什么第 3 条必须存在：判据「任意相邻两轮不得同时注入」是硬不变量
+// （2026-10-20 逐轮注入事故：模型每轮看到同一个凭空冒出的 tool_call 会以为要反复调用）。
+// 不跳的话，iterStart=8 会在 9、10 连续两轮各注入一次，直接破这条不变量。
+//
+// 为什么不改口径成「首轮顺延到 20」之类：那会让「每 10 轮」在 resume 场景整体后移，
+// 与主对话（iterStart=0）的节奏不一致；跳过相邻 10k 只影响一次、且不引入相位补丁。
 //
 // 为什么不是每轮插入：fake tool pair 会让对话里凭空多出一组
 // assistant(tool_call) + tool(result) 记录，模型连续看到同一工具反复"被调用"
 // 容易困惑（误以为要反复调用它，或把它当成真实工具）。
-func shouldInsertSystemReminder(iteration int) bool {
-	return iteration <= 1 || iteration%systemReminderInsertEvery == 0
+func shouldInsertSystemReminder(iteration, iterStart int) bool {
+	first := iterStart + 1
+	if iteration == first {
+		return true
+	}
+	if iteration%systemReminderInsertEvery != 0 {
+		return false
+	}
+	// 首轮与这个 10k 相邻 → 跳过它，保住「相邻两轮不同时注入」
+	if iteration == first+1 {
+		return false
+	}
+	return true
 }
 
 // buildSystemReminder 在**发起 LLM 请求之前**按需构建本轮要拼的 system reminder。
