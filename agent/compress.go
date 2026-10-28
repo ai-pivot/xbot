@@ -793,6 +793,10 @@ Output the structured working state directly.`
 		// ignores the instruction can decode up to the client's configured
 		// max_tokens (default 32_768).
 		MaxOutputTokens: maxOutputTokens,
+		// 压缩是内部一次性摘要，不是对话轮：不注入 system_reminder。
+		// 注入会在请求尾部多出一对 assistant(tool_call)+tool，破坏
+		// 「最后一条消息 = 压缩指令（user）」的契约（TestCompactMessages_* 会红）。
+		DisableSystemReminder: true,
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{

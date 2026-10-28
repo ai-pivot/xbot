@@ -110,6 +110,17 @@ type RunConfig struct {
 	// 传 1 ⇒ 摘要只允许一次 LLM 调用，触顶即返回明确错误（压缩失败是**非致命**的，
 	// 见 compress_failure_nonfatal_test.go），绝不无限空转。
 	MaxIterations int
+	// DisableSystemReminder 关闭 transient system_reminder fake tool pair 的注入。
+	// 专供**内部一次性 Run**（当前唯一用户：上下文压缩摘要，agent/compress.go
+	// 的 compressCfg）—— 这类调用不是「对话轮」，没有「这一轮用户说了什么」可
+	// 提醒；更重要的是形状约束：压缩请求要求「最后一条消息 = 压缩指令（user）」，
+	// 尾部接一对 assistant(tool_call)+tool 会直接破坏该契约（TestCompactMessages_*
+	// 会红：last request message must be instruction）。
+	//
+	// 必须是**显式开关**：不用 MaxIterations>0 或 AgentID=="compressor" 隐式推断
+	// —— 隐式条件会在将来新增内部 Run 时静默生效/失效，且无法表达「某个内部 Run
+	// 仍要 reminder」的例外。
+	DisableSystemReminder bool
 	// IterationStart 偏移 Run 的迭代编号（resume 场景）：> 0 时首个迭代号是
 	// IterationStart+1 而非 1。重启恢复的 Run（InjectInboundResume）复用被中断
 	// turn 的 turn_id，而迭代号是 turn 域唯一的（iteration_history 按

@@ -40,8 +40,8 @@ func resolveAbsolutePath(path string) string {
 
 // systemReminderToolName is the name of the transient fake tool pair that carries
 // the per-iteration system reminder. The reminder is NEVER persisted and NEVER
-// rendered — it is generated each iteration into runState.systemReminder and
-// appended to a fresh message copy in llmMessages() just before the LLM call.
+// rendered — it is built on demand by runState.buildSystemReminder() just before
+// each LLM request and appended to a fresh message copy in llmMessages().
 const systemReminderToolName = "system_reminder"
 
 // BuildSystemReminder builds a system reminder appended to the last tool message.
@@ -115,6 +115,11 @@ func BuildSystemReminder(
 			fmt.Fprintf(&sb, `<todo status=%q id="%d">%s</todo>`, t.Status, i+1, html.EscapeString(t.Text))
 		}
 		sb.WriteString("</todos>")
+	} else {
+		// 空 todo：不能整段静默消失。旧实现在没有计划时什么都不写，模型看不到
+		// 「该建计划」的信号 —— 首轮 reminder 因此退化成一条纯状态播报。
+		// 显式 status="empty" 保留了「当前无计划」这个事实，同时给出下一步动作。
+		sb.WriteString(`<todos status="empty">尚无计划：多步任务应先用 TodoWrite 建立待办清单，再逐项推进；单项琐碎任务可跳过</todos>`)
 	}
 
 	// Active SubAgents（当前执行中 vs 空闲）

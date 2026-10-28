@@ -245,13 +245,20 @@ func TestBuildSystemReminder_SubAgentStatus(t *testing.T) {
 	}
 }
 
-// TestShouldInsertSystemReminder —— 只有 iteration % 10 == 0 才插入 fake tool pair。
+// TestShouldInsertSystemReminder —— 首轮必插，其后每 systemReminderInsertEvery 轮插一次。
+// 插入序列：1, 10, 20, 30 …
+//
+// 历史（2026-10-28 修复）：旧表格里 `{1, false}` 把 bug 行为固化成了「期望」——
+// 引擎的迭代号是 1 基（engine.go: `i := n + s.iterStart`，n 从 1 起），首轮
+// iteration=1 时 `iteration%10==0` 天然为 false，谓词返回 false，与设计承诺的
+// 「首轮必建」直接冲突。测试断言 bug 而不是设计，正是这个 conflict 长期没被发现
+// 的原因。现在首轮返回 true，其余行（10/20/30/40/100 及非整除轮）保持不变。
 func TestShouldInsertSystemReminder(t *testing.T) {
 	cases := []struct {
 		iter int
 		want bool
 	}{
-		{1, false}, {2, false}, {9, false},
+		{1, true}, {2, false}, {9, false},
 		{10, true},
 		{11, false}, {19, false},
 		{20, true},
@@ -264,5 +271,33 @@ func TestShouldInsertSystemReminder(t *testing.T) {
 		if got := shouldInsertSystemReminder(c.iter); got != c.want {
 			t.Errorf("shouldInsertSystemReminder(%d) = %v, want %v", c.iter, got, c.want)
 		}
+	}
+}
+
+// TestBuildSystemReminder_EmptyTodosShowsGuidance —— 空 todo 不能整段静默消失。
+//
+// 旧实现：`if len(todoItems) > 0 { <todos>…</todos> }`，没有计划时什么都不写 ——
+// 模型看不到「该建计划」的信号，首轮 reminder 退化成一条纯状态播报。
+// 新实现：显式 <todos status="empty"> 说明「当前无计划 + 多步任务应先建清单」。
+//
+// 同时锁反向：有 todo 时输出必须**完全不变**（不得混入 empty 段）。
+func TestBuildSystemReminder_EmptyTodosShowsGuidance(t *testing.T) {
+	const emptyTag = `<todos status="empty">尚无计划：多步任务应先用 TodoWrite 建立待办清单，再逐项推进；单项琐碎任务可跳过</todos>`
+
+	empty := BuildSystemReminder(makeMsgs("Fix the bug", true), nil, nil, "main", "", "", nil)
+	if !strings.Contains(empty, emptyTag) {
+		t.Errorf("空 todo 必须输出引导段 %q，got:\n%s", emptyTag, empty)
+	}
+	if strings.Contains(empty, "<todos>") {
+		t.Error("空 todo 时不得输出非空 <todos> 容器（会与新引导段语义冲突）")
+	}
+
+	withTodos := BuildSystemReminder(makeMsgs("Fix the bug", true),
+		[]TodoProgressItem{{Text: "First task", Status: "done"}}, nil, "main", "", "", nil)
+	if strings.Contains(withTodos, `status="empty"`) {
+		t.Error("有 todo 时不得出现 status=\"empty\" —— 非空输出必须保持原样")
+	}
+	if !strings.Contains(withTodos, "<todos><todo status=\"done\" id=\"1\">First task</todo></todos>") {
+		t.Errorf("非空 todos 容器结构必须与旧实现逐字节一致，got:\n%s", withTodos)
 	}
 }

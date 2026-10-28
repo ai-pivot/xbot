@@ -62,16 +62,11 @@ type runState struct {
 	initialMsgCount int
 	persistence     *PersistenceBridge
 
-	// systemReminder 是给下一轮 LLM 看的瞬态系统提醒（cwd/todo/subagent 状态）。
-	// 它不进入 s.messages —— 不持久化、不显示、不参与 watermark 计数。每轮
-	// postToolProcessing 重新生成覆盖，callLLM 时临时注入到发送给 LLM 的消息副本。
-	//
-	// 背景：reminder 曾作为 fake tool pair 注入 s.messages 尾部，persistence 层
-	// 跳过它。但 commitPending 用 len(messages) 推进 watermark，把被跳过的
-	// reminder 也算了进去 → 下一轮 removeSystemReminderTool 删除 reminder 后
-	// 真实消息索引前移，落到虚高 watermark 之下被当作「已持久化」跳过 →
-	// AskUser 场景报 "persist AskUser question: no pending messages"。
-	systemReminder string
+	// 注意：system reminder 不再有常驻字段。它在本轮请求前由
+	// buildSystemReminder() 按需构建、由 llmMessages() 拼进一份消息副本，
+	// 既不入 s.messages，也不跨迭代保留（详见 llmMessages 的注释）。
+	// 历史：曾用 s.systemReminder 跨迭代保存，但那导致结构性 off-by-one
+	// （第 i 轮请求拿到的是第 i-1 轮或空串），首轮永远没有 reminder。
 
 	// Token tracking
 	tokenTracker *TokenTracker
@@ -789,18 +784,42 @@ func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 
 // llmMessages returns the messages to send to the LLM: s.messages plus the
 // transient system_reminder fake tool pair, but ONLY on insertion iterations
-// (every systemReminderInsertEvery-th). The reminder is appended to a fresh
-// copy — it never mutates s.messages, so persistence watermark and the
-// ContextEditor view stay clean.
+// (the first iteration and every systemReminderInsertEvery-th after it:
+// 1, 10, 20, …). The reminder is appended to a fresh copy — it never mutates
+// s.messages, so persistence watermark and the ContextEditor view stay clean.
 //
-// 关键：是否拼接由 iteration 决定，不取决于 s.systemReminder 是否为空。
-// s.systemReminder 是跨迭代保留的内存字段，只要它非空就会每轮被拼进去
-// （模型每轮都看到一个「凭空出现的 tool_call」，正是用户 2026-10-20 报的问题）。
+// 关键：是否拼接由 iteration 决定，且 reminder 在**请求前按需构建**。
+// 判定必须先于构建 —— buildSystemReminder() 要拉 todo / goal / 子代理状态
+// （ListActiveFn 是跨进程回调），每轮无条件构建等于把 1/10 的开销摊成每轮。
+//
+// 内部一次性 Run（压缩摘要等）**不注入** reminder —— 由调用方显式置
+// RunConfig.DisableSystemReminder，本函数不猜测（不按 MaxIterations / AgentID
+// 推断：隐式条件会在新增内部 Run 时静默失效）。判定放在最前面，避免白跑
+// buildSystemReminder（它会拉 todo/goal/subagent 状态，ListActiveFn 是跨进程回调）。
+//
+// 为什么内部 Run 必须跳过：
+//   - 它没有「用户这一轮说的话」可提醒（<user-msg> 会抓到历史里最后一条 user
+//     消息，反而误导摘要模型）；
+//   - 更硬的约束是形状：压缩请求契约要求「最后一条消息 = 压缩指令（user）」，
+//     在尾部接一对 fake tool_call/tool 结果直接破坏该契约
+//     （TestCompactMessages_* 全红：last request message must be the instruction）。
+//
+// 历史（2026-10-28 前）：reminder 由 postToolProcessing 构建到跨迭代字段
+// s.systemReminder 上，而 LLM 请求在第 i 轮构建、第 i 轮工具执行之后才发生 ——
+// 结构性 off-by-one：构建永远跟在「本该用它」的那一轮后面，首轮必然拿到空串
+// （与「首轮必建」的设计承诺直接冲突）。改为请求前懒构建后该字段失去意义，已删除。
 func (s *runState) llmMessages(iteration int) []llm.ChatMessage {
-	if s.systemReminder == "" || !shouldInsertSystemReminder(iteration) {
+	if s.cfg.DisableSystemReminder {
 		return s.messages
 	}
-	assistantMsg, toolMsg := newSyntheticToolPair(systemReminderToolName, systemReminderToolName, s.systemReminder)
+	if !shouldInsertSystemReminder(iteration) {
+		return s.messages
+	}
+	reminder := s.buildSystemReminder()
+	if reminder == "" {
+		return s.messages
+	}
+	assistantMsg, toolMsg := newSyntheticToolPair(systemReminderToolName, systemReminderToolName, reminder)
 	assistantMsg.TurnID = s.cfg.TurnID
 	out := make([]llm.ChatMessage, 0, len(s.messages)+2)
 	out = append(out, s.messages...)
@@ -2418,14 +2437,65 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 const systemReminderInsertEvery = 10
 
 // shouldInsertSystemReminder 决定本轮（iteration）是否把 system_reminder 这个
-// fake tool pair 拼进 LLM 上下文：只有 iteration 能被 systemReminderInsertEvery
-// 整除时才拼（10、20、30…），其余轮次完全不出现。
+// fake tool pair 拼进 LLM 上下文：**首轮必插**（iteration == 1），其后每
+// systemReminderInsertEvery 轮插一次（10、20、30…）。序列是 1, 10, 20, 30 …
+// —— 保持稀疏，其余轮次完全不出现。
+//
+// 为什么首轮必须插：reminder 承载 todo / goal / cwd / 子代理状态的摘要，是模型
+// 「知道该用 TodoWrite 建计划」的最早时机。旧实现只在 iteration%10==0 时插入，
+// 首轮（iteration=1）拿不到任何提醒 —— 而引擎的迭代号是 1 基（engine.go 的
+// `i := n + s.iterStart`），10 基整除集天然把第 1 轮排除在外，与设计意图不符。
 //
 // 为什么不是每轮插入：fake tool pair 会让对话里凭空多出一组
 // assistant(tool_call) + tool(result) 记录，模型连续看到同一工具反复"被调用"
 // 容易困惑（误以为要反复调用它，或把它当成真实工具）。
 func shouldInsertSystemReminder(iteration int) bool {
-	return iteration%systemReminderInsertEvery == 0
+	return iteration <= 1 || iteration%systemReminderInsertEvery == 0
+}
+
+// buildSystemReminder 在**发起 LLM 请求之前**按需构建本轮要拼的 system reminder。
+// 返回空串表示「无可注入内容」（如 messages 为空），调用方应完全不拼 fake pair。
+//
+// 为什么是请求前构建：reminder 描述的是「这一轮请求发生时」的 cwd/todo/子代理
+// 状态。旧实现把它挂在 postToolProcessing 上（第 i 轮工具执行完之后才构建），
+// 于是第 i 轮请求用的是第 i-1 轮或空串 —— 结构性 off-by-one，首轮永远拿不到。
+//
+// 开销：只在 shouldInsertSystemReminder 为真的轮次调用（1/10/20…），不逐轮重建。
+func (s *runState) buildSystemReminder() string {
+	var todoItems []TodoProgressItem
+	if s.cfg.TodoManager != nil && s.todoKey() != "" {
+		todoItems = s.cfg.TodoManager.GetTodoItems(s.todoKey())
+	}
+
+	// 当前 goal（如有 active goal 则注入）
+	var goalInfo *protocol.GoalInfo
+	if s.cfg.GoalManager != nil {
+		goalInfo = s.cfg.GoalManager.GoalInfo(s.sessionKey)
+	}
+
+	// Get current CWD for system reminder
+	var cwd string
+	if s.cfg.Session != nil {
+		cwd = s.cfg.Session.GetCurrentDir()
+	}
+
+	// Derive sessionName from chatID (format: workDir or workDir:name).
+	// s.cfg.SessionName is set once at engine creation and becomes stale
+	// when the user switches sessions; chatID always reflects the active one.
+	sessionName := "default"
+	if idx := strings.LastIndex(s.cfg.ChatID, ":"); idx > 0 {
+		workDirPart := s.cfg.ChatID[:idx]
+		if strings.HasPrefix(workDirPart, "/") || strings.HasPrefix(workDirPart, ".") || strings.HasPrefix(workDirPart, "~") {
+			sessionName = s.cfg.ChatID[idx+1:]
+		}
+	}
+	// Collect active SubAgent status for system reminder
+	var subAgentStatuses []SubAgentStatus
+	if s.cfg.InteractiveCallbacks != nil && s.cfg.InteractiveCallbacks.ListActiveFn != nil {
+		subAgentStatuses = s.cfg.InteractiveCallbacks.ListActiveFn(s.cfg.Channel, s.cfg.ChatID)
+	}
+
+	return BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, sessionName, subAgentStatuses)
 }
 
 // postToolProcessing handles dynamic context injection, system reminder,
@@ -2443,59 +2513,11 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		s.progressMu.Unlock()
 	}
 
-	// --- System Reminder generation (transient, NOT persisted) ---
-	// reminder 不进入 s.messages：它是给下一轮 LLM 看的瞬态提示，每轮覆盖。
-	// 若混入 s.messages，持久化层跳过它会导致 lastPersistedCount 虚高（
-	// commitPending 用 len(messages) 推进 watermark，把被跳过的 reminder 也
-	// 算进「已持久化」），下一轮删除 reminder 后真实消息索引前移、落到虚高
-	// watermark 之下被当作已持久化跳过 —— AskUser 报 "no pending messages"。
-	//
-	// 刷新节奏：每 10 个 iteration 重建一次（首轮必建）。逐轮重建有两个代价：
-	//   1) 每轮都要重新拉 todo / 子代理状态并拼字符串；
-	//   2) reminder 是 prompt 尾部的一段固定结构，内容逐轮抖动会让 KV cache
-	//      前缀失配。reminder 承载的是 cwd/todo/subagent 的摘要，本来就不需要
-	//      逐轮精确 —— 10 轮的粒度足够新鲜，且把重建开销摊薄到 1/10。
-	if shouldInsertSystemReminder(iteration) {
-		var todoItems []TodoProgressItem
-		if s.cfg.TodoManager != nil && s.todoKey() != "" {
-			todoItems = s.cfg.TodoManager.GetTodoItems(s.todoKey())
-		}
-
-		// 当前 goal（如有 active goal 则注入）
-		var goalInfo *protocol.GoalInfo
-		if s.cfg.GoalManager != nil {
-			goalInfo = s.cfg.GoalManager.GoalInfo(s.sessionKey)
-		}
-
-		// Get current CWD for system reminder
-		var cwd string
-		if s.cfg.Session != nil {
-			cwd = s.cfg.Session.GetCurrentDir()
-		}
-
-		// Derive sessionName from chatID (format: workDir or workDir:name).
-		// s.cfg.SessionName is set once at engine creation and becomes stale
-		// when the user switches sessions; chatID always reflects the active one.
-		sessionName := "default"
-		if idx := strings.LastIndex(s.cfg.ChatID, ":"); idx > 0 {
-			workDirPart := s.cfg.ChatID[:idx]
-			if strings.HasPrefix(workDirPart, "/") || strings.HasPrefix(workDirPart, ".") || strings.HasPrefix(workDirPart, "~") {
-				sessionName = s.cfg.ChatID[idx+1:]
-			}
-		}
-		// Collect active SubAgent status for system reminder
-		var subAgentStatuses []SubAgentStatus
-		if s.cfg.InteractiveCallbacks != nil && s.cfg.InteractiveCallbacks.ListActiveFn != nil {
-			subAgentStatuses = s.cfg.InteractiveCallbacks.ListActiveFn(s.cfg.Channel, s.cfg.ChatID)
-		}
-
-		s.systemReminder = BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, sessionName, subAgentStatuses)
-	} else {
-		// 非插入轮：清空，让 llmMessages() 完全不拼这个 fake tool pair。
-		// 连续多轮出现同一组「凭空冒出的工具调用 + 结果」会让模型困惑
-		// （误以为要反复调用它，或把它当成真实存在的工具）。
-		s.systemReminder = ""
-	}
+	// --- System Reminder 已移走 ---
+	// reminder 不再在这里构建：它现在是**请求前**按需构建的瞬态内容
+	// （见 buildSystemReminder / llmMessages），不落任何字段、不进 s.messages。
+	// 旧实现把构建放在这里（第 i 轮工具执行完之后）却供第 i 轮请求使用 ——
+	// 结构性 off-by-one，首轮永远拿到空串。此处不得再恢复任何 reminder 构建。
 
 	// --- Incremental session persistence ---
 	var persistErr error
