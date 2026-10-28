@@ -111,6 +111,8 @@ func (a *Agent) buildBaseRunConfig(
 	subAgentSem := userCtx.SubAgentSem
 
 	return RunConfig{
+		// 对话轮：保留 system_reminder（显式声明；构造点守卫见 run_config_literal_guard_test.go）
+		DisableSystemReminder: false,
 		// 必需
 		LLMClient:    llmClient,
 		Model:        model,
@@ -796,19 +798,21 @@ func (a *Agent) buildSubAgentRunConfig(
 	stream := userCtx.GetSetting("enable_stream") != "false"
 
 	cfg := RunConfig{
-		LLMClient:       llmClient,
-		Model:           subModel,
-		SubID:           subID,
-		ThinkingMode:    thinkingMode,
-		Stream:          stream,
-		MaxOutputTokens: maxOutputTokens,
-		Tools:           subTools,
-		Messages:        messages,
-		AgentID:         subAgentID,
-		Channel:         parentCtx.Channel,
-		ChatID:          parentCtx.ChatID,
-		SenderID:        parentAgentID, // SubAgent: 直接调用者 = 父 Agent
-		OriginUserID:    originUserID,  // SubAgent: 继承原始用户 ID
+		// 对话轮：保留 system_reminder（显式声明；构造点守卫见 run_config_literal_guard_test.go）
+		DisableSystemReminder: false,
+		LLMClient:             llmClient,
+		Model:                 subModel,
+		SubID:                 subID,
+		ThinkingMode:          thinkingMode,
+		Stream:                stream,
+		MaxOutputTokens:       maxOutputTokens,
+		Tools:                 subTools,
+		Messages:              messages,
+		AgentID:               subAgentID,
+		Channel:               parentCtx.Channel,
+		ChatID:                parentCtx.ChatID,
+		SenderID:              parentAgentID, // SubAgent: 直接调用者 = 父 Agent
+		OriginUserID:          originUserID,  // SubAgent: 继承原始用户 ID
 		// SubAgent inherits the parent's precomputed admin decision — spawned
 		// tools run with the same admin rights as the parent run.
 		OriginUserIsAdmin: parentCtx.OriginUserIsAdmin,
@@ -1099,11 +1103,13 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 		workingDir = a.workDir
 	}
 	cfg := &RunConfig{
-		AgentID:      "main",
-		Channel:      channel,
-		ChatID:       chatID,
-		SenderID:     senderID,      // 主 Agent: 直接调用者（用于消息路由）
-		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
+		// 对话轮：保留 system_reminder（显式声明；构造点守卫见 run_config_literal_guard_test.go）
+		DisableSystemReminder: false,
+		AgentID:               "main",
+		Channel:               channel,
+		ChatID:                chatID,
+		SenderID:              senderID,      // 主 Agent: 直接调用者（用于消息路由）
+		OriginUserID:          sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
 		// Precomputed admin decision (agent.admins allowlist; cli/web trusted).
 		OriginUserIsAdmin: a.isAdminSender(channel, sandboxUserID),
 		SenderName:        senderName,
