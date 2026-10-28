@@ -40,8 +40,8 @@ func resolveAbsolutePath(path string) string {
 
 // systemReminderToolName is the name of the transient fake tool pair that carries
 // the per-iteration system reminder. The reminder is NEVER persisted and NEVER
-// rendered — it is generated each iteration into runState.systemReminder and
-// appended to a fresh message copy in llmMessages() just before the LLM call.
+// rendered — it is built on demand by runState.buildSystemReminder() just before
+// each LLM request and appended to a fresh message copy in llmMessages().
 const systemReminderToolName = "system_reminder"
 
 // BuildSystemReminder builds a system reminder appended to the last tool message.

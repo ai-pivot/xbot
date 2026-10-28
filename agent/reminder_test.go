@@ -245,13 +245,20 @@ func TestBuildSystemReminder_SubAgentStatus(t *testing.T) {
 	}
 }
 
-// TestShouldInsertSystemReminder —— 只有 iteration % 10 == 0 才插入 fake tool pair。
+// TestShouldInsertSystemReminder —— 首轮必插，其后每 systemReminderInsertEvery 轮插一次。
+// 插入序列：1, 10, 20, 30 …
+//
+// 历史（2026-10-28 修复）：旧表格里 `{1, false}` 把 bug 行为固化成了「期望」——
+// 引擎的迭代号是 1 基（engine.go: `i := n + s.iterStart`，n 从 1 起），首轮
+// iteration=1 时 `iteration%10==0` 天然为 false，谓词返回 false，与设计承诺的
+// 「首轮必建」直接冲突。测试断言 bug 而不是设计，正是这个 conflict 长期没被发现
+// 的原因。现在首轮返回 true，其余行（10/20/30/40/100 及非整除轮）保持不变。
 func TestShouldInsertSystemReminder(t *testing.T) {
 	cases := []struct {
 		iter int
 		want bool
 	}{
-		{1, false}, {2, false}, {9, false},
+		{1, true}, {2, false}, {9, false},
 		{10, true},
 		{11, false}, {19, false},
 		{20, true},

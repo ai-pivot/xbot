@@ -51,7 +51,7 @@ func TestLoopIterationAppendIntegrity(t *testing.T) {
 	s.processToolResults(ctx, respA, resA)
 	s.postToolProcessing(ctx, respA, 1)
 
-	// reminder 是瞬态的，不再进入 s.messages（见 runState.systemReminder）。
+	// reminder 是瞬态的，不再进入 s.messages（见 llmMessages 的请求前瞬态拼接）。
 	// 这里只校验真实工具对（assistant + tool result）。
 	base := len(s.messages)
 	if s.messages[base-2].Role != "assistant" || len(s.messages[base-2].ToolCalls) != 1 {
