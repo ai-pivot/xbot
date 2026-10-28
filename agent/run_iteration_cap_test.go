@@ -12,12 +12,11 @@ package agent
 //  1. 行为：RunConfig.MaxIterations=N 必须**恰好**放行 N 次 LLM 调用，第 N+1 次之前
 //     返回明确错误（不是空转、不是静默吞掉）；且只吐 tool_calls 的模型不会把内容
 //     冒充成摘要（lastAssistantContent 为空 ⇒ 压缩侧判"没有产出"）。
-//  2. wire：agent/compress.go 的 compressCfg 字面量必须**显式**传 MaxIterations: 1
-//     （删掉这行 ⇒ 上面那条行为判据就再也守不住压缩路径；故单独钉调用点）。
+//  2. wire：`compressRunConfig(...)` 的返回值必须 **MaxIterations == 1**
+//     （纯函数直接断言；不再扫源码字符串 —— 那在重命名/格式化后会假红假绿）。
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -127,61 +126,22 @@ func TestRun_ZeroCapMeansUnlimited(t *testing.T) {
 // 行为判据只证明"引擎支持上限"；压缩是否**用了**它，只有调用点能证明。
 // 判别力自证见 TestCompressCfgBounded_RejectsMutatedLiteral。
 
-// compressCfgLiteral 截取 compress.go 里 compressCfg 的 RunConfig 字面量。
-func compressCfgLiteral(t *testing.T, src string) string {
-	t.Helper()
-	const anchor = "compressCfg := RunConfig{"
-	i := strings.Index(src, anchor)
-	if i < 0 {
-		t.Fatalf("wire: compress.go 里找不到 `%s`（压缩路径被重构？请同步本判据）", anchor)
-	}
-	rest := src[i:]
-	if j := strings.Index(rest, "\n\t}"); j >= 0 {
-		return rest[:j]
-	}
-	t.Fatalf("wire: 无法定位 compressCfg 字面量结尾")
-	return ""
-}
-
-func checkCompressCfgBounded(literal string) error {
-	if !strings.Contains(literal, "MaxIterations: 1") {
-		return errCompressUnbounded
-	}
-	return nil
-}
-
-type errCompressUnboundedType struct{}
-
-func (errCompressUnboundedType) Error() string {
-	return "压缩 Run 未显式设置 MaxIterations: 1 —— 空工具集 + 幻觉 tool_calls 会无限循环至 ctx deadline"
-}
-
-var errCompressUnbounded = errCompressUnboundedType{}
-
+// TestCompressRunIsExplicitlyBounded 钉住压缩 Run 的轮次上限。
+//
+// 2026-10-28 重构（C1，门下省审计）：原实现扫 compress.go 源码里的
+// `compressCfg := RunConfig{` 字面量文本 —— 源码字符串判据在重命名、格式化、
+// 挪动调用点后会假红/假绿，不是有效守卫。现在压缩配置由
+// `compressRunConfig(...)` 纯函数产出，这里**直接断言返回值**。
 func TestCompressRunIsExplicitlyBounded(t *testing.T) {
-	src, err := os.ReadFile("compress.go")
-	if err != nil {
-		t.Fatalf("read compress.go: %v", err)
+	cfg := compressRunConfig(
+		&mockLLM{}, "test-model",
+		[]llm.ChatMessage{llm.NewSystemMessage("sys"), llm.NewUserMessage("summarize")},
+		1024)
+	if cfg.MaxIterations != 1 {
+		t.Fatalf("⛔ 压缩 Run 的 MaxIterations = %d, want 1 —— 空工具集 + 幻觉 tool_calls 会无限循环至 ctx deadline",
+			cfg.MaxIterations)
 	}
-	if err := checkCompressCfgBounded(compressCfgLiteral(t, string(src))); err != nil {
-		t.Fatalf("⛔ %v", err)
-	}
-}
-
-func TestCompressCfgBounded_RejectsMutatedLiteral(t *testing.T) {
-	src, err := os.ReadFile("compress.go")
-	if err != nil {
-		t.Fatalf("read compress.go: %v", err)
-	}
-	literal := compressCfgLiteral(t, string(src))
-	if err := checkCompressCfgBounded(literal); err != nil {
-		t.Fatalf("前置：当前压缩字面量必须已合规：%v", err)
-	}
-	mutated := strings.Replace(literal, "MaxIterations: 1,", "", 1)
-	if mutated == literal {
-		t.Fatal("变异未生效（锚点串变了？请同步更新本测试）")
-	}
-	if err := checkCompressCfgBounded(mutated); err == nil {
-		t.Fatal("⛔ 删掉 MaxIterations: 1 后判据仍然通过 —— 本判据没有判别力")
+	if len(cfg.Tools.AsDefinitionsForSession("", 0)) != 0 {
+		t.Fatalf("压缩 Run 必须使用空工具注册表（got %d 个工具定义）", len(cfg.Tools.AsDefinitionsForSession("", 0)))
 	}
 }

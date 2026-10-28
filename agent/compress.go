@@ -542,6 +542,63 @@ func mergeCompressedResult(compressed string, systemMsgs []llm.ChatMessage, tail
 //  4. Build history text within token budget
 //  5. Call engine.Run() with a compression-focused RunConfig (reuses streaming, retry, sanitization)
 //  6. Build result: [system] + [compaction summary] + [continuation] + [tail messages]
+//
+// compressRunConfig 构造上下文压缩（内部一次性摘要 Run）使用的 RunConfig。
+//
+// 抽成纯函数（C1，2026-10-28 门下省审计）：压缩「不得注入 system_reminder」是
+// 一条安全策略，必须能被**直接断言返回值**；靠扫源码字符串既不稳也会假红假绿
+// （重命名/格式化/gofmt 对齐都能让它失效）。调用点只保留一次函数调用。
+func compressRunConfig(
+	client llm.LLM,
+	model string,
+	compactionMsgs []llm.ChatMessage,
+	maxOutputTokens int,
+) RunConfig {
+	return RunConfig{
+		LLMClient: client,
+		Model:     model,
+		Messages:  compactionMsgs,
+		Tools:     tools.NewRegistry(), // empty — no tools for compression
+		// ⛔ 一次性上限（RunConfig.MaxIterations 是**内部 Run 专用**字段，主对话永不设）：
+		// 压缩是一次摘要调用、且工具注册表为空 —— 模型若幻觉出 tool_calls，引擎会把
+		// "unknown tool" 当工具结果回喂并继续下一轮，没有上限就永不返回（压缩把整个
+		// turn 拖到 ctx deadline，用户看到"卡在压缩"）。触顶 ⇒ output.Error ⇒ 压缩失败
+		// 走既有**非致命**降级（compress_failure_nonfatal_test.go）。
+		MaxIterations: 1,
+		// Stream MUST be true — the same timeout semantics as normal chat.
+		// The non-stream path carries perAttemptCtx's HARD 120s deadline
+		// (llm/retry.go); a large compaction summary (e.g. a 52,884-token
+		// target for a 176k-token context) takes 9-17 minutes at single-stream
+		// decode speeds — every attempt was killed at 120s, all 5 retries
+		// failed, and the turn burned 16 minutes per compression cycle before
+		// re-triggering (870k-context infinite loop, 2026-08-30). The streaming
+		// path has NO total deadline: only the 120s IDLE timeout between SSE
+		// chunks, reset on EVERY chunk (CollectStreamWithCallback) — an
+		// actively-streaming summary never times out. Clients that don't
+		// implement llm.StreamingLLM fall back to Generate automatically
+		// (generateResponse).
+		Stream:       true,
+		ThinkingMode: "",
+		AgentID:      "compressor",
+		// User-configured per-model output budget (PerModelConfig via
+		// ContextManagerConfig) — the target-length cap (outputCap) honors it
+		// ("总是优先用用户配置"). NOTE (CR xbotgh): this field does NOT reach the
+		// HTTP request's max_tokens — generateResponse has no max-tokens param
+		// and the API limit comes from the LLM client's construction-time config
+		// (llm client maxTokens ← subscription/per-model max_output). It only
+		// drives engine-side display/finish-reason detection. The 16k-or-user
+		// output cap above is therefore a PROMPT-level instruction (the
+		// instruction's character budget), not a hard API bound — a model that
+		// ignores the instruction can decode up to the client's configured
+		// max_tokens (default 32_768).
+		MaxOutputTokens: maxOutputTokens,
+		// 压缩是内部一次性摘要，不是对话轮：不注入 system_reminder。
+		// 注入会在请求尾部多出一对 assistant(tool_call)+tool，破坏
+		// 「最后一条消息 = 压缩指令（user）」的契约（TestCompactMessages_* 会红）。
+		DisableSystemReminder: true,
+	}
+}
+
 func compactMessages(
 	ctx context.Context,
 	messages []llm.ChatMessage,
@@ -755,49 +812,7 @@ Output the structured working state directly.`
 		}).Info("Context compaction: flatten fallback (no real usage data or verbatim over budget)")
 	}
 
-	compressCfg := RunConfig{
-		LLMClient: client,
-		Model:     model,
-		Messages:  compactionMsgs,
-		Tools:     tools.NewRegistry(), // empty — no tools for compression
-		// ⛔ 一次性上限（RunConfig.MaxIterations 是**内部 Run 专用**字段，主对话永不设）：
-		// 压缩是一次摘要调用、且工具注册表为空 —— 模型若幻觉出 tool_calls，引擎会把
-		// "unknown tool" 当工具结果回喂并继续下一轮，没有上限就永不返回（压缩把整个
-		// turn 拖到 ctx deadline，用户看到"卡在压缩"）。触顶 ⇒ output.Error ⇒ 压缩失败
-		// 走既有**非致命**降级（compress_failure_nonfatal_test.go）。
-		MaxIterations: 1,
-		// Stream MUST be true — the same timeout semantics as normal chat.
-		// The non-stream path carries perAttemptCtx's HARD 120s deadline
-		// (llm/retry.go); a large compaction summary (e.g. a 52,884-token
-		// target for a 176k-token context) takes 9-17 minutes at single-stream
-		// decode speeds — every attempt was killed at 120s, all 5 retries
-		// failed, and the turn burned 16 minutes per compression cycle before
-		// re-triggering (870k-context infinite loop, 2026-08-30). The streaming
-		// path has NO total deadline: only the 120s IDLE timeout between SSE
-		// chunks, reset on EVERY chunk (CollectStreamWithCallback) — an
-		// actively-streaming summary never times out. Clients that don't
-		// implement llm.StreamingLLM fall back to Generate automatically
-		// (generateResponse).
-		Stream:       true,
-		ThinkingMode: "",
-		AgentID:      "compressor",
-		// User-configured per-model output budget (PerModelConfig via
-		// ContextManagerConfig) — the target-length cap (outputCap) honors it
-		// ("总是优先用用户配置"). NOTE (CR xbotgh): this field does NOT reach the
-		// HTTP request's max_tokens — generateResponse has no max-tokens param
-		// and the API limit comes from the LLM client's construction-time config
-		// (llm client maxTokens ← subscription/per-model max_output). It only
-		// drives engine-side display/finish-reason detection. The 16k-or-user
-		// output cap above is therefore a PROMPT-level instruction (the
-		// instruction's character budget), not a hard API bound — a model that
-		// ignores the instruction can decode up to the client's configured
-		// max_tokens (default 32_768).
-		MaxOutputTokens: maxOutputTokens,
-		// 压缩是内部一次性摘要，不是对话轮：不注入 system_reminder。
-		// 注入会在请求尾部多出一对 assistant(tool_call)+tool，破坏
-		// 「最后一条消息 = 压缩指令（user）」的契约（TestCompactMessages_* 会红）。
-		DisableSystemReminder: true,
-	}
+	compressCfg := compressRunConfig(client, model, compactionMsgs, maxOutputTokens)
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"original_tokens":  originalTokens,

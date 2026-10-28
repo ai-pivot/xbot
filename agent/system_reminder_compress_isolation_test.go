@@ -12,8 +12,8 @@ package agent
 // 三层判据：
 //  1. 开关本身：RunConfig.DisableSystemReminder 在内部一次性 Run 上必须真的生效；
 //  2. 真实链路：compactMessages 发出的请求里不得出现 system_reminder；
-//  3. wire：compress.go 的 compressCfg 字面量必须**显式**写 DisableSystemReminder: true
-//     （删掉这行 ⇒ 1/2 两条行为判据就守不住压缩路径了，故单独钉调用点）。
+//  3. wire：`compressRunConfig(...)` 的返回值必须 DisableSystemReminder == true
+//     （纯函数直接断言；不再扫源码字符串）。
 //
 // 为什么是显式字段而不是 `MaxIterations > 0` 或 `AgentID == "compressor"` 推断：
 // 守卫的失效方式必须是**响的**。显式字段漏设 → 压缩请求形状被破坏 →
@@ -24,8 +24,6 @@ package agent
 
 import (
 	"context"
-	"os"
-	"strings"
 	"testing"
 
 	"xbot/llm"
@@ -102,60 +100,20 @@ func TestCompactRequestHasNoSystemReminder(t *testing.T) {
 	t.Logf("compactMessages 请求 %d 条，均无 system_reminder", len(client.calls))
 }
 
-// checkCompressCfgDisablesReminder 是 wire 判据的纯函数部分（便于变异自证）。
-func checkCompressCfgDisablesReminder(literal string) bool {
-	return strings.Contains(literal, "DisableSystemReminder: true")
-}
-
-// TestCompressCfgDisablesSystemReminder 钉住调用点：compress.go 的 compressCfg
-// 字面量必须显式 DisableSystemReminder: true。
-// 复用 run_iteration_cap_test.go 的 compressCfgLiteral（同一锚点，避免两份解析）。
-func TestCompressCfgDisablesSystemReminder(t *testing.T) {
-	src, err := os.ReadFile("compress.go")
-	if err != nil {
-		t.Fatalf("read compress.go: %v", err)
+// TestCompressRunConfigDisablesSystemReminder 钉住压缩配置的 reminder 策略。
+//
+// 2026-10-28 重构（C1）：原实现扫 compress.go 源码里的字面量文本，
+// 重命名/格式化即失效；现在直接断言 `compressRunConfig(...)` 的返回值。
+// （判别力由 guard-mutation-m3b.txt 证明：把函数里的 true 改成 false，本用例红。）
+func TestCompressRunConfigDisablesSystemReminder(t *testing.T) {
+	cfg := compressRunConfig(
+		&mockLLM{}, "test-model",
+		[]llm.ChatMessage{llm.NewSystemMessage("sys"), llm.NewUserMessage("summarize")},
+		1024)
+	if !cfg.DisableSystemReminder {
+		t.Fatalf("⛔ compressRunConfig 的 DisableSystemReminder = false —— 压缩请求会被注入 system_reminder，破坏「末条 = 指令」契约")
 	}
-	literal := compressCfgLiteral(t, string(src))
-	if !checkCompressCfgDisablesReminder(literal) {
-		t.Fatalf("⛔ compressCfg 未显式设置 DisableSystemReminder: true —— 压缩请求会被注入 system_reminder，破坏「末条 = 指令」契约")
+	if cfg.MaxIterations != 1 {
+		t.Fatalf("压缩 Run 必须 MaxIterations=1（got %d）", cfg.MaxIterations)
 	}
-}
-
-// TestCompressCfgDisableReminder_RejectsMutatedLiteral 判别力自证：
-// 把 DisableSystemReminder: true 从字面量里删掉后，判据必须失败。
-func TestCompressCfgDisableReminder_RejectsMutatedLiteral(t *testing.T) {
-	src, err := os.ReadFile("compress.go")
-	if err != nil {
-		t.Fatalf("read compress.go: %v", err)
-	}
-	literal := compressCfgLiteral(t, string(src))
-	if !checkCompressCfgDisablesReminder(literal) {
-		t.Fatalf("前置：当前压缩字面量必须已合规")
-	}
-	mutated := strings.Replace(literal, "DisableSystemReminder: true,", "", 1)
-	if mutated == literal {
-		t.Fatal("变异未生效（锚点串变了？请同步更新本测试）")
-	}
-	if checkCompressCfgDisablesReminder(mutated) {
-		t.Fatal("⛔ 删掉 DisableSystemReminder: true 后判据仍然通过 —— 本判据没有判别力")
-	}
-}
-
-// TestDisableSystemReminderBeatsIterationPredicate 验证守卫顺序：即使 iteration=1
-// （谓词为真，本应注入），DisableSystemReminder 也必须压住它。
-// 这条钉住「开关判定在谓词之前」这一实现顺序 —— 顺序写反，本用例会红。
-func TestDisableSystemReminderBeatsIterationPredicate(t *testing.T) {
-	cfg, _ := buildReminderTurnConfig(1)
-	cfg.DisableSystemReminder = true
-	s := newRunState(cfg)
-	s.initDynamicInjector()
-
-	msgs := s.llmMessages(1)
-	if _, _, present := findSystemReminderInMessages(msgs); present {
-		t.Fatalf("DisableSystemReminder=true 时 iteration 1 仍注入了 reminder（守卫顺序被改反）")
-	}
-	if len(msgs) != len(s.messages) {
-		t.Fatalf("条数 = %d, want %d（不应附加任何 fake pair）", len(msgs), len(s.messages))
-	}
-	t.Logf("disable=true, iteration=1 → %d messages, no reminder", len(msgs))
 }
