@@ -245,31 +245,36 @@ func TestBuildSystemReminder_SubAgentStatus(t *testing.T) {
 	}
 }
 
-// TestShouldInsertSystemReminder —— 首轮必插，其后每 systemReminderInsertEvery 轮插一次。
-// 插入序列：1, 10, 20, 30 …
+// TestShouldInsertSystemReminder —— 谓词参数化（G1，2026-10-28 御前定稿）：
+// 「本次 Run 的第一轮」= iteration == iterStart+1；其后每 10 轮一次；
+// 首轮与下一个 10k **相邻**时跳过该 10k（保住「相邻两轮不同时注入」）。
 //
-// 历史（2026-10-28 修复）：旧表格里 `{1, false}` 把 bug 行为固化成了「期望」——
-// 引擎的迭代号是 1 基（engine.go: `i := n + s.iterStart`，n 从 1 起），首轮
-// iteration=1 时 `iteration%10==0` 天然为 false，谓词返回 false，与设计承诺的
-// 「首轮必建」直接冲突。测试断言 bug 而不是设计，正是这个 conflict 长期没被发现
-// 的原因。现在首轮返回 true，其余行（10/20/30/40/100 及非整除轮）保持不变。
+// 历史：旧表格只喂 iteration、把 iterStart 隐含为 0，且 `{1,false}` 把 bug 当期望。
 func TestShouldInsertSystemReminder(t *testing.T) {
 	cases := []struct {
-		iter int
-		want bool
+		iterStart int
+		iter      int
+		want      bool
 	}{
-		{1, true}, {2, false}, {9, false},
-		{10, true},
-		{11, false}, {19, false},
-		{20, true},
-		{21, false},
-		{30, true},
-		{40, true},
-		{100, true},
+		// iterStart=0：首轮 1，10/20/30 … 正常
+		{0, 1, true}, {0, 2, false}, {0, 9, false},
+		{0, 10, true}, {0, 11, false}, {0, 19, false},
+		{0, 20, true}, {0, 21, false}, {0, 30, true}, {0, 40, true}, {0, 100, true},
+		// iterStart=1：首轮 2；10 不相邻（2+1=3）→ 2, 10, 20
+		{1, 1, false}, {1, 2, true}, {1, 10, true}, {1, 20, true},
+		// iterStart=4：首轮 5；10 不相邻（6）→ 5, 10, 20
+		{4, 4, false}, {4, 5, true}, {4, 10, true}, {4, 20, true},
+		// iterStart=8：首轮 9；10 与 9 相邻 ⇒ 跳过 10 → 9, 20
+		{8, 8, false}, {8, 9, true}, {8, 10, false}, {8, 19, false}, {8, 20, true},
+		// iterStart=18：首轮 19；20 相邻 ⇒ 跳过 → 19, 30
+		{18, 18, false}, {18, 19, true}, {18, 20, false}, {18, 29, false}, {18, 30, true},
+		// iterStart=9：首轮正好是 10（与 10k 重合，只算一次）→ 10, 20
+		{9, 9, false}, {9, 10, true}, {9, 11, false}, {9, 20, true},
 	}
 	for _, c := range cases {
-		if got := shouldInsertSystemReminder(c.iter); got != c.want {
-			t.Errorf("shouldInsertSystemReminder(%d) = %v, want %v", c.iter, got, c.want)
+		if got := shouldInsertSystemReminder(c.iter, c.iterStart); got != c.want {
+			t.Errorf("shouldInsertSystemReminder(%d, iterStart=%d) = %v, want %v",
+				c.iter, c.iterStart, got, c.want)
 		}
 	}
 }
