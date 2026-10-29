@@ -29,6 +29,7 @@ func setPendingCreatedAt(t *testing.T, a *Agent, ch, chatID string, createdAt ti
 // 三点（全部用注入时钟，全程不 sleep、不读真实时钟 —— 纳秒精度靠真实时钟测不到）：
 //
 //	t = TTL-1ns  → 必须保留：pending 在、不广播、通知仍被拦（blocking=true）
+//	               注：TTL-1ns 点对 `<`→`<=` 不敏感（两值都保留），`<=` 只由 ttl-exact 点抓。
 //	t = TTL 整   → 必须收回。注意：= TTL 整按当前 `<` 语义收回；若实现改成 `<=`，
 //	               本断言必须跟着改成"保留"，那说明边界语义已变，不许只改测试了事。
 //	t = TTL+1ns  → 必须收回
