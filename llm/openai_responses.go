@@ -703,11 +703,12 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 		text    strings.Builder // 权威全文（仅用于与 *.done 校验长度）
 		emitted bool            // 是否已把 text 发给消费端
 		flushed bool            // summary 是否已被兜底补发过（防重复）
+		started bool            // 该 item 是否已向 EventReasoningContent 发过内容（决定 item 间分隔）
 	}
 	reasoningAccs := make(map[string]*reasoningAcc)
 	reasoningOrder := make([]string, 0, 4) // item 首次出现顺序，收尾兜底按此顺序发
 	reasoningCurrentItem := ""             // 当前 item 边界
-	reasoningEmittedAny := false           // 是否已经发过任何 reasoning（决定分隔符）
+	reasoningLastEmittedItem := ""         // 最后一段已发出的内容属于哪个 item
 
 	reasoningAccFor := func(itemID string) *reasoningAcc {
 		if itemID == "" {
@@ -721,12 +722,23 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 		}
 		return acc
 	}
-	emitReasoningDelta := func(s string) {
+	// emitReasoningForItem 是该 item 内容的唯一出口：
+	// 只在「这个 item 的第一段内容」且「前面已经有别的 item 发过内容」时补 "\n\n"——
+	// 分隔符挂在 item 边界上而不是某一类文本上，所以 text→summary、summary→text、
+	// summary→summary、text→text 四种混合顺序都不会粘连；同一 item 的后续 delta
+	// 原样透传，保持流式形状。
+	emitReasoningForItem := func(itemID, s string) {
 		if s == "" {
 			return
 		}
+		if acc := reasoningAccFor(itemID); acc != nil && !acc.started {
+			acc.started = true
+			if reasoningLastEmittedItem != "" && reasoningLastEmittedItem != itemID {
+				s = "\n\n" + s
+			}
+			reasoningLastEmittedItem = itemID
+		}
 		hasReasoning = true
-		reasoningEmittedAny = true
 		eventChan <- StreamEvent{
 			Type:             EventReasoningContent,
 			ReasoningContent: s,
@@ -746,12 +758,7 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			return
 		}
 		acc.flushed = true
-		if reasoningEmittedAny {
-			// item 之间的分隔符只在 Responses 层补，不改共用层。
-			emitReasoningDelta("\n\n" + summary)
-			return
-		}
-		emitReasoningDelta(summary)
+		emitReasoningForItem(itemID, summary)
 	}
 	// switchReasoningItem 在 item 边界先把上一个 item 的占位摘要结账，再切当前 item。
 	switchReasoningItem := func(itemID string) {
@@ -824,7 +831,7 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 					acc.text.WriteString(event.Delta)
 					acc.emitted = true
 				}
-				emitReasoningDelta(event.Delta)
+				emitReasoningForItem(event.ItemID, event.Delta)
 			}
 
 		case "response.reasoning_text.done":
@@ -848,7 +855,7 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 					acc.text.WriteString(finalText)
 					if !acc.emitted {
 						acc.emitted = true
-						emitReasoningDelta(finalText)
+						emitReasoningForItem(event.ItemID, finalText)
 					}
 				}
 			}

@@ -12,8 +12,9 @@ package llm
 //
 // 修复不变量（全部落在 llm/openai_responses.go，共用的 stream.go 一行不动）：
 //   1. summary 只是占位，不实时发；text 才是权威，实时发且只在 text 缺失时被 summary 兜底。
-//   2. 兜底补发按 item 边界（新 item 首次出现 / response.completed / 流结束）触发，
-//      且 item 之间补 "\n\n" 分隔符，绝不粘连。
+//   2. 兜底补发按 item 边界（新 item 首次出现 / response.completed / 流结束）触发；
+//      分隔符挂在 **item 边界** 上（该 item 的第一段内容前补 "\n\n"），与文本种类
+//      （summary/text）无关，同一 item 内的多段 delta 原样拼接，绝不粘连。
 //   3. `*.done` 事件带完整文本：delta 正常时只用来校验长度，delta 缺失时才补发。
 
 import (
@@ -151,5 +152,53 @@ func TestResponsesStream_ReasoningTextDoneAfterDelta_NotDuplicated(t *testing.T)
 	if resp.ReasoningContent != "abc" {
 		t.Errorf("ReasoningContent = %q, want %q（done 在 delta 之后只校验长度，不得重复发）",
 			resp.ReasoningContent, "abc")
+	}
+}
+
+// item 之间的分隔符必须挂在 item 边界上，而不是只挂在「兜底补发的 summary」上：
+// 一个 summary-only item 后面跟一个带全文的 item，同样要分隔，不能粘成 "摘要A全文B"。
+// （2026-10-29 09:53 外部探针 llm/mixed_items_probe_test.go 在 02e02e89 上暴露的缺口。）
+func TestResponsesStream_SummaryOnlyItemThenTextItem_Separated(t *testing.T) {
+	srv := newResponsesSSEServer(t,
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_a","type":"reasoning","summary":[]}}`,
+		`{"type":"response.reasoning_summary_text.delta","item_id":"rs_a","output_index":0,"summary_index":0,"sequence_number":1,"delta":"摘要A"}`,
+		`{"type":"response.output_item.added","output_index":1,"item":{"id":"rs_b","type":"reasoning","summary":[]}}`,
+		`{"type":"response.reasoning_text.delta","item_id":"rs_b","output_index":1,"content_index":0,"sequence_number":2,"delta":"全文B"}`,
+		responsesCompletedEvent,
+	)
+	defer srv.Close()
+
+	if got, want := collectResponsesStream(t, srv.URL).ReasoningContent, "摘要A\n\n全文B"; got != want {
+		t.Errorf("ReasoningContent = %q, want %q（summary-only item 与后续 text item 之间必须分隔）", got, want)
+	}
+}
+
+// 两个都带全文的 item 之间同样要分隔（分隔语义是「item 边界」，与文本种类无关）。
+func TestResponsesStream_TwoTextItems_Separated(t *testing.T) {
+	srv := newResponsesSSEServer(t,
+		`{"type":"response.reasoning_text.delta","item_id":"rs_a","output_index":0,"content_index":0,"sequence_number":1,"delta":"全文A"}`,
+		`{"type":"response.reasoning_text.delta","item_id":"rs_b","output_index":1,"content_index":0,"sequence_number":2,"delta":"全文B"}`,
+		responsesCompletedEvent,
+	)
+	defer srv.Close()
+
+	if got, want := collectResponsesStream(t, srv.URL).ReasoningContent, "全文A\n\n全文B"; got != want {
+		t.Errorf("ReasoningContent = %q, want %q（两个 item 的全文之间必须分隔）", got, want)
+	}
+}
+
+// 判据 h2：分隔符是 per-item 而不是 per-delta —— 同一个 item 内部的多段 delta
+// 必须原样拼接（"全文续写"），绝不能变成 "全文\n\n续写"。
+// 专防把「该 item 第一段」误写成「每一段 delta」。
+func TestResponsesStream_SingleItemMultiDelta_NoSeparatorInsideItem(t *testing.T) {
+	srv := newResponsesSSEServer(t,
+		`{"type":"response.reasoning_text.delta","item_id":"rs_one","output_index":0,"content_index":0,"sequence_number":1,"delta":"全文"}`,
+		`{"type":"response.reasoning_text.delta","item_id":"rs_one","output_index":0,"content_index":0,"sequence_number":2,"delta":"续写"}`,
+		responsesCompletedEvent,
+	)
+	defer srv.Close()
+
+	if got, want := collectResponsesStream(t, srv.URL).ReasoningContent, "全文续写"; got != want {
+		t.Errorf("ReasoningContent = %q, want %q（同一 item 内的多段 delta 不得插入分隔符）", got, want)
 	}
 }
