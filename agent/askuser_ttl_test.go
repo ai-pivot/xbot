@@ -14,6 +14,7 @@ import (
 	"xbot/llm"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
+	"xbot/tools"
 )
 
 // D-03 的终点判据（不启服务）：
@@ -191,14 +192,14 @@ func TestAskUserInterruptReapsExpiredPending(t *testing.T) {
 		t.Fatal("超时收回后没有取消记录行")
 	}
 	var cancelPayload struct {
-		Reason    string `json:"reason"`
-		Cancelled bool   `json:"cancelled"`
+		CancelReason string `json:"cancel_reason"`
+		Cancelled    bool   `json:"cancelled"`
 	}
 	if err := json.Unmarshal([]byte(answers[0].StructuredJSON), &cancelPayload); err != nil {
 		t.Fatalf("取消记录 structured_json 解析失败：%v", err)
 	}
-	if cancelPayload.Reason != "ttl_expired" || !cancelPayload.Cancelled {
-		t.Fatalf("取消记录的 reason 必须是 ttl_expired：%s", answers[0].StructuredJSON)
+	if cancelPayload.CancelReason != "ttl_expired" || !cancelPayload.Cancelled {
+		t.Fatalf("取消记录的 cancel_reason 必须是 ttl_expired：%s", answers[0].StructuredJSON)
 	}
 }
 
@@ -308,12 +309,81 @@ func TestAskUserTTLExpiryExposesCancelReason(t *testing.T) {
 	}
 	found := false
 	for _, row := range answers {
-		if strings.Contains(row.StructuredJSON, `"reason":"ttl_expired"`) {
+		if strings.Contains(row.StructuredJSON, `"cancel_reason":"ttl_expired"`) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("取消记录里没有 reason=ttl_expired（用户看不出为什么被关掉）：%+v", answers[0].StructuredJSON)
+		t.Fatalf("取消记录里没有 cancel_reason=ttl_expired（用户看不出为什么被关掉）：%+v", answers[0].StructuredJSON)
+	}
+}
+
+// TestAskUserTTLExpiryBroadcastsCancelReason 锁住「前端能分辨超时vs主动取消」：
+// resolved 事件必须是 Reason="cancelled" + CancelReason="ttl_expired"。
+//
+// 防什么：「TTL 收回与用户取消同值」——那样前端/日志只能看到 cancelled，
+// 无法对用户解释"为什么问题不见了"。不防：用户主动 /cancel 的 Reason（另有路径）。
+func TestAskUserTTLExpiryBroadcastsCancelReason(t *testing.T) {
+	mt, _ := newAgentHistorySession(t)
+	a := &Agent{multiSession: mt}
+	fake := &fakeResolvedSender{}
+	wireResolvedSender(a, fake)
+
+	a.setPendingAskUser("web", "chat-reason-ev", &protocol.ProgressEvent{RequestID: "req-rev"})
+	backdatePending(t, a, "web", "chat-reason-ev", pendingAskUserTTL+time.Minute)
+	a.autoResolveStalePendingAskUser("web", "chat-reason-ev")
+
+	ev := fake.snapshot()
+	if len(ev) != 1 {
+		t.Fatalf("应广播一条 resolved 事件，实际 %+v", ev)
+	}
+	if ev[0].Reason != "cancelled" {
+		t.Fatalf("Reason 应保持 cancelled（兼容既有客户端），实际 %q", ev[0].Reason)
+	}
+	if ev[0].CancelReason != "ttl_expired" {
+		t.Fatalf("超时收回必须带 cancel_reason=ttl_expired，实际 %q（前端无法分辨超时与主动取消）", ev[0].CancelReason)
+	}
+}
+
+// TestAskUserTTLDoesNotBlockNotifications 锁住「TTL 是真上界」：
+// 提问超过 TTL 后，该会话的后台通知必须能照常排空，不能被 pending 永久拦住。
+//
+// 防什么：handleBgNotifySignal 只看 HasPendingAskUserFast、不看年龄 ⇒ 用户不再
+// 发言时通知永久滞留。不防：TTL 内的拦截至（那是有意行为，另有测试）。
+func TestAskUserTTLDoesNotBlockNotifications(t *testing.T) {
+	mt, _ := newAgentHistorySession(t)
+	a := &Agent{multiSession: mt, bus: bus.NewMessageBus(), agentCtx: context.Background()}
+	key := "web:chat-bg"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(key, ss)
+
+	a.setPendingAskUser("web", "chat-bg", &protocol.ProgressEvent{RequestID: "req-bg"})
+	backdatePending(t, a, "web", "chat-bg", pendingAskUserTTL+time.Minute)
+	a.enqueueBgNotification(&tools.CronFired{Key: key, Sid: "s", Message: "tick"})
+
+	a.handleBgNotifySignal(key, ss)
+
+	// 超时 pending 不得拦住 drain：通知应已被取走（缓冲区空）。
+	if held := a.takePendingBgNotifications(key); len(held) != 0 {
+		t.Fatalf("TTL 到点后通知仍被 pending 拦住（held=%d）：用户不再发言时通知会永久滞留", len(held))
+	}
+}
+
+// TestAskUserFreshPendingStillBlocksNotifications 反向对照：TTL 内的 pending
+// 仍然要拦住通知（提问期间不被打断的既有语义不能被这次修复搞丢）。
+func TestAskUserFreshPendingStillBlocksNotifications(t *testing.T) {
+	mt, _ := newAgentHistorySession(t)
+	a := &Agent{multiSession: mt, bus: bus.NewMessageBus(), agentCtx: context.Background()}
+	key := "web:chat-bg2"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	a.bgSessionStates.Store(key, ss)
+
+	a.setPendingAskUser("web", "chat-bg2", &protocol.ProgressEvent{RequestID: "req-bg2"})
+	a.enqueueBgNotification(&tools.CronFired{Key: key, Sid: "s", Message: "tick"})
+	a.handleBgNotifySignal(key, ss)
+
+	if held := a.takePendingBgNotifications(key); len(held) != 1 {
+		t.Fatalf("新鲜 pending 必须继续拦住通知（held=%d, want 1）", len(held))
 	}
 }

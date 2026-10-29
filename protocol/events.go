@@ -499,7 +499,12 @@ type AskUserResolvedEvent struct {
 	ChatID    string `json:"chat_id"`
 	RequestID string `json:"request_id,omitempty"`
 	// Reason: "answered" | "cancelled" | "rewound" | "cleared".
-	Reason string `json:"reason"`
+	//
+	// CancelReason 只在 Reason=="cancelled" 时有意义，给出**为什么**被取消：
+	// "ttl_expired" = 超过 pendingAskUserTTL 没人答，服务端主动收回（D-03）。
+	// 用户主动 /cancel 不填此字段。前端与 CLI 用它可以区分"我取消的"与"超时关掉的"。
+	Reason       string `json:"reason"`
+	CancelReason string `json:"cancel_reason,omitempty"`
 }
 
 func (AskUserResolvedEvent) EventType() string { return "ask_user_resolved" }

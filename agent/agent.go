@@ -1531,7 +1531,14 @@ func (a *Agent) broadcastAskUserResolved(ch, chatID, requestID, reason string) {
 	if a.channelRange == nil {
 		return
 	}
-	ev := protocol.AskUserResolvedEvent{Channel: ch, ChatID: chatID, RequestID: requestID, Reason: reason}
+	// TTL 收回对外仍是 Reason="cancelled"（保持既有客户端语义不变），
+	// 但额外带上 CancelReason="ttl_expired" —— 用户/日志能分清"我取消的"与
+	// "超时被关掉的"（D-03 契约，别再靠文案区分）。
+	reasonOut, cancelReason := reason, ""
+	if reason == "ttl_expired" {
+		reasonOut, cancelReason = "cancelled", "ttl_expired"
+	}
+	ev := protocol.AskUserResolvedEvent{Channel: ch, ChatID: chatID, RequestID: requestID, Reason: reasonOut, CancelReason: cancelReason}
 	a.channelRange(func(_ string, c channel.Channel) bool {
 		if sender, ok := c.(channel.AskUserResolvedSender); ok {
 			sender.SendAskUserResolved(ev)
@@ -1621,7 +1628,7 @@ func (a *Agent) autoResolveStalePendingAskUser(ch, chatID string) {
 			cancelOpenStructuredAsks(sess, chatID)
 		}
 	}
-	a.resolvePendingAskUser(ch, chatID, "cancelled")
+	a.resolvePendingAskUser(ch, chatID, "ttl_expired")
 }
 
 func clonePendingAskUser(pending *protocol.ProgressEvent) *protocol.ProgressEvent {
@@ -3559,7 +3566,7 @@ func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
 		return
 	}
 	if parts := strings.SplitN(chatKey, ":", 2); len(parts) == 2 {
-		if a.HasPendingAskUserFast(parts[0], parts[1]) {
+		if a.hasBlockingPendingAskUser(parts[0], parts[1]) {
 			return
 		}
 	}
@@ -5549,4 +5556,30 @@ func cancelOpenStructuredAsks(sess *session.TenantSession, chatID string) {
 		log.WithFields(log.Fields{"chat_id": chatID, "message_id": row.ID,
 			"correlation_id": row.CorrelationID}).Info("Structured ask_user cancelled on TTL expiry")
 	}
+}
+
+// hasBlockingPendingAskUser 判断 pending 提问是否仍然"值得拦住通知排空"。
+//
+// 为什么不能直接用 HasPendingAskUserFast：D-03 之后 pending 可以活到 TTL（30m），
+// 而用户可能在这段时间里一言不发 —— 若只看"有没有 pending"，该会话的后台通知
+// 会被永久拦住（TTL 也就不是上界了）。所以这里按**年龄**判：超过
+// pendingAskUserTTL 的 pending 不再拦通知（它会在下一个 turn 起点被收回）。
+//
+// 零值 createdAt（老版本写入 / 测试直接构造）按"仍在等待"处理，保持同步暂停语义。
+func (a *Agent) hasBlockingPendingAskUser(ch, chatID string) bool {
+	if !a.HasPendingAskUserFast(ch, chatID) {
+		return false
+	}
+	value, ok := a.waitingUserSessions.Load(qualifyChatID(ch, chatID))
+	if !ok {
+		return false
+	}
+	entry := value.(*pendingAskUserEntry)
+	entry.mu.RLock()
+	createdAt := entry.createdAt
+	entry.mu.RUnlock()
+	if createdAt.IsZero() {
+		return true
+	}
+	return time.Since(createdAt) < pendingAskUserTTL
 }

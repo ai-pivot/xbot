@@ -455,11 +455,13 @@ func (s *SessionService) AnswerAskUser(tenantID int64, chatID, correlationID, an
 
 // MarkAskUserCancelled 取消一条未回答的 ask_user（写 kind=answer, cancelled=1）。
 func (s *SessionService) MarkAskUserCancelled(tenantID int64, chatID, correlationID, reason, idempotencyKey, senderID string) (int64, int64, bool, error) {
+	// 键名统一为 cancel_reason（D-03 契约）：此前是 "reason"，与
+	// protocol.AskUserResolvedEvent 的 cancel_reason 不一致，前端/日志要按两套键取。
 	payload, _ := json.Marshal(map[string]any{
-		"answers":     []any{},
-		"cancelled":   true,
-		"answered_by": senderID,
-		"reason":      reason,
+		"answers":       []any{},
+		"cancelled":     true,
+		"answered_by":   senderID,
+		"cancel_reason": reason,
 	})
 	return s.AnswerAskUser(tenantID, chatID, correlationID, "已取消", string(payload), idempotencyKey, senderID, senderID, true)
 }
