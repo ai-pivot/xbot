@@ -7,7 +7,7 @@
 import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
-import { hasPendingAskUser, sameSession, sessionKey } from '@/lib/session-grouping'
+import { sameSession, sessionKey } from '@/lib/session-grouping'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
 import type { ExportFormat } from '@/components/agent/api'
 import { SessionItem } from './SessionItem'
@@ -100,7 +100,7 @@ export function SessionGroup({
                 session={s}
                 starred={starred.has(sessionKey(s))}
                 unread={unreadSet.has(sessionKey(s))}
-                pendingAsk={hasPendingAskUser(pendingAskIds, s)}
+                pendingAsk={pendingAskIds?.has(sessionKey(s)) ?? false}
                 active={sameSession(activeSession, s)}
                 onSelect={(id) => onSelect(id, s.channel)}
                 onToggleStar={onToggleStar}

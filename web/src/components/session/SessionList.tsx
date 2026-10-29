@@ -37,7 +37,7 @@ import { SessionGroup } from './SessionGroup'
 import { SessionItem } from './SessionItem'
 import { SessionEmptyState } from './SessionEmptyState'
 import { collapseKey, isSubAgentSession, sortSessions } from '@/lib/session-grouping'
-import { hasPendingAskUser, sameSession, sessionKey } from '@/lib/session-grouping'
+import { sameSession, sessionKey } from '@/lib/session-grouping'
 import { childrenForParent, matchesSelfOrDescendant, isVisibleSubAgent } from './session-tree'
 import { dispatchSessionShortcut, openSessionInBrowserTab, sessionShortcutAction } from './session-shortcuts'
 import { useSessionShortcuts } from '@/hooks/useSessionShortcuts'
@@ -421,7 +421,7 @@ export function SessionList({
                   session={s}
                   starred={starredIds.includes(sessionKey(s))}
                   unread={unreadIds.includes(sessionKey(s))}
-                  pendingAsk={hasPendingAskUser(pendingAskIds, s)}
+                  pendingAsk={pendingAskIds?.has(sessionKey(s)) ?? false}
                   active={sameSession(activeSession, s)}
                   onSelect={() => selectChannel(s)}
                   onToggleStar={onToggleStar}

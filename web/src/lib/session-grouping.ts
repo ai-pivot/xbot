@@ -18,28 +18,6 @@ export function sameSession(a: SessionSelector | null | undefined, b: SessionSel
   return !!a && !!b && (a.channel || 'web') === (b.channel || 'web') && a.chatID === b.chatID
 }
 
-/**
- * askUserPendingKeys — 一个会话在 `askUserPrompts`（store 里那张 `channel:chatID`
- * 的 Map）里可能对应的全部键。
- *
- * 为什么要两个写法：store 的键是 `${channel}:${chatID}`（SSE 原文），而个别渠道
- * 返回的 chatID 本身已经带 `channel:` 前缀（如 `web:chat-A`）—— 直接拼会变成
- * `web:web:chat-A`，角标就永远不亮。这里同时给出「剥掉冗余前缀」与「原样拼接」
- * 两种写法，由调用方 some() 命中即可。
- */
-export function askUserPendingKeys(s: SessionSelector): string[] {
-  const ch = s.channel || 'web'
-  const raw = s.chatID || ''
-  const bare = raw.startsWith(`${ch}:`) ? raw.slice(ch.length + 1) : raw
-  return Array.from(new Set([`${ch}:${bare}`, `${ch}:${raw}`]))
-}
-
-/** 该会话是否有待答提问（D-04：跨会话提示的唯一判据）。 */
-export function hasPendingAskUser(pendingKeys: Set<string> | undefined, s: SessionSelector): boolean {
-  if (!pendingKeys || pendingKeys.size === 0) return false
-  return askUserPendingKeys(s).some((k) => pendingKeys.has(k))
-}
-
 export function isSubAgentSession(s: Pick<SessionInfo, 'chatID' | 'channel' | 'type' | 'parentChatID' | 'fullKey' | 'agentChatID'>): boolean {
   return s.type === 'agent' || !!s.parentChatID || isInteractiveSubAgentTenant(s.channel, s.fullKey || s.agentChatID || s.chatID)
 }
