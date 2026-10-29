@@ -242,6 +242,10 @@ const en: Translations = {
     askUserMultiHint: 'Select all that apply',
     askUserFreeInput: 'Free text (optional)',
     askUserFreeInputPlaceholder: 'Type a custom reply…',
+    // ask_user_resolved withdrawal copy: timed out ≠ cancelled by the user
+    // (two distinct strings; only the timeout one mentions timing out).
+    askUserResolvedTtlExpired: 'The question timed out and was withdrawn — nobody answered in time. You can ask again.',
+    askUserResolvedCancelled: 'The question was cancelled before it was answered.',
     emptyAssistant: '(no text output)',
     emptyResponseWarning: 'The LLM returned no text for this turn. The model output may have ended unexpectedly.',
     displayOnly: 'display only',
