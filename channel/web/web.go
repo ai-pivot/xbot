@@ -828,12 +828,13 @@ func askUserResolvedMessage(ev protocol.AskUserResolvedEvent) protocol.WSMessage
 		ev.Channel = "web"
 	}
 	return protocol.WSMessage{
-		Type:                     protocol.MsgTypeAskUserResolved,
-		TS:                       time.Now().Unix(),
-		Channel:                  ev.Channel,
-		ChatID:                   ev.ChatID,
-		AskUserResolvedRequestID: ev.RequestID,
-		AskUserResolvedReason:    ev.Reason,
+		Type:                        protocol.MsgTypeAskUserResolved,
+		TS:                          time.Now().Unix(),
+		Channel:                     ev.Channel,
+		ChatID:                      ev.ChatID,
+		AskUserResolvedRequestID:    ev.RequestID,
+		AskUserResolvedReason:       ev.Reason,
+		AskUserResolvedCancelReason: ev.CancelReason,
 	}
 }
 
