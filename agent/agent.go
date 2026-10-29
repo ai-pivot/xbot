@@ -737,6 +737,10 @@ type Agent struct {
 type pendingAskUserEntry struct {
 	mu      sync.RWMutex
 	pending *protocol.ProgressEvent
+	// createdAt 是这条待答提问的登记时间（D-03）。只有超过 pendingAskUserTTL
+	// 的入口才算「陈旧」，才允许被下一轮自动收回；新鲜的提问不得因为用户插了
+	// 一句话就被静默取消（旧行为见 autoResolveStalePendingAskUser）。
+	createdAt time.Time
 	// authRecordID is the id of the persisted ask_question control record
 	// this in-memory copy corresponds to (0 until first validated). The
 	// persisted ask_question/ask_answer records are the SINGLE authority:
@@ -1355,7 +1359,7 @@ func (a *Agent) setPendingAskUser(ch, chatID string, pending *protocol.ProgressE
 	}
 	key := qualifyChatID(ch, chatID)
 	for {
-		fresh := &pendingAskUserEntry{pending: clonePendingAskUser(pending)}
+		fresh := &pendingAskUserEntry{pending: clonePendingAskUser(pending), createdAt: time.Now()}
 		value, loaded := a.waitingUserSessions.LoadOrStore(key, fresh)
 		if !loaded {
 			return
@@ -1368,6 +1372,7 @@ func (a *Agent) setPendingAskUser(ch, chatID string, pending *protocol.ProgressE
 			continue
 		}
 		entry.pending = clonePendingAskUser(pending)
+		entry.createdAt = time.Now()
 		entry.mu.Unlock()
 		return
 	}
@@ -1535,23 +1540,85 @@ func (a *Agent) broadcastAskUserResolved(ch, chatID, requestID, reason string) {
 	})
 }
 
-// autoResolveStalePendingAskUser closes the "busy ⇒ no pending" invariant:
-// a turn is starting while the session still has a pending AskUser prompt
-// (the user moved on with a new message, or a stale entry survived a race).
-// The DB pairing (ask_answer "[cancelled]") is written FIRST so the persisted
-// state no longer shows a pending question — otherwise Replay would
-// resurrect the prompt on the next reconnect. Then memory + clients are
-// invalidated via resolvePendingAskUser("cancelled").
+// pendingAskUserTTL 是待答提问的自动收回时限（D-03）。
+//
+// 语义：提问是工单，只有三个出口能收敛它 —— 显式回答、显式取消（/cancel、/stop）、
+// 超时。用户插一句话（新 turn 开始）**不是**出口：旧实现让插话直接 auto-cancel
+// 提问并写一条 [cancelled]，提问从收件箱消失，用户再也答不上（D-03 缺陷本体）。
+//
+// 时限存在的理由：pending 期间 handleBgNotifySignal 会拦住通知排空（提问期间
+// 不应被后台通知打断），所以必须给"没人答"的提问一个上界，否则通知永久滞留。
+//
+// 默认 30 分钟；测试/演练可用 XBOT_PENDING_ASK_TTL 注入更短的时限（如 5s），
+// 生产不设该变量即走默认。改动只影响"多久算陈旧"，不影响"插话不作废"这条语义。
+const defaultPendingAskUserTTL = 30 * time.Minute
+
+var pendingAskUserTTL = pendingAskUserTTLFromEnv()
+
+func pendingAskUserTTLFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("XBOT_PENDING_ASK_TTL"))
+	if raw == "" {
+		return defaultPendingAskUserTTL
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.WithField("raw", raw).Warn("Invalid XBOT_PENDING_ASK_TTL, falling back to 30m")
+		return defaultPendingAskUserTTL
+	}
+	return d
+}
+
+// autoResolveStalePendingAskUser 收回**陈旧**的待答提问（D-03 后语义收窄）。
+//
+// 旧语义：只要下一个 turn 开始、且 session 上还有 pending，就当"用户已经走开了"，
+// 立刻写 ask_answer "[cancelled]" 并 resolvePendingAskUser("cancelled")。用户插一句话
+// 就会把刚问出来的问题静默作废（D-03）。
+//
+// 新语义：pending 只在这三种情况下收敛 —— 显式回答、显式取消、超过
+// pendingAskUserTTL 未答。本函数只负责第三种：新鲜提问一律保留原样返回，
+// 什么都不写、什么都不广播。
+//
+// DB pairing 仍然写 FIRST（ask_answer "[cancelled]"），否则 Replay 会在重连时把
+// 已作废的提问复活。
 func (a *Agent) autoResolveStalePendingAskUser(ch, chatID string) {
 	if !a.HasPendingAskUserFast(ch, chatID) {
 		return
 	}
+	key := qualifyChatID(ch, chatID)
+	value, ok := a.waitingUserSessions.Load(key)
+	if !ok {
+		return
+	}
+	entry := value.(*pendingAskUserEntry)
+	entry.mu.RLock()
+	createdAt := entry.createdAt
+	entry.mu.RUnlock()
+	// 零值（老版本写入/测试直接构造）视为新鲜：宁可留着让用户答，也不静默丢弃。
+	if createdAt.IsZero() || time.Since(createdAt) < pendingAskUserTTL {
+		log.WithFields(log.Fields{
+			"channel": ch, "chat_id": chatID,
+			"age": time.Since(createdAt).String(), "ttl": pendingAskUserTTL.String(),
+		}).Info("Keeping fresh pending AskUser across a new turn (D-03)")
+		return
+	}
+	log.WithFields(log.Fields{
+		"channel": ch, "chat_id": chatID, "age": time.Since(createdAt).String(),
+	}).Info("Auto-cancelling stale pending AskUser (TTL expired)")
 	if a.multiSession != nil {
 		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
-			if _, err := sess.AppendAskAnswer("[cancelled]"); err != nil {
+			// 用户可见的记录（不只写个 [cancelled] 记号）：超时收回必须在历史里
+			// 留下「为什么关掉」的一句话，否则提问就是悄悄没了。
+			if _, err := sess.AppendAskAnswer("[cancelled] 该提问因超时未回答已关闭（ttl_expired）"); err != nil {
 				log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
 					Warn("Failed to append ask_answer pairing for auto-cancelled AskUser")
 			}
+			// 结构化提问也要一起收尾（D-03 known-behavior）：
+			// 内存 pending 只覆盖 AskUser 工具那条链路；/api/message kind=ask_user
+			// 在收件箱里是一行 session_messages 记录。只清内存不置 cancelled，
+			// 用户就会在收件箱里看到一条「还挂着、但永远答不上」的提问——那正是
+			// 「静默蒸发」的另一种形态。这里把该会话所有仍未答/未取消的
+			// ask_user 行按 correlation_id 逐条取消（幂等，已取消的跳过）。
+			cancelOpenStructuredAsks(sess, chatID)
 		}
 	}
 	a.resolvePendingAskUser(ch, chatID, "cancelled")
@@ -3576,12 +3643,11 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 
 			// Mark session busy so chatWorker skips notification drain
 			ss.busy.Store(true)
-			// Invariant: busy ⇒ no pending AskUser. A turn starting while the
-			// session still holds a pending prompt means the user moved on (or
-			// a stale entry survived a race) — the prompt is moot and must be
-			// resolved before the new turn runs. The AskUser ANSWER is exempt:
-			// it resolves its own prompt after the ask_answer record lands
-			// (processMessage → resolvePendingAskUser "answered").
+			// D-03：新 turn 开始**不再**意味着待答提问作废。
+			// 旧 invariant「busy ⇒ no pending」让用户插一句话就把刚问出来的问题静默
+			// cancel 掉（提问从收件箱消失、用户再也答不上）。现在这里只做一件事：
+			// 把**超时未答**的提问收回（pendingAskUserTTL），新鲜提问原样保留。
+			// AskUser ANSWER 仍然免检：它落完 ask_answer 记录后自己 resolve("answered")。
 			if msg.Metadata == nil || msg.Metadata["ask_user_answered"] != "true" {
 				a.autoResolveStalePendingAskUser(msg.Channel, msg.ChatID)
 			}
@@ -5445,3 +5511,42 @@ func (a *Agent) cleanAllMaskStores(maxAgeDays int) {
 // formatToolProgress generates a human-readable one-line summary of a tool call for progress display.
 // It parses the JSON args and extracts the most important parameter(s) based on the tool name.
 // Output is concise, max ~80 chars total.
+
+// cancelOpenStructuredAsks 把某会话里所有「还没答、还没取消」的结构化 ask_user
+// 行置 cancelled（TTL 超时收回时调用）。
+//
+// 为什么需要它：内存 pending 与收件箱行是两套载体 —— 只清内存，收件箱里那条
+// 提问就永远挂在那里且无法回答（/api/answer 要求 correlation_id，而提问已不再
+// 属于任何等待中的回合）。cancelled=true 是用户可查的终态证据。
+//
+// 幂等：已 cancelled / 已 answered / 无 correlation_id 的行一律跳过。
+func cancelOpenStructuredAsks(sess *session.TenantSession, chatID string) {
+	if sess == nil {
+		return
+	}
+	svc, ok := sess.SessionService().(*sqlite.SessionService)
+	if !ok {
+		return
+	}
+	tenantID := sess.TenantID()
+	rows, _, _, err := svc.ListStructuredMessages(tenantID, sqlite.StructuredKindAskUser, 0, 200)
+	if err != nil {
+		log.WithFields(log.Fields{"chat_id": chatID}).WithError(err).
+			Warn("Failed to list structured ask_user rows for TTL cancellation")
+		return
+	}
+	for i := range rows {
+		row := rows[i]
+		if row.ChatID != chatID || row.Cancelled || row.Answered || row.CorrelationID == "" {
+			continue
+		}
+		if _, _, _, err := svc.MarkAskUserCancelled(tenantID, chatID, row.CorrelationID,
+			"ttl_expired", "", "system"); err != nil {
+			log.WithFields(log.Fields{"chat_id": chatID, "message_id": row.ID}).WithError(err).
+				Warn("Failed to mark structured ask_user cancelled on TTL expiry")
+			continue
+		}
+		log.WithFields(log.Fields{"chat_id": chatID, "message_id": row.ID,
+			"correlation_id": row.CorrelationID}).Info("Structured ask_user cancelled on TTL expiry")
+	}
+}

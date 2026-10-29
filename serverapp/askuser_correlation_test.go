@@ -84,3 +84,31 @@ func TestAskUserCorrelationIdEnvelopeMatchesStored(t *testing.T) {
 		t.Fatal("ask_user 的正文渲染为空（用户看不到问的是什么）")
 	}
 }
+
+// TestAskUserCorrelationIdThroughAppendFn 是 D-07 的**入口级**判据：走真实
+// appendFn（/api/message 与 SendMessage 工具共用的落库入口），不是直接调
+// ensureAskCorrelationID —— 只有从这里驱动，删掉 appendFn 里那行调用才会红。
+func TestAskUserCorrelationIdThroughAppendFn(t *testing.T) {
+	ag := newTestAgentForCWD(t)
+	appendFn, _, _, _, _ := structuredCallbacks(ag)
+
+	sel := web.SessionSelector{Channel: "web", ChatID: "chat-entry"}
+	msg, _, err := appendFn("web-1", sel, protocol.StructuredMessageInput{
+		Kind: "ask_user",
+		Payload: map[string]any{
+			"questions": []any{map[string]any{"id": "q1", "question": "选个颜色", "type": "single"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("appendFn 落库失败：%v", err)
+	}
+	if msg == nil {
+		t.Fatal("appendFn 返回 nil 消息")
+	}
+	if msg.CorrelationID == "" {
+		t.Fatal("appendFn 落库的 ask_user 没有 correlation_id：入口侧没发钥匙，/api/answer 必然 400")
+	}
+	if envCorr, _ := msg.Envelope["correlation_id"].(string); envCorr != msg.CorrelationID {
+		t.Fatalf("envelope.correlation_id=%q 与 message.correlation_id=%q 不一致", envCorr, msg.CorrelationID)
+	}
+}
