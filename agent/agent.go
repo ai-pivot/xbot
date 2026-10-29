@@ -1562,6 +1562,36 @@ const defaultPendingAskUserTTL = 30 * time.Minute
 
 var pendingAskUserTTL = pendingAskUserTTLFromEnv()
 
+// askUserClock 是 AskUser TTL 判定唯一允许使用的时钟（D-03 边界判据的注入点）。
+//
+// 生产路径永远走 time.Now（init 里装好，没有任何代码会改它）；只有测试用
+// setAskUserNowForTest 临时替换，用来在没有 sleep、没有真实时钟的情况下断言
+// TTL 的纳秒级边界（TTL-1ns / TTL / TTL+1ns）。
+//
+// 为什么是 atomic.Pointer 而不是裸 `var askUserNow = time.Now`：
+// chatProcessLoop 与 handleBgNotifySignal 跑在不同的 goroutine 里，都会读这个
+// 时钟；裸变量在测试里替换就是数据竞争（-race 会直接报）。存函数指针后，
+// 读侧只有一次原子 Load，热路径开销可忽略。
+var askUserClock atomic.Pointer[func() time.Time]
+
+func init() {
+	now := time.Now
+	askUserClock.Store(&now)
+}
+
+// askUserNow 返回当前时间。所有 TTL 判断都必须走它，不许直接 time.Now/time.Since，
+// 否则注入时钟的边界判据会漏掉那条路径（两条路径必须是同一语义）。
+func askUserNow() time.Time {
+	return (*askUserClock.Load())()
+}
+
+// setAskUserNowForTest 替换时钟并返回还原函数。仅供测试使用。
+func setAskUserNowForTest(f func() time.Time) (restore func()) {
+	old := askUserClock.Load()
+	askUserClock.Store(&f)
+	return func() { askUserClock.Store(old) }
+}
+
 func pendingAskUserTTLFromEnv() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("XBOT_PENDING_ASK_TTL"))
 	if raw == "" {
@@ -1600,16 +1630,20 @@ func (a *Agent) autoResolveStalePendingAskUser(ch, chatID string) {
 	entry.mu.RLock()
 	createdAt := entry.createdAt
 	entry.mu.RUnlock()
+	age := askUserNow().Sub(createdAt)
 	// 零值（老版本写入/测试直接构造）视为新鲜：宁可留着让用户答，也不静默丢弃。
-	if createdAt.IsZero() || time.Since(createdAt) < pendingAskUserTTL {
+	// 边界语义：age < pendingAskUserTTL 保留，age == pendingAskUserTTL 即收回
+	// （严格小于；改成 <= 会让 TTL 变成「多留 1ns」，且与 hasBlockingPendingAskUser
+	// 的语义分叉 —— 两条路径必须同一语义，见 TestAskUserTTLBoundaryInjectedClock）。
+	if createdAt.IsZero() || age < pendingAskUserTTL {
 		log.WithFields(log.Fields{
 			"channel": ch, "chat_id": chatID,
-			"age": time.Since(createdAt).String(), "ttl": pendingAskUserTTL.String(),
+			"age": age.String(), "ttl": pendingAskUserTTL.String(),
 		}).Info("Keeping fresh pending AskUser across a new turn (D-03)")
 		return
 	}
 	log.WithFields(log.Fields{
-		"channel": ch, "chat_id": chatID, "age": time.Since(createdAt).String(),
+		"channel": ch, "chat_id": chatID, "age": age.String(),
 	}).Info("Auto-cancelling stale pending AskUser (TTL expired)")
 	if a.multiSession != nil {
 		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
@@ -5581,5 +5615,7 @@ func (a *Agent) hasBlockingPendingAskUser(ch, chatID string) bool {
 	if createdAt.IsZero() {
 		return true
 	}
-	return time.Since(createdAt) < pendingAskUserTTL
+	// 与 autoResolveStalePendingAskUser 同一语义：age < TTL 拦住，age == TTL 已过期
+	// 不再拦（它会在下一个 turn 起点被收回）。两处都用 askUserNow()，同一时钟。
+	return askUserNow().Sub(createdAt) < pendingAskUserTTL
 }
