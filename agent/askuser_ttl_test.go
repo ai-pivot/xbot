@@ -227,3 +227,49 @@ func TestAskUserInterruptReapsExpiredThroughProcessLoop(t *testing.T) {
 	}
 	t.Fatal("超时提问在 loop 起点没有被收回：call-site 丢了，或者 TTL 判据没生效（pending 会永远挂住）")
 }
+
+// TestAskUserTTLExpiryExposesCancelReason 锁住「取消原因可查」：
+// 超时收回后，取消记录里必须带 reason=ttl_expired（API 把它作为 payload 返回），
+// 否则用户只知道"没了"，不知道为什么没了。
+func TestAskUserTTLExpiryExposesCancelReason(t *testing.T) {
+	mt, _ := newAgentHistorySession(t)
+	sess, err := mt.GetOrCreateSession("web", "chat-reason")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, ok := sess.SessionService().(*sqlite.SessionService)
+	if !ok {
+		t.Fatal("session service is not *sqlite.SessionService")
+	}
+	tenantID := sess.TenantID()
+	if _, _, err := svc.AppendStructuredMessage(tenantID, sqlite.StructuredMessage{
+		ChatID: "chat-reason", Kind: sqlite.StructuredKindAskUser, CorrelationID: "ask-reason-1",
+		Direction: "in", Role: "assistant", Content: "选个颜色",
+		SenderType: "user", SenderID: "web-1", SenderName: "web-1", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{multiSession: mt}
+	a.setPendingAskUser("web", "chat-reason", &protocol.ProgressEvent{RequestID: "req-reason"})
+	backdatePending(t, a, "web", "chat-reason", pendingAskUserTTL+time.Minute)
+	a.autoResolveStalePendingAskUser("web", "chat-reason")
+
+	answers, _, _, err := svc.ListStructuredMessages(tenantID, "answer", 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(answers) == 0 {
+		t.Fatal("超时收回后没有取消记录行")
+	}
+	found := false
+	for _, row := range answers {
+		if strings.Contains(row.StructuredJSON, `"reason":"ttl_expired"`) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("取消记录里没有 reason=ttl_expired（用户看不出为什么被关掉）：%+v", answers[0].StructuredJSON)
+	}
+}
