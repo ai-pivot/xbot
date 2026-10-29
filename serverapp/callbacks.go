@@ -1255,12 +1255,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	return callbacks
 }
 
-func applyWebRunningStatuses(ag *agent.Agent, rows []web.UserChatWithPreview) {
-	for i := range rows {
-		applyWebRunningStatus(ag, &rows[i])
-	}
-}
-
+// applyWebRunningStatus sets one row's running status from the agent's live
+// state. 注：曾有一个批量版 applyWebRunningStatuses(rows) 包装（a089a9359 加入），
+// 自 82794d3b/07bde7cd 起所有列表接口改用 applyWebRunningStatusesFast（预计算快照），
+// 该包装已无调用方 → 2026-10-29 依 golangci-lint unused 删除（纯死代码，无行为变化）。
 func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 	if row == nil {
 		return
