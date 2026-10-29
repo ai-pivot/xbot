@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"sync"
@@ -137,6 +138,9 @@ func TestAskUserInterruptReapsExpiredPending(t *testing.T) {
 	if len(ev) != 1 || ev[0].Reason != "cancelled" {
 		t.Fatalf("超时收回必须广播一条 resolved(cancelled)，实际 %+v", ev)
 	}
+	if ev[0].Channel != "web" || ev[0].ChatID != "chat-stale" || ev[0].RequestID != "req-stale" {
+		t.Fatalf("resolved 广播的 channel/chat_id/request_id 不对，前端无法定位要撤的角标：%+v", ev[0])
+	}
 	// Replay 不复活提问的依据。
 	_, recordType, err := sess.SessionService().LatestAskControlRecord(tenantID)
 	if err != nil {
@@ -145,7 +149,30 @@ func TestAskUserInterruptReapsExpiredPending(t *testing.T) {
 	if recordType != sqlite.HistoryRecordAskAnswer {
 		t.Fatalf("超时收回必须落 ask_answer 配对：最新控制记录 = %q", recordType)
 	}
-	// 用户可查的终态：收件箱里那条提问必须 cancelled=true。
+	// 历史里必须留下用户可见的一句话（御前判据：不能只写个 [cancelled] 记号）。
+	const wantHistory = "[cancelled] 该提问因超时未回答已关闭（ttl_expired）"
+	records, err := svc.GetFullHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyFound := false
+	for _, rec := range records {
+		if rec.Type != sqlite.HistoryRecordAskAnswer {
+			continue
+		}
+		var ans sqlite.AskAnswerRecord
+		if err := json.Unmarshal(rec.Data, &ans); err != nil {
+			continue
+		}
+		if strings.Contains(ans.Answer, wantHistory) {
+			historyFound = true
+			break
+		}
+	}
+	if !historyFound {
+		t.Fatalf("历史里没有可见记录 %q（用户看不出提问为什么消失）", wantHistory)
+	}
+	// 用户可查的终态：收件箱里那条提问必须 cancelled=true，且取消记录 reason=ttl_expired。
 	rows, _, _, err := svc.ListStructuredMessages(tenantID, sqlite.StructuredKindAskUser, 0, 50)
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +182,23 @@ func TestAskUserInterruptReapsExpiredPending(t *testing.T) {
 	}
 	if !rows[0].Cancelled {
 		t.Fatalf("超时收回后 inbox 行必须 cancelled=true（否则用户看到一条答不上的提问），实际 %+v", rows[0])
+	}
+	answers, _, _, err := svc.ListStructuredMessages(tenantID, sqlite.StructuredKindAnswer, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(answers) == 0 {
+		t.Fatal("超时收回后没有取消记录行")
+	}
+	var cancelPayload struct {
+		Reason    string `json:"reason"`
+		Cancelled bool   `json:"cancelled"`
+	}
+	if err := json.Unmarshal([]byte(answers[0].StructuredJSON), &cancelPayload); err != nil {
+		t.Fatalf("取消记录 structured_json 解析失败：%v", err)
+	}
+	if cancelPayload.Reason != "ttl_expired" || !cancelPayload.Cancelled {
+		t.Fatalf("取消记录的 reason 必须是 ttl_expired：%s", answers[0].StructuredJSON)
 	}
 }
 
