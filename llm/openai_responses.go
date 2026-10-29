@@ -37,6 +37,15 @@ func sanitizeID(s string) string {
 	return b.String()
 }
 
+// truncateForLog 返回最多 n 字节的预览，避免整段 reasoning 打爆日志。
+// 只用于日志字段，不做语义用途。
+func truncateForLog(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
 // ---------------------------------------------------------------------------
 // Reasoning items (Responses API) — 加密思维链的捕获与回传
 // ---------------------------------------------------------------------------
@@ -680,12 +689,85 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 	}
 	toolCallsByID := make(map[string]*toolCallState)
 	toolCallList := make([]*toolCallState, 0)
-	// Reasoning dedup: `reasoning_text.delta` carries the FULL reasoning text and
-	// `reasoning_summary_text.delta` a condensed summary. Both map to
-	// EventReasoningContent, so a provider that emits BOTH would double the
-	// reasoning text. Prefer the full text per reasoning item: once an item has
-	// delivered text deltas, its summary deltas are ignored.
-	reasoningItemHasText := make(map[string]bool)
+	// Reasoning 归属模型（Responses API 专属，共用层只做无脑累积）：
+	//   - `reasoning_text.*` 是**权威全文**，实时转发；
+	//   - `reasoning_summary_text.*` 是**概括占位**，只累积、不实时发；
+	//   - 只有当一个 item 全程没有 text 时，才在 item 边界（新 item 首次出现 /
+	//     response.completed / 流结束）把它的 summary 兜底补发一次，并在 item
+	//     之间补 "\n\n" 分隔符，绝不粘连。
+	// 旧实现用 map[string]bool 做单向闸门（text 到了才拦 summary），挡不住服务端
+	// 正常顺序「摘要先成型、全文后到」——摘要已经写进 builder，全文再来是追加，
+	// 撤不回，于是拼成 "[摘要占位]真正全文"。
+	type reasoningAcc struct {
+		summary strings.Builder // 占位概括（仅兜底用）
+		text    strings.Builder // 权威全文（仅用于与 *.done 校验长度）
+		emitted bool            // 是否已把 text 发给消费端
+		flushed bool            // summary 是否已被兜底补发过（防重复）
+	}
+	reasoningAccs := make(map[string]*reasoningAcc)
+	reasoningOrder := make([]string, 0, 4) // item 首次出现顺序，收尾兜底按此顺序发
+	reasoningCurrentItem := ""             // 当前 item 边界
+	reasoningEmittedAny := false           // 是否已经发过任何 reasoning（决定分隔符）
+
+	reasoningAccFor := func(itemID string) *reasoningAcc {
+		if itemID == "" {
+			return nil
+		}
+		acc := reasoningAccs[itemID]
+		if acc == nil {
+			acc = &reasoningAcc{}
+			reasoningAccs[itemID] = acc
+			reasoningOrder = append(reasoningOrder, itemID)
+		}
+		return acc
+	}
+	emitReasoningDelta := func(s string) {
+		if s == "" {
+			return
+		}
+		hasReasoning = true
+		reasoningEmittedAny = true
+		eventChan <- StreamEvent{
+			Type:             EventReasoningContent,
+			ReasoningContent: s,
+		}
+	}
+	// flushReasoningSummary 把「全程没有 text」的 item 的摘要补发出去。
+	flushReasoningSummary := func(itemID string) {
+		if itemID == "" {
+			return
+		}
+		acc := reasoningAccs[itemID]
+		if acc == nil || acc.emitted || acc.flushed {
+			return
+		}
+		summary := acc.summary.String()
+		if summary == "" {
+			return
+		}
+		acc.flushed = true
+		if reasoningEmittedAny {
+			// item 之间的分隔符只在 Responses 层补，不改共用层。
+			emitReasoningDelta("\n\n" + summary)
+			return
+		}
+		emitReasoningDelta(summary)
+	}
+	// switchReasoningItem 在 item 边界先把上一个 item 的占位摘要结账，再切当前 item。
+	switchReasoningItem := func(itemID string) {
+		if itemID == "" || itemID == reasoningCurrentItem {
+			return
+		}
+		flushReasoningSummary(reasoningCurrentItem)
+		reasoningCurrentItem = itemID
+	}
+	// flushAllReasoningSummaries 用于 response.completed / 流结束（含 incomplete、
+	// 断流）时的收尾：按 item 首次出现顺序补发所有尚未结账的摘要。
+	flushAllReasoningSummaries := func() {
+		for _, itemID := range reasoningOrder {
+			flushReasoningSummary(itemID)
+		}
+	}
 	// Reasoning items (Responses API)：捕获 id + encrypted_content 以便原样回传
 	// （见 responsesInclude / toResponsesParams）。同一个 item 可能在
 	// `response.output_item.done` 与 `response.completed.response.output` 各出现一次
@@ -735,29 +817,66 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			}
 
 		case "response.reasoning_text.delta":
-			// Full reasoning text delta — authoritative for this item.
+			// 权威全文 delta：实时转发，并标记该 item 已发过 text。
 			if event.Delta != "" {
-				hasReasoning = true
-				reasoningItemHasText[event.ItemID] = true
-				eventChan <- StreamEvent{
-					Type:             EventReasoningContent,
-					ReasoningContent: event.Delta,
+				switchReasoningItem(event.ItemID)
+				if acc := reasoningAccFor(event.ItemID); acc != nil {
+					acc.text.WriteString(event.Delta)
+					acc.emitted = true
+				}
+				emitReasoningDelta(event.Delta)
+			}
+
+		case "response.reasoning_text.done":
+			// done 带完整最终文本：delta 正常时只用来校验长度（不重复发），
+			// delta 一个都没来时用它补发。
+			switchReasoningItem(event.ItemID)
+			if acc := reasoningAccFor(event.ItemID); acc != nil {
+				finalText := event.Text
+				if finalText != "" {
+					if streamed := acc.text.String(); streamed != "" && streamed != finalText {
+						l.WithFields(log.Fields{
+							"provider":      "openai-responses",
+							"item_id":       event.ItemID,
+							"streamed_len":  len(streamed),
+							"done_len":      len(finalText),
+							"streamed_head": truncateForLog(streamed, 120),
+							"done_head":     truncateForLog(finalText, 120),
+						}).Warn("[LLM] reasoning_text.done 与流式累积长度不一致（以 delta 为准，不重发）")
+					}
+					acc.text.Reset()
+					acc.text.WriteString(finalText)
+					if !acc.emitted {
+						acc.emitted = true
+						emitReasoningDelta(finalText)
+					}
 				}
 			}
 
 		case "response.reasoning_summary_text.delta":
-			// Reasoning summary delta — skipped when this item already delivered
-			// its full reasoning text (prevents duplicated reasoning).
-			if event.Delta != "" && !reasoningItemHasText[event.ItemID] {
-				hasReasoning = true
-				eventChan <- StreamEvent{
-					Type:             EventReasoningContent,
-					ReasoningContent: event.Delta,
+			// 概括占位：只累积，不实时发（text 才是权威）。
+			if event.Delta != "" {
+				switchReasoningItem(event.ItemID)
+				if acc := reasoningAccFor(event.ItemID); acc != nil {
+					acc.summary.WriteString(event.Delta)
 				}
+			}
+
+		case "response.reasoning_summary_text.done":
+			// 只校正摘要缓存，不发（是否兜底补发由 item 边界决定）。
+			switchReasoningItem(event.ItemID)
+			if acc := reasoningAccFor(event.ItemID); acc != nil && event.Text != "" {
+				acc.summary.Reset()
+				acc.summary.WriteString(event.Text)
 			}
 
 		case "response.output_item.added":
 			// New output item — track function calls
+			if event.Item.Type == "reasoning" {
+				// reasoning item 边界：上一个 item 若全程没 text，就在这里把它的
+				// 占位摘要结账，避免多 item 摘要挤在收尾处（也避免粘连）。
+				switchReasoningItem(event.Item.ID)
+			}
 			if event.Item.Type == "function_call" {
 				callID := event.Item.CallID
 				if callID == "" {
@@ -839,6 +958,8 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			}
 
 		case "response.completed":
+			// Response completed — 先把还没结账的占位摘要补发（最后一个 item）。
+			flushAllReasoningSummaries()
 			// Response completed — extract usage and finish reason
 			completed := event.Response
 			lastUsage = &TokenUsage{
@@ -911,6 +1032,11 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 		}
 		return
 	}
+
+	// 流结束（含没有 response.completed 的断流 / response.incomplete）收尾：
+	// 补发所有「全程没有 text」的 item 的占位摘要。必须在下面的空流判定之前，
+	// 否则 summary-only 模型会被误判成空流。
+	flushAllReasoningSummaries()
 
 	// Empty-stream detection (issue #282, 与 chat completions 路径同构)：provider/
 	// 代理可能回 200 text/event-stream 却一个事件都不发就关掉 body，或只发不带
