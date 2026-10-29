@@ -14,6 +14,8 @@ import (
 	"xbot/protocol"
 	"xbot/storage/sqlite"
 	"xbot/tools"
+
+	"github.com/google/uuid"
 )
 
 // structured_callbacks.go — 结构化消息 WebCallbacks 的真实实现。
@@ -187,6 +189,29 @@ func structuredRole(kind string) string {
 	}
 }
 
+// newAskCorrelationID 生成 ask_user 的关联键（工单钥匙）。
+//
+// 形状 ask-<uuid>：前缀让日志/前端一眼分开「回答钥匙」与 message_id；用 UUID 而不是
+// 自增 id，是因为 correlation_id 会跨会话、跨渠道出现，必须全局唯一且不可猜。
+func newAskCorrelationID() string {
+	return "ask-" + uuid.NewString()
+}
+
+// ensureAskCorrelationID 只给「缺钥匙的 ask_user」补发钥匙，其余输入原样返回。
+//
+// 三条边界（都有单测）：
+//   - 客户端显式给了 correlation_id ⇒ 尊重（幂等重投、导回填都靠它对齐）；
+//   - 非 ask_user ⇒ 不碰（report/decision/text 的 correlation_id 语义不同，
+//     凭空生成会让 reply_to 闭环对不上）；
+//   - 只补一次：入参已是最终值，落库与 envelope 共用同一个 input，天然同值。
+func ensureAskCorrelationID(input protocol.StructuredMessageInput) protocol.StructuredMessageInput {
+	if input.Kind != "ask_user" || strings.TrimSpace(input.CorrelationID) != "" {
+		return input
+	}
+	input.CorrelationID = newAskCorrelationID()
+	return input
+}
+
 // buildStructuredEnvelope 生成完整信封 JSON（服务端填充 from/created_at）。
 func buildStructuredEnvelope(senderID string, sel web.SessionSelector, input protocol.StructuredMessageInput) map[string]any {
 	return map[string]any{
@@ -329,6 +354,12 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		if input.Kind == "answer" {
 			return answerViaMessage(senderID, sel, svc, tenantID, ag, activityIdx, input)
 		}
+		// D-07：ask_user 是「可回答的工单」，correlation_id 是回答它的唯一钥匙。
+		// 创建方是服务端，所以钥匙必须由服务端发——客户端（Web 表单 / SendMessage
+		// 工具 / 飞书卡片）都可能不带。此前落库 correlation_id="" 时，/api/answer
+		// 对空值一律 400（correlation_id is required），提问在结构上不可回答：
+		// 用户看得见、点回答必失败。生成点放在落库之前，envelope 与 message 同值。
+		input = ensureAskCorrelationID(input)
 		createdAt, err := parseStructuredCreatedAt(input.CreatedAt)
 		if err != nil {
 			return nil, false, err
