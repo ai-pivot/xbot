@@ -137,6 +137,7 @@ const zhCN = {
     deleteConfirm: '确定删除会话「{{name}}」吗？此操作不可撤销。',
     clearSelection: "清空选择",
     markRead: "标为已读",
+    pendingAskBadge: "有提问等你处理",
     selectionVisibleOnly: "仅选择当前显示的主会话。切换筛选会清空选择。",
     selectionLoadedOnly: "仅选择当前已加载且显示的主会话，还有更多会话未加载。",
     batchWorking: "正在处理所选会话…",

@@ -82,6 +82,15 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   }, [searchOpen, closeSearch])
   const [channelPickerOpen, setChannelPickerOpen] = useState(false)
 
+  // D-04：待答提问键集合（`channel:chatID`）—— 用户切到别的会话后，
+  // 「有一条提问在等我处理」只能靠侧栏角标表达；store 已经把跨会话 SSE 的
+  // ask_user/ask_user_resolved 都记在这张 Map 上（见 useSessionStore）。
+  const pendingAskIds = useMemo(
+    // 防御：有些测试/宿主只 mock 了 store 的一部分字段，缺 askUserPrompts 时按「无待答」处理。
+    () => new Set((store.askUserPrompts ?? new Map<string, never>()).keys()),
+    [store.askUserPrompts],
+  )
+
   // Channel-filtered sessions
   const filteredSessions = useMemo(() => {
     if (!store.activeChannel) return store.sessions
@@ -329,6 +338,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           onToggleGroup={store.toggleGroupCollapsed}
           starredIds={store.starredIds}
           unreadIds={store.unreadIds}
+          pendingAskIds={pendingAskIds}
           activeSession={store.activeSession}
           search={search}
           subAgents={store.subAgents}

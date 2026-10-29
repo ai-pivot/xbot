@@ -7,7 +7,7 @@
 import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
-import { sameSession, sessionKey } from '@/lib/session-grouping'
+import { hasPendingAskUser, sameSession, sessionKey } from '@/lib/session-grouping'
 import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
 import type { ExportFormat } from '@/components/agent/api'
 import { SessionItem } from './SessionItem'
@@ -35,6 +35,8 @@ interface SessionGroupProps {
   /** Multi-select mode props (passed through to SessionItem). */
   multiSelectMode?: boolean
   selectedIds?: Set<string>
+  /** D-04：处于「待答提问」状态的会话键集合（`channel:chatID`，来自 store 的 askUserPrompts）。 */
+  pendingAskIds?: Set<string>
   onToggleSelect?: (key: string, shiftKey: boolean) => void
   /** Drag-and-drop reorder. */
   onDragStartItem?: (key: string) => void
@@ -59,6 +61,7 @@ export function SessionGroup({
   onExportOptions,
   multiSelectMode = false,
   selectedIds,
+  pendingAskIds,
   onToggleSelect,
   onDragStartItem,
   onDropItem,
@@ -97,6 +100,7 @@ export function SessionGroup({
                 session={s}
                 starred={starred.has(sessionKey(s))}
                 unread={unreadSet.has(sessionKey(s))}
+                pendingAsk={hasPendingAskUser(pendingAskIds, s)}
                 active={sameSession(activeSession, s)}
                 onSelect={(id) => onSelect(id, s.channel)}
                 onToggleStar={onToggleStar}

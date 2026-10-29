@@ -37,7 +37,7 @@ import { SessionGroup } from './SessionGroup'
 import { SessionItem } from './SessionItem'
 import { SessionEmptyState } from './SessionEmptyState'
 import { collapseKey, isSubAgentSession, sortSessions } from '@/lib/session-grouping'
-import { sameSession, sessionKey } from '@/lib/session-grouping'
+import { hasPendingAskUser, sameSession, sessionKey } from '@/lib/session-grouping'
 import { childrenForParent, matchesSelfOrDescendant, isVisibleSubAgent } from './session-tree'
 import { dispatchSessionShortcut, openSessionInBrowserTab, sessionShortcutAction } from './session-shortcuts'
 import { useSessionShortcuts } from '@/hooks/useSessionShortcuts'
@@ -54,6 +54,8 @@ interface SessionListProps {
   onToggleGroup: (key: string) => void
   starredIds: string[]
   unreadIds: string[]
+  /** D-04：处于「待答提问」状态的会话键集合（`channel:chatID`）。 */
+  pendingAskIds?: Set<string>
   activeSession: SessionSelector | null
   search: string
   /** Deprecated compatibility prop. The canonical source is sessions[].children. */
@@ -103,6 +105,7 @@ export function SessionList({
   onReorder,
   hasMore = false,
   onLoadMore,
+  pendingAskIds,
 }: SessionListProps) {
   const { t } = useI18n()
   const isMobile = useIsMobile()
@@ -418,6 +421,7 @@ export function SessionList({
                   session={s}
                   starred={starredIds.includes(sessionKey(s))}
                   unread={unreadIds.includes(sessionKey(s))}
+                  pendingAsk={hasPendingAskUser(pendingAskIds, s)}
                   active={sameSession(activeSession, s)}
                   onSelect={() => selectChannel(s)}
                   onToggleStar={onToggleStar}
@@ -463,6 +467,7 @@ export function SessionList({
                 onToggle={() => onToggleGroup(ck)}
                 starredIds={starredIds}
                 unreadIds={unreadIds}
+                pendingAskIds={pendingAskIds}
                 activeSession={activeSession}
                 onSelect={onSelect}
                 onToggleStar={onToggleStar}

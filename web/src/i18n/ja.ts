@@ -140,6 +140,7 @@ const ja: Translations = {
     deleteConfirm: 'セッション「{{name}}」を削除しますか？この操作は取り消せません。',
     clearSelection: "選択を解除",
     markRead: "既読にする",
+    pendingAskBadge: "回答待ちの質問があります",
     selectionVisibleOnly: "表示中のメインセッションのみ選択します。フィルター変更で選択を解除します。",
     selectionLoadedOnly: "読み込み済みで表示中のメインセッションのみ選択します。未読み込みのセッションがあります。",
     batchWorking: "選択したセッションを処理中…",

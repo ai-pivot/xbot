@@ -141,6 +141,7 @@ const en: Translations = {
     deleteConfirm: 'Delete session "{{name}}"? This cannot be undone.',
     clearSelection: "Clear selection",
     markRead: "Mark as read",
+    pendingAskBadge: "A question is waiting for you",
     selectionVisibleOnly: "Only visible main sessions are selected. Changing filters clears selection.",
     selectionLoadedOnly: "Only loaded, visible main sessions are selected. More sessions remain unloaded.",
     batchWorking: "Processing selected sessions…",
