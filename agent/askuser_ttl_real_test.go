@@ -123,6 +123,9 @@ func TestAskUserTTLThirtyMinutesReal(t *testing.T) {
 	if got.Channel != "web" || got.ChatID != chatID || got.RequestID != requestID || got.Reason != "cancelled" {
 		t.Fatalf("T+31m：resolved 广播内容不对（侧栏角标撤不掉）：%+v", got)
 	}
+	if got.CancelReason != "ttl_expired" {
+		t.Fatalf("T+31m：广播必须带 cancel_reason=ttl_expired（前端要能分辨超时与主动取消）：%+v", got)
+	}
 	t.Logf("T+31m 广播 OK：%+v", got)
 
 	// d) 收件箱：问句行 cancelled=true（否则用户看到一条永远答不上的提问）。
@@ -151,13 +154,13 @@ func TestAskUserTTLThirtyMinutesReal(t *testing.T) {
 		t.Fatalf("T+31m：取消记录行 cancelled=false：%+v", *answer)
 	}
 	var payload struct {
-		Reason    string `json:"reason"`
-		Cancelled bool   `json:"cancelled"`
+		CancelReason string `json:"cancel_reason"`
+		Cancelled    bool   `json:"cancelled"`
 	}
 	if err := json.Unmarshal([]byte(answer.StructuredJSON), &payload); err != nil {
 		t.Fatalf("T+31m：取消记录 structured_json 解析失败：%v（%s）", err, answer.StructuredJSON)
 	}
-	if payload.Reason != "ttl_expired" || !payload.Cancelled {
+	if payload.CancelReason != "ttl_expired" || !payload.Cancelled {
 		t.Fatalf("T+31m：取消原因不是 ttl_expired：%s", answer.StructuredJSON)
 	}
 
@@ -183,7 +186,7 @@ func TestAskUserTTLThirtyMinutesReal(t *testing.T) {
 	if !historyFound {
 		t.Fatalf("T+31m：历史里没有可见记录 %q（提问悄悄消失，用户看不出原因）", wantHistory)
 	}
-	t.Logf("T+31m 收回 OK：cancelled=%v reason=%s", question.Cancelled, payload.Reason)
+	t.Logf("T+31m 收回 OK：cancelled=%v cancel_reason=%s", question.Cancelled, payload.CancelReason)
 }
 
 // findStructuredByCorrelation 取指定 correlation_id 的最新一条结构化消息
