@@ -13,7 +13,7 @@ import type { StructuredKind, StructuredMessage } from './types'
 const { toastMock } = vi.hoisted(() => ({ toastMock: vi.fn() }))
 vi.mock('sonner', () => ({ toast: toastMock }))
 
-import { getInboxState, refreshInbox, resetInboxStore, resolveInboxCard } from './inboxStore'
+import { getInboxScope, getInboxState, refreshInbox, resetInboxStore, resolveInboxCard, setInboxScope } from './inboxStore'
 
 function card(id: number, kind: StructuredKind = 'report'): StructuredMessage {
   return {
@@ -164,5 +164,46 @@ describe('resolveInboxCard', () => {
 
     expect(getInboxState().unanswered).toBe(1)
     expect(getInboxState().items.map((m) => m.message_id)).toEqual([1])
+  })
+})
+
+describe('scope（取数必须落在当前会话）', () => {
+  it('setInboxScope 后请求带 chat_id，unanswered 取该会话的值', async () => {
+    const seen: string[] = []
+    stubFetch((url) => {
+      seen.push(url)
+      // 服务端按会话分账：chat_A 有 1 条，默认会话 0 条。
+      return url.includes('chat_id=chat_A') ? inboxResponse([card(1)], 1) : inboxResponse([], 0)
+    })
+
+    setInboxScope({ channel: 'web' })
+    await refreshInbox()
+    expect(getInboxState().unanswered).toBe(0)
+
+    setInboxScope({ channel: 'web', chat_id: 'chat_A' })
+    await refreshInbox()
+
+    expect(getInboxState().unanswered).toBe(1)
+    expect(getInboxScope().chat_id).toBe('chat_A')
+    expect(seen.some((u) => u.includes('chat_id=chat_A'))).toBe(true)
+  })
+
+  it('切换会话会清空上一会话的列表（不串数据）', async () => {
+    stubFetch((url) =>
+      url.includes('chat_id=chat_B') ? inboxResponse([card(9)], 1) : inboxResponse([card(1), card(2)], 2),
+    )
+
+    setInboxScope({ channel: 'web', chat_id: 'chat_A' })
+    await refreshInbox()
+    expect(getInboxState().unanswered).toBe(2)
+
+    setInboxScope({ channel: 'web', chat_id: 'chat_B' })
+    // 切换瞬间必须清空，不能把 A 的两条挂在 B 上。
+    expect(getInboxState().items).toHaveLength(0)
+    expect(getInboxState().unanswered).toBe(0)
+
+    await refreshInbox()
+    expect(getInboxState().items.map((m) => m.message_id)).toEqual([9])
+    expect(getInboxState().unanswered).toBe(1)
   })
 })

@@ -1,20 +1,24 @@
 /**
  * Inbox —— 待处理看板（用户看板卡片的唯一处理界面）。
  *
- * 数据来自共享 inboxStore（GET /api/inbox：kind ∈ {ask_user, report}、
+ * 数据来自共享 inboxStore 的 `GET /api/inbox`（kind ∈ {ask_user, report}、
  * answered=0、cancelled=0），不是从聊天流里捞 —— 卡片行 record_type='notice'
  * 本来就不进对话流/历史回放，等消息流永远等不到它。
  *
- * 每条列 kind / 摘要 / 相对时间，并可对单条执行四个动作：
- *   approve（准）· reject（驳）· answer（回答，ask_user 需填内容）· dismiss（忽略）
- * 动作全部走 POST /api/inbox/resolve（agent 侧的回流通道 /api/answer、
- * /api/message 是另一套寻址语义，不能混用），成功后该条从列表消失、
- * 侧栏角标 -1；幂等命中（duplicate=true）只清残留、不重复扣数字（见 inboxStore）。
+ * **scope 必须是当前会话**：服务端按会话解析 tenant，不带 chat_id 时读到的是
+ * 默认会话那份（常常是空的）。所以看板由 StructuredWorkspace 把路由里的
+ * scope 传进来，与消息流用同一份 —— 徽标/列表才和用户看到的消息流对得上。
+ *
+ * 交互保持与既有 E2E 一致：
+ * - 点条目 → 展开详情（渲染 StructuredCard，ask_user 给回答表单、report 给准/驳/改）；
+ * - 展开区顶部是本轮新增的四动作（准 / 驳 / 忽略 / 回答）→ 走 `/api/inbox/resolve`，
+ *   成功后该条从列表消失、侧栏角标 -1；幂等命中（duplicate=true）只清残留、不重复扣。
+ * 动作按钮放在展开区而不是每条常驻，是为了不改变「点条目=展开」的点击语义。
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
-import { KIND_META, LongText, formatSender, messageSummary } from './StructuredCards'
-import { useInboxBoard } from './inboxStore'
+import { StructuredCard, KIND_META, LongText, formatSender, messageSummary, type AnswerFn, type DecideFn } from './StructuredCards'
+import { useInboxBoard, type InboxScope } from './inboxStore'
 import type { InboxResolveAction, StructuredMessage } from './types'
 
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / M月D日 HH:mm。 */
@@ -53,28 +57,32 @@ function KindTag({ message }: { message: StructuredMessage }) {
   )
 }
 
-export function Inbox() {
-  const { items, unanswered, loading, error, refresh, resolve } = useInboxBoard()
+export function Inbox({
+  scope,
+  onAnswer,
+  onDecide,
+}: {
+  scope: InboxScope
+  onAnswer: AnswerFn
+  onDecide: DecideFn
+}) {
+  const { items, unanswered, loading, error, refresh, resolve } = useInboxBoard(scope)
   const [expanded, setExpanded] = useState<number | null>(null)
   const [draft, setDraft] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState<number | null>(null)
-
-  // 打开看板就先拉一次：用户点进来看到的是最新待处理，而不是 30s 前的快照。
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
 
   const act = async (messageId: number, action: InboxResolveAction) => {
     if (busy === messageId) return
     setBusy(messageId)
     try {
       await resolve(messageId, action, draft[messageId]?.trim() || undefined)
-      // 成功后这条已被 store 移除；清掉草稿即可。
+      // 成功后这条已被 store 移除；清掉草稿与展开态即可。
       setDraft((cur) => {
         const next = { ...cur }
         delete next[messageId]
         return next
       })
+      setExpanded((cur) => (cur === messageId ? null : cur))
     } catch {
       /* store 已把错误写进 state.error，看板顶部会显示 */
     } finally {
@@ -150,45 +158,49 @@ export function Inbox() {
                   </div>
                   <p className="mt-0.5 line-clamp-2 text-xs text-text-secondary">{messageSummary(m)}</p>
                 </button>
-                <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                  {ACTIONS.map(({ action, label }) => (
-                    <button
-                      key={action}
-                      type="button"
-                      data-testid={`inbox-${action}`}
-                      disabled={busy === m.message_id}
-                      onClick={() => void act(m.message_id, action)}
-                      className="rounded border border-border px-1.5 py-0.5 text-[11px] text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
-                    >
-                      {label}
-                    </button>
-                  ))}
-                  {m.kind === 'ask_user' ? (
-                    <>
-                      <input
-                        data-testid="inbox-answer-input"
-                        value={draft[m.message_id] ?? ''}
-                        onChange={(e) =>
-                          setDraft((cur) => ({ ...cur, [m.message_id]: e.target.value }))
-                        }
-                        placeholder="回答内容"
-                        className="min-w-0 flex-1 rounded border border-border bg-bg-primary px-1.5 py-0.5 text-[11px] text-text-primary"
-                      />
-                      <button
-                        type="button"
-                        data-testid="inbox-answer"
-                        disabled={busy === m.message_id}
-                        onClick={() => void act(m.message_id, 'answer')}
-                        className="rounded border border-border px-1.5 py-0.5 text-[11px] text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
-                      >
-                        回答
-                      </button>
-                    </>
-                  ) : null}
-                </div>
                 {expanded === m.message_id ? (
-                  <div className="mt-1.5 rounded-lg border border-border bg-bg-primary p-2">
-                    <LongText text={messageSummary(m)} />
+                  <div className="mt-1.5 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {ACTIONS.map(({ action, label }) => (
+                        <button
+                          key={action}
+                          type="button"
+                          data-testid={`inbox-${action}`}
+                          disabled={busy === m.message_id}
+                          onClick={() => void act(m.message_id, action)}
+                          className="rounded border border-border px-1.5 py-0.5 text-[11px] text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                      {m.kind === 'ask_user' ? (
+                        <>
+                          <input
+                            data-testid="inbox-answer-input"
+                            value={draft[m.message_id] ?? ''}
+                            onChange={(e) =>
+                              setDraft((cur) => ({ ...cur, [m.message_id]: e.target.value }))
+                            }
+                            placeholder="回答内容"
+                            className="min-w-0 flex-1 rounded border border-border bg-bg-primary px-1.5 py-0.5 text-[11px] text-text-primary"
+                          />
+                          <button
+                            type="button"
+                            data-testid="inbox-answer"
+                            disabled={busy === m.message_id}
+                            onClick={() => void act(m.message_id, 'answer')}
+                            className="rounded border border-border px-1.5 py-0.5 text-[11px] text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
+                          >
+                            回答
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                    <StructuredCard message={m} onAnswer={onAnswer} onDecide={onDecide} />
+                    <details>
+                      <summary className="cursor-pointer text-[11px] text-text-muted">原文</summary>
+                      <LongText text={messageSummary(m)} />
+                    </details>
                   </div>
                 ) : null}
               </li>

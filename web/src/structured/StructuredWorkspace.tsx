@@ -45,7 +45,7 @@ export function StructuredWorkspace() {
         onAnswer={state.answer}
         onDecide={state.decide}
       />
-      <Inbox />
+      <Inbox scope={scope} onAnswer={state.answer} onDecide={state.decide} />
     </div>
   )
 }

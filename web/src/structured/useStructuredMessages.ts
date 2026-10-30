@@ -15,6 +15,7 @@ import {
   fetchStructuredMessages,
   type StructuredScope,
 } from './api'
+import { refreshInbox as refreshSharedInbox } from './inboxStore'
 import type { InboxResult, StructuredAnswerInput, StructuredMessage } from './types'
 
 export interface UseStructuredMessages {
@@ -206,6 +207,11 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
     inboxTimerRef.current = window.setTimeout(() => {
       inboxTimerRef.current = null
       void refreshInbox()
+      // 同一份未处理集合在共享 store 里还给看板与侧栏角标用（N1）。
+      // 不刷新它的话，B 端（另一个浏览器上下文）只能等 30s 轮询才归零 ——
+      // e2e「跨端同步」要求 8s 内归零（baseline 88ba305e 已通过，不能退化）。
+      // 复用这条既有 SSE → 刷新链路，不另开 EventSource。
+      void refreshSharedInbox({ notify: false })
     }, 150)
   }, [refreshInbox])
   useEffect(() => {

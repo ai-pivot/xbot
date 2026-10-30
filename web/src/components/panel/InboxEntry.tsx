@@ -6,11 +6,14 @@
  * 默认布局里 `a[href="/structured"]` 数量为 0）。会话面板是默认左栏、标题行常驻，
  * 放这里才「看得见、点得到」；手机抽屉里也挂了同一个入口。
  *
- * 数量口径与 /api/inbox 一致（ask_user 待回答 + report 待批复，answered=0 且
- * cancelled=0），数字直接取服务端 `unanswered`，并在看板上处理完立刻收敛
- * —— 数据来自共享的 inboxStore，不再各组件独立轮询（N1：状态必须流转）。
+ * 取数 scope = **当前会话**（不是全局）。服务端按会话解析 tenant：
+ *   GET /api/inbox?channel=web                 → 读到默认会话那份（常常是空的）
+ *   GET /api/inbox?channel=web&chat_id=chat_X  → 目标会话那份
+ * 2026-10-30 e2e 实测：写死 `{channel:'web'}` 会让徽标恒 0（structured-cards
+ * 「收件箱：未读徽标 + 展开回答」从绿转红）。所以这里跟 activeSession 走。
  *
- * 角标只在 unanswered > 0 时渲染（0 是常态，常驻一个「0」是噪音）。
+ * 数字取服务端 `unanswered`，并在看板上处理完立刻收敛（同一份 inboxStore），
+ * 不再各组件独立轮询。角标只在 unanswered > 0 时渲染（0 是常态，常驻「0」是噪音）。
  *
  * 样式与 Inbox 面板内的徽标同源（bg-kind-ask-user + text-bg-primary），
  * 保证同一语义在两处颜色一致。
@@ -18,12 +21,17 @@
 import { Inbox } from 'lucide-react'
 
 import { StructuredLink } from '@/components/StructuredLink'
+import { useSessionStore } from '@/hooks/useSessionStore'
 import { useInboxPolling } from '@/structured/inboxStore'
 import { useI18n } from '@/providers/i18n'
 
 export function InboxEntry({ className }: { className?: string }) {
   const { t } = useI18n()
-  const { unanswered } = useInboxPolling()
+  const { activeSession } = useSessionStore()
+  const { unanswered } = useInboxPolling({
+    channel: activeSession?.channel ?? 'web',
+    chat_id: activeSession?.chatID,
+  })
 
   return (
     <StructuredLink className={className} title={t('sidebar.inboxTitle')}>
