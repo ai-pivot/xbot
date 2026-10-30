@@ -630,8 +630,16 @@ CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
 	}
 	// user_chats 的查询索引同样属于「同版本漂移」：老库可能有、新库缺，
 	// 只在 createSchema 里声明覆盖不到已在运行的库。幂等 DDL，见 migrations.go。
+	//
+	// ⛔ 与 schema.go:530-551（idx_sm_tenant_turn 兜底）同约定：**索引失败只告警，
+	// 绝不阻断 Open**。索引是纯优化，不是可用性前提 —— 只读库（backup 副本 /
+	// mode=ro / 无 DDL 权限）或索引名被占用时 CREATE INDEX 必然失败，但库本身
+	// 完全可读可用，只是 label/sort_order 子查询退化为扫表（慢一点而已）。
+	// 让「补一条索引」把「能打开库」这个前提打掉，是拿启动铁律换优化（P0 回归，
+	// 2026-10-30：2070457b 引入）。回归测试见 user_chats_index_test.go
+	// TestUserChatsChannelChatIndexReadOnlyDBStillOpens。
 	if err := ensureUserChatsLookupIndexes(db.Conn()); err != nil {
-		return err
+		log.WithError(err).Warn("ensure user_chats lookup indexes failed; label subquery may stay slow")
 	}
 	return nil
 }
