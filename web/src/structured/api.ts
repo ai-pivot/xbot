@@ -1,5 +1,11 @@
 import { APIError, postAPI } from '@/lib/api'
-import type { InboxResult, StructuredAnswerInput, StructuredMessage } from './types'
+import type {
+  InboxResolveAction,
+  InboxResolveResult,
+  InboxResult,
+  StructuredAnswerInput,
+  StructuredMessage,
+} from './types'
 
 /** 统一读取 {ok,data,error} 信封的 GET。 */
 async function getAPI<T>(endpoint: string, signal?: AbortSignal): Promise<T> {
@@ -84,4 +90,35 @@ export async function answerStructuredMessage(input: {
   chat_id?: string
 }): Promise<{ message_id: number; duplicate: boolean; message: StructuredMessage }> {
   return postAPI('/api/answer', input)
+}
+
+/**
+ * 用户看板卡片的处理入口（N1：状态流转的唯一通道）。
+ *
+ * 与 /api/answer、/api/message(kind=decision) 的区别：这两个是 **agent 侧**的
+ * 回流通道（靠 correlation_id / reply_to 寻址）；用户在看板上处理 to="user"
+ * 卡片时服务端要跑 CAS（pending → resolved）+ 幂等键 + 向 origin 会话回流，
+ * 语义都封装在 /api/inbox/resolve 里。前端只发一张卡 + 一个动作。
+ *
+ * 幂等边界（服务端保证，前端只用它决定要不要扣数字）：
+ * - 同 action 重复提交 → 200 + duplicate=true（不重复回流）；
+ * - 已处理但换了 action/idempotency_key → 409 conflict。
+ */
+export async function resolveInboxItem(input: {
+  message_id: number
+  action: InboxResolveAction
+  comment?: string
+  idempotency_key?: string
+  channel?: string
+  chat_id?: string
+}): Promise<InboxResolveResult> {
+  // 后端 handler 写的是 `{"ok":true,"result":<StructuredResolveResult>}`，
+  // 经 writeJSON 信封化后 = `{ok, data:{result:{...}}}` —— 结果在 **data.result**，
+  // 不是 data 本体。直接读 data.duplicate 会永远 undefined，
+  // 于是「首次/幂等」判不开，重复点会重复扣角标（N1 ③ 要防的正是这个）。
+  const raw = await postAPI<InboxResolveResult & { result?: InboxResolveResult }>(
+    '/api/inbox/resolve',
+    input,
+  )
+  return raw.result ?? raw
 }

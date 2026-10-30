@@ -45,14 +45,7 @@ export function StructuredWorkspace() {
         onAnswer={state.answer}
         onDecide={state.decide}
       />
-      <Inbox
-        inbox={state.inbox}
-        loading={state.inboxLoading}
-        error={state.inboxError}
-        onAnswer={state.answer}
-        onDecide={state.decide}
-        onRefresh={() => void state.refreshInbox()}
-      />
+      <Inbox />
     </div>
   )
 }
