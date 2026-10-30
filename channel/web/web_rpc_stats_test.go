@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -271,62 +272,138 @@ func TestRPCStatsReportLogsEachMethod(t *testing.T) {
 	}
 }
 
-// TestRPCStatsMethodIsolation 是「method 维度不是总耗时冒充」的判据：
-// 两个耗时量级不同的 method 各打 20 次，快 method 的分位数不得被慢 method
-// 污染（若是「总耗时冒充」，fast 的 p99 会被 25ms 的样本拉起来）。
+// TestRPCStatsMethodIsolation 是「method 维度不是总耗时冒充」的判据，也是 G-17
+// 判据 B 的落点。三条硬要求都在这里被钉死：
+//
+//  1. 分母必须断言：total 与每条 method 的 N 都与「本用例实际打出的请求数」比较，
+//     不写字面量。子用例 interleaved-20x2 是 20+20（total==40、各 N==20），
+//     single-sample-denominator 是 1+1（total==2、各 N==1），后者专治把分母
+//     写死成常量的假通过。
+//  2. 归属链路必须真实：method 名在运行时由 t.Name() 派生、经请求体注入，
+//     断言只按注入名去 snapshot 键里查，并要求桶集合恰好等于注入集合——
+//     生产代码里根本不存在这两个串，所以「断言对着某个常量」不可能通过。
+//  3. 判别力不得靠常量：见 2。断言绑定的是 body.method → handleRPC 打点 →
+//     snapshot 键这条实际执行的归属路径；把 web_rpc_stats.go 的归属改成固定串
+//     （或让 handleRPC 忽略请求体），这条用例立刻 RED。
 func TestRPCStatsMethodIsolation(t *testing.T) {
-	wc, _ := newTestWebChannel(t, nil)
+	t.Run("interleaved-20x2", func(t *testing.T) {
+		runRPCStatsIsolation(t, 20)
+	})
+	t.Run("single-sample-denominator", func(t *testing.T) {
+		runRPCStatsIsolation(t, 1)
+	})
+}
 
+// isolationMethodNames 从测试名派生两个生产代码里不存在的 method 名。
+// 用 t.Name() 而不是字面量，是为了让「按请求体注入的名字查 snapshot」这件事
+// 可自证：一旦打点把 method 归属成别的桶（固定串 / 空串 / 常量），这里必然查不到。
+func isolationMethodNames(t *testing.T) (fast, slow string) {
+	t.Helper()
+	prefix := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	return prefix + "_fast", prefix + "_slow"
+}
+
+// runRPCStatsIsolation 用 rounds×2 次交错请求打两个耗时量级不同的 method，
+// 然后审计分母、每 method 计数、桶集合与快慢可分性。
+func runRPCStatsIsolation(t *testing.T, rounds int) {
+	t.Helper()
+	fastMethod, slowMethod := isolationMethodNames(t)
 	delays := map[string]time.Duration{
-		"fast_method": time.Millisecond,
-		"slow_method": 25 * time.Millisecond,
+		fastMethod: time.Millisecond,
+		slowMethod: 25 * time.Millisecond,
 	}
+
+	wc, _ := newTestWebChannel(t, nil)
 	wc.callbacks.RPCHandler = func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
 		time.Sleep(delays[method])
 		return json.RawMessage(`{"ok":true}`), nil
 	}
 
 	// 交错发送，确保两条时间线在同一次压测里互相穿插。
-	for i := 0; i < 20; i++ {
-		for _, m := range []string{"fast_method", "slow_method"} {
-			body := []byte(fmt.Sprintf(`{"method":%q,"params":{}}`, m))
+	sent := map[string]int{}
+	for i := 0; i < rounds; i++ {
+		for _, method := range []string{fastMethod, slowMethod} {
+			body := []byte(fmt.Sprintf(`{"method":%q,"params":{}}`, method))
 			rec := httptest.NewRecorder()
 			wc.handleRPC(rec, authedAPIRequestFor(http.MethodPost, "/api/rpc", body, "web-2", 2))
 			if rec.Code != http.StatusOK {
-				t.Fatalf("%s: status = %d", m, rec.Code)
+				t.Fatalf("%s: status = %d body=%s", method, rec.Code, rec.Body.String())
 			}
+			sent[method]++
 		}
 	}
 
 	snaps, total := wc.rpcObs.stats.snapshotAll(false)
-	if total != 40 {
-		t.Fatalf("total = %d, want 40", total)
+
+	// —— 要求 1：分母 == 实际打出的请求数 ——
+	wantTotal := 0
+	for _, n := range sent {
+		wantTotal += n
 	}
+	if total != uint64(wantTotal) {
+		t.Fatalf("total = %d, want %d (sum of requests actually sent)", total, wantTotal)
+	}
+
 	byMethod := map[string]rpcMethodSnapshot{}
+	var sumPerMethod uint64
 	for _, s := range snaps {
 		byMethod[s.Method] = s
+		sumPerMethod += s.N
 	}
-	fast, ok := byMethod["fast_method"]
-	if !ok {
-		t.Fatalf("fast_method missing: %+v", snaps)
+	// —— 要求 3：snapshot 桶集合必须恰好等于请求体注入的 method 集合 ——
+	if len(snaps) != len(sent) {
+		t.Fatalf("snapshot buckets = %d %v, want exactly the %d injected methods %v",
+			len(snaps), snapshotMethodNames(snaps), len(sent), sentMethodNames(sent))
 	}
-	slow, ok := byMethod["slow_method"]
-	if !ok {
-		t.Fatalf("slow_method missing: %+v", snaps)
+	if sumPerMethod != total {
+		t.Fatalf("sum of per-method n = %d, want total %d (per-method counts must add up)", sumPerMethod, total)
 	}
-	if fast.N != 20 || slow.N != 20 {
-		t.Fatalf("n = fast:%d slow:%d, want 20/20 (counts must be per-method)", fast.N, slow.N)
+	for method, n := range sent {
+		snap, ok := byMethod[method]
+		if !ok {
+			t.Fatalf("method %q missing from snapshot keys %v (attribution must come from request body)",
+				method, snapshotMethodNames(snaps))
+		}
+		if snap.N != uint64(n) {
+			t.Fatalf("method %q: n = %d, want %d", method, snap.N, n)
+		}
 	}
-	// 快 method 的每一条样本都不该看到慢 method 的耗时。
+
+	// 把实测分母打进日志：证据要能照抄数字，不能只有 PASS。
+	t.Logf("rounds=%d total=%d sent=%v buckets=%v per-method n: %s=%d %s=%d",
+		rounds, total, sentMethodNames(sent), snapshotMethodNames(snaps),
+		fastMethod, byMethod[fastMethod].N, slowMethod, byMethod[slowMethod].N)
+
+	// —— 原有判据：快 method 的每一条样本都不该看到慢 method 的耗时 ——
+	fast, slow := byMethod[fastMethod], byMethod[slowMethod]
 	if fast.P99Ms >= 10 || fast.MaxMs >= 10 {
-		t.Fatalf("fast_method polluted by slow samples: p99=%.3f max=%.3f", fast.P99Ms, fast.MaxMs)
+		t.Fatalf("%s polluted by slow samples: p99=%.3f max=%.3f", fastMethod, fast.P99Ms, fast.MaxMs)
 	}
 	if slow.P50Ms < 25 || slow.P99Ms < 25 {
-		t.Fatalf("slow_method percentiles too low: p50=%.3f p99=%.3f", slow.P50Ms, slow.P99Ms)
+		t.Fatalf("%s percentiles too low: p50=%.3f p99=%.3f", slowMethod, slow.P50Ms, slow.P99Ms)
 	}
 	if slow.P50Ms < fast.P99Ms*2 {
 		t.Fatalf("methods are not separable: slow p50=%.3f vs fast p99=%.3f", slow.P50Ms, fast.P99Ms)
 	}
+}
+
+// snapshotMethodNames / sentMethodNames 只用于失败消息，让 RED 一眼能看出
+// 「桶里是什么名字、本应是什么名字」。
+func snapshotMethodNames(snaps []rpcMethodSnapshot) []string {
+	out := make([]string, 0, len(snaps))
+	for _, s := range snaps {
+		out = append(out, s.Method)
+	}
+	return out
+}
+
+func sentMethodNames(sent map[string]int) []string {
+	out := make([]string, 0, len(sent))
+	for m := range sent {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestRPCStatsMethodCardinalityBounded 验证无界增长防护：method 名是客户端
