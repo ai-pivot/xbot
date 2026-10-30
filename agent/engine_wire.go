@@ -1197,6 +1197,13 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 			}
 		})
 
+		// ⛔ 历史伪工具名（system_reminder）不查注册表、直接判死：外部来源可能以该名
+		// 注册了真实工具，执行它会把整份上下文快照交回模型（prompt injection 面）。
+		// 见 perm_control_helpers.go 的 neverExposedToolNames。
+		if isNeverExposedToolName(tc.Name) {
+			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
+		}
+
 		// 1. 工具查找：session MCP 优先，然后全局注册表
 		var tool tools.Tool
 		ok := false
