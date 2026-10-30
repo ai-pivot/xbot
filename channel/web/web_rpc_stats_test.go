@@ -292,6 +292,17 @@ func TestRPCStatsMethodIsolation(t *testing.T) {
 	t.Run("single-sample-denominator", func(t *testing.T) {
 		runRPCStatsIsolation(t, 1)
 	})
+	// 合成输入的分离性自证：fast 中位 1ms、但尾部有 20ms 尖峰；slow 中位 25ms。
+	// 两个 method 的中位确实分开了 ⇒ 必须判「不串味」。若分离性断言改成跨统计量
+	// （slow.P50 vs fast.P99×2），阈值被 fast 的尾部抬到 40ms，这条会被误判成红 ——
+	// 这就是 /tmp/rb-verify/mutations.sh 里 M5-separability-cross-statistic 的落点。
+	t.Run("tail-spike-is-not-pollution", func(t *testing.T) {
+		fast := rpcMethodSnapshot{Method: "fast_method", P50Ms: 1, P99Ms: 20, MaxMs: 21}
+		slow := rpcMethodSnapshot{Method: "slow_method", P50Ms: 25, P99Ms: 26, MaxMs: 27}
+		if err := rpcIsolationVerdict(fast, slow, 100*time.Millisecond, 100*time.Millisecond); err != nil {
+			t.Fatalf("judge 误判（分离性混比了跨统计量?）：%v", err)
+		}
+	})
 }
 
 // isolationMethodNames 从测试名派生两个生产代码里不存在的 method 名。
@@ -352,7 +363,7 @@ func runRPCStatsIsolation(t *testing.T, rounds int) {
 	}
 	// —— 要求 3：snapshot 桶集合必须恰好等于请求体注入的 method 集合 ——
 	if len(snaps) != len(sent) {
-		t.Fatalf("snapshot buckets = %d %v, want exactly the %d injected methods %v",
+		t.Fatalf("snapshot buckets = %d %v, want exactly the %d injected methods %v (per-method percentiles polluted: attribution must stay per-method)",
 			len(snaps), snapshotMethodNames(snaps), len(sent), sentMethodNames(sent))
 	}
 	if sumPerMethod != total {
@@ -375,15 +386,93 @@ func runRPCStatsIsolation(t *testing.T, rounds int) {
 		fastMethod, byMethod[fastMethod].N, slowMethod, byMethod[slowMethod].N)
 
 	// —— 原有判据：快 method 的每一条样本都不该看到慢 method 的耗时 ——
+	// 判据本体抽成纯函数 rpcIsolationVerdict（见下方）：墙钟用例只能证明「现在
+	// 没退化」，不能证明「判据抓得到退化」；能抓退化的证据由合成快照用例承担。
 	fast, slow := byMethod[fastMethod], byMethod[slowMethod]
-	if fast.P99Ms >= 10 || fast.MaxMs >= 10 {
-		t.Fatalf("%s polluted by slow samples: p99=%.3f max=%.3f", fastMethod, fast.P99Ms, fast.MaxMs)
+	if err := rpcIsolationVerdict(fast, slow, 10*time.Millisecond, 10*time.Millisecond); err != nil {
+		t.Fatalf("%v", err)
+	}
+	t.Logf("isolation verdict: fast n=%d p50=%.3fms p99=%.3fms max=%.3fms | slow n=%d p50=%.3fms p99=%.3fms",
+		fast.N, fast.P50Ms, fast.P99Ms, fast.MaxMs, slow.N, slow.P50Ms, slow.P99Ms)
+}
+
+// rpcIsolationVerdict 是「method 维度不是总耗时冒充」判据的本体。
+//
+// 抽成纯函数，是为了让**合成快照**也能决定判据有没有判别力：真实墙钟用例
+// 只能证明「现在没退化」，把某条断言改成恒真它照样绿。
+//
+// 四条：
+//  1. fast 的 P99 低于 p99Budget —— 成规模串味（一批 fast 样本看到慢 method）；
+//  2. fast 的 max 低于 maxBudget —— 哪怕一条样本串味也不行；
+//  3. slow 的分位数不能塌（25ms 的睡眠得量出来，否则是打点没生效）；
+//  4. slow 的中位 ≥ fast 的 **P50** ×2 —— 两档确实分开了。这里刻意 P50↔P50：
+//     本条测的是「method 维度分位数不串味」，值是合成/实测样本的同量比较；
+//     拿 slow.P50 去比 fast.P99×2 是跨统计量混比（fast 一有尾尖峰阈值就被抬高，
+//     两边都不可信）。「P50 不许替代 P99」只约束延迟预算断言（第 1 条仍是 P99）。
+func rpcIsolationVerdict(fast, slow rpcMethodSnapshot, p99Budget, maxBudget time.Duration) error {
+	if fast.P99Ms >= p99Budget.Seconds()*1000 {
+		return fmt.Errorf("%s polluted by slow samples: p99=%.3f max=%.3f (budget p99<%v)",
+			fast.Method, fast.P99Ms, fast.MaxMs, p99Budget)
+	}
+	if fast.MaxMs >= maxBudget.Seconds()*1000 {
+		return fmt.Errorf("%s max=%.3fms >= %v：有样本看到慢 method 的耗时", fast.Method, fast.MaxMs, maxBudget)
 	}
 	if slow.P50Ms < 25 || slow.P99Ms < 25 {
-		t.Fatalf("%s percentiles too low: p50=%.3f p99=%.3f", slowMethod, slow.P50Ms, slow.P99Ms)
+		return fmt.Errorf("%s percentiles too low: p50=%.3f p99=%.3f", slow.Method, slow.P50Ms, slow.P99Ms)
 	}
-	if slow.P50Ms < fast.P99Ms*2 {
-		t.Fatalf("methods are not separable: slow p50=%.3f vs fast p99=%.3f", slow.P50Ms, fast.P99Ms)
+	if slow.P50Ms < fast.P50Ms*2 {
+		return fmt.Errorf("methods are not separable: slow p50=%.3f < fast p50×2=%.3f", slow.P50Ms, fast.P50Ms*2)
+	}
+	return nil
+}
+
+// TestRPCIsolationVerdictCatchesTailPollution 用合成快照钉住判据的判别力。
+//
+// 变异判别（取自 /tmp/rb-verify/mutations.sh 的现成变异，不另造）：
+//   - M5-separability-cross-statistic：把分离性改成 slow.P50 vs fast.P99×2 →
+//     case "separability-is-p50-vs-p50" 被误判为红 → 本测试红；
+//   - 把第 1 条预算断言从 P99 降级成 P50（M3 同型）→ case "tail-only" 由红转绿。
+func TestRPCIsolationVerdictCatchesTailPollution(t *testing.T) {
+	slowOK := rpcMethodSnapshot{Method: "slow_method", P50Ms: 25, P95Ms: 25.5, P99Ms: 26, MaxMs: 27}
+	clean := rpcMethodSnapshot{Method: "fast_method", P50Ms: 1.0, P95Ms: 1.0, P99Ms: 1.2, MaxMs: 1.3}
+
+	cases := []struct {
+		name    string
+		fast    rpcMethodSnapshot
+		slow    rpcMethodSnapshot
+		p99     time.Duration
+		max     time.Duration
+		wantErr bool
+	}{
+		{"clean", clean, slowOK, 10 * time.Millisecond, 10 * time.Millisecond, false},
+		// 只有尾部串味、中位不动：P50 口径抓不到，P99 预算必须抓到。
+		{"tail-only", rpcMethodSnapshot{Method: "fast_method", P50Ms: 1.0, P99Ms: 12, MaxMs: 13}, slowOK,
+			10 * time.Millisecond, 20 * time.Millisecond, true},
+		// 单条样本串味：P99 仍在预算内，只有 max 越界。
+		{"max-only", rpcMethodSnapshot{Method: "fast_method", P50Ms: 1.0, P99Ms: 2, MaxMs: 25}, slowOK,
+			10 * time.Millisecond, 20 * time.Millisecond, true},
+		// slow 没量出来（打点失效）：分位数塌了。
+		{"slow-collapsed", clean, rpcMethodSnapshot{Method: "slow_method", P50Ms: 1, P99Ms: 1, MaxMs: 1},
+			10 * time.Millisecond, 10 * time.Millisecond, true},
+		// 中位真的分开了、只有 fast 尾部尖峰：这是「不串味」，必须判绿 ——
+		// 若把分离性改成 slow.P50 vs fast.P99×2 就会误判为红（M5 的落点）。
+		{"separability-is-p50-vs-p50", rpcMethodSnapshot{Method: "fast_method", P50Ms: 1, P99Ms: 20, MaxMs: 21},
+			rpcMethodSnapshot{Method: "slow_method", P50Ms: 25, P99Ms: 26, MaxMs: 27},
+			100 * time.Millisecond, 100 * time.Millisecond, false},
+		// 中位没分开（两档混成一档）：分离性必须判红。
+		{"not-separable", rpcMethodSnapshot{Method: "fast_method", P50Ms: 15, P99Ms: 20, MaxMs: 21}, slowOK,
+			100 * time.Millisecond, 100 * time.Millisecond, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := rpcIsolationVerdict(c.fast, c.slow, c.p99, c.max)
+			if c.wantErr && err == nil {
+				t.Fatalf("judge 放过了该判红的情形：fast=%+v slow=%+v", c.fast, c.slow)
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("judge 误判：%v（fast=%+v slow=%+v）", err, c.fast, c.slow)
+			}
+		})
 	}
 }
 
