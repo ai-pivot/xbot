@@ -3,9 +3,11 @@ package agent
 // system_reminder_compress_isolation_test —— commit B 的守护判据：
 // **压缩摘要（内部一次性 Run）不得注入 system_reminder**。
 //
-// 为什么需要这条隔离：首轮必插一旦无条件生效，压缩请求尾部会多出一对
-// assistant(tool_call) + tool(result)，直接破坏「最后一条消息 = 压缩指令（user）」
-// 的契约 —— 实测会让 TestCompactMessages_* 六个用例同时变红。
+// 为什么需要这条隔离：每轮都注入一旦无条件生效，压缩请求尾部会多出一块
+// reminder —— 末条不再是「压缩指令（user）」的裸指令，直接破坏
+// 「最后一条消息 = 压缩指令（user）」的契约 —— 实测会让 TestCompactMessages_*
+// 六个用例同时变红。（旧形态下多出来的是一对 assistant(tool_call) + tool(result)，
+// 2026-10-30 N2 起改成尾部内容拼接，破坏契约的方式变了，隔离要求不变。）
 // reminder 是**对话轮**的机制：压缩没有「这一轮用户说了什么」可提醒，
 // 塞进去只有害处（<user-msg> 会抓到历史里最后一条 user 消息，误导摘要模型）。
 //
@@ -60,7 +62,7 @@ func TestSystemReminderSkippedForInternalOneShotRun(t *testing.T) {
 		t.Fatalf("请求次数 = %d, want 1", len(mock.calls))
 	}
 	msgs := mock.calls[0].Messages
-	if _, _, present := findSystemReminderInMessages(msgs); present {
+	if _, present, _ := findSystemReminderInMessages(msgs); present {
 		t.Fatalf("内部一次性 Run（压缩）不得注入 system_reminder，实际注入了 %d 条消息", len(msgs))
 	}
 	if last := msgs[len(msgs)-1]; last.Role != "user" {
@@ -88,13 +90,13 @@ func TestCompactRequestHasNoSystemReminder(t *testing.T) {
 		t.Fatal("压缩没有发起任何 LLM 请求")
 	}
 	for i, req := range client.calls {
-		if _, _, present := findSystemReminderInMessages(req); present {
+		if _, present, _ := findSystemReminderInMessages(req); present {
 			t.Fatalf("压缩请求 #%d 里出现了 system_reminder（%d 条消息）—— 会破坏「末条必须是指令」契约", i+1, len(req))
 		}
-		for _, m := range req {
-			if m.Role == "tool" && m.ToolCallID == systemReminderToolName {
-				t.Fatalf("压缩请求 #%d 里出现 system_reminder 的 tool 结果", i+1)
-			}
+		// 新形态下 reminder 不再走伪工具对，但这条守卫保留反向扫描：
+		// 一旦有人把 fake pair 路径恢复，压缩请求里会立刻出现 system_reminder 伪工具。
+		if hits := findFakeReminderToolCalls(req); len(hits) > 0 {
+			t.Fatalf("压缩请求 #%d 里出现 system_reminder 伪工具调用: %v", i+1, hits)
 		}
 	}
 	t.Logf("compactMessages 请求 %d 条，均无 system_reminder", len(client.calls))
@@ -145,11 +147,11 @@ func TestDisableSystemReminderShortCircuitsBeforeBuild(t *testing.T) {
 	s.initDynamicInjector()
 
 	msgs := s.llmMessages(1)
-	if _, _, present := findSystemReminderInMessages(msgs); present {
+	if _, present, _ := findSystemReminderInMessages(msgs); present {
 		t.Fatalf("DisableSystemReminder=true 时 iteration 1 仍注入了 reminder")
 	}
 	if len(msgs) != len(s.messages) {
-		t.Fatalf("条数 = %d, want %d（不应附加任何 fake pair）", len(msgs), len(s.messages))
+		t.Fatalf("条数 = %d, want %d（不应附加任何消息/内容）", len(msgs), len(s.messages))
 	}
 	if buildCalls != 0 {
 		t.Fatalf("DisableSystemReminder=true 时仍调用 buildSystemReminder %d 次 —— "+

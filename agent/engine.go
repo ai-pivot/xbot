@@ -1008,6 +1008,13 @@ func executeWithHooks(
 // Used for SubAgent and other scenarios that don't need session MCP / activation checks.
 func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 	return func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+		// ⛔ 历史伪工具名（system_reminder）：即便注册表被外部来源（插件 / 会话 MCP）
+		// 塞了同名真实工具，也**绝不执行** —— 它会把整份上下文快照（user-msg + cwd +
+		// todos + subagents + guidelines）交回给模型，等于给模型开了一条可自取的
+		// prompt injection 通道。见 perm_control_helpers.go 的 neverExposedToolNames。
+		if isNeverExposedToolName(tc.Name) {
+			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
+		}
 		tool, ok := cfg.Tools.GetForSession(tc.Name, cfg.TenantID, cfg.SessionKey)
 		if !ok {
 			// Synthetic notification tools (background_task_result etc.) are

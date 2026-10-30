@@ -250,6 +250,8 @@ func TestBuildSystemReminder_SubAgentStatus(t *testing.T) {
 // 首轮与下一个 10k **相邻**时跳过该 10k（保住「相邻两轮不同时注入」）。
 //
 // 历史：旧表格只喂 iteration、把 iterStart 隐含为 0，且 `{1,false}` 把 bug 当期望。
+// N2a（2026-10-30）：本谓词与 systemReminderInsertEvery=10 **原样保留** ——
+// 这次只改落点（fake tool pair → 尾部内容拼接），频率改动属 N2b。
 func TestShouldInsertSystemReminder(t *testing.T) {
 	cases := []struct {
 		iterStart int

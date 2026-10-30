@@ -782,32 +782,53 @@ func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 	}
 }
 
-// llmMessages returns the messages to send to the LLM: s.messages plus the
-// transient system_reminder fake tool pair, but ONLY on insertion iterations
-// (the first iteration and every systemReminderInsertEvery-th after it:
-// 1, 10, 20, …). The reminder is appended to a fresh copy — it never mutates
-// s.messages, so persistence watermark and the ContextEditor view stay clean.
+// llmMessages returns the messages to send to the LLM: s.messages with the
+// transient system reminder **concatenated onto the tail content**.
 //
-// 关键：是否拼接由 iteration 决定，且 reminder 在**请求前按需构建**。
-// 判定必须先于构建 —— buildSystemReminder() 要拉 todo / goal / 子代理状态
-// （ListActiveFn 是跨进程回调），每轮无条件构建等于把 1/10 的开销摊成每轮。
+// 形态（2026-10-30 御前令，N2）：reminder 不再是「assistant(tool_calls[
+// system_reminder]) + tool 结果」的假消息对，而是**尾部内容拼接**。上游看到的
+// 是一段干净对话，历史里不再出现 `system_reminder` 这个根本不存在的工具名 ——
+// 模型看到凭空冒出的伪工具调用会幻觉「我调用过它 / 我该反复调用它」
+// （2026-09 ~ 2026-10 反复出现，也是 2026-10-20 逐轮注入事故的根因）。
+//
+// 落点规则（按最后一条消息的 role 判定，见 appendReminderToTail）：
+//   - user      → 拼进它 content 的**新副本**末尾（"\n\n" 分隔）；
+//   - tool      → 追加一条**独立的 user 消息**（不拼进 tool 结果，否则模型会
+//     以为工具输出里带着提醒）；
+//   - assistant → 同上，追加独立 user 消息。**绝不拼进 assistant content** ——
+//     那等于把运行时提醒塞进模型自己的发言，污染自述、且会让同一
+//     commit 在不同轮次内容不同。
+//
+// 包装：BuildSystemReminder()（reminder.go:80/150）已自带
+// `<system-reminder role="reminder">…</system-reminder>` 整块，这里只补分隔符，
+// **不得再包一层**（否则嵌套标签，且会与 memory / 改名提示的裸标签混淆）。
+//
+// 频率：**N2a 保持原样** —— 由 shouldInsertSystemReminder（1、10、20…）决定，
+// 只在插入轮注入；非插入轮直接返回 s.messages（不构建、不注入）。
+// 频率改每轮（N2b）需要先给出 token 增量量化，不在本次范围。
+//
+// 纯视图：所有改动都发生在 make() 出来的副本上，s.messages 一个字节不动 ——
+// 因此不存在「删掉上一轮的 reminder」这个动作（它从未写入历史）。改内容而不是
+// 追加副本切片元素，保证 `user→user` 连续两条永远不会出现（末条是 user 时走
+// 内容追加，不新建消息），OpenAI / Anthropic / Responses 三家 provider 都接受。
 //
 // 内部一次性 Run（压缩摘要等）**不注入** reminder —— 由调用方显式置
 // RunConfig.DisableSystemReminder，本函数不猜测（不按 MaxIterations / AgentID
 // 推断：隐式条件会在新增内部 Run 时静默失效）。判定放在最前面，避免白跑
-// buildSystemReminder（它会拉 todo/goal/subagent 状态，ListActiveFn 是跨进程回调）。
+// buildSystemReminder（它会拉 todo/goal/subagent 状态；ListActiveFn 是一次
+// 进程内 sync.Map 扫描，见 engine_wire.go:545 → interactive.go:3430）。
 //
 // 为什么内部 Run 必须跳过：
 //   - 它没有「用户这一轮说的话」可提醒（<user-msg> 会抓到历史里最后一条 user
 //     消息，反而误导摘要模型）；
 //   - 更硬的约束是形状：压缩请求契约要求「最后一条消息 = 压缩指令（user）」，
-//     在尾部接一对 fake tool_call/tool 结果直接破坏该契约
+//     尾部追加任何东西都会破坏该契约
 //     （TestCompactMessages_* 全红：last request message must be the instruction）。
 //
 // 历史（2026-10-28 前）：reminder 由 postToolProcessing 构建到跨迭代字段
 // s.systemReminder 上，而 LLM 请求在第 i 轮构建、第 i 轮工具执行之后才发生 ——
 // 结构性 off-by-one：构建永远跟在「本该用它」的那一轮后面，首轮必然拿到空串
-// （与「首轮必建」的设计承诺直接冲突）。改为请求前懒构建后该字段失去意义，已删除。
+// （与「首轮必建」的设计承诺直接冲突）。改为请求前构建后该字段失去意义，已删除。
 func (s *runState) llmMessages(iteration int) []llm.ChatMessage {
 	if s.cfg.DisableSystemReminder {
 		return s.messages
@@ -819,12 +840,32 @@ func (s *runState) llmMessages(iteration int) []llm.ChatMessage {
 	if reminder == "" {
 		return s.messages
 	}
-	assistantMsg, toolMsg := newSyntheticToolPair(systemReminderToolName, systemReminderToolName, reminder)
-	assistantMsg.TurnID = s.cfg.TurnID
-	out := make([]llm.ChatMessage, 0, len(s.messages)+2)
-	out = append(out, s.messages...)
-	out = append(out, assistantMsg, toolMsg)
-	return out
+	return appendReminderToTail(s.messages, reminder, s.cfg.TurnID)
+}
+
+// appendReminderToTail 把 reminder 落到消息尾部并返回**新切片**。
+//
+// 不伪造 tool 调用对；不修改入参切片里的任何元素（逐条 copy 之后只改末条的
+// Content）。调用方可以放心对同一份 s.messages 反复调用 —— 幂等且无副作用。
+func appendReminderToTail(msgs []llm.ChatMessage, reminder string, turnID uint64) []llm.ChatMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	out := make([]llm.ChatMessage, len(msgs))
+	copy(out, msgs)
+	last := len(out) - 1
+	if out[last].Role == "user" {
+		if out[last].Content == "" {
+			out[last].Content = reminder
+		} else {
+			out[last].Content += "\n\n" + reminder
+		}
+		return out
+	}
+	// tool 结果 / assistant 发言：追加一条独立 user 消息。绝不拼进它们的 content。
+	userMsg := llm.NewUserMessage(reminder)
+	userMsg.TurnID = turnID
+	return append(out, userMsg)
 }
 
 // callLLM invokes the LLM with the current messages, handling per-tenant
@@ -2433,13 +2474,16 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 	}
 }
 
-// systemReminderInsertEvery 是 transient system_reminder fake tool pair 的插入周期。
+// systemReminderInsertEvery 是 reminder 的注入周期（**N2a 保持原样：10 轮**）。
+//
+// 为什么频率这次不动：御前 N2a 令只改落点（fake tool pair → 尾部内容拼接），
+// 频率改动（1/10 → 每轮）单独走 N2b，必须先给出真 token 量化（字符→token 依据、
+// 典型轮数、日增比例）。本次 commit 不碰这条常量与下面的谓词。
 const systemReminderInsertEvery = 10
 
-// shouldInsertSystemReminder 决定本轮（iteration）是否把 system_reminder 这个
-// fake tool pair 拼进 LLM 上下文。
+// shouldInsertSystemReminder 决定本轮（iteration）是否把 reminder 拼进 LLM 上下文。
 //
-// 规则（2026-10-28 御前定稿，G1）：
+// 规则（2026-10-28 御前定稿，G1，N2a 原样保留）：
 //  1. **本次 Run 的第一轮必插** —— 引擎迭代号是 1 基，且 resume turn 从
 //     iterStart+1 起（engine.go: `i := n + s.iterStart`），所以「第一轮」是
 //     `iteration == iterStart + 1`，不是写死的 1。
@@ -2450,15 +2494,15 @@ const systemReminderInsertEvery = 10
 //     iterStart=9 → 首轮正好是 10 ⇒ 重合只算一次，10、20。
 //
 // 为什么第 3 条必须存在：判据「任意相邻两轮不得同时注入」是硬不变量
-// （2026-10-20 逐轮注入事故：模型每轮看到同一个凭空冒出的 tool_call 会以为要反复调用）。
-// 不跳的话，iterStart=8 会在 9、10 连续两轮各注入一次，直接破这条不变量。
+// （2026-10-20 逐轮注入事故）。不跳的话，iterStart=8 会在 9、10 连续两轮各注入一次，
+// 直接破这条不变量。
 //
 // 为什么不改口径成「首轮顺延到 20」之类：那会让「每 10 轮」在 resume 场景整体后移，
 // 与主对话（iterStart=0）的节奏不一致；跳过相邻 10k 只影响一次、且不引入相位补丁。
 //
-// 为什么不是每轮插入：fake tool pair 会让对话里凭空多出一组
-// assistant(tool_call) + tool(result) 记录，模型连续看到同一工具反复"被调用"
-// 容易困惑（误以为要反复调用它，或把它当成真实工具）。
+// 为什么不是每轮插入：本谓词的历史理由（fake tool pair 让模型困惑）随 N2a 的落点
+// 改造消失，但**频率本身是 N2b 的议题**（token 成本按轮次线性消耗，需先量化）。
+// N2a 不动频率 ⇒ 这条谓词与常量原样保留，N2b 再单独裁决。
 func shouldInsertSystemReminder(iteration, iterStart int) bool {
 	first := iterStart + 1
 	if iteration == first {
@@ -2474,14 +2518,22 @@ func shouldInsertSystemReminder(iteration, iterStart int) bool {
 	return true
 }
 
-// buildSystemReminder 在**发起 LLM 请求之前**按需构建本轮要拼的 system reminder。
-// 返回空串表示「无可注入内容」（如 messages 为空），调用方应完全不拼 fake pair。
+// buildSystemReminder 在**发起 LLM 请求之前**构建本轮要拼的 system reminder。
+// 返回空串表示「无可注入内容」（如 messages 为空），调用方应完全不拼。
+//
+// 频率（N2a 保持原样）：只在 shouldInsertSystemReminder 为真的轮次构建
+// （1、10、20…，resume 场景见该谓词），非插入轮完全不构建 —— 因此
+// ListActiveFn（进程内 sync.Map 扫描，engine_wire.go:545 → interactive.go:3430）
+// 只在插入轮被调用。频率改每轮属 N2b，需先给出 token 增量量化。
 //
 // 为什么是请求前构建：reminder 描述的是「这一轮请求发生时」的 cwd/todo/子代理
 // 状态。旧实现把它挂在 postToolProcessing 上（第 i 轮工具执行完之后才构建），
 // 于是第 i 轮请求用的是第 i-1 轮或空串 —— 结构性 off-by-one，首轮永远拿不到。
 //
-// 开销：只在 shouldInsertSystemReminder 为真的轮次调用（1/10/20…），不逐轮重建。
+// 构建本身的 CPU 成本（BenchmarkBuildSystemReminder，10000 次）：P0（无子代理）
+// p50≈2.5µs、P1（5 条子代理）p50≈4.3µs —— 与频率无关地属于「可忽略」档。
+// ⚠️ 这只说明 CPU 开销，不说明 token 成本：reminder 每次注入都进 prompt
+// （约 618 bytes / 406 runes），频率变更必须按 token 算，见 N2b。
 func (s *runState) buildSystemReminder() string {
 	var todoItems []TodoProgressItem
 	if s.cfg.TodoManager != nil && s.todoKey() != "" {
@@ -2742,9 +2794,11 @@ func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMRespo
 //
 // This is the SINGLE construction point for all fake/synthetic tool pairs
 // (background task, subagent, cron, delivered message, pre_turn_end,
-// user_cancelled, system_reminder). Do NOT hand-roll assistant+tool pairs
+// user_cancelled). Do NOT hand-roll assistant+tool pairs
 // elsewhere — the offload / persistence / progress / cleanup behavior would
 // silently diverge.
+// ⛔ system_reminder 自 2026-10-30（N2）起**不再**走这里：它是尾部内容拼接，
+// 不是消息对（见 llmMessages / appendReminderToTail）。
 // 注入型（fake）工具的结果【不加任何"这不是你调用的工具"前缀】—— 用户 2026-09-17 决策：
 // 「我们自己注入的不要告诉他别调用，否则他会以为这个是他自己调用的」。
 //
