@@ -186,26 +186,32 @@ var sharedConns = struct {
 	m  map[string]*sharedConn
 }{m: make(map[string]*sharedConn)}
 
+// sharedConn 是「一个路径一行」的注册项。conn 经 connHolder 间接持有，
+// 这样 WAL 自愈（walguard.go）能对整个进程一次性换池。
 type sharedConn struct {
-	conn *sql.DB
-	refs int
+	holder *connHolder
+	refs   int
 }
 
-// acquireSharedConn returns the process-wide *sql.DB for path, creating it on
-// first use. Every successful call must be paired with releaseSharedConn.
-func acquireSharedConn(path string, maxIdleConns int, maxIdleTime time.Duration) (*sql.DB, error) {
+// acquireSharedConn returns the process-wide connection pool for path, creating
+// it on first use. Every successful call must be paired with releaseSharedConn.
+func acquireSharedConn(path string, maxIdleConns int, maxIdleTime time.Duration) (*connHolder, error) {
 	sharedConns.mu.Lock()
 	defer sharedConns.mu.Unlock()
 	if e, ok := sharedConns.m[path]; ok {
 		e.refs++
-		return e.conn, nil
+		return e.holder, nil
 	}
 	conn, err := openRawConn(path, maxIdleConns, maxIdleTime)
 	if err != nil {
 		return nil, err
 	}
-	sharedConns.m[path] = &sharedConn{conn: conn, refs: 1}
-	return conn, nil
+	// 记录刚打开的 -wal/-shm 身份：WAL 守卫据此判断「路径上还是不是我那个文件」。
+	walID, shmID := captureWALIdentity(path)
+	h := &connHolder{db: conn, walID: walID, shmID: shmID, maxIdle: maxIdleConns, maxIdleTime: maxIdleTime}
+	sharedConns.m[path] = &sharedConn{holder: h, refs: 1}
+	startWALGuard()
+	return h, nil
 }
 
 // releaseSharedConn drops one reference; the underlying pool is closed only when
@@ -224,11 +230,16 @@ func releaseSharedConn(path string) error {
 		return nil
 	}
 	delete(sharedConns.m, path)
-	return e.conn.Close()
+	conn := e.holder.get()
+	if conn == nil {
+		return nil
+	}
+	return conn.Close()
 }
 
 // sharedConnRefs reports the current reference count for path (0 = not open).
-// Used by tests and by shutdown diagnostics.
+// Used by tests, by the WAL sidecar guard (RemoveWALSidecars) and by shutdown
+// diagnostics.
 func sharedConnRefs(path string) int {
 	sharedConns.mu.Lock()
 	defer sharedConns.mu.Unlock()
@@ -280,18 +291,22 @@ func openRawConn(path string, maxIdleConns int, maxIdleTime time.Duration) (*sql
 }
 
 func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, error) {
-	var conn *sql.DB
-	var err error
 	if path == ":memory:" {
 		// 每个 :memory: 库天然独立，不能共享。
-		conn, err = openRawConn(path, maxIdleConns, maxIdleTime)
-	} else {
-		conn, err = acquireSharedConn(path, maxIdleConns, maxIdleTime)
+		conn, err := openRawConn(path, maxIdleConns, maxIdleTime)
+		if err != nil {
+			return nil, err
+		}
+		db := &DB{conn: conn, path: path}
+		db.logWALState("open")
+		return db, nil
 	}
+	holder, err := acquireSharedConn(path, maxIdleConns, maxIdleTime)
 	if err != nil {
 		return nil, err
 	}
-	db := &DB{conn: conn, path: path}
+	// conn 只是「打开那一刻的快照」，读写一律走 activeConn()（可能已被 WAL 守卫换成新池）。
+	db := &DB{conn: holder.get(), holder: holder, path: path}
 	db.logWALState("open")
 	return db, nil
 }

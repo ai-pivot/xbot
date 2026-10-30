@@ -33,6 +33,7 @@ import (
 // immediately with SQLITE_BUSY.
 type DB struct {
 	conn         *sql.DB
+	holder       *connHolder // 仅文件库：全进程共享的连接池间接层（WAL 自愈要换池）
 	path         string
 	closed       atomic.Bool // Close 幂等（D-01）
 	mu           sync.RWMutex
@@ -464,8 +465,9 @@ func (db *DB) CheckpointForShutdown() error {
 		return nil
 	}
 	db.mu.RLock()
-	conn, path := db.conn, db.path
+	path := db.path
 	db.mu.RUnlock()
+	conn := db.activeConn()
 	if conn == nil {
 		return nil
 	}
@@ -510,8 +512,22 @@ func walCheckpointTruncate(conn *sql.DB) (busy, logFrames, checkpointed int, err
 	return busy, logFrames, checkpointed, nil
 }
 
-// Conn returns the underlying database connection
+// Conn returns the underlying database connection.
+//
+// 文件库走 activeConn()：WAL 守卫（walguard.go）可能在运行期把池换成新的，
+// 所有 handle 必须看到同一套池，否则会有人抱着已关闭的池继续读写。
 func (db *DB) Conn() *sql.DB {
+	return db.activeConn()
+}
+
+// activeConn 返回该 handle 当前真正使用的连接池。
+func (db *DB) activeConn() *sql.DB {
+	if db == nil {
+		return nil
+	}
+	if db.holder != nil {
+		return db.holder.get()
+	}
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	return db.conn

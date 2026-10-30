@@ -33,7 +33,6 @@ package session
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -359,9 +358,12 @@ func (m *MultiTenantSession) deleteSessionDBFile(tenantID int64) {
 		return
 	}
 	abs := filepath.Join(m.sessionDBDir, dbPath)
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if err := os.Remove(abs + suffix); err != nil && !os.IsNotExist(err) {
-			log.WithError(err).WithField("path", abs+suffix).Warn("Failed to delete session db file")
-		}
+	// 唯一删除入口：sqlite.RemoveWALSidecars 会先确认「没有任何连接/flock 引用该
+	// 路径」才删 <db>/-wal/-shm（G-20261027-14）。以前这里直接 os.Remove，只要还有
+	// 别的 handle 指着同一路径（例如另一个被缓存的 TenantSession、或某个 agent 手里
+	// 的 *sqlite.DB），就会把别人正在写的 -wal 删成孤儿 inode。
+	if err := sqlite.RemoveWALSidecars(abs); err != nil {
+		log.WithError(err).WithField("path", abs).
+			Warn("Session DB file kept on disk: refused to delete while a connection handle still references it")
 	}
 }
