@@ -86,38 +86,69 @@ func TestObservabilityIsolatedInstance(t *testing.T) {
 	}
 
 	// ---- 1. 10 个快请求：100ms 档必须保持 0 ----
-	// -race 构建会把墙钟放大到数百毫秒（实测 auth/DB 路径 650ms+），此时
-	// 「快请求」在计时上不再快，断言无判别力，跳过；默认门禁覆盖该断言。
+	// 为什么这里可以 skip 而单元测试（web_request_timing_test.go）不行：
+	// 「-race 把墙钟抬到数百毫秒」这条只对**真实 auth + DB 路径**成立——本文件走
+	// 真实 http.Server + 真实 cookie 鉴权 + SQLite，-race 下实测 650ms+，快请求
+	// 在计时上不再快，断言无判别力（见下方 FAST_BURST 日志的原始数字）。
+	// 单元测试用的是合成 handler + time.Sleep（不经 auth/DB），-race 开销只有
+	// 个位数毫秒，因此那边不 skip、必须真跑。
+	// 客户端侧实测耗时作为前置条件：客户端 elapsed 覆盖服务端中间件 elapsed
+	// （网络 + auth + handler），因此 client<100ms ⇒ 中间件必然 <100ms。
+	// 用它把「机器繁忙导致请求本来就被拖慢」和「打点误触发」区分开：前者不是本用例
+	// 能判定的对象（并发跑 -race 时实测 10 个 /api/ping 里会有 2 个超 100ms）。
+	fastOver100 := 0
 	for i := 0; i < 10; i++ {
+		t0 := time.Now()
 		do("/api/ping", "{}")
-	}
-	if !raceEnabled {
-		if n := wc.reqTiming.over100ms.Load(); n != 0 {
-			t.Fatalf("10 fast requests bumped the 100ms bucket: %d", n)
+		if time.Since(t0) >= 100*time.Millisecond {
+			fastOver100++
 		}
 	}
-	t.Logf("FAST_BURST over100ms=%d over200ms=%d (race=%v; want 0/0 when !race)",
-		wc.reqTiming.over100ms.Load(), wc.reqTiming.over200ms.Load(), raceEnabled)
+	if !raceEnabled {
+		if fastOver100 > 0 {
+			// 前置条件不成立：只记录，不判红。严格断言由单元用例
+			// TestRequestTiming100msTier（合成 handler，不经 auth/DB，可确定复现）承担。
+			t.Logf("FAST_BURST_PRECONDITION_UNMET: %d/10 requests >=100ms client-side; strict bucket assertion not applicable", fastOver100)
+		} else if n := wc.reqTiming.over100ms.Load(); n != 0 {
+			t.Fatalf("10 fast requests (<100ms each client-side) bumped the 100ms bucket: %d", n)
+		}
+	}
+	t.Logf("FAST_BURST over100ms=%d over200ms=%d fast_over100_client=%d (race=%v; want 0/0 when !race)",
+		wc.reqTiming.over100ms.Load(), wc.reqTiming.over200ms.Load(), fastOver100, raceEnabled)
 
 	// ---- 2. 1 个慢请求（130ms）：100ms 档必须被触发 ----
+	slowStart := time.Now()
 	do("/api/slow-130ms", "{}")
+	slowClient := time.Since(slowStart)
 	if n := wc.reqTiming.over100ms.Load(); n < 1 {
 		t.Fatalf("130ms request did not hit the 100ms bucket: %d", n)
 	}
 	if !raceEnabled {
-		// 非 -race 下 130ms 必须留在 100ms 档，不得串到 200ms 档。
-		if n := wc.reqTiming.over200ms.Load(); n != 0 {
-			t.Fatalf("130ms request leaked into the 200ms bucket: %d", n)
-		}
-		if n := wc.reqTiming.over100ms.Load(); n != 1 {
-			t.Fatalf("over100ms = %d, want 1", n)
+		if slowClient >= 200*time.Millisecond {
+			// 同上：客户端侧已 ≥200ms 时，服务端是否串档不可判定（负载所致），只记录。
+			t.Logf("SLOW_CALL_PRECONDITION_UNMET: 130ms handler took %v client-side (>=200ms); tier assertion not applicable", slowClient)
+		} else {
+			// 非 -race 且客户端 <200ms ⇒ 服务端 <200ms：130ms 必须留在 100ms 档。
+			if n := wc.reqTiming.over200ms.Load(); n != 0 {
+				t.Fatalf("130ms request leaked into the 200ms bucket: %d", n)
+			}
+			if n := wc.reqTiming.over100ms.Load(); n != 1 {
+				t.Fatalf("over100ms = %d, want 1", n)
+			}
 		}
 	}
 	t.Logf("SLOW_CALL over100ms=%d over200ms=%d (want 1/0 when !race)", wc.reqTiming.over100ms.Load(), wc.reqTiming.over200ms.Load())
 
 	// ---- 3. 两个 method 各打若干次，然后抓 /api/rpc-stats ----
+	// 记录 usage 调用的客户端侧最大耗时：client<10ms ⇒ 服务端<10ms ⇒ p99 必然 <10ms。
+	// 这给下面的「不被 pending 污染」断言一个确定前置条件（机器繁忙导致的不算）。
+	usageMaxClient := time.Duration(0)
 	for i := 0; i < 5; i++ {
+		t0 := time.Now()
 		do("/api/rpc", `{"method":"get_session_usage_stats","params":{}}`)
+		if el := time.Since(t0); el > usageMaxClient {
+			usageMaxClient = el
+		}
 		do("/api/rpc", `{"method":"get_pending_ask_user","params":{}}`)
 	}
 	statsBody := do("/api/rpc-stats", "")
@@ -150,15 +181,21 @@ func TestObservabilityIsolatedInstance(t *testing.T) {
 		t.Fatalf("per-method n = usage:%d pending:%d, want 5/5", usage.N, pending.N)
 	}
 	if !raceEnabled {
-		// usage(3ms) 与 pending(15ms) 必须能区分开：若退化成总耗时口径，两者会趋同。
-		if usage.P99Ms >= 10 {
-			t.Fatalf("get_session_usage_stats polluted: p99=%.3f (want <10ms)", usage.P99Ms)
-		}
-		if pending.P50Ms < 15 {
-			t.Fatalf("get_pending_ask_user p50=%.3f (want >=15ms)", pending.P50Ms)
-		}
-		if pending.P50Ms <= usage.P99Ms*2 {
-			t.Fatalf("methods not separable: pending p50=%.3f usage p99=%.3f", pending.P50Ms, usage.P99Ms)
+		if usageMaxClient >= 10*time.Millisecond {
+			// 前置条件不成立（负载把 3ms 的 usage 调用拖过 10ms），只记录不判红；
+			// method 维度的严格断言由 TestRPCStats* 单元用例承担。
+			t.Logf("METHOD_ROWS_PRECONDITION_UNMET: usage call took %v client-side (>=10ms); separability assertion not applicable", usageMaxClient)
+		} else {
+			// usage(3ms) 与 pending(15ms) 必须能区分开：若退化成总耗时口径，两者会趋同。
+			if usage.P99Ms >= 10 {
+				t.Fatalf("get_session_usage_stats polluted: p99=%.3f (want <10ms)", usage.P99Ms)
+			}
+			if pending.P50Ms < 15 {
+				t.Fatalf("get_pending_ask_user p50=%.3f (want >=15ms)", pending.P50Ms)
+			}
+			if pending.P50Ms <= usage.P99Ms*2 {
+				t.Fatalf("methods not separable: pending p50=%.3f usage p99=%.3f", pending.P50Ms, usage.P99Ms)
+			}
 		}
 	}
 	t.Logf("METHOD_ROWS usage n=%d p50=%.3f p99=%.3f | pending n=%d p50=%.3f p99=%.3f",

@@ -25,6 +25,22 @@ import (
 //     长时间运行不会无限增长。N 是累计总数（不受环形窗口覆盖影响）。
 //  3. 环形窗口是「最近 N 个样本」——分位数反映近期状态，而不是把一周前的
 //     慢请求混进来。
+//
+// 范围边界（读数字前必须知道）：
+//   - 本文件的判据范围**仅限 `POST /api/rpc`**（handleRPC 这一个咽喉点）。
+//   - WS 通道的 `MsgTypeRPC`（CLI 侧指定 method，见 web.go 的 case
+//     protocol.MsgTypeRPC）**没有打点**，它的耗时不出现在 /api/rpc-stats 里；
+//     需要覆盖时另立条目，不要把这里的数字当成「全部 rpc」。
+//   - 在 authMiddleware 阶段就被拒绝（未进入 handleRPC）的请求也不计入。
+//
+// 分母与归桶口径（见 Observe / rpcMethodSnapshot）：
+//   - 分母（N / samples）是**所有抵达 handleRPC 的调用**，不按状态码过滤：
+//     成功 200、400、403、500 与 503 全部进样本。也就是说 p50/p99 是
+//     「全量请求」的分位数，不是「仅成功请求」的分位数。
+//   - 503（RPC service unavailable，RPCHandler 未装配）发生在 method 解析之前，
+//     此时 method 为空 → 归入 "(invalid)" 桶，status=503 → 该桶 errors 递增。
+//   - 日志节流（100ms 档每请求时间窗口最多一行）只影响日志行数，**不影响**
+//     这里任何计数。
 // ---------------------------------------------------------------------------
 
 const (
@@ -134,11 +150,15 @@ func (w *rpcMethodWindow) snapshot(method string, clearSeen bool) rpcMethodSnaps
 }
 
 // rpcMethodSnapshot 是单个 method 的分位数快照（对外 JSON / 日志共用）。
+//
+// 口径：N 是累计调用次数（分母，含成功与各类错误状态，见文件头「分母与归桶口径」）；
+// Samples 是环形窗口内实际参与分位数计算的样本数（= min(N, rpcStatRingSize)）；
+// P50/P95/P99/Max 都在这 Samples 个样本上计算，不按状态码过滤。
 type rpcMethodSnapshot struct {
 	Method  string  `json:"method"`
 	N       uint64  `json:"n"`       // 累计调用次数
 	Samples uint64  `json:"samples"` // 窗口内实际样本数（≤ rpcStatRingSize）
-	Errors  uint64  `json:"errors"`
+	Errors  uint64  `json:"errors"`  // 累计 status != 200 的次数
 	P50Ms   float64 `json:"p50_ms"`
 	P95Ms   float64 `json:"p95_ms"`
 	P99Ms   float64 `json:"p99_ms"`
@@ -206,8 +226,10 @@ func (s *rpcStats) window(method string) *rpcMethodWindow {
 	return v.(*rpcMethodWindow)
 }
 
-// Observe 记录一次 /api/rpc 调用。method 为空（请求体非法）时归入 "(invalid)"，
-// 这样非法请求既不会被静默丢弃，也不会污染真实 method 的分位数。
+// Observe 记录一次 /api/rpc 调用。method 为空（请求体非法，或 RPCHandler 未装配
+// 直接返回 503）时归入 "(invalid)"，这样这些请求既不会被静默丢弃，也不会污染
+// 真实 method 的分位数；它们的 status（400/503 等）只体现在该桶的 errors 上，
+// 但耗时仍计入该桶的分位数样本（分母口径见文件头）。
 func (s *rpcStats) Observe(method string, d time.Duration, status int) {
 	if method == "" {
 		method = "(invalid)"

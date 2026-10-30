@@ -1981,6 +1981,11 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 		case protocol.MsgTypeRPC:
 			// CLI RemoteBackend RPC request — dispatch to server-side handler.
 			//
+			// 注意（观测范围）：本通道**没有** G-17 的 per-method 打点。
+			// G-17 判据范围仅限 POST /api/rpc（见 web_rpc_stats.go 文件头），
+			// 这里不走 handleRPC，因此它的耗时不会出现在 /api/rpc-stats。
+			// 需要覆盖 WS 通道时另立条目。
+			//
 			// RPC processing runs in a goroutine so readPump can continue
 			// reading the next WebSocket message. Without this, a long-running
 			// RPC (e.g. refresh_model_entries, which fetches /models from every
@@ -2263,7 +2268,11 @@ type requestTimingBuckets struct {
 }
 
 // requestTimingThrottle 是 100ms 档日志的最小间隔。
-const requestTimingThrottle = time.Second
+//
+// 用 var 而非 const 只为测试可注入一个远超测试时长的窗口，使「N 次调用是否
+// 落在同一节流窗口内」成为确定事实而不是墙钟假设（机器繁忙时 3×130ms 可能
+// 跨过 1s 边界）。生产代码不修改它。
+var requestTimingThrottle = time.Second
 
 // requestTimingMiddleware buckets slow API requests (100ms / 200ms / 1s) for
 // diagnostics. The 100ms tier is count-only + throttled logging (see
@@ -2316,15 +2325,20 @@ func (wc *WebChannel) requestTimingMiddleware(next http.Handler) http.Handler {
 			if folded > 0 {
 				folded--
 			}
+			// count_ge_100ms 是「≥100ms 累计」计数（含 200ms / 1s 档），
+			// 因此会大于本行代表的 100–200ms 档样本数。曾用名 count_100ms：
+			// 旧名字把档位写成单一数字，容易被误读成「恰好 100ms 档」，
+			// 2026-10-30 更名；查历史日志请按旧名 grep
+			// （新旧对照见 docs/observability-rpc-latency.md）。
 			log.WithFields(log.Fields{
-				"method":      r.Method,
-				"path":        path,
-				"status":      rw.status,
-				"elapsed":     elapsed.String(),
-				"tier":        "100ms",
-				"throttled":   true,
-				"folded":      folded,
-				"count_100ms": wc.reqTiming.over100ms.Load(),
+				"method":         r.Method,
+				"path":           path,
+				"status":         rw.status,
+				"elapsed":        elapsed.String(),
+				"tier":           "100ms",
+				"throttled":      true,
+				"folded":         folded,
+				"count_ge_100ms": wc.reqTiming.over100ms.Load(),
 			}).Info("API request over 100ms")
 		}
 	})
