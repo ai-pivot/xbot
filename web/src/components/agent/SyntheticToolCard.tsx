@@ -14,7 +14,7 @@
  * Icons are lucide SVG — NEVER emoji (emoji glyphs render as tofu boxes
  * wherever the environment lacks an emoji font; caught by an E2E screenshot).
  */
-import { memo, useMemo, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Ban,
   Bot,
@@ -344,6 +344,39 @@ function CodeBlock({
   const [copied, setCopied] = useState(false)
   const [open, setOpen] = useState(false)
   const collapsible = text.split('\n').length > 3 || text.length > 220
+  // "已复制"复位定时器必须由组件自己持有、卸载时清掉（与 UserMessage 同一模式）。
+  // 裸 `window.setTimeout` 在 1200ms 内卸载（虚拟滚动回收旧卡片 / 切会话）后
+  // 回调仍在跑：teardown 之后访问已销毁的 window 抛 `ReferenceError: window is
+  // not defined`，用例全过但 vitest 退出码非 0，拦掉所有人的 pre-commit。
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // clipboard.writeText 是 promise：卸载可能发生在它 resolve 之前，那种情况下
+  // 不许再 setState、也不许再起 timer（否则等于把泄漏换个入口）。
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (copyResetTimer.current !== null) {
+        clearTimeout(copyResetTimer.current)
+        copyResetTimer.current = null
+      }
+    }
+  }, [])
+
+  const copy = useCallback(() => {
+    void navigator.clipboard?.writeText(text).then(() => {
+      if (!mountedRef.current) return
+      setCopied(true)
+      // 连点时先清旧 timer 再起新的：任何时刻最多只有一个待触发的复位定时器。
+      if (copyResetTimer.current !== null) clearTimeout(copyResetTimer.current)
+      copyResetTimer.current = setTimeout(() => {
+        copyResetTimer.current = null
+        setCopied(false)
+      }, 1200)
+    })
+  }, [text])
+
   return (
     <div className="group/code relative rounded-lg border border-border/60 bg-bg-tertiary/40">
       <pre
@@ -358,12 +391,7 @@ function CodeBlock({
         type="button"
         title={copyLabel}
         aria-label={copyLabel}
-        onClick={() => {
-          void navigator.clipboard?.writeText(text).then(() => {
-            setCopied(true)
-            window.setTimeout(() => setCopied(false), 1200)
-          })
-        }}
+        onClick={copy}
         className="absolute right-1 top-1 rounded-md border border-border/60 bg-bg-secondary/80 p-1 text-text-muted opacity-0 transition-opacity hover:text-text-primary focus:opacity-100 group-hover/code:opacity-100"
       >
         {copied ? <Check size={11} /> : <Copy size={11} />}

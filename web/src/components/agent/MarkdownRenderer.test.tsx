@@ -5,8 +5,8 @@
  * highlight.js tokens, inline code, links, and that the component memoizes on
  * content equality.
  */
-import { describe, expect, it, vi } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createRef } from 'react'
 import '@testing-library/jest-dom'
 
@@ -478,5 +478,109 @@ A paragraph.`
     if (!a) throw new Error('markdown link did not render (a element missing)')
     expect(a).toHaveAttribute('href', '/api/files/download?key=uploads%2Fweb%2Fc%2Fbin-key')
     expect(a).toHaveAttribute('target', '_blank')
+  })
+})
+
+/**
+ * 2026-10-30 P0 回归 —— 代码块「已复制」复位定时器泄漏。
+ *
+ * 与 UserMessage 是同一类故障：`CopyButton` 里裸调
+ * `setTimeout(() => setCopied(false), 1200)`，代码块所在的消息在 1200ms 内被
+ * 虚拟滚动回收 / 切会话卸载后回调仍在跑；测试环境 teardown 之后 jsdom 的
+ * `window` 已销毁 ⇒ 回调路径抛 `ReferenceError: window is not defined` 的
+ * **未捕获异常**：用例全过但 vitest 退出码非 0，拦掉所有人的 pre-commit。
+ *
+ * 两条用例分别锁：卸载必须清理 / 卸载后剪贴板 promise 才 resolve 时不许再起 timer。
+ */
+describe('MarkdownRenderer — copy-confirmation reset timer cleanup (2026-10-30 regression)', () => {
+  const FENCE = '```js\nconst a = 1\n```'
+
+  function mockClipboard() {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    return writeText
+  }
+
+  function copyButton(): HTMLElement {
+    return screen.getByLabelText('Copy code')
+  }
+
+  // 剪贴板 .then 回调、定时器回调都会触发 setState：必须包在 act 里。
+  async function flushClipboard() {
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+
+  const tick = async (ms: number) => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('① unmount 早于 1200ms 时清掉复位定时器（定时器回调不再执行、无错误输出）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockClipboard()
+
+    // 直接盯「那个 1200ms 回调到底有没有被执行」：泄漏的实现在卸载后依然会触发它。
+    const fakeSetTimeout = globalThis.setTimeout
+    let resetRuns = 0
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => fakeSetTimeout(((...passed: unknown[]) => {
+      if (ms === 1200) resetRuns += 1
+      return (fn as (...x: unknown[]) => void)(...passed)
+    }) as TimerHandler, ms, ...args)) as unknown as typeof setTimeout)
+
+    const { unmount } = render(<MarkdownRenderer content={FENCE} />)
+
+    fireEvent.click(copyButton())
+    await flushClipboard()
+    expect(resetRuns).toBe(0) // 还没到点
+
+    unmount() // 1200ms 之前卸载
+    await tick(2000) // 推进到 2000ms：被清理掉的定时器不该再执行
+    expect(resetRuns).toBe(0)
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it('② 卸载后剪贴板 promise 才 resolve：不排复位定时器、不报错', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let release: () => void = () => {}
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockReturnValue(pending) } })
+
+    const fakeSetTimeout = globalThis.setTimeout
+    let resetScheduled = 0
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      if (ms === 1200) resetScheduled += 1
+      return fakeSetTimeout(fn, ms, ...args)
+    }) as unknown as typeof setTimeout)
+
+    const { unmount } = render(<MarkdownRenderer content={FENCE} />)
+    fireEvent.click(copyButton())
+    unmount()
+
+    await act(async () => { release() })
+    await flushClipboard()
+
+    expect(resetScheduled).toBe(0) // 卸载后不再起定时器
+    expect(errorSpy).not.toHaveBeenCalled()
   })
 })

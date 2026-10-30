@@ -17,7 +17,7 @@
  * `toolHints` (no `args` — transient during live execution), so history
  * renderers parse label+summary; live renderers prefer args/detail.
  */
-import { memo, useCallback, useMemo, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   FileText, ChevronRight, CheckCircle2, Circle, FastForward, Loader2,
   Image as ImageIcon, ExternalLink, Copy, Check,
@@ -236,6 +236,25 @@ function ShareFileRender({
   const { t } = useI18n()
   const parsed = useMemo(() => parseShareFile(tool, summary, detail), [tool, summary, detail])
   const [copied, setCopied] = useState(false)
+  // "已复制"复位定时器必须由组件自己持有、卸载时清掉（与 UserMessage 同一模式）。
+  // 裸 `window.setTimeout` 在 1500ms 内卸载（虚拟滚动回收旧卡片 / 切会话）后
+  // 回调仍在跑：teardown 之后访问已销毁的 window 抛 `ReferenceError: window is
+  // not defined`，用例全过但 vitest 退出码非 0，拦掉所有人的 pre-commit。
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 复制走 clipboard（promise）且失败会回退 execCommand：两条路径都可能晚于
+  // 卸载，那种情况下不许再 setState、也不许再起 timer。
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (copyResetTimer.current !== null) {
+        clearTimeout(copyResetTimer.current)
+        copyResetTimer.current = null
+      }
+    }
+  }, [])
 
   const copyLink = useCallback(async () => {
     if (!parsed) return
@@ -251,8 +270,14 @@ function ShareFileRender({
       document.execCommand('copy')
       document.body.removeChild(ta)
     }
+    if (!mountedRef.current) return
     setCopied(true)
-    window.setTimeout(() => setCopied(false), 1500)
+    // 连点时先清旧 timer 再起新的：任何时刻最多只有一个待触发的复位定时器。
+    if (copyResetTimer.current !== null) clearTimeout(copyResetTimer.current)
+    copyResetTimer.current = setTimeout(() => {
+      copyResetTimer.current = null
+      setCopied(false)
+    }, 1500)
   }, [parsed])
 
   // 历史行缺结构化信息 / 发布失败：回落默认渲染，绝不吞掉内容。
