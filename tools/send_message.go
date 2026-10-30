@@ -26,6 +26,7 @@ func (t *SendMessageTool) Description() string {
 
 ## Addressing
 - Agent: "agent:<role>/<instance>" (e.g., "agent:reviewer/cr1")
+- User board: "user" (this session's owner) or "user:<owner_id>" — top-level agents only (see below)
 - Group: "group:<id>" (e.g., "group:g1") — SubAgent meeting mode
 - Peer Group: "peer:<group_id>" (e.g., "peer:dev-team") — async broadcast to independent agent sessions
 - Session: "session:<session_key>" (e.g., "session:cli:session-abc") — async message to a specific agent session
@@ -59,7 +60,22 @@ Examples:
   → Async broadcast to all members in peer group "dev-team".
 
 ## IM target
-Sends message immediately (fire-and-forget).`
+Sends message immediately (fire-and-forget).
+
+## User board target — "user" / "user:<owner_id>"
+Delivers a CARD to the user's board instead of burying it in the chat stream — use it for
+briefings the user must not miss, and for anything that needs the user's decision.
+The card does NOT wake the session, does NOT appear in the chat history and does NOT enter
+the LLM context; it is listed by GET /api/inbox until the user acts on it
+(approve / reject / answer / dismiss). When the user acts, you receive one feedback message
+in this session (repeated clicks never re-deliver).
+
+- Allowed only for top-level agents (agent depth <= 1). Nested sub-agents must report to
+  their parent agent, which decides whether the user should be interrupted.
+- kind must be "report" (default when omitted) or "ask_user" (payload.questions required).
+  decision/answer are replies to an agent, not cards.
+- Example: SendMessage(to="user", kind="report", message="N1 后端闭环完成：...",
+  payload="{\"summary\":\"一句话结论\",\"needs_approval\":true}", idempotency_key="n1-1")`
 }
 
 type SendMessageParams struct {
@@ -95,6 +111,12 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 	addr := params.To
 	if addr == "" {
 		return nil, fmt.Errorf("invalid address format: empty")
+	}
+
+	// to="user" 特殊路由：落到**用户可见的会话**（用户看板），不是聊天流。
+	// 必须在 kind 分支与地址 switch 之前判定 —— "user" 既不是 IM 前缀也不是会话地址。
+	if isUserTarget(addr) {
+		return t.sendToUserBoard(ctx, addr, params)
 	}
 
 	// 结构化分支：kind 缺省/为 text 时完全走旧路径（零回归）。
@@ -133,6 +155,174 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 		return NewResult(result), nil
 	}
 	return NewResult(fmt.Sprintf("Message sent to %s", params.To)), nil
+}
+
+// ── to="user"：用户看板特殊路由 ─────────────────────────────────────────────
+//
+// 用户原话（2026-10-29）："我希望 sendmsg 有个特殊路由 user，最上级 agent 可用这个
+// 路由，这些消息会像项目进度管理那种卡片一样提示用户，用户交互后流转状态通知 agent"。
+//
+// 三条语义（与派发单 §2 对齐）：
+//  1. **落点是用户可见的会话**（根会话，如 web:web-4），不是发起的子代理会话 ——
+//     "用户看不到简报"的根因正是 report 落在子代理自己的会话库里。
+//  2. **只有最上级 agent 能用**（AgentDepth ≤ 1，即由用户主会话直接 spawn 的那一层）。
+//     更深的子代理必须上报父代理，由父代理决定是否打扰用户；**绝不静默降级**成普通 IM 发送。
+//  3. **落库但不唤醒目标会话**（Silent）：卡片是给用户看的待办，不是给用户会话的
+//     新一轮输入，否则会话会自己把自己拉起来。
+//
+// 存储仍是 session_messages 那一套结构化行（kind=report/ask_user），
+// 不新造第二套存储；用户处理后的状态回流见 serverapp 的 resolve 回调。
+
+// isUserTarget 判断地址是否命中 to="user" 特殊路由（"user" 或 "user:<owner>"）。
+func isUserTarget(addr string) bool {
+	return addr == "user" || strings.HasPrefix(addr, "user:")
+}
+
+// userBoardTarget 是 to="user" 的解析结果。
+type userBoardTarget struct {
+	Channel       string // 用户可见会话的渠道（根会话）
+	ChatID        string
+	SenderID      string // 卡片发起方（记录在行上，用于审计/看板展示）
+	OriginSession string // 发起方物理会话 key（用户处理后回流到这里）
+	OriginAgent   string // 发起方逻辑地址（agent:<role>/<instance>），可能是空
+}
+
+func (t *SendMessageTool) sendToUserBoard(ctx *ToolContext, addr string, p SendMessageParams) (*ToolResult, error) {
+	// ① 权限：最上级 agent 才可用。判定用显式深度字段，不做任何字符串猜测。
+	if ctx == nil {
+		return nil, fmt.Errorf("to=%q is only available to top-level agents inside an agent session", addr)
+	}
+	if ctx.AgentDepth > 1 {
+		return nil, fmt.Errorf("only top-level agents may target %q: this caller is at agent depth %d — nested sub-agents must report to their parent with SendMessage(to=\"agent:<role>/<instance>\") and let it decide whether to surface a card", addr, ctx.AgentDepth)
+	}
+
+	// ② 落点 & 归属
+	target, err := resolveUserBoardTarget(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+
+	// ③ kind：看板只承载"待用户处理"的两类卡片。普通文本按 report 处理
+	//    （用户要的"简报别被淹没"就是这个场景）。
+	kind := strings.ToLower(strings.TrimSpace(p.Kind))
+	if kind == "" || kind == "text" {
+		kind = "report"
+	}
+	if kind != "report" && kind != "ask_user" {
+		return nil, fmt.Errorf("to=%q only carries board items (kind=report|ask_user): got kind=%q — decision/answer are replies to agents, not cards for the user board", addr, kind)
+	}
+
+	var payload map[string]any
+	if s := strings.TrimSpace(p.Payload); s != "" {
+		if err := json.Unmarshal([]byte(s), &payload); err != nil {
+			return nil, fmt.Errorf("payload must be a JSON object string: %w", err)
+		}
+	}
+	// ask_user 卡片必须带问题：没有 questions 的卡片在看板上无内容可答，
+	// 与 HTTP 入口（validateStructuredPayload）保持同一份契约。
+	if kind == "ask_user" {
+		if _, ok := payload["questions"]; !ok {
+			return nil, fmt.Errorf("payload.questions is required for kind=ask_user (to=%q)", addr)
+		}
+	}
+
+	// ④ 落库（注入的 userNotice 实现；未注入 = 该运行时没有用户看板）
+	fn := userNoticeAppend()
+	if fn == nil {
+		return nil, fmt.Errorf("user board (to=%q) is not available in this context", addr)
+	}
+	caller := CallerScope{Channel: ctx.Channel, ChatID: ctx.ChatID, SessionKey: ctx.CallerSessionKey}
+	idem := strings.TrimSpace(p.IdempotencyKey)
+	id, dup, err := fn(target.SenderID, caller, target.Channel, target.ChatID, protocol.StructuredMessageInput{
+		Kind:           kind,
+		Payload:        payload,
+		Text:           p.Message,
+		IdempotencyKey: idem,
+		OriginSession:  target.OriginSession,
+		OriginAgent:    target.OriginAgent,
+		Silent:         true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("user card (kind=%s → %s:%s) failed: %w", kind, target.Channel, target.ChatID, err)
+	}
+
+	note := ""
+	if dup {
+		note = "（幂等命中：该卡片此前已提交，未重复生效）"
+	}
+	return NewResult(fmt.Sprintf("卡片已提交到用户看板：%s #%d（%s:%s，待处理）%s", kind, id, target.Channel, target.ChatID, note)), nil
+}
+
+// resolveUserBoardTarget 解析 to="user" 的落点、归属与回流目标。
+//
+// owner 口径：`user` = 本会话 owner；`user:<open_id>` 必须是**本会话已知的 owner**
+// （本部署没有 open_id → 用户的映射表，凭空接受一个 id 就等于允许把卡片投进
+// 别人的会话，所以这里显式拒绝并说清可用的值）。
+func resolveUserBoardTarget(ctx *ToolContext, addr string) (userBoardTarget, error) {
+	rootChannel, rootChatID := rootSessionOf(ctx)
+	if rootChannel == "" || rootChatID == "" || rootChannel == "agent" {
+		return userBoardTarget{}, fmt.Errorf("to=%q: cannot resolve the user's session from this context (channel=%q chat_id=%q root=%q) — send it from an agent session", addr, ctx.Channel, ctx.ChatID, ctx.RootSessionKey)
+	}
+	owner := firstNonEmptyString(ctx.OriginUserID, ctx.SenderID, rootChatID)
+	if rest, ok := strings.CutPrefix(addr, "user:"); ok {
+		want := strings.TrimSpace(rest)
+		if want == "" {
+			return userBoardTarget{}, fmt.Errorf("invalid address %q: use \"user\" (this session's owner) or \"user:<owner_id>\"", addr)
+		}
+		if want != owner && want != rootChatID && want != ctx.SenderID {
+			return userBoardTarget{}, fmt.Errorf("unknown user %q for this session: only the current session owner (%q) is addressable from here", want, owner)
+		}
+	}
+	originSession := strings.TrimSpace(ctx.CallerSessionKey)
+	if originSession == "" {
+		originSession = rootChannel + ":" + rootChatID
+	}
+	originAgent := ""
+	if ctx.AgentDepth >= 1 {
+		name := firstNonEmptyString(ctx.AgentID, ctx.SessionKey)
+		if name != "" {
+			if strings.HasPrefix(name, "agent:") {
+				originAgent = name
+			} else {
+				originAgent = "agent:" + name
+			}
+		}
+	}
+	return userBoardTarget{
+		Channel:       rootChannel,
+		ChatID:        rootChatID,
+		SenderID:      firstNonEmptyString(originAgent, owner),
+		OriginSession: originSession,
+		OriginAgent:   originAgent,
+	}, nil
+}
+
+// rootSessionOf 返回调用方所在的**用户可见根会话**（channel, chatID）。
+//
+// 只用既有字段，不做 SessionKey 字符串手术：
+//   - 子代理的 RunConfig.RootSessionKey 就是顶层会话 key（形如 "web:web-4"）；
+//   - 主会话没有 RootSessionKey（或等于自身），用 Channel:ChatID。
+//
+// 返回值 channel=="agent" 表示"解析不到用户会话"，调用方必须报错而不是落库。
+func rootSessionOf(ctx *ToolContext) (channel, chatID string) {
+	key := strings.TrimSpace(ctx.RootSessionKey)
+	if key == "" {
+		key = strings.TrimSpace(ctx.Channel) + ":" + strings.TrimSpace(ctx.ChatID)
+	}
+	i := strings.Index(key, ":")
+	if i <= 0 || i == len(key)-1 {
+		return "", ""
+	}
+	return key[:i], key[i+1:]
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // sendStructured 提交一条结构化消息（report / ask_user / answer / decision）。

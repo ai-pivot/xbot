@@ -214,6 +214,14 @@ type ToolContext struct {
 	// OriginUserIsAdmin is true when the end user has admin privileges.
 	// Global-scoped settings should only be modified when this is true.
 	OriginUserIsAdmin bool
+
+	// AgentDepth 是调用方在 agent 调用链中的深度：
+	//   0 = 主会话自身（用户直接对话的那个 agent）
+	//   1 = 最上级 agent（由主会话直接 spawn 的子代理，如 court.shoufu）
+	//  >=2 = 更深的子代理（孙级及以下）
+	// 由 agent 侧的 buildToolContext 从 CallChainFromContext 注入（tools 不能 import
+	// agent，否则成环）。SendMessage(to="user") 用它做权限判定。
+	AgentDepth int
 }
 
 // ConfigListItem is a single configuration entry returned by config tool's "list" action.

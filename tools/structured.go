@@ -39,6 +39,9 @@ type StructuredAppendFunc func(senderID string, caller CallerScope, channel, cha
 var (
 	structuredMu sync.RWMutex
 	structuredFn StructuredAppendFunc
+
+	userNoticeMu sync.RWMutex
+	userNoticeFn StructuredAppendFunc
 )
 
 // SetStructuredAppend 注入落地实现（serverapp 在装配 callbacks 时调用一次）。
@@ -47,6 +50,25 @@ func SetStructuredAppend(fn StructuredAppendFunc) {
 	structuredMu.Lock()
 	structuredFn = fn
 	structuredMu.Unlock()
+}
+
+// SetUserNoticeAppend 注入 `to="user"` 用户看板卡片的落地实现。
+//
+// 与 StructuredAppend 分开一个钩子（而不是加个 bool 参数）的理由：
+// 只有内部路径能产出"卡片带 origin、且不唤醒目标会话"的写入，HTTP 客户端
+// 伪造不了这个能力（protocol.StructuredMessageInput 里那三个字段是 json:"-"）。
+// 落地实现仍是同一份 append 闭包，所以存储机制只有一套。
+func SetUserNoticeAppend(fn StructuredAppendFunc) {
+	userNoticeMu.Lock()
+	userNoticeFn = fn
+	userNoticeMu.Unlock()
+}
+
+// userNoticeAppend 取出用户看板落地实现（未注入时为 nil）。
+func userNoticeAppend() StructuredAppendFunc {
+	userNoticeMu.RLock()
+	defer userNoticeMu.RUnlock()
+	return userNoticeFn
 }
 
 // StructuredAppendInstalled 报告当前是否已注入落地实现。

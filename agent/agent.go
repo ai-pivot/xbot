@@ -5182,6 +5182,11 @@ func (a *Agent) InjectInboundResume(channel, chatID, senderID string) {
 }
 
 func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content string, metadata map[string]string) {
+	if a.bus == nil || a.bus.Inbound == nil {
+		// bare &Agent{} / 未注入 bus 的构造：通知无处可投，记日志而不是 panic。
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).Warn("injectInbound: no bus configured, dropping message")
+		return
+	}
 	msg := bus.InboundMessage{
 		Channel:   channel,
 		SenderID:  senderID,
@@ -5191,9 +5196,15 @@ func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content str
 		Time:      time.Now(),
 		RequestID: log.NewRequestID(),
 	}
+	// agentCtx 只在 Run() 里创建：未 Run 的 agent（典型场景是单测直接构造的
+	// 最小 agent）不能因此 panic —— 入站队列是缓冲通道，投递本身是安全的。
+	var done <-chan struct{}
+	if a.agentCtx != nil {
+		done = a.agentCtx.Done()
+	}
 	select {
 	case a.bus.Inbound <- msg:
-	case <-a.agentCtx.Done():
+	case <-done:
 		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).Warn("injectInbound: agent context done, dropping message")
 	}
 }
