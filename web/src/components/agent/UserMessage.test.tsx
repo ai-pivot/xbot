@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
@@ -256,5 +256,156 @@ describe('UserMessage — compact-marker folding', () => {
     )
     expect(container.querySelector('details')).toBeNull()
     expect(queryByText('hello world')).toBeInTheDocument()
+  })
+})
+
+/**
+ * 2026-10-30 P0 回归 —— "已复制" 复位定时器泄漏。
+ *
+ * 故障现场：`handleCopy` 里裸调 `window.setTimeout(() => setCopied(false), 1200)`，
+ * 组件在 1200ms 内卸载后回调仍在跑；测试环境 teardown 后 jsdom 的 window 已销毁，
+ * 回调路径抛 `ReferenceError: window is not defined` 的**未捕获异常** ——
+ * `Test Files 204 passed / Tests 2243 passed / Errors 1 error`，退出码非 0，
+ * 把所有人的 pre-commit 一起拦下。
+ *
+ * 三条用例分别锁：卸载必须清理 / 连点不叠加 / 正常回落行为不变。
+ */
+describe('UserMessage — copy-confirmation reset timer cleanup (2026-10-30 regression)', () => {
+  function mockClipboard() {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    return writeText
+  }
+
+  // user 气泡上的复制按钮：第一个带 copy 图标、且不在代码块复制区里的 button。
+  function copyButton(): HTMLElement {
+    const btn = screen.getAllByRole('button').find(
+      (item) => item.querySelector('svg.lucide-copy') && !item.closest('pre, .group\\/code'),
+    )
+    if (!btn) throw new Error('copy button not found')
+    return btn
+  }
+
+  // 剪贴板 .then 回调、定时器回调都会触发 setState：必须包在 act 里，
+  // 否则会出现 act(...) 告警，令 ① 的 "console.error 零调用" 断言失去意义。
+  async function flushClipboard() {
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+
+  const tick = async (ms: number) => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('① unmount 早于 1200ms 时清掉复位定时器（定时器回调不再执行、无错误输出）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockClipboard()
+
+    // 直接盯"那个 1200ms 回调到底有没有被执行"：泄漏的实现在卸载后依然会触发它
+    // （真实环境里就是 teardown 之后访问已销毁的 window 那条未捕获异常）。
+    const fakeSetTimeout = globalThis.setTimeout
+    let resetRuns = 0
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => fakeSetTimeout(((...passed: unknown[]) => {
+      if (ms === 1200) resetRuns += 1
+      return (fn as (...x: unknown[]) => void)(...passed)
+    }) as TimerHandler, ms, ...args)) as unknown as typeof setTimeout)
+
+    const { unmount } = renderWithProviders(<UserMessage content="hello" />)
+
+    fireEvent.click(copyButton())
+    await flushClipboard()
+    expect(resetRuns).toBe(0) // 还没到点
+
+    unmount() // 1200ms 之前卸载
+    await tick(2000) // 推进到 2000ms：被清理掉的定时器不该再执行
+    expect(resetRuns).toBe(0)
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it('② 连点两次只有一个待触发复位定时器，且最终回到未复制态', async () => {
+    mockClipboard()
+
+    renderWithProviders(<UserMessage content="hello" />)
+    const btn = copyButton()
+    const baseline = vi.getTimerCount()
+
+    fireEvent.click(btn)
+    await flushClipboard()
+    expect(vi.getTimerCount()).toBe(baseline + 1)
+    expect(btn.querySelector('svg.lucide-check')).not.toBeNull()
+
+    fireEvent.click(btn) // 第二次点击：旧 timer 必须先被清掉
+    await flushClipboard()
+    expect(vi.getTimerCount()).toBe(baseline + 1) // 而不是 baseline + 2
+
+    await tick(1200)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(btn.querySelector('svg.lucide-check')).toBeNull()
+    expect(btn.querySelector('svg.lucide-copy')).not.toBeNull()
+  })
+
+  it('③ 正常流程：复制 → 1200ms 内显示已复制 → 到点回落到未复制', async () => {
+    const writeText = mockClipboard()
+
+    renderWithProviders(<UserMessage content="hello" />)
+    const btn = copyButton()
+
+    fireEvent.click(btn)
+    await flushClipboard()
+    expect(writeText).toHaveBeenCalledWith('hello')
+    expect(btn.querySelector('svg.lucide-check')).not.toBeNull()
+
+    await tick(1199)
+    expect(btn.querySelector('svg.lucide-check')).not.toBeNull() // 未到点，仍显示已复制
+
+    await tick(1)
+    expect(btn.querySelector('svg.lucide-check')).toBeNull()
+    expect(btn.querySelector('svg.lucide-copy')).not.toBeNull()
+  })
+
+  it('④ 卸载后剪贴板 promise 才 resolve：不排复位定时器、不报错', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    // writeText 挂起，等卸载之后才 resolve —— 输入框/消息被回收时真实会发生。
+    let release: () => void = () => {}
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockReturnValue(pending) } })
+
+    const fakeSetTimeout = globalThis.setTimeout
+    let resetScheduled = 0
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: TimerHandler,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      if (ms === 1200) resetScheduled += 1
+      return fakeSetTimeout(fn, ms, ...args)
+    }) as unknown as typeof setTimeout)
+
+    const { unmount } = renderWithProviders(<UserMessage content="hello" />)
+    fireEvent.click(copyButton())
+    unmount()
+
+    await act(async () => { release() })
+    await flushClipboard()
+
+    expect(resetScheduled).toBe(0) // 卸载后不再起定时器
+    expect(errorSpy).not.toHaveBeenCalled()
   })
 })
