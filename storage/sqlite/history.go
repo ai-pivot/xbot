@@ -28,6 +28,13 @@ const (
 	HistoryRecordAskQuestion HistoryRecordType = "ask_question"
 	HistoryRecordAskAnswer   HistoryRecordType = "ask_answer"
 	HistoryRecordMask        HistoryRecordType = "mask"
+	// HistoryRecordNotice = 用户看板卡片（`SendMessage(to="user")` 发出的待办）。
+	//
+	// **出流**是它的存在意义：卡片只在看板（/api/inbox）里出现，不进聊天流、
+	// 不进 LLM 上下文 —— replayDisplayRecords 与 replayWith 都显式跳过它。
+	// 存储仍是同一张 session_messages（结构化行），不新造第二套存储；
+	// 用 record_type 区分"是消息"还是"是控制记录"，与 command/mask 同一套机制。
+	HistoryRecordNotice HistoryRecordType = "notice"
 )
 
 type HistoryRecord struct {
@@ -1155,6 +1162,9 @@ func replayDisplayRecords(records []HistoryRecord) (*ReplayResult, error) {
 			// 给 UI 看的（见 HistoryRecordCommand 注释）。CommandRow 标记随消息带给
 			// 转换层，由它写出 Standalone/AnchorTurnID 供前端插回原位。
 			result.Messages = append(result.Messages, record.Message)
+		case HistoryRecordNotice:
+			// 用户看板卡片：出流。聊天流里一条都不出现（用户要在看板上看，
+			// 不是被消息淹没），因此这里不追加。
 		case HistoryRecordCompress, HistoryRecordPrune:
 			// Insert the [Compacted context] summary as a marker.
 			// Don't replace existing messages — keep the full history.
@@ -1568,6 +1578,9 @@ func ApplyHistoryRecords(records []HistoryRecord, hasCheckpoint bool) (*ReplayRe
 			}
 			result.Messages[idx].Content = answer.Answer
 			result.PendingAskUser = nil
+		case HistoryRecordNotice:
+			// 用户看板卡片：只在看板上出现，**不进任何回放**（display 与 LLM 都跳过）。
+			// 这里刻意不 continue —— 让它在 known 里登记，语义上仍是合法的历史记录。
 		default:
 			return nil, fmt.Errorf("history_id %d: unknown history record type %q", record.HistoryID, record.Type)
 		}

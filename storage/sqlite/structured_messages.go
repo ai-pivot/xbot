@@ -86,7 +86,20 @@ type StructuredMessage struct {
 	SenderID   string
 	SenderName string
 
+	// RecordType 决定这行属于"消息"还是"控制记录"（见 HistoryRecordType）。
+	// 空串 = 'message'（默认，参与历史回放）；'notice' = 用户看板卡片（出流，
+	// 两套回放都跳过）。
+	RecordType HistoryRecordType
+
 	CreatedAt time.Time
+}
+
+// structuredRecordType 归一化 RecordType（空串 = message）。
+func structuredRecordType(m StructuredMessage) string {
+	if m.RecordType == "" {
+		return string(HistoryRecordMessage)
+	}
+	return string(m.RecordType)
 }
 
 // structuredRole 按 kind 决定行的 role：提问/汇报是 assistant 产出；回答/批复是
@@ -150,9 +163,9 @@ func (s *SessionService) AppendStructuredMessage(tenantID int64, m StructuredMes
 			(tenant_id, role, content, display_only, record_type, created_at, turn_id,
 			 chat_id, kind, correlation_id, reply_to, idempotency_key, structured_json,
 			 direction, answered, cancelled, sender_type, sender_id, sender_name)
-			VALUES (?, ?, ?, 0, 'message', ?, 0,
+			VALUES (?, ?, ?, 0, ?, ?, 0,
 			        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			tenantID, structuredRole(m), m.Content, canonicalTimestamp(m.CreatedAt),
+			tenantID, structuredRole(m), m.Content, structuredRecordType(m), canonicalTimestamp(m.CreatedAt),
 			m.ChatID, m.Kind, m.CorrelationID, m.ReplyTo, m.IdempotencyKey, m.StructuredJSON,
 			m.Direction, boolInt(m.Answered), boolInt(m.Cancelled),
 			m.SenderType, m.SenderID, m.SenderName)

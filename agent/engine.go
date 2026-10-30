@@ -1390,6 +1390,21 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 
 	// 注入 MessageSender（Dispatcher 引用，允许 Agent 向任何 Channel 发消息）
 	tc.MessageSender = cfg.MessageSender
+	// 注入调用链深度：SendMessage(to="user") 的权限判据（0=主会话，1=最上级 agent）。
+	//
+	// 取 len(Chain)-1：Chain[0] 是发起方自己（"main"），所以主会话 = 0 层。
+	// 防御：链缺失但 AgentID 含 "/"（确定是子代理）时按 ≥2 处理 —— 宁可挡住
+	// 也不能让一个链丢失的深层子代理拿到用户看板的写权限。
+	{
+		depth := len(CallChainFromContext(ctx).Chain) - 1
+		if depth <= 0 && strings.Contains(strings.TrimSpace(cfg.AgentID), "/") {
+			depth = 2
+		}
+		if depth < 0 {
+			depth = 0
+		}
+		tc.AgentDepth = depth
+	}
 	// 注入 AgentChannel 注册/注销回调
 	tc.RegisterAgentChannel = cfg.RegisterAgentChannel
 	tc.UnregisterAgentChannel = cfg.UnregisterAgentChannel

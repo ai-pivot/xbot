@@ -90,7 +90,7 @@ func TestAskUserCorrelationIdEnvelopeMatchesStored(t *testing.T) {
 // ensureAskCorrelationID —— 只有从这里驱动，删掉 appendFn 里那行调用才会红。
 func TestAskUserCorrelationIdThroughAppendFn(t *testing.T) {
 	ag := newTestAgentForCWD(t)
-	appendFn, _, _, _, _ := structuredCallbacks(ag)
+	appendFn, _, _, _, _, _ := structuredCallbacks(ag)
 
 	sel := web.SessionSelector{Channel: "web", ChatID: "chat-entry"}
 	msg, _, err := appendFn("web-1", sel, protocol.StructuredMessageInput{

@@ -1168,12 +1168,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	}
 
 	// ─── 结构化消息（sendmessage-structured）───
-	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList := structuredCallbacks(ag)
+	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList, structuredResolve := structuredCallbacks(ag)
 	callbacks.StructuredAppend = structuredAppend
 	callbacks.StructuredAnswer = structuredAnswer
 	callbacks.StructuredInbox = structuredInbox
 	callbacks.StructuredCount = structuredCount
 	callbacks.StructuredMessages = structuredList
+	callbacks.StructuredResolve = structuredResolve
 
 	// ─── 跨会话活动流（通信视图性能重构）───
 	// 只绑主库连接（webSQL）。PG 后端没有 activity_index/interactive_agents 的

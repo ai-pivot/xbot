@@ -313,6 +313,9 @@ type WebCallbacks struct {
 	StructuredCount func(sel SessionSelector) (int, error)
 	// StructuredMessages lists structured messages filtered by kind.
 	StructuredMessages func(sel SessionSelector, kind string, cursor, afterID int64, limit int) ([]protocol.StructuredMessage, bool, int64, error)
+	// StructuredResolve 处理用户看板卡片（approve/reject/dismiss）：CAS 推进状态，
+	// 首次处理时把回流消息投给发起 agent。幂等（重复处理 Duplicate=true，不再回流）。
+	StructuredResolve func(senderID string, sel SessionSelector, input protocol.StructuredResolveInput) (*protocol.StructuredResolveResult, error)
 
 	// ── 跨会话活动流（通信视图性能重构）────────────────────────────────────
 	//
@@ -1077,6 +1080,8 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	// 分支由 handleMessage 转发）；这里补回答、收件箱、按 kind 查询。
 	mux.HandleFunc("/api/answer", wc.authenticatedPOST(wc.handleStructuredAnswer))
 	mux.HandleFunc("/api/inbox", wc.authMiddleware(wc.handleInbox))
+	// 用户看板卡片处理（to="user" 闭环）：approve / reject / dismiss。
+	mux.HandleFunc("/api/inbox/resolve", wc.authenticatedPOST(wc.handleInboxResolve))
 	// 跨会话活动流（通信视图性能重构）：只读主库索引表，绝不打开会话分库。
 	//   /api/activity —— 最近的 report/decision/answer/... 摘要流
 	//   /api/agents   —— 活跃子代理（默认不含 unloaded）

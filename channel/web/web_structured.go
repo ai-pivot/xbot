@@ -161,6 +161,47 @@ func (wc *WebChannel) handleInbox(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleInboxResolve 处理用户看板卡片：POST /api/inbox/resolve
+//
+//	{"message_id": 12, "action": "approve|reject|dismiss", "comment": "...", "idempotency_key": "..."}
+//
+// 状态机 pending → resolved（CAS），首次处理时服务端把回流消息投给发起 agent；
+// 重复提交返回 200 + duplicate=true（不重复回流），已处理但换了幂等键返回 409。
+func (wc *WebChannel) handleInboxResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var input protocol.StructuredResolveInput
+	if err := decodeJSONBody(r, &input, true); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if input.MessageID <= 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "message_id is required")
+		return
+	}
+	if input.Action == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "action is required (approve|reject|dismiss)")
+		return
+	}
+	if wc.callbacks.StructuredResolve == nil {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "structured messages unavailable")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	sel, ok := wc.resolveAPISession(w, r, senderID, input.Channel, input.ChatID)
+	if !ok {
+		return
+	}
+	result, err := wc.callbacks.StructuredResolve(senderID, sel, input)
+	if err != nil {
+		writeStructuredError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
+}
+
 func (wc *WebChannel) handleStructuredMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
