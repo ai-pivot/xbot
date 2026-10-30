@@ -315,6 +315,9 @@ CREATE TABLE user_chats (
     UNIQUE(channel, sender_id, chat_id)
 );
 CREATE INDEX idx_user_chats_sender ON user_chats(channel, sender_id);
+-- 生产库（v79）早已有这条索引，仓库 schema 一直没声明 → 新库/重建库缺它，
+-- /api/session-tree 的 label/sort_order 子查询退化成逐行 SCAN uc。
+CREATE INDEX IF NOT EXISTS idx_user_chats_channel_chat ON user_chats(channel, chat_id);
 
 CREATE TABLE IF NOT EXISTS pending_resumes (
     channel TEXT NOT NULL,

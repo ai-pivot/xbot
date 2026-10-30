@@ -1098,6 +1098,7 @@ CREATE TABLE tenants (
   preview TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE user_chats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel TEXT NOT NULL,
   sender_id TEXT NOT NULL,
   chat_id TEXT NOT NULL,

@@ -1451,6 +1451,83 @@ func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, erro
 	return result, nil
 }
 
+// userChatsLatestCTE 一次预取 user_chats 里「每个 (channel, chat_id) 的最新一行」
+// 与「每个 chat_id 的最新非空 label 行」。
+//
+// 改造前这两件事由 3 条【逐租户行执行】的相关子查询完成：EXPLAIN QUERY PLAN 里
+// 每条 tenants 行都要把每条子查询跑一遍（其中跨 channel 的 label 兜底退化成
+// SCAN uc）。现在压成两次 GROUP BY（各走一次索引），再 LEFT JOIN 回 tenants：
+// 一次查询里 user_chats 的扫描次数从 O(租户行数) 降到 O(1)。
+//
+// 语义与旧的 COALESCE 链逐字等价：
+//
+//	label      = (channel, chat_id) 匹配的最新【非空】label
+//	             → 退化为该 chat_id 跨 channel 的最新非空 label → 再退化为 ''
+//	sort_order = (channel, chat_id) 匹配的最新一行（不筛 label）的 sort_order → 0
+//
+// 「最新」= id 最大。SQLite 的 id 是 INTEGER PRIMARY KEY（rowid 别名），与旧的
+// ORDER BY rowid DESC 同序；用 id 而非 rowid 还能让同一段 SQL 在 PG 上执行
+// （PG 没有 rowid）。
+//
+// ⛔ 别名不要用 uc：测试用「plan 里不得出现 SCAN uc」钉住「不再逐行全扫」。
+const userChatsLatestCTE = `
+WITH latest_by_chat AS (
+    SELECT chat_rows.channel, chat_rows.chat_id,
+           MAX(chat_rows.id) AS latest_id,
+           MAX(CASE WHEN chat_rows.label != '' THEN chat_rows.id END) AS latest_label_id
+    FROM user_chats chat_rows
+    GROUP BY chat_rows.channel, chat_rows.chat_id
+),
+latest_any_channel AS (
+    SELECT chat_rows.chat_id, MAX(chat_rows.id) AS latest_label_id
+    FROM user_chats chat_rows
+    WHERE chat_rows.label != ''
+    GROUP BY chat_rows.chat_id
+)`
+
+// userChatsJoinCTE 把 userChatsLatestCTE 的预取结果接回 tenants（别名 t）。
+// 三次 user_chats 自连接都落在主键上（id = ...），是 O(1) 的点查。
+const userChatsJoinCTE = `
+LEFT JOIN latest_by_chat lbc ON lbc.channel = t.channel AND lbc.chat_id = t.chat_id
+LEFT JOIN user_chats lbl ON lbl.id = lbc.latest_label_id
+LEFT JOIN user_chats srt ON srt.id = lbc.latest_id
+LEFT JOIN latest_any_channel lac ON lac.chat_id = t.chat_id
+LEFT JOIN user_chats albl ON albl.id = lac.latest_label_id`
+
+// userChatsLabelColumns 是 label/sort_order 两列的取值表达式（见 CTE 注释）。
+const userChatsLabelColumns = `
+       COALESCE(lbl.label, albl.label, '') AS label,
+       COALESCE(srt.sort_order, 0) AS sort_order`
+
+// listTenantsByChannelSQL 供 listTenantsByChannel 使用；测试直接拿它跑
+// EXPLAIN QUERY PLAN，断言计划里不再出现逐行全扫。
+const listTenantsByChannelSQL = userChatsLatestCTE + `
+SELECT t.id, t.chat_id, t.created_at, t.last_active_at,` + userChatsLabelColumns + `,
+       COALESCE(t.preview, '') AS preview
+FROM tenants t` + userChatsJoinCTE + `
+WHERE t.channel = ? AND t.chat_id != '_shared'
+ORDER BY t.last_active_at DESC`
+
+// listTenantsByChannelsSQLTemplate 是 listTenantsByChannels 的多 channel 形式，
+// %s 处填 IN 列表的占位符。
+const listTenantsByChannelsSQLTemplate = userChatsLatestCTE + `
+SELECT t.channel, t.id, t.chat_id, t.created_at, t.last_active_at,` + userChatsLabelColumns + `,
+       COALESCE(t.preview, '') AS preview
+FROM tenants t` + userChatsJoinCTE + `
+WHERE t.channel IN (%s) AND t.chat_id != '_shared'
+ORDER BY t.last_active_at DESC`
+
+// listTenantsByChannelsQuery 渲染 n 个 channel 的 IN 列表查询及其参数。
+func listTenantsByChannelsQuery(channels []string) (string, []any) {
+	placeholders := make([]string, len(channels))
+	args := make([]any, len(channels))
+	for i, ch := range channels {
+		placeholders[i] = "?"
+		args[i] = ch
+	}
+	return fmt.Sprintf(listTenantsByChannelsSQLTemplate, strings.Join(placeholders, ",")), args
+}
+
 // listTenantsByChannel lists all tenants for a given channel (e.g. "cli", "feishu").
 // Used by admin to browse sessions from other channels in the Web UI.
 // Returns the last user/assistant message as preview.
@@ -1459,22 +1536,7 @@ func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, erro
 // 旧子查询 JOIN session_messages（拆库后主库没有消息数据 —— 消息在每会话
 // 独立库里，跨库 JOIN 不可能）。
 func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
-	// Single query with correlated subquery for preview — avoids N+1 pattern.
-	rows, err := db.Query(`
-  SELECT t.id, t.chat_id, t.created_at, t.last_active_at,
-          COALESCE((SELECT uc.label FROM user_chats uc
-           WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
-           ORDER BY uc.rowid DESC LIMIT 1),
-           (SELECT uc.label FROM user_chats uc
-           WHERE uc.chat_id = t.chat_id AND uc.label != ''
-           ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
-         COALESCE((SELECT uc.sort_order FROM user_chats uc
-                  WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
-                  ORDER BY uc.rowid DESC LIMIT 1), 0) AS sort_order,
-         COALESCE(t.preview, '') AS preview
-  FROM tenants t
-  WHERE t.channel = ? AND t.chat_id != '_shared'
-  ORDER BY t.last_active_at DESC`, channel)
+	rows, err := db.Query(listTenantsByChannelSQL, channel)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants by channel: %w", err)
 	}
@@ -1539,27 +1601,8 @@ func listTenantsByChannels(db *sql.DB, channels []string) ([]web.UserChatWithPre
 	if len(channels) == 0 {
 		return nil, nil
 	}
-	placeholders := make([]string, len(channels))
-	args := make([]any, len(channels))
-	for i, ch := range channels {
-		placeholders[i] = "?"
-		args[i] = ch
-	}
-	rows, err := db.Query(fmt.Sprintf(`
-  SELECT t.channel, t.id, t.chat_id, t.created_at, t.last_active_at,
-          COALESCE((SELECT uc.label FROM user_chats uc
-           WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
-           ORDER BY uc.rowid DESC LIMIT 1),
-           (SELECT uc.label FROM user_chats uc
-           WHERE uc.chat_id = t.chat_id AND uc.label != ''
-           ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
-         COALESCE((SELECT uc.sort_order FROM user_chats uc
-                  WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
-                  ORDER BY uc.rowid DESC LIMIT 1), 0) AS sort_order,
-         COALESCE(t.preview, '') AS preview
-  FROM tenants t
-  WHERE t.channel IN (%s) AND t.chat_id != '_shared'
-  ORDER BY t.last_active_at DESC`, strings.Join(placeholders, ",")), args...)
+	query, args := listTenantsByChannelsQuery(channels)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants by channels: %w", err)
 	}
