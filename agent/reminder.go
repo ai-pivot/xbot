@@ -38,13 +38,18 @@ func resolveAbsolutePath(path string) string {
 	return path
 }
 
-// systemReminderToolName is the name of the transient fake tool pair that carries
-// the per-iteration system reminder. The reminder is NEVER persisted and NEVER
-// rendered — it is built on demand by runState.buildSystemReminder() just before
-// each LLM request and appended to a fresh message copy in llmMessages().
+// systemReminderToolName 是**历史形态**的伪工具名（2026-10-30 N2 之前的
+// 「assistant tool_call + tool 结果」假消息对）。
+//
+// 现在 reminder 走尾部内容拼接（见 runState.llmMessages / appendReminderToTail），
+// 这个名字**不得再出现在任何发给上游的请求里** —— 保留常量只为让测试能机械扫描
+// 「0 处 system_reminder 伪工具调用」，以及让历史注释/日志可读。
 const systemReminderToolName = "system_reminder"
 
-// BuildSystemReminder builds a system reminder appended to the last tool message.
+// BuildSystemReminder builds the per-turn system reminder block
+// (`<system-reminder role="reminder">…</system-reminder>`), which the engine
+// concatenates onto the TAIL of the request (never a fake tool pair, never
+// persisted — see runState.llmMessages / appendReminderToTail).
 // agentID "main" = main Agent, otherwise SubAgent.
 // sessionName is the current session display name (used to detect auto-generated names needing rename).
 //
@@ -80,10 +85,10 @@ func BuildSystemReminder(
 	sb.WriteString("<system-reminder role=\"reminder\">")
 	// note 只保留「这是自动注入」这一个事实标识（用户 2026-10-20：不要搞那么大一段）。
 	// 历史：2026-09-17 曾因「原文太长且可能被误读」缩短过一次；2026-10-14 又因模型把注入
-	// 误当成自己调用过的工具（`system_reminder` 这个假 tool pair 的名字就在历史里）而写成
-	// 60+ 词的自解释。2026-10-20 起 fake tool pair 改为每 10 轮才插入一次
-	// （shouldInsertSystemReminder），模型看到它的次数大幅减少，长文纠正不再必要 ——
-	// 长文案反而每轮占 prompt 并把注意力引到「我是不是调错了工具」上。
+	// 误当成自己调用过的工具（当时 `system_reminder` 是一个假 tool pair 的名字，就在历史里）
+	// 而写成 60+ 词的自解释。2026-10-30 起改为**尾部内容拼接**（不再伪造 tool 调用对，
+	// 上游永远看不到那个工具名），模型不再有「我是不是调错了工具」的困惑来源 ——
+	// 长文案反而每轮占 prompt，故保持这一句。
 	sb.WriteString("<note>AUTO-INJECTED</note>")
 
 	// 用户原始消息（CDATA 包裹，100% 防 XML 注入——wrapCDATA 拆分 ]]> ）
