@@ -108,6 +108,7 @@
 
 The highest-priority rules, one line each. **Before changing the related code, Read the named file** — it carries the full rule, the incident that produced it, and the guard test.
 
+- ⛔ `docs/agent/settings.md` — **跨渠道设置必须用 canonical channel**（2026-10-30）：`tavily_api_key` 是 Web/CLI/飞书共享的**一个**值，读写都经 `agent.settingStorageKey` → `channel.CanonicalChannelForSetting`（= `TavilyKeyChannel "cli"`），否则「设置页保存成功但别的渠道永远读不到」；敏感值出站一律掩码 `***`（`maskSensitiveSettings`），**写侧必须跳过掩码值**（`IsMaskedSettingValue`），否则未修改的保存会把 `***` 写进密钥。`WebSearchTool` 每次 Execute 经 `ConfigGet` 解析 ⇒ 保存即生效、无需重启。守护：`channel/setting_keys_test.go`、`agent/setting_runtime_test.go`、`serverapp/setting_handlers_test.go`、`web/src/components/settings/SettingsSearch.test.tsx`。
 - ⛔ `docs/agent/settings.md` — **迭代次数上限已彻底移除**（2026-10-14 用户要求「以后不加这种限制」）：`max_iterations`/`AGENT_MAX_ITERATIONS`/`set_max_iterations`/`DefaultMaxIterations=2000` 全部删除，主循环无上限；⛔ 别再引入每 turn 迭代上限（曾致迭代记录 2000 条后断流 + 压缩点锚点塌陷）。
 - ⛔ `docs/agent/install.md` — **macOS 装完二进制必须 `codesign --force --sign -`**（2026-10-14 事故：`cp` 新二进制使旧签名失效 ⇒ launchd 拒绝 exec ⇒ 服务静默起不来）。`scripts/install.sh` 已自动签名。
 - ⛔ `docs/agent/gotchas-agent-core.md` — `max_concurrency` 只能有一个存储位置（2026-09-17 用户报告根治）：「设了 100 并发，只起 4-5 个子代理就卡」+「统计里的 TTFT 很短、和入库时间对不上」。

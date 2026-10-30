@@ -366,7 +366,7 @@ Server 模式安装时自动配置，一般不需要手动修改。
 
 | 字段 | 说明 |
 |------|------|
-| `tavily_api_key` | Tavily 网页搜索 API Key（配置后 Agent 可搜索网页） |
+| `tavily_api_key` | Tavily 网页搜索 API Key（全局默认值；也可在 Web 设置 → **联网搜索** 中运行时设置，立即生效且所有渠道共享） |
 | `oauth` | OAuth 2.0 服务配置（Web 渠道认证用） |
 | `pprof` | 性能分析端点（开发调试用） |
 

@@ -470,6 +470,11 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		for _, k := range []string{"llm_provider", "llm_api_key", "llm_model", "llm_base_url"} {
 			delete(result, k)
 		}
+		// Never hand raw credentials to a client. Sensitive settings (tavily_api_key)
+		// come back as a placeholder meaning "configured"; write paths ignore it.
+		// tavily_api_key also has a config.json fallback (global default) — surface
+		// that as "configured" without exposing the file value either.
+		maskSensitiveSettings(result, "tavily_api_key", h.Cfg.TavilyAPIKey)
 		// Inject config defaults for keys not present in user_settings.
 		// This ensures remote CLI clients see the actual runtime values
 		// (e.g. max_context_tokens=200000) even when the user never
@@ -518,6 +523,11 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		bizID := rpcBizID(ctx)
 		switch p.Key {
 		case "llm_provider", "llm_api_key", "llm_model", "llm_base_url":
+			return nil
+		}
+		// Masked placeholder means "unchanged" — never persist it over a real
+		// credential (the settings UI round-trips every visible value on save).
+		if channel.IsSensitiveSettingKey(p.Key) && channel.IsMaskedSettingValue(p.Value) {
 			return nil
 		}
 		// Global-scoped keys (sandbox_mode) are server-level config, not per-user.
