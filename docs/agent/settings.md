@@ -106,6 +106,31 @@ The #1 goal of this refactoring was eliminating credential loss bugs. The protec
    updates (provider, key, model) go through `ApplySettings` → `updateActiveSubscription`
    which has its own masked-key protection.
 
+## 跨渠道设置（tavily_api_key）：canonical channel 是唯一存储位置
+
+`tavily_api_key` 是**一个** per-operator 值，Web / CLI / 飞书共享。历史上它按
+`cfg.Channel` 读写 ⇒ Web 设置页存到 `(web, sender)`，CLI 会话读 `(cli, cli_user)`
+⇒ 在别的渠道**静默不可见**（同 `max_concurrency` 的 `MaxConcurrencyChannel`
+教训）。契约：
+
+- 存储 channel 由 `channel.CanonicalChannelForSetting(key)` 决定
+  （`tavily_api_key` → `channel.TavilyKeyChannel = "cli"`）。
+- **读与写必须走同一解析器**：`agent/settingStorageKey(key, callerChannel, originUserID)`
+  （`agent/setting_runtime.go`），ConfigGet / ConfigSet / ConfigList 全部使用。
+  只改一侧 = 写入成功但永不生效。
+- 运行时生效不需要 setter：`WebSearchTool.Execute` 每次询问 `ConfigGet`；
+  `SettingHandlerRegistry["tavily_api_key"]` 故意是空 handler。
+- **敏感值出站一律掩码**：`serverapp.maskSensitiveSettings` 把已配置的敏感项替换为
+  `channel.MaskedSettingValue`（`***`），没有 DB 行但 config.json 有值时也返回
+  掩码（表示"已配置"）。写侧（`set_setting` RPC / CLI `saveSettings` /
+  `ApplySettings` runtime 值）**必须跳过** `IsMaskedSettingValue(v)`，否则一次
+  未修改的保存会把 `***` 写进密钥。
+- config.json 的 `tavily_api_key` 保留为全局默认：清除 DB 行后回退到它。
+- 守护：`channel/setting_keys_test.go`、`agent/setting_runtime_test.go`
+  （`TestSettingStorageKeyRoutesCrossChannelKeys`）、
+  `serverapp/setting_handlers_test.go`、前端
+  `web/src/components/settings/SettingsSearch.test.tsx`。
+
 ## 迭代次数上限：已彻底移除（2026-10-14，用户要求「以后不加这种限制」）
 
 `max_iterations` / `AgentConfig.MaxIterations` / `RunConfig.MaxIterations` /

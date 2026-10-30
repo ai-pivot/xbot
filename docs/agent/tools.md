@@ -226,7 +226,7 @@ Manages webhook event subscriptions for external service integration. Actions: `
 | `offload_recall` | `tools/offload_recall.go` | Retrieve full content of offloaded tool results. The store is **shared between the main agent and its SubAgents** (both write/read under the canonical root session key — `ctx.RootSessionKey`), so either side can recall what the other offloaded. Post-compression cleanup is ownership-scoped (`OwnerKey`) so one participant never deletes another's still-referenced entries. IDs are `ol_<8 hex>` — recall takes the id, not the session |
 | `knowledge_tools` | `tools/knowledge_tools.go` | ~~Removed~~ — project knowledge now via AGENTS.md + docs/agent/ using standard Read/FileReplace |
 | `logs` | `tools/logs.go` | Query agent logs |
-| `WebSearch` | `tools/web_search.go` | Tavily web search |
+| `WebSearch` | `tools/web_search.go` | Tavily web search. The API key is resolved **search 时刻** via `ToolContext.ConfigGet("tavily_api_key")` — a value saved in the Web settings tab (设置 → 联网搜索) takes effect on the next search, no restart. The key lives in ONE canonical `user_settings` row (`channel.TavilyKeyChannel`), so Web / CLI / Feishu sessions share it; `get_settings` returns it masked (`***`) and write paths ignore the mask. |
 | `Runner` | `tools/sandbox_runner.go` | Manage remote sandbox connections |
 
 `Skill` 本地加载除全局目录及 workspace/CWD 下的 `.xbot/skills`、`skills`、`.skills` 外，还需从 workspace/CWD 向上扫描 `.agents/skills`，与 `SkillStore.scanProjectSkills` 的目录发现保持兼容，否则 catalog 可见但调用报 `not found`。frontmatter 名称回退扫描须用 `os.Stat` 跟随符号链接目录；`list_files` 须先解析根目录符号链接再 Walk（保留原 display 路径），否则只会列出链接本身。回归测试：`TestSkillToolProjectDiscovery`（load/list_files、父目录、别名和符号链接）。

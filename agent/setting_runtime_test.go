@@ -3,9 +3,27 @@ package agent
 import (
 	"testing"
 
+	"xbot/channel"
 	"xbot/config"
 	"xbot/tools"
 )
+
+// settingStorageKey is the single resolver for the (channel, sender) row a
+// user setting lives under. Cross-channel keys (tavily_api_key) MUST collapse to
+// one canonical row so the Web settings tab, CLI /set and every session share the
+// same value; other keys keep the caller's scope.
+func TestSettingStorageKeyRoutesCrossChannelKeys(t *testing.T) {
+	chName, sender := settingStorageKey("tavily_api_key", "web", "user-1")
+	if chName != channel.TavilyKeyChannel || sender != canonicalSettingsSender {
+		t.Fatalf("tavily_api_key stored at (%q,%q), want (%q,%q)",
+			chName, sender, channel.TavilyKeyChannel, canonicalSettingsSender)
+	}
+
+	chName, sender = settingStorageKey("thinking_mode", "web", "user-1")
+	if chName != "web" || sender != "user-1" {
+		t.Fatalf("thinking_mode stored at (%q,%q), want caller scope (web,user-1)", chName, sender)
+	}
+}
 
 // allow_self_compact runtime handler：切换设置时 compact_context 工具
 // 动态注册/注销（web 设置开关的运行时生效层）。off = 模型永远看不见该工具

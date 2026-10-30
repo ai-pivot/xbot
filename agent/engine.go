@@ -1487,8 +1487,13 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 					return channel.ConfigValueBySource(key, def.Source), nil
 				}
 			}
-			// SourceUserDB: read from user_settings DB
-			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
+			// SourceUserDB: read from user_settings DB.
+			// Cross-channel keys (tavily_api_key) live in ONE canonical row so a
+			// value saved from the Web settings tab is visible to CLI/Feishu
+			// sessions too (otherwise the key is silently invisible outside the
+			// channel that saved it).
+			chName, sender := settingStorageKey(key, cfg.Channel, cfg.OriginUserID)
+			vals, err := svc.GetSettings(chName, sender)
 			if err == nil {
 				if v, ok := vals[key]; ok && v != "" {
 					return v, nil
@@ -1508,13 +1513,15 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 				}
 				return cfg.UpdateActiveSubFn(key, value)
 			}
-			// All other keys: write to user_settings DB
-			vals, err := svc.GetSettings(cfg.Channel, cfg.OriginUserID)
+			// All other keys: write to user_settings DB (canonical channel for
+			// cross-channel keys — must match the read path above).
+			chName, sender := settingStorageKey(key, cfg.Channel, cfg.OriginUserID)
+			vals, err := svc.GetSettings(chName, sender)
 			if err != nil {
 				return "", err
 			}
 			oldVal := vals[key]
-			if err := svc.SetSetting(cfg.Channel, cfg.OriginUserID, key, value); err != nil {
+			if err := svc.SetSetting(chName, sender, key, value); err != nil {
 				return "", err
 			}
 			return oldVal, nil
@@ -1539,12 +1546,21 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 			if err == nil {
 				for i := range items {
 					if items[i].Source == "user_db" {
-						if v, ok := vals[items[i].Key]; ok && v != "" {
-							items[i].CurrentVal = v
+						itemVals := vals
+						// Cross-channel keys live in one canonical row; read that
+						// row instead of the caller-channel map so the AI sees the
+						// same value as every other channel.
+						if canonical := channel.CanonicalChannelForSetting(items[i].Key); canonical != "" {
+							if cv, cerr := uc.SettingsSvc.GetSettings(canonical, canonicalSettingsSender); cerr == nil {
+								itemVals = cv
+							}
+						}
+						if v, ok := itemVals[items[i].Key]; ok && v != "" {
+							items[i].CurrentVal = channel.MaskConfigItemValue(items[i].Sensitive, v)
 						} else if items[i].CurrentVal == "" {
 							// Fallback: try config.json top-level key (e.g. tavily_api_key)
 							if cfgVal := channel.ConfigValueBySource(items[i].Key, channel.SourceConfigJSON); cfgVal != "" {
-								items[i].CurrentVal = cfgVal
+								items[i].CurrentVal = channel.MaskConfigItemValue(items[i].Sensitive, cfgVal)
 							}
 						}
 					}

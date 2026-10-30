@@ -290,6 +290,23 @@ For backward compatibility, legacy nanosecond numbers are also accepted.
 
 See the [Sandbox guide](/guides/sandbox/) for Docker setup details.
 
+## Web search configuration (Tavily)
+
+The `WebSearch` tool queries the Tavily API. You can set the key at runtime in
+the Web UI under **Settings → Web Search**: it takes effect on the next search
+(no restart) and is shared by every channel (Web / CLI / Feishu). The top-level
+`tavily_api_key` in `config.json` remains the global default used when no
+runtime value is configured:
+
+```json
+{
+  "tavily_api_key": "tvly-your-key"
+}
+```
+
+Runtime values are stored in the settings database and are never returned in
+plaintext to clients (the settings API returns `***`).
+
 ## Channel configuration
 
 See the per-channel docs:
