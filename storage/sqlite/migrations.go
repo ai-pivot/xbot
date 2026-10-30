@@ -2920,6 +2920,44 @@ func migrateV29ToV30(conn *sql.DB) error {
 	return nil
 }
 
+// userChatsLookupIndexesDDL 是 user_chats 的【查询索引】DDL，由
+// ensureAdditiveTables 在每次 open 时执行（幂等）。
+//
+// 为什么放这里而不是新增版本迁移：这是「同版本 schema 漂移」——生产库（v79）
+// 早就有 idx_user_chats_channel_chat，仓库内的建表语句却从未声明过它，于是
+// 新库/重建的库缺这条索引，/api/session-tree 的 label/sort_order 子查询退化
+// 成逐租户行 SCAN user_chats。新增版本号会让所有 v79 库（含生产）在下次启动
+// 时走一遍「整库 VACUUM INTO 备份 + 迁移」，而实际只差一条 CREATE INDEX
+// IF NOT EXISTS ——代价与收益不成比例。同版本补对象正是 ensureAdditiveTables
+// 存在的理由（见 db.go 中 oauth_tokens 的先例）。
+//
+// 为什么不加单列 chat_id 索引：跨 channel 的 label 兜底（GROUP BY chat_id）
+// 无论有没有索引都要读遍 user_chats 的每一行，索引只省掉一次排序；而
+// user_chats 每次聊天创建/改名都要写，多一个索引就是多一份写放大。不值得。
+const userChatsLookupIndexesDDL = `
+CREATE INDEX IF NOT EXISTS idx_user_chats_channel_chat ON user_chats(channel, chat_id);
+`
+
+// ensureUserChatsLookupIndexes 幂等补齐 user_chats 的查询索引。
+//
+// 先确认表存在：旧版本库的迁移 fixture（以及只建了部分表的库）在这一步可能
+// 还没有 user_chats —— CREATE INDEX 会直接报 no such table 并把整个 open 打挂。
+// 这类库等它的 v29→v30 建出表之后，下一次 open 会自然补上。
+func ensureUserChatsLookupIndexes(conn *sql.DB) error {
+	var name string
+	err := conn.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='user_chats'`).Scan(&name)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check user_chats table: %w", err)
+	}
+	if _, err := conn.Exec(userChatsLookupIndexesDDL); err != nil {
+		return fmt.Errorf("ensure user_chats lookup indexes: %w", err)
+	}
+	return nil
+}
+
 // migrateV30ToV31 adds context_tokens column to session_messages.
 // This stores the exact API prompt_tokens value at the time each user message
 // was sent, enabling precise token accounting without estimation.

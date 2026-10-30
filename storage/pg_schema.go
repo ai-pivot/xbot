@@ -303,6 +303,8 @@ func initPGSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			UNIQUE(channel, sender_id, chat_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_chats_sender ON user_chats(channel, sender_id)`,
+		// 生产库早有此索引；仓库 schema 直到 2026-10 才补上（与 SQLite 侧对齐）。
+		`CREATE INDEX IF NOT EXISTS idx_user_chats_channel_chat ON user_chats(channel, chat_id)`,
 
 		// ── Pending resumes ──
 		`CREATE TABLE IF NOT EXISTS pending_resumes (

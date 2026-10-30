@@ -628,6 +628,11 @@ CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
 	if _, err := db.Conn().Exec(additive); err != nil {
 		return fmt.Errorf("ensure additive tables: %w", err)
 	}
+	// user_chats 的查询索引同样属于「同版本漂移」：老库可能有、新库缺，
+	// 只在 createSchema 里声明覆盖不到已在运行的库。幂等 DDL，见 migrations.go。
+	if err := ensureUserChatsLookupIndexes(db.Conn()); err != nil {
+		return err
+	}
 	return nil
 }
 
