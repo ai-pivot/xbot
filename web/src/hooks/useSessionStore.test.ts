@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { normalizeCanonicalSessionTree, normalizeSessionTree, useSessionStoreImpl } from './useSessionStore'
+import i18n from '@/i18n'
 import {
   lastSeqCache,
   progressSnapshotCache,
@@ -15,6 +16,16 @@ let messageHandler: ((event: WSMessage) => void) | null = null
 const wsMocks = vi.hoisted(() => ({
   rpc: vi.fn(),
 }))
+
+/** sonner 的 toast 在 jsdom 里没有 Toaster，这里换成 spy 以便断言"提示了什么"。 */
+const toastMocks = vi.hoisted(() => ({
+  info: vi.fn(),
+  error: vi.fn(),
+  success: vi.fn(),
+  warning: vi.fn(),
+}))
+
+vi.mock('sonner', () => ({ toast: toastMocks }))
 
 vi.mock('@/hooks/useWSConnection', () => ({
   useWSConnection: () => ({
@@ -793,6 +804,88 @@ describe('normalizeSessionTree', () => {
       messageHandler?.({ type: 'ask_user_resolved', channel: 'cli', chat_id: '/repo', reason: 'answered' })
     })
     expect(result.current.askUserPrompts.has('cli:/repo')).toBe(false)
+  })
+
+  it('ask_user_resolved 收回提示：超时收回 ≠ 主动取消（同一条事件，只差 cancel_reason）', async () => {
+    // 判据（G-B20261030-01 b）：同一条 ask_user_resolved 事件，cancel_reason='ttl_expired'
+    // 的文案含「超时」，缺该键的文案不含「超时」，两者 !== 。卡消失时用户必须能
+    // 分辨"等到超时被系统收回"与"我自己取消的"。
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: '/repo', channel: 'cli', label: 'repo',
+              last_active: '2026-07-08T00:00:00Z', is_current: true,
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    await act(async () => {
+      await i18n.changeLanguage('zh-CN')
+    })
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    const ask = (requestID: string) => {
+      act(() => {
+        messageHandler?.({
+          type: 'ask_user',
+          channel: 'cli',
+          chat_id: '/repo',
+          progress: { request_id: requestID, questions: [{ question: 'Continue?', options: ['yes', 'no'] }] },
+        })
+      })
+      expect(result.current.askUserPrompts.has('cli:/repo')).toBe(true)
+    }
+    const lastTip = (): string | undefined => {
+      const calls = toastMocks.info.mock.calls
+      return calls[calls.length - 1]?.[0] as string | undefined
+    }
+
+    // ① 服务端 TTL 超时收回（D-03：reason 仍是 cancelled，额外带 cancel_reason）
+    ask('r-ttl')
+    toastMocks.info.mockClear()
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user_resolved',
+        channel: 'cli',
+        chat_id: '/repo',
+        request_id: 'r-ttl',
+        reason: 'cancelled',
+        cancel_reason: 'ttl_expired',
+      })
+    })
+    expect(result.current.askUserPrompts.has('cli:/repo')).toBe(false)
+    const ttlTip = lastTip()
+    expect(typeof ttlTip).toBe('string')
+    expect(ttlTip).toContain('超时')
+
+    // ② 用户主动取消：同一条事件，缺 cancel_reason
+    ask('r-active')
+    toastMocks.info.mockClear()
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user_resolved',
+        channel: 'cli',
+        chat_id: '/repo',
+        request_id: 'r-active',
+        reason: 'cancelled',
+      })
+    })
+    expect(result.current.askUserPrompts.has('cli:/repo')).toBe(false)
+    const activeTip = lastTip()
+    expect(typeof activeTip).toBe('string')
+    expect(activeTip).not.toContain('超时')
+    expect(activeTip).not.toBe(ttlTip)
   })
 
   it('drops a stale cached prompt when a refresh response shows no pending (server row is authoritative)', async () => {

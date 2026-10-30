@@ -31,6 +31,7 @@ import { DEFAULT_SESSION_CATEGORY, groupSessions, isSessionCategory, parseAgentC
 import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
 import { rememberRecentWorkDir } from '@/lib/recent-workdirs'
 import { initialActiveSession, isEmbeddedHostPage, readHostIdentity } from '@/plugin-runtime/sessionIdentity'
+import { askUserResolvedTip, shouldTipAskUserResolved } from '@/lib/askUserResolved'
 import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus, TodoItem } from '@/types/shared'
 import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
@@ -1854,9 +1855,18 @@ export function useSessionStoreImpl(): SessionStore {
           ?? (chatID === wsRef.current.chatID ? wsRef.current.channel : null)
           ?? (fallback && chatID === fallback.chatID ? fallback.channel : DEFAULT_CHANNEL)
         if (chatID) {
+          const key = `${channel}:${chatID}`
+          // 卡片在**本会话**真的要消失了才提示：先看本地有没有卡（没有卡就
+          // 什么都不消失，尤其别对"我刚点了回答/取消"的收尾事件再弹一句）。
+          const hadPrompt = askUserPromptTsRef.current.has(key)
           // 服务端确认该问题不再 pending ⇒ 撤销闪回抑制（此后同一 requestId 若真再来 = 真新问题）
           askAnsweredRef.current.delete(`${channel}:${chatID}`)
           dropAskUserPrompt(`${channel}:${chatID}`)
+          // 提示走既有 toast 通道（Toaster 已挂在 App 上，不新造 UI）：
+          // 超时收回 vs 主动取消是两条不同文案（cancel_reason 分辨，见 lib/askUserResolved）。
+          if (hadPrompt && shouldTipAskUserResolved(msg)) {
+            toast.info(askUserResolvedTip(msg.cancel_reason))
+          }
         }
         return
       }

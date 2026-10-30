@@ -242,6 +242,10 @@ const ja: Translations = {
     askUserMultiHint: '複数選択可',
     askUserFreeInput: '自由入力（任意）',
     askUserFreeInputPlaceholder: '直接入力、または補足説明…',
+    // ask_user_resolved の取り下げ文案：タイムアウト ≠ ユーザーによるキャンセル
+    // （2 つは別文案。タイムアウトの文案だけが時間切れに言及する）。
+    askUserResolvedTtlExpired: '質問はタイムアウトで取り下げられました。待機時間内に回答がなかったためです。もう一度質問できます。',
+    askUserResolvedCancelled: '質問は回答されないままキャンセルされました。',
     emptyAssistant: '（テキスト出力なし）',
     emptyResponseWarning: 'LLM が今回はテキストを返しませんでした。出力異常か途中終了の可能性があります。',
     displayOnly: '表示のみ',
