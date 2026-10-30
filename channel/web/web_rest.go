@@ -400,6 +400,17 @@ func writeInboundError(w http.ResponseWriter, err error) {
 }
 
 func (wc *WebChannel) handleRPC(w http.ResponseWriter, r *http.Request) {
+	// Per-method latency observability (see web_rpc_stats.go): 这里是 /api/rpc
+	// 唯一下发点，打点放在最外层 defer，保证成功、报错、提前返回的调用都被计入。
+	started := time.Now()
+	var rpcMethod string
+	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	defer func() {
+		wc.rpcObs.stats.Observe(rpcMethod, time.Since(started), rec.status)
+		wc.maybeReportRPCStats()
+	}()
+	w = rec
+
 	if wc.callbacks.RPCHandler == nil {
 		jsonErrorResponse(w, http.StatusServiceUnavailable, "RPC service unavailable")
 		return
@@ -416,6 +427,7 @@ func (wc *WebChannel) handleRPC(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "method is required")
 		return
 	}
+	rpcMethod = request.Method
 	identity := wc.rpcIdentityFromRequest(r)
 	if status, err := wc.authorizeRESTRPC(r, identity, request.Method, request.Params); err != nil {
 		jsonErrorResponse(w, status, err.Error())
