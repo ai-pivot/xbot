@@ -162,18 +162,30 @@ func captureWALIdentity(path string) (walID, shmID os.FileInfo) {
 // ── 守卫循环 ──
 
 var walGuard = struct {
-	mu      sync.Mutex
-	started bool
+	mu       sync.Mutex
+	started  bool
+	suppress bool          // true 时连自动巡检都不启动（测试隔离用，见 pauseWALGuard）
+	stop     chan struct{} // 关闭即让巡检 goroutine 退出
+	done     chan struct{} // 巡检 goroutine 退出后关闭（等它在飞的 tick 结束）
 }{}
 
 // startWALGuard 在第一次成功打开文件库时启动唯一的巡检 goroutine。
+//
+// 生产路径只会有这一个 goroutine；walGuardTick 是可直接调用的测试钩子，所以测试
+// 必须先把后台巡检停掉（pauseWALGuard），否则两条执行流会抢同一个「异常」：
+// 后台先把 -wal 自愈了，测试的手动 tick 就只能看到一个已经一致的状态、返回 0
+// （G-20261027-14 的 -race 确定性红灯就是这么来的，见
+// court/evidence/gongbu/g14-walfd-20261030/16-attribution-rootcause.md）。
 func startWALGuard() {
 	walGuard.mu.Lock()
-	if walGuard.started {
+	if walGuard.started || walGuard.suppress {
 		walGuard.mu.Unlock()
 		return
 	}
 	walGuard.started = true
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	walGuard.stop, walGuard.done = stop, done
 	walGuard.mu.Unlock()
 
 	log.WithFields(log.Fields{
@@ -182,9 +194,22 @@ func startWALGuard() {
 	}).Info("WAL guard started (kill switches: " + envWALGuard + "=" + onOff(walGuardEnabled) + ", " + envWALGuardHeal + "=" + healWarn(walGuardHealEnabled) + ")")
 
 	go func() {
+		defer close(done)
 		t := time.NewTicker(walGuardInterval)
 		defer t.Stop()
-		for range t.C {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+			}
+			// stop 之后不再开始新的 tick：否则 pauseWALGuard 返回后仍可能有一次
+			// 巡检落在测试的手动 tick 前面。
+			select {
+			case <-stop:
+				return
+			default:
+			}
 			walGuardTick()
 		}
 	}()
