@@ -11,7 +11,7 @@ import (
 	"xbot/config"
 	llm "xbot/llm"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 
 	"github.com/google/uuid"
 	log "xbot/logger"
@@ -597,8 +597,8 @@ func (c *Client) GetDailyTokenUsage(senderID string, days int) ([]map[string]any
 
 // GetSessionUsageStats fetches a session's aggregated usage & performance
 // (per-iteration input/cached tokens live in iteration_history since v59).
-func (c *Client) GetSessionUsageStats(channel, chatID string, limit int) (*sqlite.TenantUsageStats, error) {
-	var r sqlite.TenantUsageStats
+func (c *Client) GetSessionUsageStats(channel, chatID string, limit int) (*common.TenantUsageStats, error) {
+	var r common.TenantUsageStats
 	if err := c.call(MethodGetSessionUsageStats, getSessionUsageStatsReq{Channel: channel, ChatID: chatID, Limit: limit}, &r); err != nil {
 		return nil, err
 	}
@@ -609,8 +609,8 @@ func (c *Client) GetSessionUsageStats(channel, chatID string, limit int) (*sqlit
 // time buckets, computed ENTIRELY in SQL over the full iteration_history table
 // (the trend chart must cover the whole history, not just the newest ≤500 rows
 // that GetSessionUsageStats' detail list is capped to).
-func (c *Client) GetSessionUsageBuckets(channel, chatID, granularity string, count, tzOffsetMinutes int) ([]sqlite.UsageBucket, error) {
-	var r []sqlite.UsageBucket
+func (c *Client) GetSessionUsageBuckets(channel, chatID, granularity string, count, tzOffsetMinutes int) ([]common.UsageBucket, error) {
+	var r []common.UsageBucket
 	if err := c.call(MethodGetSessionUsageBuckets, getSessionUsageBucketsReq{
 		Channel:         channel,
 		ChatID:          chatID,

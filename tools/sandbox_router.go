@@ -12,6 +12,7 @@ import (
 
 	"xbot/config"
 	log "xbot/logger"
+	"xbot/storage/common"
 )
 
 // SessionBindingStore persists session→runner bindings.
@@ -138,7 +139,7 @@ func (r *SandboxRouter) EnsureRemote() bool {
 
 // SetRunnerStore stores the runner registry used for token validation, wiring it
 // into the remote sandbox (starting it lazily if needed).
-func (r *SandboxRouter) SetRunnerStore(store *RunnerStore) {
+func (r *SandboxRouter) SetRunnerStore(store common.RunnerStore) {
 	r.remoteMu.Lock()
 	r.remoteCfg.RunnerStore = store
 	rs := r.remote
@@ -236,7 +237,7 @@ func (r *SandboxRouter) requireKnownRunner(name string) error {
 }
 
 // runnerStore returns the wired runner registry (nil when absent).
-func (r *SandboxRouter) runnerStore() *RunnerStore {
+func (r *SandboxRouter) runnerStore() common.RunnerStore {
 	return r.remoteCfg.RunnerStore
 }
 

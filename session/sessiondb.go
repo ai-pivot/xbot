@@ -61,6 +61,13 @@ const sessionDBIdleSweep = time.Hour
 // 锁序：m.mu → sessionDBMu（GetOrCreateSession 持 m.mu 调这里；DestroySession 同序）。
 // 绝不允许反向（sessionDBMu 内获取 m.mu 会死锁）。
 func (m *MultiTenantSession) sessionDB(tenantID int64) (*sqlite.DB, error) {
+	// PG 后端没有会话库文件（会话数据在共享 PG 连接里，tenant_id 过滤）。
+	// 必须在这里收口：调用方（DestroySession / ClearMemory / RewindHistory /
+	// SessionDBFor）在 PG 上路径依然会走到本函数，而 m.tenantSvc 为 nil ——
+	// 继续往下就是 nil 指针 panic。
+	if m.db == nil {
+		return nil, fmt.Errorf("session database is not available on the PG backend (tenant %d)", tenantID)
+	}
 	m.sessionDBMu.Lock()
 	defer m.sessionDBMu.Unlock()
 	if entry, ok := m.sessionDBs[tenantID]; ok {
@@ -180,6 +187,28 @@ func (m *MultiTenantSession) recomputeSessionPreview(sdb *sqlite.DB, tenantID in
 	}
 }
 
+// refreshTenantPreview 从**后端无关的会话存储**重算并写回 tenants.preview。
+// 与 recomputeSessionPreview（绑 *sqlite.DB，仅迁移/拆库路径可用）不同：
+// 这里只经 storage.SessionStore + storage.TenantStore，因此在 PG 上同样生效。
+func (m *MultiTenantSession) refreshTenantPreview(tenantID int64) {
+	if m == nil || m.store == nil {
+		return
+	}
+	svc, err := m.SessionServiceFor(tenantID)
+	if err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("refresh preview: open session store failed")
+		return
+	}
+	preview, err := svc.LatestPreview(tenantID)
+	if err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("refresh preview: query latest message failed")
+		return
+	}
+	if err := m.store.Tenant().SetTenantPreview(tenantID, preview); err != nil {
+		log.WithError(err).WithField("tenant_id", tenantID).Warn("refresh preview: update tenants.preview failed")
+	}
+}
+
 // SessionServiceFor 返回绑定 tenantID 会话存储的 storage.SessionStore
 // （后端无关：SQLite 走每会话 DB 池，PG 走共享连接 + tenant_id 过滤）。这是只有
 // tenantID、不经 TenantSession 的直接构造点收口（rpc contextUsage / 内部工具）。
@@ -230,7 +259,10 @@ func (m *MultiTenantSession) SessionDBFor(tenantID int64) (*sqlite.DB, error) {
 // 模型切换的两半，分别落在各自的库）。LLMFactory 的 sessionTokenResetter 钩子
 // 在模型变更时调用本方法（见 llm_factory.go 的 SetSessionLLM / SelectModel）。
 func (m *MultiTenantSession) ResetSessionContextTokens(channel, chatID string) {
-	tenantID, err := m.tenantSvc.GetTenantIDByChannelChatID(channel, chatID)
+	if m == nil || m.store == nil {
+		return
+	}
+	tenantID, err := m.store.Tenant().GetTenantIDByChannelChatID(channel, chatID)
 	if err != nil || tenantID == 0 {
 		return
 	}
@@ -336,6 +368,10 @@ func (m *MultiTenantSession) sweepIdleSessionDBs() {
 // 先 closeSessionDB（checkpoint + close + 出池），再删文件 + -wal/-shm。
 // db_path 从注册表读取 —— 调用方必须在删除 tenants 行**之前**调用本函数。
 func (m *MultiTenantSession) deleteSessionDBFile(tenantID int64) {
+	// PG：没有会话库文件可删，也不需要读 tenants.db_path（m.tenantSvc 为 nil）。
+	if m.db == nil {
+		return
+	}
 	// 先立墓碑，再动资源：从这一刻起 sessionDB() 拒绝为这个租户重新开库
 	// （与下面的 close+unlink 顺序配合，杜绝 use-after-close 的重新打开）。
 	m.markTenantDestroyed(tenantID)

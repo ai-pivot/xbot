@@ -13,7 +13,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 
 	"xbot/tools"
 )
@@ -595,7 +595,7 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	// If neither is available (early restart recovery), skip — the iteration
 	// will be written when the session is fully initialized.
 	var tenantID int64
-	var appendFn func(msgID int64, turnID uint64, rec sqlite.IterationRecord) error
+	var appendFn func(msgID int64, turnID uint64, rec common.IterationRecord) error
 
 	if s.persistence != nil && s.persistence.session != nil {
 		// Primary path: PersistenceBridge has a live TenantSession
@@ -625,7 +625,7 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	// message_id=0: we don't link to a specific message — iteration_history
 	// is queried by turn_id on read. This avoids the dependency on
 	// IncrementalPersist populating message IDs.
-	if err := appendFn(0, turnID, sqlite.IterationRecord{
+	if err := appendFn(0, turnID, common.IterationRecord{
 		MessageID:      0,
 		TurnID:         turnID,
 		Iteration:      snap.Iteration,
@@ -696,7 +696,7 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 	// Append mask controls before installing the in-memory view. Original tool
 	// results remain immutable message rows and replay applies only placeholders.
 	if s.cfg.Session != nil {
-		mutations := make([]sqlite.MaskMutation, 0, len(maskedEntries))
+		mutations := make([]common.MaskMutation, 0, len(maskedEntries))
 		for _, entry := range maskedEntries {
 			if entry.MessageIndex < 0 || entry.MessageIndex >= len(s.messages) || s.messages[entry.MessageIndex].ID == 0 {
 				log.Ctx(ctx).WithField("raw_idx", entry.MessageIndex).Warn("Mask skipped: target has no persisted history_id")
@@ -708,7 +708,7 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 					occurrence++
 				}
 			}
-			mutations = append(mutations, sqlite.MaskMutation{TargetHistoryID: s.messages[entry.MessageIndex].ID, TargetOccurrence: occurrence, Content: entry.Content})
+			mutations = append(mutations, common.MaskMutation{TargetHistoryID: s.messages[entry.MessageIndex].ID, TargetOccurrence: occurrence, Content: entry.Content})
 		}
 		if len(mutations) > 0 {
 			if err := s.cfg.Session.AppendMasks(mutations); err != nil {

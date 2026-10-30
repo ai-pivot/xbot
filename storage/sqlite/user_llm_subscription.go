@@ -10,51 +10,16 @@ import (
 
 	"xbot/crypto"
 	log "xbot/logger"
-	"xbot/protocol"
 )
 
 // PerModelConfig stores per-model token overrides within a subscription.
 // Alias to protocol.PerModelConfig — the canonical definition used across all packages.
-type PerModelConfig = protocol.PerModelConfig
 
 // LLMSubscription represents a user's LLM provider subscription.
-type LLMSubscription struct {
-	ID              string                    // unique subscription ID
-	SenderID        string                    // user ID
-	Name            string                    // display name (e.g. "OpenAI GPT-4", "DeepSeek")
-	Provider        string                    // LLM provider: "openai", "deepseek", "anthropic", etc.
-	BaseURL         string                    // API base URL
-	APIKey          string                    // API key (plaintext in struct, encrypted in DB)
-	Model           string                    // default model for this subscription
-	MaxContext      int                       // max context token limit (0 = use default)
-	MaxOutputTokens int                       // max output token limit (0 = use default 8192)
-	ThinkingMode    string                    // thinking mode: "" (auto), "enabled", "disabled"
-	APIType         string                    // API type: "" (default=chat_completions), "responses"
-	IsDefault       bool                      // whether this is the active subscription
-	Enabled         bool                      // whether this subscription contributes models to the picker (v40); default true
-	CachedModels    []string                  // cached model list from API (JSON in DB)
-	PerModelConfigs map[string]PerModelConfig // per-model token overrides (JSON in DB)
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}
 
 // SubscriptionModel stores per-model configuration for a subscription.
 // Introduced in v35 to replace the JSON-blob PerModelConfigs and subscription-level
 // model fields. One subscription → many models.
-type SubscriptionModel struct {
-	ID              string // unique model row ID
-	SubscriptionID  string // FK → user_llm_subscriptions.id
-	Model           string // model name (e.g. "deepseek-v4-pro")
-	MaxContext      int    // max context window tokens
-	MaxOutputTokens int    // max output tokens
-	ThinkingMode    string // thinking mode override
-	APIType         string // API type override: "" (use subscription default), "responses"
-	Enabled         bool   // whether this model is selectable (v38); default true
-	Vision          bool   // model accepts image (multimodal) input; purely manual, NO built-in model-name whitelist
-	VisionDetail    string // OpenAI image_url.detail hint ("low"|"high"|"" = auto)
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}
 
 // LLMSubscriptionService manages user LLM subscriptions.
 type LLMSubscriptionService struct {
@@ -520,39 +485,6 @@ func (s *LLMSubscriptionService) UpdatePerModelConfigs(id string, configs map[st
 
 // GetPerModelMaxTokens returns the per-model max_output_tokens override for the given subscription and model.
 // Returns 0 if no override is configured (caller should fall back to subscription-level default).
-func (sub *LLMSubscription) GetPerModelMaxTokens(model string) int {
-	if sub.PerModelConfigs == nil || model == "" {
-		return 0
-	}
-	if cfg, ok := sub.PerModelConfigs[model]; ok {
-		return cfg.MaxOutputTokens
-	}
-	return 0
-}
-
-// GetPerModelMaxContext returns the per-model max_context override for the given subscription and model.
-// Returns 0 if no override is configured (caller should fall back to subscription-level default).
-func (sub *LLMSubscription) GetPerModelMaxContext(model string) int {
-	if sub.PerModelConfigs == nil || model == "" {
-		return 0
-	}
-	if cfg, ok := sub.PerModelConfigs[model]; ok {
-		return cfg.MaxContext
-	}
-	return 0
-}
-
-// GetPerModelAPIType returns the per-model API type override.
-// Returns "" if no override is set (use subscription default).
-func (sub *LLMSubscription) GetPerModelAPIType(model string) string {
-	if sub.PerModelConfigs == nil || model == "" {
-		return ""
-	}
-	if cfg, ok := sub.PerModelConfigs[model]; ok {
-		return cfg.APIType
-	}
-	return ""
-}
 
 // ─── SubscriptionModel CRUD ─────────────────────────────
 
@@ -805,12 +737,6 @@ func (s *LLMSubscriptionService) RemoveModel(subID, model string) error {
 // UserDefaultModel holds a user's default (subscription, model) used to resolve
 // the LLM for new sessions. Replaces the implicit "current model" semantics of
 // user_llm_subscriptions.model.
-type UserDefaultModel struct {
-	SenderID       string
-	SubscriptionID string
-	Model          string
-	UpdatedAt      time.Time
-}
 
 // GetUserDefaultModel returns the operator's default model selection, or nil
 // if unset.

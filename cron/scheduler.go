@@ -8,7 +8,7 @@ import (
 
 	log "xbot/logger"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // InjectFunc is the function type for injecting messages into the agent.
@@ -289,7 +289,7 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 }
 
 // CalculateNextRun calculates the next run time for a job
-func CalculateNextRun(job *sqlite.CronJob, now time.Time) (time.Time, error) {
+func CalculateNextRun(job *common.CronJob, now time.Time) (time.Time, error) {
 	if job.At != "" {
 		t, err := time.ParseInLocation("2006-01-02T15:04:05", job.At, time.Local)
 		if err != nil {

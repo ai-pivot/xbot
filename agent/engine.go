@@ -18,7 +18,7 @@ import (
 	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/storage/vectordb"
 	"xbot/tools"
 
@@ -1647,7 +1647,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 				return nil
 			}
 			tc.AddSubscriptionFn = func(params tools.SubscriptionCreateParams) (string, error) {
-				sub := &sqlite.LLMSubscription{
+				sub := &common.LLMSubscription{
 					Name:            params.Name,
 					Provider:        params.Provider,
 					BaseURL:         params.BaseURL,
@@ -1726,8 +1726,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 
 	// Inject runner CRUD callbacks (for config tool).
 	// Runner management requires a database — if not configured, callbacks return errors.
-	if db := tools.GetRunnerTokenDB(); db != nil {
-		store := tools.NewRunnerStore(db)
+	if store := tools.GetRunnerStore(); store != nil {
 		tc.RunnerCreate = func(name, mode, dockerImage, workspace, llmProvider, llmAPIKey, llmModel, llmBaseURL string) (string, error) {
 			llm := tools.RunnerLLMSettings{
 				Provider: llmProvider,

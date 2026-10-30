@@ -4,7 +4,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // operatorSenderID is the fixed sender used by ALL channels after the
@@ -107,7 +107,7 @@ func (a *Agent) ResolveUserContext(channel, chatID, senderID string, metadata ma
 	resolveLLMFresh := func(chatID string) (llm.LLM, string, int, string, int) {
 		return a.userSys.llmFactory.ResolveLLM(senderID, chatID, channel)
 	}
-	resolveActiveSub := func(chatID string) (*sqlite.LLMSubscription, string, error) {
+	resolveActiveSub := func(chatID string) (*common.LLMSubscription, string, error) {
 		return a.userSys.llmFactory.ResolveActiveSubModel(senderID, chatID, channel)
 	}
 	selectModel := func(chatID, subID, model string) error {

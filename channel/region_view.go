@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // =============================================================================
@@ -53,7 +53,7 @@ type regionToolSnap struct {
 // ⚠️ 纯函数、无缓存：同一 rec 在 RegionRuns/HasGenuiTool/MapIterationRecord 里会被
 // 重复解析。本层不是性能瓶颈（正确性与同构优先），调用方若在巨型 turn 上做热路径
 // 优化，可在**调用方**缓存解析结果（不要在此处塞全局 map —— 会引入共享可变状态）。
-func parseRegionTools(rec sqlite.IterationRecord) []regionToolSnap {
+func parseRegionTools(rec common.IterationRecord) []regionToolSnap {
 	if rec.Tools == "" || rec.Tools == "[]" {
 		return nil
 	}
@@ -65,7 +65,7 @@ func parseRegionTools(rec sqlite.IterationRecord) []regionToolSnap {
 }
 
 // hasRegionTools 与前端 `hasTools(it) = it.tools.length > 0` 同构。
-func hasRegionTools(rec sqlite.IterationRecord) bool {
+func hasRegionTools(rec common.IterationRecord) bool {
 	return len(parseRegionTools(rec)) > 0
 }
 
@@ -74,14 +74,14 @@ func hasRegionTools(rec sqlite.IterationRecord) bool {
 //
 // 只有纯工具迭代才能被**前置 head 吸收**（head 本身允许带 content/reasoning，
 // 见 §2.1 用户点名的坑）。
-func IsPureToolIteration(rec sqlite.IterationRecord) bool {
+func IsPureToolIteration(rec common.IterationRecord) bool {
 	return rec.Content == "" && rec.Reasoning == "" && hasRegionTools(rec)
 }
 
 // HasGenuiTool 报告该迭代的工具里是否存在 GenUI 工具（ui_mode 非空）。
 // 用于 D3 的 GenUI 豁免：含 GenUI 工具的迭代不参与详情瘦身（顶层卡片默认渲染
 // 可能消费详情，保守全量）。
-func HasGenuiTool(rec sqlite.IterationRecord) bool {
+func HasGenuiTool(rec common.IterationRecord) bool {
 	for _, t := range parseRegionTools(rec) {
 		if t.UIMode != "" {
 			return true
@@ -121,7 +121,7 @@ type RegionRun struct {
 // 差异会直接导致两侧区域边界漂移 ⇒ 窗口边界错 ⇒ 前端拼接断号）。
 //
 // 输入必须是 iteration 升序（调用方保证：GetIterationHistoryByTurns 的 ORDER BY）。
-func RegionRuns(recs []sqlite.IterationRecord) []RegionRun {
+func RegionRuns(recs []common.IterationRecord) []RegionRun {
 	if len(recs) == 0 {
 		return nil
 	}
@@ -171,7 +171,7 @@ func RegionRuns(recs []sqlite.IterationRecord) []RegionRun {
 //
 // ⚠️ 「窗口内迭代号连续」依赖输入不变量：同一 turn 的 iteration 号连续
 // （DB 侧 1 起、续跑续接）。本函数只按**区域边界**切分，不缝补输入空洞。
-func RegionWindow(recs []sqlite.IterationRecord, k int) ([]sqlite.IterationRecord, int) {
+func RegionWindow(recs []common.IterationRecord, k int) ([]common.IterationRecord, int) {
 	runs := RegionRuns(recs)
 	if len(runs) == 0 {
 		return nil, 0
@@ -214,11 +214,11 @@ const PillInlineMax = 8
 
 // FoldToolsForRecord 回答"这条迭代在**区域视图**里是否该折叠"：
 // 只有工具数 > PillInlineMax 才折叠（1 枚工具也抹详情会让每次看详情都要再拉一次）。
-func FoldToolsForRecord(rec sqlite.IterationRecord) bool {
+func FoldToolsForRecord(rec common.IterationRecord) bool {
 	return len(parseRegionTools(rec)) > PillInlineMax
 }
 
-func MapIterationRecord(rec sqlite.IterationRecord, foldTools bool) HistoryIteration {
+func MapIterationRecord(rec common.IterationRecord, foldTools bool) HistoryIteration {
 	snaps := parseRegionTools(rec)
 	var tools []protocol.ToolProgress
 	folded := false

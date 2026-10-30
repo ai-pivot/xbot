@@ -19,7 +19,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/session"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -764,9 +764,11 @@ func (a *Agent) markRegistryUnloaded(roleName, instance string) {
 		return
 	}
 	agentKey := "agent:" + roleName + "/" + instance
-	if err := a.interactiveAgentSvc().MarkUnloadedCascade(agentKey); err != nil {
-		log.WithError(err).WithField("agent_key", agentKey).
-			Warn("Failed to mark interactive agent unloaded in the registry")
+	if svc := a.interactiveAgentSvc(); svc != nil {
+		if err := svc.MarkUnloadedCascade(agentKey); err != nil {
+			log.WithError(err).WithField("agent_key", agentKey).
+				Warn("Failed to mark interactive agent unloaded in the registry")
+		}
 	}
 }
 
@@ -847,7 +849,7 @@ func (a *Agent) reconcileInteractiveRegistryOnce() {
 //  1. running → interrupted：上一个进程的 goroutine 已随进程消失，不可能"还在计算"；
 //  2. 僵尸 idle → unloaded：DB 里有行，但（a）运行时 interactiveSubAgents 里没有这个
 //     实例，且（b）它的会话租户已经不在了。判据与理由见
-//     sqlite.InteractiveAgentService.MarkOrphanedIdleUnloaded。
+//     common.InteractiveAgentService.MarkOrphanedIdleUnloaded。
 //
 // 为什么要 (b)：只按「运行时没有」判定会在启动瞬间把**全部** idle 行判死（启动时
 // map 必然是空的），包括「会话还在、下一条消息就能恢复」的正常子代理 —— 而
@@ -858,6 +860,9 @@ func (a *Agent) ReconcileInteractiveAgentsOnStartup() error {
 		return nil
 	}
 	svc := a.interactiveAgentSvc()
+	if svc == nil {
+		return nil
+	}
 
 	var errs []error
 	if n, err := svc.MarkAllRunningAsInterrupted(); err != nil {
@@ -1424,7 +1429,7 @@ func (a *Agent) SpawnInteractiveSession(
 	cfg.CallerSessionKey = key
 
 	// 持久化注册表：重启后据此重建这个子代理（幂等 upsert）。
-	a.persistInteractiveAgent(placeholder, sqlite.InteractiveAgentIdle)
+	a.persistInteractiveAgent(placeholder, common.InteractiveAgentIdle)
 
 	// Interactive SubAgent gets its own TenantSession for message persistence.
 	// Channel="agent", ChatID=key → messages saved to DB like normal sessions.
@@ -2343,7 +2348,7 @@ func (a *Agent) SendToInteractiveSession(
 			// F5 修复（2026-09-30 CR）：用新鲜 TenantSession 刷新 cfg.Session。
 			// ia.cfg 是 spawn 时的快照——若会话空闲满 24h 被 cleanupInactiveResources
 			// 驱逐（evictSessionDB 关闭其会话库），快照里的 Session 仍指向已 Close
-			// 的 *sqlite.DB，本 send 的 AppendMessage/GetMessages 会报
+			// 的 *common.DB，本 send 的 AppendMessage/GetMessages 会报
 			// "database is closed"。GetOrCreateSession 缓存 miss 时自动重开
 			// （sessionDB 池），这里拿到的永远是活句柄。
 			cfg.Session = sess
@@ -2586,7 +2591,7 @@ func (a *Agent) SendToInteractiveSession(
 		startTime := time.Now()
 		// 注册表：先落 running。若进程在本次 Run 期间被杀，重启后的恢复
 		// 逻辑会据此把它标成 interrupted 并 resume 同一个 turn。
-		a.persistInteractiveAgent(ia, sqlite.InteractiveAgentRunning)
+		a.persistInteractiveAgent(ia, common.InteractiveAgentRunning)
 		defer func() {
 			if r := recover(); r != nil {
 				clipanic.Report("agent.interactive.SendAsync", fmt.Sprintf("%s:%s", roleName, instance), r)
@@ -2656,7 +2661,7 @@ func (a *Agent) SendToInteractiveSession(
 
 		// 注册表：正常结束 → idle。若进程在此之后被杀，重启时不会再误触发 resume；
 		// 反之（进程在 running 期间被杀）状态会停在 running，恢复时按 interrupted 处理。
-		a.markPersistedAgentStatus(ia, sqlite.InteractiveAgentIdle, 0)
+		a.markPersistedAgentStatus(ia, common.InteractiveAgentIdle, 0)
 
 		if wasCancelled {
 			if wasInterrupted {

@@ -26,7 +26,7 @@ import (
 	"xbot/registry"
 	"xbot/session"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 
 	"github.com/google/uuid"
@@ -185,7 +185,7 @@ func (h *RPCContext) resolveOwnedHistorySession(ctx context.Context, channel, ch
 // subOwnedByUser reports whether sub is manageable by the caller. After the
 // multi-user removal there is a single operator: every subscription belongs
 // to them (sender 'cli_user' post-v63 sender collapse).
-func (h *RPCContext) subOwnedByUser(ctx context.Context, svc storage.SubscriptionBackend, sub *sqlite.LLMSubscription) bool {
+func (h *RPCContext) subOwnedByUser(ctx context.Context, svc storage.SubscriptionBackend, sub *common.LLMSubscription) bool {
 	if isAdmin(ctx) {
 		return true
 	}
@@ -249,7 +249,7 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 		return usage, nil
 	}
 	// 后端无关：tenant 解析走 TenantStore，会话 token 走 SessionStore
-	// （SQLite 会话库 / PG 共享连接）—— 不再依赖主库 *sqlite.DB，因此 PG 后端同样可用。
+	// （SQLite 会话库 / PG 共享连接）—— 不再依赖主库 *common.DB，因此 PG 后端同样可用。
 	tenantStore := h.Ag.MultiSession().Store().Tenant()
 	tenantID, err := tenantStore.GetTenantIDByChannelChatID(channelName, chatID)
 	if err != nil {
@@ -863,7 +863,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		dbSub := &sqlite.LLMSubscription{
+		dbSub := &common.LLMSubscription{
 			ID:              p.Sub.ID,
 			Name:            p.Sub.Name,
 			Provider:        p.Sub.Provider,
@@ -876,9 +876,9 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			IsDefault:       p.Sub.Active,
 		}
 		if len(p.Sub.PerModelConfigs) > 0 {
-			dbSub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(p.Sub.PerModelConfigs))
+			dbSub.PerModelConfigs = make(map[string]common.PerModelConfig, len(p.Sub.PerModelConfigs))
 			for model, cfg := range p.Sub.PerModelConfigs {
-				dbSub.PerModelConfigs[model] = sqlite.PerModelConfig(cfg)
+				dbSub.PerModelConfigs[model] = common.PerModelConfig(cfg)
 			}
 		}
 		// Single operator (multi-user removal): every subscription belongs to
@@ -893,7 +893,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 	t["update_per_model_config"] = rpc1void(func(ctx context.Context, p struct {
 		ID     string                `json:"id"`
 		Model  string                `json:"model"`
-		Config sqlite.PerModelConfig `json:"config"`
+		Config common.PerModelConfig `json:"config"`
 	}) error {
 		svc, err := h.requireSubscriptionSvc()
 		if err != nil {
@@ -908,7 +908,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			return fmt.Errorf("subscription not found")
 		}
 		if existing.PerModelConfigs == nil {
-			existing.PerModelConfigs = make(map[string]sqlite.PerModelConfig)
+			existing.PerModelConfigs = make(map[string]common.PerModelConfig)
 		}
 		existing.PerModelConfigs[p.Model] = p.Config
 		if err := svc.Update(existing); err != nil {
@@ -983,7 +983,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return nil, err
 		}
-		var subs []*sqlite.LLMSubscription
+		var subs []*common.LLMSubscription
 		if len(p.IDs) > 0 {
 			for _, id := range p.IDs {
 				sub, err := svc.Get(id)
@@ -1084,7 +1084,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				continue
 			}
 			newID := uuid.New().String()
-			dbSub := &sqlite.LLMSubscription{
+			dbSub := &common.LLMSubscription{
 				ID:              newID,
 				Name:            imp.Name,
 				Provider:        imp.Provider,
@@ -1096,9 +1096,9 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				SenderID:        cliSenderID,
 			}
 			if len(imp.PerModelConfigs) > 0 {
-				dbSub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(imp.PerModelConfigs))
+				dbSub.PerModelConfigs = make(map[string]common.PerModelConfig, len(imp.PerModelConfigs))
 				for model, cfg := range imp.PerModelConfigs {
-					dbSub.PerModelConfigs[model] = sqlite.PerModelConfig(cfg)
+					dbSub.PerModelConfigs[model] = common.PerModelConfig(cfg)
 				}
 			}
 			if err := svc.Add(dbSub); err != nil {
@@ -1175,7 +1175,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if stats == nil {
 			// Unknown session: return an empty aggregate instead of null so
 			// plugin/CLI consumers can render a zero-state panel.
-			return &sqlite.TenantUsageStats{RecentIterations: []sqlite.UsageIterationRow{}, ByModel: []sqlite.UsageModelRow{}}, nil
+			return &common.TenantUsageStats{RecentIterations: []common.UsageIterationRow{}, ByModel: []common.UsageModelRow{}}, nil
 		}
 		return stats, nil
 	})
@@ -1193,7 +1193,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if err := h.requireMultiSession(); err != nil {
 			return nil, err
 		}
-		bucketSeconds, ok := sqlite.UsageBucketSecondsForGranularity(p.Granularity)
+		bucketSeconds, ok := common.UsageBucketSecondsForGranularity(p.Granularity)
 		if !ok {
 			return nil, fmt.Errorf("invalid granularity %q (want minute, hour or day)", p.Granularity)
 		}
@@ -1207,7 +1207,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		if buckets == nil {
 			// Unknown session: empty series (zero-state), never null.
-			return []sqlite.UsageBucket{}, nil
+			return []common.UsageBucket{}, nil
 		}
 		return buckets, nil
 	})
@@ -1351,7 +1351,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 				return nil, err
 			}
 			// v55: load structured iteration_history by turn_id.
-			var turnIterMap map[uint64][]sqlite.IterationRecord
+			var turnIterMap map[uint64][]common.IterationRecord
 			tenantID := sess.TenantID()
 			if tenantID > 0 {
 				turnSet := make(map[uint64]bool)
@@ -1374,7 +1374,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 					}
 					batch, _ := svc.GetIterationHistoryByTurns(tenantID, turnIDs)
 					if len(batch) > 0 {
-						turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(batch))
+						turnIterMap = make(map[uint64][]common.IterationRecord, len(batch))
 						for turnID, recs := range batch {
 							if len(recs) > 0 {
 								turnIterMap[turnID] = recs
@@ -2614,7 +2614,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 		MaxOutputTokens int                              `json:"max_output_tokens"`
 		ThinkingMode    string                           `json:"thinking_mode"`
 		APIType         string                           `json:"api_type"`
-		PerModelConfigs map[string]sqlite.PerModelConfig `json:"per_model_configs"`
+		PerModelConfigs map[string]common.PerModelConfig `json:"per_model_configs"`
 	} `json:"sub"`
 }) error {
 	bizID := rpcBizID(ctx)
@@ -2631,7 +2631,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	}
 	// Start from existing subscription — client never has unmasked credentials,
 	// so we preserve all existing fields and only accept intentional changes.
-	dbSub := &sqlite.LLMSubscription{
+	dbSub := &common.LLMSubscription{
 		ID: existing.ID, SenderID: existing.SenderID,
 		Name: existing.Name, Provider: existing.Provider, BaseURL: existing.BaseURL,
 		APIKey: existing.APIKey, Model: existing.Model,
@@ -2825,7 +2825,7 @@ func (h *RPCContext) listTenants(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	if !isAdmin(ctx) {
-		var userTenants []sqlite.TenantInfo
+		var userTenants []common.TenantInfo
 		for _, t := range tenants {
 			if t.ChatID == bizID {
 				userTenants = append(userTenants, t)
@@ -2833,7 +2833,7 @@ func (h *RPCContext) listTenants(ctx context.Context) (any, error) {
 		}
 		tenants = userTenants
 	}
-	tenants = slices.DeleteFunc(tenants, func(t sqlite.TenantInfo) bool {
+	tenants = slices.DeleteFunc(tenants, func(t common.TenantInfo) bool {
 		return t.Channel == "agent"
 	})
 	type tenantJSON struct {
@@ -2867,15 +2867,15 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		LLMModel    string `json:"llm_model"`
 		LLMBaseURL  string `json:"llm_base_url"`
 	}) (any, error) {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return nil, fmt.Errorf("runner management not configured")
 		}
 		if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 			router.EnsureRemote()
 		}
 		llm := tools.RunnerLLMSettings{Provider: p.LLMProvider, APIKey: p.LLMAPIKey, Model: p.LLMModel, BaseURL: p.LLMBaseURL}
-		token, err := tools.NewRunnerStore(db).Create(p.Name, p.Mode, p.DockerImage, p.Workspace, llm)
+		token, err := store.Create(p.Name, p.Mode, p.DockerImage, p.Workspace, llm)
 		if err != nil {
 			return nil, err
 		}
@@ -2907,25 +2907,29 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 	t["runner_registry"] = rpc1(func(ctx context.Context, p struct {
 		Managed []string `json:"managed"`
 	}) (any, error) {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return nil, fmt.Errorf("runner management not configured")
 		}
-		return tools.BuildRunnerRegistry(db, p.Managed)
+		var tenantStore storage.TenantStore
+		if h.Ag != nil && h.Ag.MultiSession() != nil && h.Ag.MultiSession().Store() != nil {
+			tenantStore = h.Ag.MultiSession().Store().Tenant()
+		}
+		return tools.BuildRunnerRegistryFromStore(store, tenantStore, p.Managed)
 	})
 
 	// runner_delete removes a runner and drops its live connection.
 	t["runner_delete"] = rpc1void(func(ctx context.Context, p struct {
 		Name string `json:"name"`
 	}) error {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return fmt.Errorf("runner management not configured")
 		}
 		if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 			router.DisconnectRunner(p.Name)
 		}
-		return tools.NewRunnerStore(db).Delete(p.Name)
+		return store.Delete(p.Name)
 	})
 
 	// runner_rename renames a runner (session bindings follow the new name).
@@ -2933,11 +2937,11 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		OldName string `json:"old_name"`
 		NewName string `json:"new_name"`
 	}) error {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return fmt.Errorf("runner management not configured")
 		}
-		return tools.NewRunnerStore(db).Rename(p.OldName, p.NewName)
+		return store.Rename(p.OldName, p.NewName)
 	})
 
 	// runner_session_get reports the machine a session is bound to.
@@ -3267,7 +3271,7 @@ func listUserInstalled(xbotHome, workDir, senderID, itemType string) []string {
 
 // ── Helpers ──
 
-func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
+func subToChannel(s *common.LLMSubscription) channel.Subscription {
 	return channel.Subscription{
 		ID: s.ID, Name: s.Name, Provider: s.Provider,
 		BaseURL: s.BaseURL, APIKey: maskAPIKey(s.APIKey),
@@ -3281,7 +3285,7 @@ func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
 
 // historyRecordToExported converts a raw append-only history record
 // (session_messages row) to the portable export format.
-func historyRecordToExported(r sqlite.HistoryRecord) protocol.ExportedRecord {
+func historyRecordToExported(r common.HistoryRecord) protocol.ExportedRecord {
 	rec := protocol.ExportedRecord{
 		HistoryID:       r.HistoryID,
 		RecordType:      string(r.Type),
@@ -3289,7 +3293,7 @@ func historyRecordToExported(r sqlite.HistoryRecord) protocol.ExportedRecord {
 		RecordData:      r.Data,
 		CreatedAt:       r.CreatedAt,
 	}
-	if r.Type == sqlite.HistoryRecordMessage {
+	if r.Type == common.HistoryRecordMessage {
 		m := r.Message
 		rec.Role = m.Role
 		rec.Content = m.Content

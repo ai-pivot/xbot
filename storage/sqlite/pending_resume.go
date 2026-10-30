@@ -7,12 +7,6 @@ import (
 
 // PendingResume represents a session whose agent loop was interrupted by
 // graceful shutdown and should be resumed on next startup.
-type PendingResume struct {
-	Channel   string
-	ChatID    string
-	SenderID  string
-	CreatedAt string
-}
 
 // AddPendingResume records a session for resumption on next startup.
 func (db *DB) AddPendingResume(channel, chatID, senderID string) error {

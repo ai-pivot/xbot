@@ -32,7 +32,7 @@ import (
 	"xbot/protocol"
 	"xbot/session"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -854,7 +854,7 @@ func (a *Agent) updateActiveSubFn(uc *UserContext, channel string) func(key, val
 }
 
 // subFieldValue reads a single field from an LLMSubscription by config key.
-func subFieldValue(sub *sqlite.LLMSubscription, key string) string {
+func subFieldValue(sub *common.LLMSubscription, key string) string {
 	switch key {
 	case "llm_provider":
 		return sub.Provider
@@ -876,7 +876,7 @@ func subFieldValue(sub *sqlite.LLMSubscription, key string) string {
 }
 
 // setSubFieldValue sets a single field on an LLMSubscription by config key.
-func setSubFieldValue(sub *sqlite.LLMSubscription, key, value string) error {
+func setSubFieldValue(sub *common.LLMSubscription, key, value string) error {
 	switch key {
 	case "llm_provider":
 		sub.Provider = strings.TrimSpace(value)
@@ -1138,7 +1138,7 @@ func (a *Agent) emitSessionState(ev protocol.SessionEvent) {
 // renameSession renames a chat session in DB and pushes the state change.
 // renameSession renames a chat session and pushes the state change.
 // 后端无关：一律经 TenantStore（SQLite 的 user_chats / PG 的同一张表），
-// 不再依赖主库 *sqlite.DB —— PG 后端同样可用。
+// 不再依赖主库 *common.DB —— PG 后端同样可用。
 func (a *Agent) renameSession(chatID, newName string) (oldName string, err error) {
 	if a.multiSession == nil || a.multiSession.Store() == nil {
 		return "", fmt.Errorf("renameSession: no storage backend")
@@ -1282,7 +1282,7 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	// the DB says a question is genuinely pending. HasPendingAskUserFast runs
 	// this path per session-tree row, so the probe keeps that cheap.
 	id, recordType, available := a.latestAskControlRecordForSession(ch, chatID)
-	if available && recordType != sqlite.HistoryRecordAskQuestion {
+	if available && recordType != common.HistoryRecordAskQuestion {
 		return key, nil
 	}
 	if a.multiSession == nil {
@@ -1291,7 +1291,7 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	// Resolve again before replay: deletion may have happened after the probe.
 	// Never use GetOrCreateSession on this read-only recovery path.
 	// 后端无关：tenant 解析走 TenantStore、replay 走 SessionStore —— 因此 PG
-	// 后端也能恢复待答问题（此前这里依赖主库 *sqlite.DB，PG 上直接跳过）。
+	// 后端也能恢复待答问题（此前这里依赖主库 *common.DB，PG 上直接跳过）。
 	tenantStore := a.multiSession.Store().Tenant()
 	tenantID, err := tenantStore.GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil || tenantID == 0 {
@@ -1384,12 +1384,12 @@ func (a *Agent) clearPendingAskUserKey(key string) bool {
 // control record (ask_question / ask_answer) for the session's tenant.
 // available=false when there is no DB/session or the probe fails — callers
 // then fall back to trusting the in-memory copy (best effort).
-func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqlite.HistoryRecordType, bool) {
+func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, common.HistoryRecordType, bool) {
 	if a.multiSession == nil {
 		return 0, "", false
 	}
 	// 后端无关：tenant 解析走 TenantStore，控制记录查询走 SessionStore —— PG 后端
-	// 同样可用（此前这里依赖主库 *sqlite.DB，PG 上直接返回 available=false）。
+	// 同样可用（此前这里依赖主库 *common.DB，PG 上直接返回 available=false）。
 	// Session-tree probes must not recreate a tenant from a stale deleted row.
 	tenantID, err := a.multiSession.Store().Tenant().GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil {
@@ -1424,13 +1424,13 @@ func (a *Agent) pendingAskUserEntryIsAuthoritative(ch, chatID, key string, entry
 	if !available {
 		return true
 	}
-	if recordType == sqlite.HistoryRecordAskAnswer {
+	if recordType == common.HistoryRecordAskAnswer {
 		a.dropPendingAskUserEntry(key, entry)
 		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID, "answer_record_id": id}).
 			Info("Dropped stale in-memory pending AskUser: persisted ask_answer is newer")
 		return false
 	}
-	if recordType != sqlite.HistoryRecordAskQuestion {
+	if recordType != common.HistoryRecordAskQuestion {
 		// No ask control record at all — no contradiction, trust memory.
 		return true
 	}
@@ -2158,7 +2158,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// 初始化 Cron 服务和调度器。
 	// 后端无关：cronSvc 来自 storage.CronStore（SQLite 的 cron_jobs 表 / PG 的同一张表），
-	// 因此 PG 后端同样可用（此前这里依赖主库 *sqlite.DB，PG 上整段被跳过 ⇒ cron 静默消失）。
+	// 因此 PG 后端同样可用（此前这里依赖主库 *common.DB，PG 上整段被跳过 ⇒ cron 静默消失）。
 	if multiSession.Store() != nil {
 		cronSvc := multiSession.Store().Cron()
 		cronSch := cron.NewScheduler(cronSvc)
@@ -2180,14 +2180,10 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		a.userSys = &userSystem{}
 	}
 	a.userSys.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
-	// ⚠️ PG 后端：订阅/租户服务是 SQLite 专属具体类型（*sqlite.LLMSubscriptionService
-	// / *sqlite.TenantService），PG 走 storage.ConfigStore/TenantStore 接口 —— 此处
-	// 不接线（PG 路径为后端对齐/测试用途，LLM 配置不在其范围内）。消费点都有
-	// nil 守卫（如 llm_factory.go 的 settingsSvc/subSvc 检查）。
-	if db := multiSession.DB(); db != nil {
-		a.userSys.llmFactory.SetSubscriptionSvc(storage.NewSQLiteConfigStore(db))
-		a.userSys.llmFactory.SetTenantSvc(storage.NewSQLiteTenantStore(db))
-	} else if multiSession.Store() != nil {
+	// ⚠️ 不按 db != nil 分支：订阅/租户访问统一经 storage 接口。SQLite 的
+	// sqliteStorage.config/tenant 与 PG 的实现都满足同一契约，PG 上也就不再
+	// 需要「跳过接线」这种会静默丢失功能的路径。
+	if multiSession.Store() != nil {
 		a.userSys.llmFactory.SetSubscriptionSvc(multiSession.Store().Config())
 		a.userSys.llmFactory.SetTenantSvc(multiSession.Store().Tenant())
 	}
@@ -2287,11 +2283,9 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.registryManager = NewRegistryManager(a.skills, a.agents, cfg.WorkDir, cfg.XbotHome, cfg.Sandbox)
 
 	// Initialize UserSettingsService and SettingsService.
-	// SettingsService 走后端无关的 storage.ConfigStore：SQLite 用适配层包主库，
-	// PG 用 Store().Config()（同一套 ConfigStore 接口，无后端分支）。
-	if db := multiSession.DB(); db != nil {
-		a.userSys.settingsSvc = NewSettingsService(storage.NewSQLiteConfigStore(db))
-	} else if multiSession.Store() != nil {
+	// SettingsService 走后端无关的 storage.ConfigStore（SQLite 用适配层包主库，
+	// PG 用 Store().Config()）—— 同一套接口，不再按是否有 SQLite 句柄分支。
+	if multiSession.Store() != nil {
 		a.userSys.settingsSvc = NewSettingsService(multiSession.Store().Config())
 	}
 

@@ -162,10 +162,6 @@ func (s *MemoryService) GetHistoryEntries(ctx context.Context, tenantID int64, l
 }
 
 // HistoryEntry is one event_history row with its timestamp.
-type HistoryEntry struct {
-	Entry     string
-	CreatedAt time.Time
-}
 
 // GetHistoryEntriesInRange returns event_history rows within [start, end],
 // newest first (limit <= 0 means 20). Moved verbatim from the former

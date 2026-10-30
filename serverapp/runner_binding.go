@@ -1,12 +1,10 @@
 package serverapp
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 
 	log "xbot/logger"
-	"xbot/storage/sqlite"
+	"xbot/storage"
 	"xbot/tools"
 )
 
@@ -15,12 +13,15 @@ import (
 // Authority is tenants.runner_id: a session key "channel:chatID" maps to the
 // machine that session runs on. In-memory maps exist only as a cache (see
 // tools.SandboxRouter), so a server restart keeps every binding.
+//
+// It depends on storage.TenantStore (not *sqlite.TenantService) so the same
+// wiring works on the PG backend, where there is no SQLite handle.
 type runnerBindingStore struct {
-	svc *sqlite.TenantService
+	svc storage.TenantStore
 }
 
-func newRunnerBindingStore(db *sqlite.DB) *runnerBindingStore {
-	return &runnerBindingStore{svc: sqlite.NewTenantService(db)}
+func newRunnerBindingStore(tenant storage.TenantStore) *runnerBindingStore {
+	return &runnerBindingStore{svc: tenant}
 }
 
 // SetSessionRunner persists the binding for a session (runnerName == "" unbinds).
@@ -39,9 +40,6 @@ func (s *runnerBindingStore) GetSessionRunner(sessionKey string) (string, error)
 		return "", nil
 	}
 	name, err := s.svc.GetTenantRunner(channelName, chatID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
 	if err != nil {
 		return "", err
 	}
@@ -49,10 +47,10 @@ func (s *runnerBindingStore) GetSessionRunner(sessionKey string) (string, error)
 }
 
 // wireRunnerBindingStore attaches session→runner binding persistence to the
-// global sandbox router. Called wherever the runner database becomes available
-// (server core and the web/server entrypoint).
-func wireRunnerBindingStore(db *sqlite.DB) {
-	if db == nil {
+// global sandbox router. Called wherever the storage backend becomes available
+// (server core and the web/server entrypoint) — on every backend, including PG.
+func wireRunnerBindingStore(tenant storage.TenantStore) {
+	if tenant == nil {
 		return
 	}
 	router, ok := tools.GetSandbox().(*tools.SandboxRouter)
@@ -60,6 +58,6 @@ func wireRunnerBindingStore(db *sqlite.DB) {
 		log.Warn("runner binding store not wired: sandbox router unavailable")
 		return
 	}
-	router.SetBindingStore(newRunnerBindingStore(db))
+	router.SetBindingStore(newRunnerBindingStore(tenant))
 	log.Info("Session→runner bindings persist in tenants.runner_id")
 }

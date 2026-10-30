@@ -1607,11 +1607,11 @@ func (wc *WebChannel) validateCLIToken(token string) (string, error) {
 		return "admin", nil
 	}
 	// Fall back to runner token lookup
-	db := tools.GetRunnerTokenDB()
-	if db == nil {
+	store := tools.GetRunnerStore()
+	if store == nil {
 		return "", fmt.Errorf("runner token auth not available")
 	}
-	if _, ok := tools.NewRunnerStore(db).FindByToken(token); !ok {
+	if _, ok := store.FindByToken(token); !ok {
 		return "", fmt.Errorf("invalid token")
 	}
 	return "cli_user", nil
