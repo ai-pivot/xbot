@@ -212,6 +212,33 @@ func ensureAskCorrelationID(input protocol.StructuredMessageInput) protocol.Stru
 	return input
 }
 
+// newUserCardCorrelationID 生成用户看板卡片的关联键（待办钥匙）。
+//
+// 形状 card-<uuid>：与 ask_user 的 ask-<uuid> 同源同风格（全局唯一、不可猜），
+// 但前缀区分「用户看板待办」与「工单回答钥匙」，日志/前端一眼能认出。
+func newUserCardCorrelationID() string {
+	return "card-" + uuid.NewString()
+}
+
+// ensureUserCardCorrelationID 只给「缺钥匙的 to="user" 卡片」补发钥匙。
+//
+// 为什么卡片必须有钥匙：用户处理后回流给发起 agent 的消息要带同一把钥匙，
+// 否则「我提的这条待办」和「用户对它的处理」在存储/审计里对不上（旧实现回流
+// 自造 notice-<id>，两把钥匙永远配不上对）。
+//
+// 三条边界：
+//   - 只碰 Silent（to="user" 卡片）：普通 report/decision 的 correlation_id 语义不同；
+//   - 已有钥匙 ⇒ 原样保留（ask_user 已由 ensureAskCorrelationID 发过 ask-<uuid>，
+//     幂等重投/导入回填也要能带上自己那把）；
+//   - 只补一次：落库与信封共用同一个 input，天然同值。
+func ensureUserCardCorrelationID(input protocol.StructuredMessageInput) protocol.StructuredMessageInput {
+	if !input.Silent || strings.TrimSpace(input.CorrelationID) != "" {
+		return input
+	}
+	input.CorrelationID = newUserCardCorrelationID()
+	return input
+}
+
 // buildStructuredEnvelope 生成完整信封 JSON（服务端填充 from/created_at）。
 //
 // origin 只在 to="user" 卡片上出现：它记录**发起方**（哪个 agent、哪个物理会话），
@@ -373,6 +400,9 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		// 对空值一律 400（correlation_id is required），提问在结构上不可回答：
 		// 用户看得见、点回答必失败。生成点放在落库之前，envelope 与 message 同值。
 		input = ensureAskCorrelationID(input)
+		// to="user" 卡片必须有稳定的 correlation_id：用户处理后的回流要带同一把钥匙
+		// （见 ensureUserCardCorrelationID 与 persistUserNoticeFeedback）。
+		input = ensureUserCardCorrelationID(input)
 		createdAt, err := parseStructuredCreatedAt(input.CreatedAt)
 		if err != nil {
 			return nil, false, err
@@ -564,12 +594,12 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			//  2. 唤醒该会话（busy → 优先队列 / idle → 新 turn）。
 			// 只投递不落行的话，agent 醒来看到的是一条空消息（DeliverStructuredMessage
 			// 的空 content 契约），用户说了什么全丢。
-			if perr := persistUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID); perr != nil {
+			if perr := persistUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID); perr != nil {
 				log.WithError(perr).WithFields(log.Fields{
 					"message_id": input.MessageID, "origin_session": originSession,
 				}).Warn("Failed to persist user notice feedback into the originating session")
 			}
-			if !deliverUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID) {
+			if !deliverUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID) {
 				log.WithFields(log.Fields{
 					"message_id": input.MessageID, "origin_session": originSession,
 				}).Warn("Failed to deliver user notice feedback to the originating agent")
@@ -702,7 +732,12 @@ func splitPhysicalSessionKey(key string) (channel, chatID string) {
 // 否则 agent 被唤醒后读不到用户到底说了什么。
 //
 // 幂等：idempotency_key = "notice-feedback:<card id>"，重复提交不会产生第二行。
-func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, cardKind, status, content, senderID string) error {
+//
+// 钥匙对齐（N1 断言③）：cardCorrelationID 是**卡片创建时**落库的 correlation_id，
+// 回流必须逐字复用它 —— 前端/审计才能把「我提的这条待办」与「用户对它的处理」
+// 配成一对。旧实现自造 notice-<id>，等于两把互不相认的钥匙。
+// 老卡片（升级前落库、没有钥匙）退化为 notice-<id>：不阻断回流，只是无键可对。
+func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, cardKind, status, content, senderID, cardCorrelationID string) error {
 	if ag == nil || ag.MultiSession() == nil {
 		return fmt.Errorf("no session manager")
 	}
@@ -722,17 +757,22 @@ func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 	if status == "dismissed" || status == "answered" {
 		kind = sqlite.StructuredKindAnswer
 	}
+	correlationID := strings.TrimSpace(cardCorrelationID)
+	if correlationID == "" {
+		correlationID = fmt.Sprintf("notice-%d", messageID)
+	}
 	envelope, _ := json.Marshal(map[string]any{
-		"schema":  "xbot.message/v1",
-		"kind":    kind,
-		"to":      originSession,
-		"payload": map[string]any{"status": status, "card_kind": cardKind, "card_id": messageID, "text": content},
-		"text":    content,
+		"schema":         "xbot.message/v1",
+		"kind":           kind,
+		"to":             originSession,
+		"correlation_id": correlationID,
+		"payload":        map[string]any{"status": status, "card_kind": cardKind, "card_id": messageID, "text": content},
+		"text":           content,
 	})
 	_, _, err = svc.AppendStructuredMessage(sess.TenantID(), sqlite.StructuredMessage{
 		ChatID:         chatID,
 		Kind:           kind,
-		CorrelationID:  fmt.Sprintf("notice-%d", messageID),
+		CorrelationID:  correlationID,
 		StructuredJSON: string(envelope),
 		Direction:      "in",
 		Role:           "user",
@@ -750,7 +790,7 @@ func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 //
 // 复用既有 kind=decision 的结构化回流通道（agent.DeliverStructuredMessage）：
 // 目标会话忙则进优先队列、空闲则起一轮 —— 不另造消息通道。
-func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, kind, status, content, senderID string) bool {
+func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, kind, status, content, senderID, cardCorrelationID string) bool {
 	if ag == nil {
 		return false
 	}
@@ -758,15 +798,20 @@ func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 	if channel == "" || chatID == "" {
 		return false
 	}
+	correlationID := strings.TrimSpace(cardCorrelationID)
+	if correlationID == "" {
+		correlationID = fmt.Sprintf("notice-%d", messageID)
+	}
 	return ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
-		ID:         fmt.Sprintf("notice-resolve:%d", messageID),
-		Channel:    channel,
-		ChatID:     chatID,
-		SenderID:   senderID,
-		SenderName: senderID,
-		Content:    content,
-		Kind:       "decision",
-		Priority:   agent.StructuredPriorityHigh,
+		ID:            fmt.Sprintf("notice-resolve:%d", messageID),
+		Channel:       channel,
+		ChatID:        chatID,
+		SenderID:      senderID,
+		SenderName:    senderID,
+		Content:       content,
+		Kind:          "decision",
+		CorrelationID: correlationID,
+		Priority:      agent.StructuredPriorityHigh,
 	})
 }
 
