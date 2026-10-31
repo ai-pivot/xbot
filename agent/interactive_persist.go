@@ -349,6 +349,13 @@ func (a *Agent) resumeIfPreviouslyRunning(rec sqlite.InteractiveAgentRecord, ia 
 }
 
 // lookupRoleDefinition 从 agents 目录重新解析 role（恢复时以磁盘定义为准）。
+//
+// 但「磁盘目录」不是唯一来源：内置（embed）role（如 explore）从来不在
+// agents 目录里，spawn 侧一直靠 tools.GetSubAgentRole 的 embed fallback 拿到它。
+// 恢复侧此前只查磁盘，于是每次恢复内置 role 的子代理都记一条
+// 「role definition explore not found in …/agents (the role file was deleted or
+// renamed after spawn)」并整棵子树跳过 —— 生产窗口内实测 250 条，根因只有这一个。
+// 2026-10-31：与 spawn 侧对齐，磁盘查不到时回落到 embed 定义。
 func (a *Agent) lookupRoleDefinition(roleName string) (*tools.SubAgentRole, error) {
 	dir := a.agentsDir
 	roles, err := tools.LoadAgentRoles(dir)
@@ -360,7 +367,25 @@ func (a *Agent) lookupRoleDefinition(roleName string) (*tools.SubAgentRole, erro
 			return &roles[i], nil
 		}
 	}
+	if role, ok := embeddedRoleDefinition(roleName); ok {
+		return role, nil
+	}
 	return nil, &restoreRoleMissingError{role: roleName, dir: dir}
+}
+
+// embeddedRoleDefinition 从二进制内嵌的 agent 定义里解析 role。
+// 与 tools.GetSubAgentRole 的 embed 分支同义，但不依赖全局 agentsDir 状态，
+// 便于恢复路径单测隔离。
+func embeddedRoleDefinition(roleName string) (*tools.SubAgentRole, bool) {
+	data, err := tools.ReadEmbeddedAgentFile(roleName)
+	if err != nil {
+		return nil, false
+	}
+	role, err := tools.ParseAgentFileContent(data, roleName)
+	if err != nil || role.Name == "" {
+		return nil, false
+	}
+	return &role, true
 }
 
 // restoreRoleMissingError 表示 role 定义文件已不存在 —— 恢复必须显式失败，

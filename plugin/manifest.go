@@ -379,6 +379,16 @@ func DiscoverPlugins(dirs []string) []*PluginManifest {
 			if abs, err := filepath.Abs(pluginDir); err == nil && searchPath[filepath.Clean(abs)] {
 				continue
 			}
+			// 目录里压根没有 plugin.json ⇒ 它不是一个插件目录（生产实测：<home>/plugins/genui
+			// 与 <home>/plugins/qq 只剩 logs/ 子目录，各 20 条 warning）。旧实现直接
+			// LoadManifest 再把 "read manifest … no such file" 打成 warning，把「残留目录」
+			// 误报成「插件坏了」。有 plugin.json 但内容非法才是真问题，仍然 warning。
+			if _, statErr := os.Stat(filepath.Join(pluginDir, "plugin.json")); statErr != nil {
+				if !os.IsNotExist(statErr) {
+					log.WithField("dir", pluginDir).Warn("Failed to stat plugin manifest")
+				}
+				continue
+			}
 			manifest, err := LoadManifest(pluginDir)
 			if err != nil {
 				log.WithField("dir", pluginDir).Warn("Skipping invalid plugin: ", err)
