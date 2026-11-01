@@ -283,6 +283,19 @@ func walIdentityAnomaly(path string, h *connHolder) string {
 	cur, err := os.Stat(path + "-wal")
 	missing := err != nil || cur == nil
 
+	// idle 快路径：没有记下的身份、路径上也没有 -wal、池里一条连接都没开着
+	// ⇒ 不可能存在孤儿 fd（fd 只可能属于活连接），直接判良性、**跳过 /proc 扫描**。
+	//
+	// 为什么值得专门加这条：生产上 50+ 个会话库会长期停在「idle 且 -wal 已被
+	// last-close unlink」这个状态。不跳过的话，每个库每 2s 都要扫一遍本进程 fd 表
+	// （实测进程 104 个 fd，单次 ≈0.25ms；59 个库 ≈15ms/2s ≈ 0.75% CPU 常驻）。
+	// 判据不变：真异常里写入方一定是活连接，OpenConnections 必 >0，不会被这条短路。
+	if walID == nil && missing {
+		if db, _, _ := h.snapshot(); db == nil || db.Stats().OpenConnections == 0 {
+			return ""
+		}
+	}
+
 	// 快路径：还是池子打开时记下的那个文件（每 2s 每库只付一次 stat）。
 	if walID != nil && !missing && os.SameFile(walID, cur) {
 		return ""

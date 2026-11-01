@@ -158,3 +158,40 @@ func TestWALGuardStillAlarmsOnExternalUnlinkWithLiveHandle(t *testing.T) {
 		t.Fatalf("walGuardTick healed=%d with heal disabled, want 0", healed)
 	}
 }
+
+// BenchmarkWALIdentityAnomalyIdleNoSidecar 钉住 idle 快路径的成本：
+// 池已 idle 关连接、-wal 已被 last-close unlink（生产上 50+ 会话库的长期状态）。
+// 这条路径必须**不**扫 /proc/self/fd（否则每库每 2s ≈0.25ms，59 库 ≈0.75% CPU 常驻）。
+func BenchmarkWALIdentityAnomalyIdleNoSidecar(b *testing.B) {
+	resumeGuard := pauseWALGuard()
+	defer resumeGuard()
+
+	dir := b.TempDir()
+	path := filepath.Join(dir, "session.db")
+	db, err := OpenSessionDB(path)
+	if err != nil {
+		b.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	pool := db.holder.get()
+	pool.SetMaxIdleConns(0)
+	pool.SetConnMaxIdleTime(time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for pool.Stats().OpenConnections > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, s := range []string{"-wal", "-shm"} { // 让状态稳定成「无 sidecar、无连接」
+		_ = os.Remove(path + s)
+	}
+	if pool.Stats().OpenConnections != 0 {
+		b.Fatalf("precondition: pool still has open connections")
+	}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if got := walIdentityAnomaly(path, db.holder); got != "" {
+			b.Fatalf("anomaly=%q on the idle fast path, want empty", got)
+		}
+	}
+}
