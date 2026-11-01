@@ -69,7 +69,13 @@ func (p *StructuredProgress) Clone() *StructuredProgress {
 	cp := *p
 	cp.ActiveTools = append([]ToolProgress(nil), p.ActiveTools...)
 	cp.CompletedTools = append([]ToolProgress(nil), p.CompletedTools...)
-	cp.Todos = append([]TodoProgressItem(nil), p.Todos...)
+	// ⛔ 同上（空数组 ≠ nil）：显式区分，避免新消费者拿到 nil 而误判"未携带"。
+	if p.Todos != nil {
+		cp.Todos = make([]TodoProgressItem, len(p.Todos))
+		copy(cp.Todos, p.Todos)
+	} else {
+		cp.Todos = nil
+	}
 	cp.SubAgents = cloneSubAgentNodes(p.SubAgents)
 	if p.TokenUsage != nil {
 		tu := *p.TokenUsage

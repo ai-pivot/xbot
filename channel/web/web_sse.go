@@ -760,6 +760,14 @@ func (wc *WebChannel) sendHeartbeatLive(client *Client) {
 	if p == nil || p.Phase == "" || p.Phase == "done" {
 		return // 无进行中 turn —— 普通 heartbeat
 	}
+	// ⛔ 2026-10-21（state-gate-11-8 确证）：heartbeat 下发的是**全量快照**（内容取自
+	//   `mergeStreamState` 的最新流式文本，而 Seq 取自上一条结构化事件）——「新内容 + 旧水位」。
+	//   客户端的陈旧判据会把它当重放丢弃 ⇒ 恰恰在它唯一要救的场景（sendCh 满/半开连接丢了
+	//   stream 帧）救不回来 ⇒ 流式卡死到下一个结构化事件。
+	//   ⇒ 结构性规则：**快照帧不参与水位**（Seq=0 + omitempty ⇒ 线上不带 seq ⇒ 客户端读作
+	//   "无水位"：覆盖内容但不推进水位）。增量帧仍由 `progressSeqFor` 单调加盖。
+	snap := *p
+	snap.Seq = 0
 	wc.hub.sendSSEEventIf(sessionRouteKey(sel.Channel, sel.ChatID), func() (protocol.WSMessage, bool) {
 		return protocol.WSMessage{
 			Type:         protocol.MsgTypeProgress,
@@ -768,7 +776,7 @@ func (wc *WebChannel) sendHeartbeatLive(client *Client) {
 			ChatID:       sel.ChatID,
 			RouteChannel: sel.Channel,
 			RouteChatID:  sel.ChatID,
-			Progress:     p,
+			Progress:     &snap,
 		}, true
 	})
 }

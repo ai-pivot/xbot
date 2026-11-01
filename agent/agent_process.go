@@ -632,6 +632,11 @@ func (a *Agent) storePendingAskUserOutbound(msg bus.InboundMessage, outbound *ch
 		return
 	}
 	askPayload := &protocol.ProgressEvent{}
+	// ⛔ 2026-10-21（state-gate-12-4 确证-1）：取消分支要用"被暂停轮"做身份比对，而
+	//   `pending.TurnID` 此前**没有任何写入点** ⇒ `pausedTurn` 恒 0 ⇒ 比对永不成立（死守卫，
+	//   与"完全没比对"同效）⇒ 另一客户端取消 AskUser 时会把**新一轮**标 idle 并清掉它的
+	//   activeTurnID（在飞快照被降级 done、live 文本/工具消失）。⇒ 在这里把暂停轮记下来。
+	askPayload.TurnID = a.getActiveTurnID(qualifyChatID(msg.Channel, msg.ChatID))
 	if outbound.Metadata != nil {
 		askPayload.RequestID = outbound.Metadata["request_id"]
 		if qJSON := outbound.Metadata["ask_questions"]; qJSON != "" {

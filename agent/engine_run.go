@@ -275,9 +275,14 @@ func (s *runState) initProgress() {
 			s.progressMu.Lock()
 			if len(s.structuredProgress.ActiveTools) > 0 {
 				for _, t := range s.structuredProgress.ActiveTools {
-					if t.Status == ToolDone || t.Status == ToolError {
-						s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, t)
+					// ⛔ D6（审计确证 2026-10-21）：终帧此前只保留 done/error，**pending/running
+					//   直接蒸发** ⇒ 用户正看着转圈的 pill 在 turn 结束后凭空消失（以为没执行）。
+					//   终帧是权威收尾快照 ⇒ 未完成的工具以 error + 中断原因保留（可见地失败）。
+					if t.Status != ToolDone && t.Status != ToolError {
+						t.Status = ToolError
+						t.Summary = "interrupted: turn ended before the tool finished"
 					}
+					s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, t)
 				}
 				s.structuredProgress.ActiveTools = nil
 			}
@@ -382,6 +387,11 @@ func (s *runState) refreshStructuredTodos() {
 		return
 	}
 	items := s.cfg.TodoManager.GetTodoItems(s.todoKey())
+	// 三态（state-gate-12-6）：无记录 ⇒ 保持 nil（"未携带"），不得折成 `[]`（"显式清空"）。
+	if items == nil {
+		s.structuredProgress.Todos = nil
+		return
+	}
 	todos := make([]TodoProgressItem, len(items))
 	for i, td := range items {
 		todos[i] = TodoProgressItem{
@@ -392,7 +402,11 @@ func (s *runState) refreshStructuredTodos() {
 	s.structuredProgress.Todos = todos
 	// Also inject goal state so the frontend can display/modify the active goal.
 	if s.cfg.GoalManager != nil {
-		s.structuredProgress.Goal = s.cfg.GoalManager.GoalInfo(s.sessionKey)
+		s.structuredProgress.Goal = s.cfg.GoalManager.GoalInfo(s.todoKey())
+	if s.structuredProgress.Goal == nil {
+		// ⛔ be-state-1：无 goal 时写 nil ⇒ 结构化帧没有 goal 键 ⇒ 客户端学不到"已清除"。
+		s.structuredProgress.Goal = s.cfg.GoalManager.Tombstone(s.todoKey())
+	}   // D4: 与 todos 同键（跨渠道浏览时 sessionKey 会被改成 physical channel ⇒ goal 恒空）
 	}
 }
 
@@ -436,6 +450,12 @@ func (s *runState) syncMessages(newMessages []llm.ChatMessage) []llm.ChatMessage
 
 // notifyProgress sends progress notification to the configured callback.
 func (s *runState) notifyProgress(extra string) {
+	// ⛔ 审计确证（be-state-1 §3）：todos 刷新必须在 `autoNotify` 早退**之前** ——
+	//   Web/CLI 的 `autoNotify=false`（engine_wire.go:439-441）⇒ 旧顺序让事后构建的结构化帧
+	//   永远带**旧 todos**（`todo_write` 之后要等下一个迭代边界才更新，长迭代里看起来"完全不更新"）。
+	s.progressMu.Lock()
+	s.refreshStructuredTodos()
+	s.progressMu.Unlock()
 	if !s.autoNotify {
 		return
 	}
@@ -452,7 +472,6 @@ func (s *runState) notifyProgress(extra string) {
 	// execOneTool/updateToolResult* writes race against the locked clone below.
 	// The todo refresh + seq bump + lines copy share ONE critical section.
 	s.progressMu.Lock()
-	s.refreshStructuredTodos()
 	// Increment seq and assign to structuredProgress (unified entry point).
 	if s.structuredProgress != nil && s.cfg.ProgressSeq != nil {
 		s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
@@ -2467,7 +2486,11 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		// 当前 goal（如有 active goal 则注入）
 		var goalInfo *protocol.GoalInfo
 		if s.cfg.GoalManager != nil {
-			goalInfo = s.cfg.GoalManager.GoalInfo(s.sessionKey)
+			// ⛔ 审计确证（be-state-1 §3）：goal 的 key 有**三个来源**（`ch:chatID` / `todoKey()`
+			//   = RootSessionKey / `s.sessionKey`）。跨渠道浏览时 `sessionKey` 会被改成
+			//   physical channel（engine_wire.go:336-344）⇒ 系统提醒里读不到 goal（模型重复问目标）。
+			//   ⇒ 与结构化快照同源，统一用 `s.todoKey()`。
+			goalInfo = s.cfg.GoalManager.GoalInfo(s.todoKey())
 		}
 
 		// Get current CWD for system reminder

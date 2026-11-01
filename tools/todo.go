@@ -237,6 +237,13 @@ func (m *TodoManager) GetTodoSummary(sessionKey string) string {
 // Uses write-lock for the entire load to prevent concurrent caller race
 // (same fix as HasTodos — goroutine A marks loaded=true, releases lock,
 // goroutine B sees loaded=true and returns nil before LoadFromFile writes to map).
+// GetTodos 返回该会话的 todo 列表。**形状契约（三态）**：
+//   · 记录存在（哪怕为空 = 用户把它清空了） ⇒ **非 nil**（空则为 `[]TodoItem{}`）；
+//   · 记录不存在（从未写过 / 文件里也没有）   ⇒ **nil**（= "没携带"，调用方不得据此清空）。
+//
+// ⛔ 审计确证（state-gate-9-4）：旧实现三条分支形状不一致 —— 同一"没有 todo"的会话，
+//   首次调用走 lazy-load 返回 `[]`（前端读作"显式清空"），之后返回 `nil`（读作"未携带"）
+//   ⇒ 服务重启后 todo 面板**时清时不清**，行为取决于调用顺序。收敛到上面这一条规则。
 func (m *TodoManager) GetTodos(sessionKey string) []TodoItem {
 	m.mu.RLock()
 	items, ok := m.todos[sessionKey]
@@ -260,9 +267,12 @@ func (m *TodoManager) GetTodos(sessionKey string) []TodoItem {
 	}
 	m.loaded[sessionKey] = true
 	m.loadFromFileLocked(sessionKey)
-	items = m.todos[sessionKey]
-	result := make([]TodoItem, len(items))
-	copy(result, items)
+	loaded, hasRecord := m.todos[sessionKey]
+	if !hasRecord {
+		return nil // 与上面的"已加载但无记录"同一形状（三态契约）
+	}
+	result := make([]TodoItem, len(loaded))
+	copy(result, loaded)
 	return result
 }
 
