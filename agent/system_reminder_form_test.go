@@ -368,7 +368,7 @@ func BenchmarkBuildSystemReminder(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				t0 := time.Now()
-				out = BuildSystemReminder(msgs, todoItems, goal, "main", "/home/smith/src/.xbot-worktrees/sr-form", "sr-form", c.subAgents)
+				out = BuildSystemReminder(msgs, todoItems, true, goal, "main", "/home/smith/src/.xbot-worktrees/sr-form", "sr-form", c.subAgents)
 				durs = append(durs, time.Since(t0))
 			}
 			b.StopTimer()

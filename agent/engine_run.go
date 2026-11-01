@@ -2568,7 +2568,9 @@ func (s *runState) buildSystemReminder() string {
 		subAgentStatuses = s.cfg.InteractiveCallbacks.ListActiveFn(s.cfg.Channel, s.cfg.ChatID)
 	}
 
-	return BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, sessionName, subAgentStatuses)
+	// todosKnown：只有 manager 已接且 key 非空才算「可知」；否则 reminder 整段不输出
+	// todo（而不是谎报 status="empty"，见 reminder.go 的 todosKnown 说明）。
+	return BuildSystemReminder(s.messages, todoItems, s.cfg.TodoManager != nil && s.todoKey() != "", goalInfo, s.cfg.AgentID, cwd, sessionName, subAgentStatuses)
 }
 
 // postToolProcessing handles dynamic context injection, system reminder,

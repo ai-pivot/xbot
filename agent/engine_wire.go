@@ -902,6 +902,18 @@ func (a *Agent) buildSubAgentRunConfig(
 		}
 	}
 
+	// TodoManager — TODO 状态查询（**必须与主 Agent 同一个实例**，
+	// 与 buildMainRunConfig 的 wiring 对齐）。
+	//
+	// N2a-B 根因：只有 buildMainRunConfig 接了 TodoManager，SubAgent 的 run 里
+	// cfg.TodoManager==nil ⇒ buildSystemReminder 拿不到任何 todo ⇒ 每轮注入
+	// 假的 `<todos status="empty">`（实测：SubAgent 的 TodoWrite 明明写进
+	// 自己的 sessionKey，注入块却恒为空）。key 规则不动 —— 读写两侧本来就都是
+	// cfg.SessionKey（= 本函数的 subAgentID），这里只补 instance wiring。
+	if a.todoManager != nil {
+		cfg.TodoManager = &todoManagerAdapter{mgr: a.todoManager}
+	}
+
 	// 独立 sessionKey：使用 subAgentID 确保与父 Agent 隔离，
 	// 避免工具激活、OffloadStore、MaskStore 等按 sessionKey 索引的数据污染。
 	cfg.SessionKey = subAgentID
