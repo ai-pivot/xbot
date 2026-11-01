@@ -254,25 +254,78 @@ func walGuardTick() int {
 
 // walIdentityAnomaly 判断路径上的 -wal 是否还是我们打开的那个文件。
 //
+// ── 两种「身份不一致」必须分开（2026-11-01 误报修复）──
+//
+// ① **良性**：会话库池是 MaxIdleConns(1) + ConnMaxIdleTime(5min)。会话静默后池丢掉
+// 最后一个物理连接，SQLite 的 last-close 语义就会 checkpoint + unlink -wal（
+// PERSIST_WAL 只设在 openRawConn 里最初那 4 条物理连接上，后来按需新建的没有）；
+// 下一轮查询在新 inode 上重建。这在生产上每 5 分钟对每个会话库发生一次，
+// 旧实现把它当成外部入侵 ⇒ 50 个库 × 每 2s 一条 error（2026-11-01 11 分钟 13085 条）。
+//
+// ② **真异常**：外部进程删/换了 -wal，而我们还有活连接的 fd 抱着那个孤儿 inode，
+// 之后的写入全部落在别人看不见的文件里（2026-10-21 malformed 的成因）。
+//
+// 判别式：**本进程里还有没有 fd 指着旧 inode**（见 sidecarOrphanFD）。良性事件里
+// 最后一条连接已经关干净、fd 全部释放；真异常里孤儿 fd 一直在。
+// 不能用「池里开了几条连接」当判据：良性场景下，下一次查询可能在两次巡检之间就把
+// 池重新开起来了（OpenConnections>0），而记录的旧身份照样过期。
+//
+// 判为良性后必须**对齐身份**（adoptIdentity），否则守卫会永久哑掉：记录清空或刷新，
+// 下一轮重新记下磁盘上当前的真实 inode，后续真异常仍能被发现。
+//
 // 只认 -wal 的身份：-shm 在「池里没有物理连接」时会由 SQLite 正常删掉（池下次取
-// 连接时重建），那是常态不是异常；而 -wal 有 PERSIST_WAL 保护，正常情况下只要池
-// 还活着就必须还在。
+// 连接时重建），那是常态不是异常。
 func walIdentityAnomaly(path string, h *connHolder) string {
 	if path == "" || path == ":memory:" || h == nil {
 		return ""
 	}
 	_, walID, _ := h.snapshot()
-	if walID == nil {
+	cur, err := os.Stat(path + "-wal")
+	missing := err != nil || cur == nil
+
+	// 快路径：还是池子打开时记下的那个文件（每 2s 每库只付一次 stat）。
+	if walID != nil && !missing && os.SameFile(walID, cur) {
 		return ""
 	}
-	cur, err := os.Stat(path + "-wal")
-	if err != nil || cur == nil {
-		return "missing"
-	}
-	if !os.SameFile(walID, cur) {
+
+	if fd, ok := sidecarOrphanFD(path, cur); ok {
+		if fd == "" {
+			// 没有孤儿 fd ⇒ 我们自己关连接导致的 unlink/重建。对齐身份后返回良性。
+			h.adoptIdentity(path, cur)
+			return ""
+		}
+		log.WithFields(log.Fields{"path": path, "fd": fd}).
+			Warn("WAL guard: this process still holds an fd to a deleted/replaced -wal (orphan inode confirmed)")
+		if missing {
+			return "missing"
+		}
 		return "replaced"
 	}
-	return ""
+
+	// 本平台不能扫 fd：退回保守判据 —— 池里一条连接都没开着，就不可能有写入落在
+	// 孤儿 inode 上；否则按异常处理（宁可多报，不可漏报）。
+	if db, _, _ := h.snapshot(); db != nil && db.Stats().OpenConnections == 0 {
+		h.adoptIdentity(path, cur)
+		return ""
+	}
+	if missing {
+		return "missing"
+	}
+	return "replaced"
+}
+
+// adoptIdentity 把「我们持有的 sidecar 身份」对齐到磁盘当前状态。
+//
+// cur 为 nil 表示此刻路径上没有 -wal（池里暂时没有物理连接）：身份一起清空，
+// 等下一次查询建出新文件后由下一轮巡检重新记下（同样的对齐逻辑，所以不会哑）。
+func (h *connHolder) adoptIdentity(path string, cur os.FileInfo) {
+	var shm os.FileInfo
+	if cur != nil {
+		shm, _ = os.Stat(path + "-shm")
+	}
+	h.mu.Lock()
+	h.walID, h.shmID = cur, shm
+	h.mu.Unlock()
 }
 
 // healForeignWALDeletion 处理「外部进程删/替换了我们的 -wal」。
