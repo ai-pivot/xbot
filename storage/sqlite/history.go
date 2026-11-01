@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"xbot/llm"
+	"xbot/redact"
 	"xbot/storage/internal"
 )
 
@@ -296,9 +297,30 @@ func (s *SessionService) withImmediateHistoryWrite(fn func(historyQueryExecer) e
 }
 
 func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage) (int64, error) {
+	// 写入侧脱敏（W4）：会话库是 LLM 上下文的回放源，也是记忆自动抽取（W1）的上游源头。
+	// INSERT 一次绑定**四个**可能承载凭据的字符串列，逐个在绑定前洗：
+	//   content / tool_arguments / tool_calls（洗每个 Arguments）/ detail（+ reasoning_content）。
+	// 这是行为变更（回放时模型看到的是 ***，不再是原凭据）—— 兵部 ORDER §5.1 的口径 (a)。
+	//
+	// ⛔ 明确**不动**的列及理由（防后人"顺手也洗了"）：
+	//   - reasoning_items：Responses API 的 encrypted_content 必须原样回传，洗了直接破 API 语义；
+	//   - tool_call_id / tool_name / role / 时间戳：结构性字段，不是内容，动了会断关联与回放。
+	content := redact.Secrets(msg.Content)
+	toolArguments := redact.Secrets(msg.ToolArguments)
+	detail := redact.Secrets(msg.Detail)
+	reasoningContent := redact.Secrets(msg.ReasoningContent)
 	var toolCallsJSON sql.NullString
 	if len(msg.ToolCalls) > 0 {
-		data, err := json.Marshal(msg.ToolCalls)
+		// tool_calls 是同一批参数的又一份副本（每个 ToolCall.Arguments 是一段 JSON）。
+		// **深拷贝后再洗**：绝不原地改 msg.ToolCalls —— 调用方持有该切片，内存侧与
+		// 下一轮 LLM 请求都读它。llm.ToolCall 全是值类型字段，copy 即深拷贝；
+		// 只洗 Arguments，name/id 不动。
+		redactedCalls := make([]llm.ToolCall, len(msg.ToolCalls))
+		copy(redactedCalls, msg.ToolCalls)
+		for i := range redactedCalls {
+			redactedCalls[i].Arguments = redact.Secrets(redactedCalls[i].Arguments)
+		}
+		data, err := json.Marshal(redactedCalls)
 		if err != nil {
 			return 0, fmt.Errorf("marshal tool_calls: %w", err)
 		}
@@ -330,8 +352,8 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 		 detail, display_only, internal_only, reasoning_content, reasoning_items, record_type, record_data,
 		 group_id, sender_type, sender_id, sender_name, created_at, turn_id, iteration)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?, ?, ?, ?, ?, ?, ?)
-	`, tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName, msg.ToolArguments,
-		toolCallsJSON, msg.Detail, displayOnly, internalOnly, msg.ReasoningContent, reasoningItemsJSON,
+	`, tenantID, msg.Role, content, msg.ToolCallID, msg.ToolName, toolArguments,
+		toolCallsJSON, detail, displayOnly, internalOnly, reasoningContent, reasoningItemsJSON,
 		msg.RecordData, msg.GroupID, msg.SenderType, msg.SenderID, msg.SenderName,
 		canonicalTimestamp(ts), msg.TurnID, msg.Iteration)
 	if err != nil {

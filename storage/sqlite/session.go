@@ -9,6 +9,7 @@ import (
 
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/redact"
 )
 
 // SessionService handles session message operations
@@ -601,12 +602,39 @@ type IterationRecord struct {
 	CreatedAt time.Time `json:"created_at,omitempty"`
 }
 
+// RedactIterationTools 对 iteration_history.tools 这一 **JSON 列** 脱敏，并保证
+// 「入参是合法 JSON ⇒ 出参仍是合法 JSON」：该列由前端/回放按 JSON 解析，写进非法
+// JSON 比丢一次工具快照更糟。正常路径下 redact.Secrets 不会破坏 JSON（见
+// redact.benignValue 的裸标量豁免 + maskLike 的引号配平），这里只是保险丝。
+//
+// 保险丝的兜底值是 JSON 字面量 null（既能当数组元素也能当整列值，解码侧一律按空处理），
+// 绝不放回原文 —— 放回原文等于漏打码。
+//
+// 导出给 PG 后端复用（storage/pg_session.go），保证两个后端同一语义。
+func RedactIterationTools(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	out := redact.Secrets(raw)
+	if !json.Valid([]byte(raw)) || json.Valid([]byte(out)) {
+		return out
+	}
+	log.WithField("raw_tools_bytes", len(raw)).
+		Warn("sqlite: iteration tools redaction produced invalid JSON; tool snapshot dropped")
+	return "null"
+}
+
 // AppendIterationHistory inserts a single iteration record linked to a message.
 func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec IterationRecord) error {
 	conn, err := s.conn()
 	if err != nil {
 		return err
 	}
+	// 写入侧脱敏：iteration_history **不走 appendMessageWith**（独立 INSERT，见本函数），
+	// 所以 content / reasoning / tools 必须在这里各脱一次（W5 的 sqlite 侧写入点）。
+	content := redact.Secrets(rec.Content)
+	reasoning := redact.Secrets(rec.Reasoning)
+	tools := RedactIterationTools(rec.Tools)
 	// ⚠️ 时间表示铁律（2026-10-14「压缩分隔条堆一摞」事故）：created_at 必须
 	// 显式写带时区偏移的 canonical 形态（与 session_messages 的 Go 写侧同款），
 	// ⛔ 绝不依赖 DDL 默认 —— `CURRENT_TIMESTAMP` 产出的是 **UTC 裸串**，与本仓
@@ -616,7 +644,7 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 	if _, err := conn.Exec(`
 		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs, rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID, canonicalTimestamp(time.Now())); err != nil {
+	`, msgID, tenantID, turnID, rec.Iteration, content, reasoning, tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs, rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID, canonicalTimestamp(time.Now())); err != nil {
 		return fmt.Errorf("append iteration_history: %w", err)
 	}
 	return nil
@@ -657,6 +685,12 @@ func (s *SessionService) AppendIterationHistories(tenantID int64, recs []Iterati
 func (s *SessionService) AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error) {
 	if !json.Valid([]byte(toolJSON)) {
 		return false, fmt.Errorf("append iteration tool: toolJSON is not valid JSON")
+	}
+	// 写入侧脱敏：tools 数组里的工具快照同样是凭据明文来源。**前置 json.Valid 不被绕过**：
+	// 先验入参（上一行），脱敏后再验一次出参 —— 保证落库的仍是合法 JSON。
+	toolJSON = redact.Secrets(toolJSON)
+	if !json.Valid([]byte(toolJSON)) {
+		return false, fmt.Errorf("append iteration tool: redaction produced invalid JSON")
 	}
 	lock := s.db.historyLock(tenantID)
 	lock.Lock()

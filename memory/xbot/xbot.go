@@ -24,6 +24,7 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/prompt"
+	"xbot/redact"
 	"xbot/storage"
 	"xbot/storage/agentmem"
 )
@@ -819,6 +820,9 @@ func (m *XbotMemory) searchShortTerm(query string, topK int) ([]ShortTermMemory,
 // --- Write methods ---
 
 func (m *XbotMemory) addShortTermMemory(summary, topics, sessionID string) error {
+	// 写入侧脱敏（W2 短时记忆）：LLM 生成的摘要会把工具输出里的凭据原样带进来。
+	summary = redact.Secrets(summary)
+	topics = redact.Secrets(topics)
 	_, err := m.store.AddAgentShortTermMemory(context.Background(), agentmem.ShortTermMemory{
 		UserID:    m.scopeArg(),
 		TenantID:  m.tenantID,
@@ -841,6 +845,11 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
 
+	// 写入侧脱敏（W1/W2 自动抽取路径）：入库前与写镜像前都必须是脱敏后的 entry，
+	// 因为 writeMemoryFile 落的是 entry 正文逐字（兵部 W1 镜像就是靠这里覆盖）。
+	entry.Content = redact.Secrets(entry.Content)
+	entry.Keywords = redact.Secrets(entry.Keywords)
+	entry.Tags = redact.Secrets(entry.Tags)
 	searchText := buildSearchText(entry.Content, entry.Keywords, entry.Tags)
 	dupQuery := agentmem.Query{
 		UserID:        entry.UserID,
@@ -918,7 +927,12 @@ func (m *XbotMemory) readCoreSummary() string {
 	return text
 }
 
+// writeCoreSummary writes the core summary (MEMORY.md).
+//
+// 写入侧脱敏（W3）：core summary 是 LLM 生成物，它会把上下文里的凭据原样带到
+// MEMORY.md；这里落盘的永远是脱敏后的文本。**签名不许改**——兵部探针直接调它。
 func (m *XbotMemory) writeCoreSummary(content string) {
+	content = redact.Secrets(content)
 	path := filepath.Join(m.baseDir, coreSummaryFileName)
 	// Atomic write: tmp + rename
 	tmpPath := path + ".tmp"
@@ -1362,9 +1376,14 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 	if entry.Importance == 0 {
 		entry.Importance = 0.5
 	}
+	// 写入侧脱敏（W1/W2 显式写入路径）：**先脱敏正文再抽关键词**，否则关键词会从
+	// 未脱敏正文里切出凭据碎片；SearchText 与写镜像（writeMemoryFile）用的都是脱敏后的值。
+	entry.Content = redact.Secrets(entry.Content)
 	if entry.Keywords == "" {
 		entry.Keywords = extractKeywords(entry.Content)
 	}
+	entry.Keywords = redact.Secrets(entry.Keywords)
+	entry.Tags = redact.Secrets(entry.Tags)
 	if entry.Scope == "" {
 		entry.Scope = "global"
 	}
@@ -1431,7 +1450,13 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 }
 
 // UpdateMemory updates a memory's content.
+//
+// 写入侧脱敏（W2 更新路径）：content/keywords/tags 与 **SearchText** 都必须用脱敏后的值
+// —— 旧实现里 SearchText 是用原始 content 建的，只脱敏列会留下一份索引副本。
 func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywords, tags string, importance float64) error {
+	content = redact.Secrets(content)
+	keywords = redact.Secrets(keywords)
+	tags = redact.Secrets(tags)
 	return m.store.UpdateAgentLongTermMemory(ctx, agentmem.LongTermMemory{
 		ID:         id,
 		UserID:     m.scopeArg(),

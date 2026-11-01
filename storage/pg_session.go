@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"xbot/llm"
+	"xbot/redact"
 	"xbot/storage/sqlite"
 )
 
@@ -347,9 +348,15 @@ const iterationInsertSQL = `INSERT INTO iteration_history
 	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`
 
 // queueIterationInsert appends one row to the batch, in the column order above.
+//
+// 写入侧脱敏（W5 的 PG 侧写入点）：per-row 与 batch 共用这一条 INSERT，所以只在这里
+// 脱一次即可覆盖两条路径。content/reasoning 是纯字符串，tools 是 JSON 列 —— 后者用
+// sqlite.RedactIterationTools 的同一语义（合法进 ⇒ 合法出），保证 PG 与 sqlite 行为一致。
 func queueIterationInsert(b *pgx.Batch, tenantID, msgID int64, turnID uint64, rec sqlite.IterationRecord) {
 	b.Queue(iterationInsertSQL,
-		msgID, tenantID, turnID, rec.Iteration, pgText(rec.Content), pgText(rec.Reasoning), pgText(rec.Tools),
+		msgID, tenantID, turnID, rec.Iteration,
+		pgText(redact.Secrets(rec.Content)), pgText(redact.Secrets(rec.Reasoning)),
+		pgText(sqlite.RedactIterationTools(rec.Tools)),
 		rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs,
 		rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)
 }
@@ -400,7 +407,8 @@ func (s *pgSessionStore) AppendIterationHistories(tenantID int64, recs []sqlite.
 
 func (s *pgSessionStore) AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error) {
 	ctx := context.Background()
-	tag, err := s.pool.Exec(ctx, `UPDATE iteration_history SET tools = $1 WHERE tenant_id = $2 AND turn_id = $3 AND iteration = $4`, pgText(toolJSON), tenantID, turnID, iteration)
+	tag, err := s.pool.Exec(ctx, `UPDATE iteration_history SET tools = $1 WHERE tenant_id = $2 AND turn_id = $3 AND iteration = $4`,
+		pgText(sqlite.RedactIterationTools(toolJSON)), tenantID, turnID, iteration)
 	if err != nil {
 		return false, err
 	}
