@@ -47,7 +47,10 @@ import (
 //   - 5: 结构化消息列（chat_id / kind / correlation_id / reply_to /
 //     idempotency_key / structured_json / direction / answered / cancelled）
 //     与三个索引。旧库按列幂等 ALTER 补齐。
-const sessionSchemaVersion = 5
+//   - 6: session_messages 补 v80 的三条历史流回溯索引（markers / display /
+//     turn-user）。拆库后主库 session_messages 基本为空，索引必须建在会话库才
+//     有效；沿用幂等 ensureSessionMessagesLookupIndexes，失败只告警。
+const sessionSchemaVersion = 6
 
 // sessionSchema 是会话库的完整 DDL（主库 schema 的子集，FK 省略）。
 // 与 schema.go 的 session_messages/iteration_history 列定义保持逐列一致——
@@ -443,6 +446,19 @@ func (db *DB) initSessionSchema() error {
 		CREATE INDEX IF NOT EXISTS ix_sm_correlation
 		    ON session_messages(correlation_id)`); err != nil {
 		return fmt.Errorf("create ix_sm_correlation: %w", err)
+	}
+	// v6: v80 的三条历史流回溯索引（markers / display / turn-user）补到**会话库**。
+	//
+	// v71/v72 拆库后主库的 session_messages 基本是 0 行，真实消息全在各会话库；
+	// 只在主库（db.go 的 v80 迁移 + ensureAdditiveTables）建这三条索引等于没建，
+	// /api/history 的回溯查询仍在会话库上全表扫（G-12 未翻绿的真正原因，
+	// 实测 p95 550ms → 240ms 由这三条索引带来）。
+	//
+	// 失败只告警不阻断：与主库同口径（db.go ensureAdditiveTables 的调用点）。
+	// 索引是优化不是可用性前提 —— 只读库（backup 副本 / mode=ro / 无 DDL 权限）
+	// 上 CREATE INDEX 必然失败，但库本身必须仍能打开。
+	if err := ensureSessionMessagesLookupIndexes(db.Conn()); err != nil {
+		log.WithError(err).Warn("ensure session_messages lookup indexes (session db) failed; history reads may stay slow")
 	}
 	return nil
 }
