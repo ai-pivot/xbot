@@ -30,9 +30,62 @@ func SanitizeWorkspaceKey(raw string) string {
 }
 
 // UserRoot 返回用户根目录：{workDir}/.xbot/users/{sender}
+//
+// 幂等：workDir 本身已经是该用户的 user root 或 workspace 时直接复用，不再前缀。
+// 见 joinPathIdempotent 的注释（2026-11-02 生产日志：.../workspace 被拼了两次）。
 func UserRoot(workDir, senderID string) string {
 	// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
-	return filepath.Join(workDir, ".xbot", "users", SanitizeWorkspaceKey(senderID))
+	key := SanitizeWorkspaceKey(senderID)
+	clean := filepath.Clean(workDir)
+	if root, ok := existingUserRoot(clean, key); ok {
+		return root
+	}
+	return joinPathIdempotent(clean, filepath.Join(".xbot", "users", key))
+}
+
+// joinPathIdempotent 把 rel 拼到 base 下，但对绝对路径幂等：rel 已是绝对路径时
+// 直接 filepath.Clean(rel)，绝不再加一次 base 前缀。
+//
+// 背景（2026-11-02 生产日志，每日 6~7 条 "Failed to load user agent roles"）：
+//
+//	read agents dir /home/smith/.xbot/users/web-4/workspace/.xbot/users/web-4/workspace/agents
+//
+// 子代理的 ToolContext 把 per-user workspace 直接当 WorkingDir 传下来
+// （agent/interactive.go buildParentToolContext: WorkingDir = workspaceRoot），
+// 旧实现无条件 filepath.Join(workDir, ".xbot", "users", sender) 就把
+// {workspace}/.xbot/users/{sender}/workspace 又拼了一遍。
+func joinPathIdempotent(base, rel string) string {
+	if rel == "" {
+		return filepath.Clean(base)
+	}
+	if base == "" {
+		return filepath.Clean(rel)
+	}
+	if filepath.IsAbs(rel) {
+		return filepath.Clean(rel)
+	}
+	return filepath.Clean(filepath.Join(base, rel))
+}
+
+// existingUserRoot 判断 path 是否已经是 {…}/.xbot/users/{key} 或其 workspace 子目录，
+// 是则返回该 user root（幂等拼接的落点）。
+func existingUserRoot(path, key string) (string, bool) {
+	if filepath.Base(path) == "workspace" {
+		if root := filepath.Dir(path); isUserRootDir(root, key) {
+			return root, true
+		}
+	}
+	if isUserRootDir(path, key) {
+		return path, true
+	}
+	return "", false
+}
+
+// isUserRootDir 判断 path 是否为 {…}/.xbot/users/{key}（UserRoot 的产物形态）。
+func isUserRootDir(path, key string) bool {
+	return filepath.Base(path) == key &&
+		filepath.Base(filepath.Dir(path)) == "users" &&
+		filepath.Base(filepath.Dir(filepath.Dir(path))) == ".xbot"
 }
 
 // UserWorkspaceRoot 返回用户工作区目录：{workDir}/.xbot/users/{sender}/workspace
