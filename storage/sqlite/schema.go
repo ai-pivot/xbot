@@ -91,6 +91,12 @@ CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, r
 CREATE INDEX IF NOT EXISTS idx_sm_tenant_role_id ON session_messages(tenant_id, role, id) WHERE role IN ('user','assistant');
 -- v74: 群组展示的游标分页索引（按群取一页，id DESC 直接走索引）。
 CREATE INDEX IF NOT EXISTS ix_sm_group_cursor ON session_messages(group_id, id DESC);
+-- v80: 历史读路径的三条部分索引（大库实测：历史轮次/展示消息/turn 内 user 消息
+-- 三条查询在缺索引时退化为 tenant_id 全扫）。partial index 让写侧代价只落在
+-- 命中的记录类型上，普通 message 行不进 markers 索引。
+CREATE INDEX IF NOT EXISTS idx_sm_markers ON session_messages(tenant_id, id) WHERE record_type IN ('compress','prune');
+CREATE INDEX IF NOT EXISTS idx_sm_display_msg ON session_messages(tenant_id, id) WHERE record_type='message' AND display_only=0;
+CREATE INDEX IF NOT EXISTS idx_sm_turn_user ON session_messages(tenant_id,turn_id,id) WHERE record_type='message' AND display_only=0 AND role='user';
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,
@@ -157,7 +163,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (79);
+INSERT INTO schema_version (version) VALUES (80);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.

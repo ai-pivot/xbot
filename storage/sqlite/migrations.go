@@ -569,9 +569,79 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v80: session_messages 历史读路径的三条部分索引（idx_sm_markers /
+	// idx_sm_display_msg / idx_sm_turn_user）。
+	//
+	// ⛔ 与 schema.go:530-551（idx_sm_tenant_turn 兜底）同口径（cdc7ff8e 的 P0
+	// 定论）：**索引失败只告警，绝不阻断 Open**。索引是纯优化，不是可用性前提；
+	// 只读库 / 无 DDL 权限 / 索引名被占用时 CREATE INDEX 必然失败，但库完全可读。
+	// 让「补三条索引」把「能打开库」打掉，是拿启动铁律换优化。失败由
+	// ensureAdditiveTables 在之后每次 Open 重试（幂等 DDL）。
+	if from < 80 {
+		if err := migrateV79ToV80(db); err != nil {
+			return fmt.Errorf("migrate to v80: %w", err)
+		}
+	}
+
 	// 迁移链只负责「版本差异」带来的变更；新加入 schema 的表（不伴随版本号变化）
 	// 由 ensureAdditiveTables 补齐，这样老库和刚迁移完的库走的是同一条收尾路径。
 	return db.ensureAdditiveTables()
+}
+
+// sessionMessagesLookupIndexesDDL 是 v80 的三条 session_messages 部分索引。
+//
+// 三条查询（来自大库实测 hist-prof-r2-20261031 候选 A）：
+//   - idx_sm_markers     (tenant_id, id) WHERE record_type IN ('compress','prune')
+//     —— 历史流里找压缩/裁剪标记行；
+//   - idx_sm_display_msg (tenant_id, id) WHERE record_type='message' AND display_only=0
+//     —— 展示流按 tenant 顺序翻页；
+//   - idx_sm_turn_user   (tenant_id, turn_id, id) WHERE record_type='message'
+//     AND display_only=0 AND role='user' —— 取某 turn 的用户原话（不扫 assistant/tool 行）。
+//
+// 全部 CREATE INDEX IF NOT EXISTS ⇒ 可重入：迁移重跑、崩溃重启、每次 Open 的
+// 兜底补建都不会报错。
+const sessionMessagesLookupIndexesDDL = `
+CREATE INDEX IF NOT EXISTS idx_sm_markers ON session_messages(tenant_id, id) WHERE record_type IN ('compress','prune');
+CREATE INDEX IF NOT EXISTS idx_sm_display_msg ON session_messages(tenant_id, id) WHERE record_type='message' AND display_only=0;
+CREATE INDEX IF NOT EXISTS idx_sm_turn_user ON session_messages(tenant_id,turn_id,id) WHERE record_type='message' AND display_only=0 AND role='user';
+`
+
+// ensureSessionMessagesLookupIndexes 幂等补齐 v80 的三条索引。
+//
+// 先确认表存在（v71/v72 之后主库通常已无 session_messages，只剩会话库；
+// 手工构造的残库也可能缺该表）—— 缺表时静默跳过，等表出现后下次 Open 再补。
+func ensureSessionMessagesLookupIndexes(conn *sql.DB) error {
+	var name string
+	err := conn.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='session_messages'`).Scan(&name)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check session_messages table: %w", err)
+	}
+	if _, err := conn.Exec(sessionMessagesLookupIndexesDDL); err != nil {
+		return fmt.Errorf("ensure session_messages lookup indexes: %w", err)
+	}
+	return nil
+}
+
+// migrateV79ToV80 建三条 session_messages 部分索引并置版本 80。
+//
+// 失败语义（P0 口径，见 cdc7ff8e）：**索引 DDL 失败只 WARN，不返回错误**，
+// 迁移照常推进到 v80 —— 版本号只表示「迁移已尝试过」，索引补建由
+// ensureAdditiveTables 在每次 Open 幂等重试。若让错误冒泡，Open 会把
+// xbot-server 拖进 supervisor 的崩溃循环（启动铁律：启动路径永不阻塞）。
+func migrateV79ToV80(db *DB) error {
+	conn := db.Conn()
+	if err := ensureSessionMessagesLookupIndexes(conn); err != nil {
+		log.WithError(err).
+			Warn("v80 session_messages lookup indexes NOT created (index is an optimization only); will retry on next open")
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 80"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v80: session_messages lookup indexes (markers / display / turn-user)")
+	return nil
 }
 
 // migrateV78ToV79 建立 activity_index（跨会话活动流索引）。

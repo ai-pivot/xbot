@@ -81,7 +81,7 @@ type DB struct {
 	lockFile *os.File
 }
 
-const schemaVersion = 79
+const schemaVersion = 80
 const historyLockStripes = 64
 
 // dbLockEntry 是进程内对某个数据库文件持有的 flock，带引用计数。
@@ -656,6 +656,11 @@ CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
 	// TestUserChatsChannelChatIndexReadOnlyDBStillOpens。
 	if err := ensureUserChatsLookupIndexes(db.Conn()); err != nil {
 		log.WithError(err).Warn("ensure user_chats lookup indexes failed; label subquery may stay slow")
+	}
+	// v80 的三条 session_messages 部分索引同样按「同版本漂移」处理：迁移期失败
+	// （只读库/无 DDL 权限）不阻断启动，这里每次 Open 幂等重试，同样只告警。
+	if err := ensureSessionMessagesLookupIndexes(db.Conn()); err != nil {
+		log.WithError(err).Warn("ensure session_messages lookup indexes failed; history reads may stay slow")
 	}
 	return nil
 }
