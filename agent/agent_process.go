@@ -362,6 +362,19 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 		return
 	}
 	channelName, chatID := parts[0], parts[1]
+	// 兜底归一化（2026-11-03 P0 子代理通知投错会话）：
+	// 上游若把子代理的 parentKey 存成执行上下文镜像 "agent:<ch>:<chatID>"，
+	// 通知会被投进一个独立的镜像会话，父会话永远收不到（线上实证 36 次：
+	// {"channel":"agent","chat_id":"web:web-4","msg":"Bg notifications: injected ..."}）。
+	// 归一化统一走 sessionAddress，不在调用点手拼。
+	if addr, ok := sessionAddress(channelName, chatID); ok {
+		ch, rest, _ := strings.Cut(addr, ":")
+		channelName, chatID = ch, rest
+	}
+	if isMirrorSessionAddress(channelName + ":" + chatID) {
+		log.WithFields(log.Fields{"session_key": sessionKey, "target": channelName + ":" + chatID}).
+			Error("drainAndProcessNotifications: target is still a mirror session — notification will be misdelivered")
+	}
 
 	// Inject each notification individually. Notifications are admitted
 	// sequentially through the session queue, so per-session FIFO ordering is

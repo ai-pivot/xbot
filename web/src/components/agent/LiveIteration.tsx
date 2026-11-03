@@ -72,8 +72,30 @@ export const LiveIteration = memo(function LiveIteration({
   // effectiveReasoning —— live 的 reasoning 与**任意**已完成迭代相同 ⇒ 抑制
   //（该内容已在历史块渲染；AskUser 暂停等场景下 live 号仍停在旧迭代、持有同一段
   //  reasoning —— 现场实证：`data-iter-id="24"` 与 live 各一个 Thought 384 chars）。
-  const effectiveReasoning =
-    reasoningContent && historyTextIndex.reasonings.has(reasoningContent) ? '' : reasoningContent
+  //
+  // 2026-11-03 P0（用户截图：reasoning 被渲染到 turn 结尾、content 之后）：
+  // 全等比较不够。turn 提交后 liveProgress 仍非 null，reasoningStreamContent 是
+  // 历史 iteration 的**增量快照**（前缀不同长度），`has(reasoningContent)` 判 false
+  // ⇒ 漏抑制 ⇒ TurnBody 先渲染 CommittedTurn（content 在前），再渲染 LiveIteration
+  // （残留 reasoning 在后）⇒ 同一轮的思考出现在正文之后。
+  //
+  // 判据改为「**前缀关系**」而不是「一律抑制」：
+  //   · 全等（Set.has，O(1)）—— AskUser 暂停等场景 live 号停在旧迭代、持同一段文本；
+  //   · 一方是另一方的前缀 —— 增量快照与最终文本的关系（stream 帧按长度增长，
+  //     提交后 live 可能只剩前 N 个字符）；
+  //   · **互不为前缀 ⇒ 真正的新迭代内容，必须渲染**（turnBodyLiveDedup 用例 2 钉死）。
+  // 前缀扫描只在**非流式**时做（流式时 live reasoning 本来就要显示），
+  // 流式帧的开销仍是 O(1) 查找 —— 流式性能铁律不破。
+  const reasoningIsStale = useMemo(() => {
+    if (!reasoningContent) return false
+    if (historyTextIndex.reasonings.has(reasoningContent)) return true
+    if (progress.streaming) return false
+    for (const h of historyTextIndex.reasonings) {
+      if (h.startsWith(reasoningContent) || reasoningContent.startsWith(h)) return true
+    }
+    return false
+  }, [reasoningContent, historyTextIndex, progress.streaming])
+  const effectiveReasoning = reasoningContent && reasoningIsStale ? '' : reasoningContent
   const hasReasoning = Boolean(effectiveReasoning)
   const rawTextContent = progress.streamContent || progress.content || ''
   // effectiveStreamContent —— 同源抑制：live 的 streamContent 与**任意**已完成迭代

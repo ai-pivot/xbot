@@ -1328,8 +1328,21 @@ func (a *Agent) SpawnInteractiveSession(
 		// 这条记录 ⇒ 进程重启后子代理全部丢失（2026-10-21 实测：入库行是
 		// ('agent:tester/probe-1','','',...)）。origin* 已在本函数开头解析，
 		// 与 interactiveKey 用的是同一对值，语义一致。
-		if originChannel != "" && originChatID != "" {
-			placeholder.parentKey = originChannel + ":" + originChatID
+		//
+		// ⛔ 2026-11-03 P0「子代理 turn 结束不通知父会话」：
+		// origin 由 `SubAgent` / `CreateChat` 在 **agent 执行上下文**里给出，形如
+		// channel="agent"、chatID="web:web-4" —— 而 `agent:<ch>:<chatID>` 只是
+		// 会话的**执行上下文镜像**，不是用户可见会话。直接拼出
+		//   parentKey = "agent:web:web-4"
+		// 之后 SendSubAgentNotify 会把它当成 (channel=agent, chatID=web:web-4)
+		// 投递，落进一个独立的 agent:web:web-4 会话；父会话真实位置是
+		// (web, web-4)，永远收不到。线上证据（36 次）：
+		//   {"channel":"agent","chat_id":"web:web-4",
+		//    "msg":"Bg notifications: injected as ONE batched user message"}
+		// 正确落点由 chatID 自身携带，所以 agent 前缀必须剥掉还原成
+		// (web, web-4)，否则通知、user 看板回流、cascade 清理全部指错会话。
+		if addr, ok := sessionAddress(originChannel, originChatID); ok {
+			placeholder.parentKey = addr
 		}
 	}
 	if existing, loaded := a.interactiveSubAgents.LoadOrStore(key, placeholder); loaded {
@@ -3394,6 +3407,46 @@ func (a *Agent) CleanupInteractiveSessions(ctx context.Context, channel, chatID 
 
 // resolveOriginIDs 从 InboundMessage 中提取 origin channel/chatID/senderID，
 // 带有 fallback 到顶层字段的逻辑。
+// sessionAddress 把 (channel, chatID) 归一化成**用户可见会话**的地址 "channel:chatID"。
+//
+// ⛔ 2026-11-03 P0（子代理完成通知投错会话，线上实证 36 次）：
+// `agent:<ch>:<chatID>` 是会话的**执行上下文镜像**，不是用户可见会话。spawn 子代理时
+// 拿到的 origin 正是这种形态（channel="agent"、chatID="web:web-4"），旧代码直接
+// `originChannel + ":" + originChatID` 拼出 "agent:web:web-4" 存进 parentKey，
+// 此后通知、用户看板回流、cascade 清理全部指向那个独立存在的镜像会话
+// （sessions/agent/8f/web_web-4-8ff53b7cc715.db，13MB/2934 条），父会话永远收不到。
+//
+// 这是**唯一**允许把 (channel, chatID) 拼成会话地址的地方 —— 任何地方再手拼
+// `a + ":" + b` 都是同一个 bug 的复发入口。
+func sessionAddress(channel, chatID string) (string, bool) {
+	if channel == "" || chatID == "" {
+		return "", false
+	}
+	// 只有 `agent:<ch>:<chatID>` 且 chatID **不含 "/"** 时才是执行上下文镜像。
+	// chatID 含 "/" 说明它是 interactive 子代理的 map key
+	// （形如 "web:web-4/court.shoufu:main"）—— 那是**真 agent 会话**，不能剥，
+	// 剥了会把通知投进 web 渠道的畸形 chatID（2026-11-03 实测踩过：
+	// channel=web, chat_id="web-4/court.shoufu:main"）。
+	if channel == "agent" && !strings.Contains(chatID, "/") {
+		if ch, rest, cut := strings.Cut(chatID, ":"); cut && ch != "" && rest != "" {
+			return ch + ":" + rest, true
+		}
+	}
+	return channel + ":" + chatID, true
+}
+
+// isMirrorSessionAddress 判断地址是否仍是执行上下文镜像（"agent:<ch>:<chatID>"，
+// 且 chatID 不含 "/"）。interactive 子代理的 "agent:web:web-4/role:inst" 是真正的
+// 会话地址，不算镜像。
+func isMirrorSessionAddress(addr string) bool {
+	ch, rest, cut := strings.Cut(addr, ":")
+	if !cut || ch != "agent" || strings.Contains(rest, "/") {
+		return false
+	}
+	_, _, hasColon := strings.Cut(rest, ":")
+	return hasColon
+}
+
 func resolveOriginIDs(msg bus.InboundMessage) (channel, chatID, sender string) {
 	channel = msg.OriginChannel()
 	chatID = msg.OriginChatID()
