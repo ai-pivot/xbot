@@ -10,9 +10,9 @@
 
 ## ⚠️ 执行状态（必读）
 
-**本脚本/本文档未在任何真实生产实例上执行过；仅在 fake supervisorctl / fake curl / 临时日志（`t.TempDir()`）
-下由 `scripts/restart_all_instances_test.go` 验证。** 首次真机使用前，请先用 `--instances` 指向一台
-非生产实例跑通，再对生产实例执行。
+**本脚本/本文档未在任何真实生产实例上执行过；仅由 `scripts/restart_all_instances_test.go`
+在 fake supervisorctl / fake curl / 临时日志下验证。** 首次真机使用前，请先用 `--instances`
+指向一台非生产实例跑通，再对生产实例执行。
 
 机器验证的 5 个失败条件（每个都有独立用例，用例名可直接 `-run`）：
 

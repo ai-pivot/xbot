@@ -20,9 +20,9 @@
 #
 # 任何一项不过 ⇒ exit 1，并逐个打印失败 / 漏掉的实例名。
 #
-# ⚠️ 本脚本**未在任何真实生产实例上执行过**：它只在 fake supervisorctl /
-#    fake curl / 临时日志（t.TempDir）下由 scripts/restart_all_instances_test.go
-#    验证过。首次真机使用前请先 --instances 指向一台非生产实例跑通。
+# ⚠️ 本脚本/本文档**未在任何真实生产实例上执行过**；仅由
+#    scripts/restart_all_instances_test.go 在 fake supervisorctl / fake curl /
+#    临时日志下验证。首次真机使用前请先 --instances 指向一台非生产实例跑通。
 #    机器验证的 5 个失败条件（均有用例，见该测试文件）：
 #      1. 漏实例   —— supervisor 里 RUNNING 但不在清单里       TestRestartAllInstancesMissedInstanceFails
 #      2. 旧二进制 —— /api/health 的 binary_sha256 与新二进制不符 TestRestartAllInstancesStaleBinaryFails
@@ -55,7 +55,7 @@ set -uo pipefail
 
 usage() {
     # 头部以哨兵行结束，避免增删注释后行号漂移把代码打出来
-    sed -n '2,/^# end-of-header$/p' "$0" | sed 's/^#\{1,2\} \{0,1\}//'
+    sed -n '2,/^# end-of-header$/p' "$0" | sed 's/^#\{1,2\} \{0,1\}//' | grep -v '^end-of-header$'
 }
 
 INSTANCES_FILE="${XBOT_INSTANCES_FILE:-${XBOT_HOME:-$HOME/.xbot}/deploy/instances.list}"

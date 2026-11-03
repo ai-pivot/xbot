@@ -12,6 +12,7 @@ package sqlite
 // status=degraded），因为 401 风暴时外部探针只能读这个端点。
 
 import (
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -157,5 +158,40 @@ func TestAlignedSchemaDoesNotLogError(t *testing.T) {
 	}
 	if h := runtimeinfo.Default().Health(); h.SchemaNewer || h.Status != runtimeinfo.StatusOK {
 		t.Fatalf("aligned database health = %+v, want ok/%d/%d", h, schemaVersion, schemaVersion)
+	}
+}
+
+// TestFreshDatabaseRegistersSchemaVersionOnSingleOpen —— 「只 Open 一次」路径的硬证据
+// （工部/首辅点名条件）：
+//
+// 真机上 fresh DB 的 health 报 80/80，**不是因为建库分支登记了**，而是因为 serve 里
+// 还有第二次 `sqlite.Open(dbPath)`（serverapp/server.go 的 tokenDB），它走的是「库
+// 已存在」分支，在那儿把版本对登记了。于是「新建库不登记」这个缺口只会在**单次
+// Open** 的调用方暴露 —— CLI 工具、单测、以及任何只开一次库的进程。
+//
+// 所以本用例刻意：起始态清零 ⇒ `Open()` **恰好一次** ⇒ 直接读 Health()。中间没有
+// 第二次 Open 帮忙兜底，登记行一失效就必红（变异自证见证据 14-*.log）。
+func TestFreshDatabaseRegistersSchemaVersionOnSingleOpen(t *testing.T) {
+	prevBinary, prevDB := runtimeinfo.Default().SchemaVersions()
+	t.Cleanup(func() { runtimeinfo.Default().SetSchemaVersions(prevBinary, prevDB) })
+	runtimeinfo.Default().SetSchemaVersions(0, 0)
+
+	path := filepath.Join(t.TempDir(), "fresh.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open fresh db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	h := runtimeinfo.Default().Health()
+	if h.SchemaBinary != schemaVersion || h.SchemaDB != schemaVersion {
+		t.Fatalf("single Open of a fresh database must register (%d,%d), got (%d,%d)",
+			schemaVersion, schemaVersion, h.SchemaBinary, h.SchemaDB)
+	}
+	if h.SchemaNewer {
+		t.Fatalf("schema_newer = true for a fresh database (%d/%d)", h.SchemaBinary, h.SchemaDB)
+	}
+	if h.Status != runtimeinfo.StatusOK {
+		t.Fatalf("status = %q, want %q for a fresh database", h.Status, runtimeinfo.StatusOK)
 	}
 }
