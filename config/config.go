@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -796,6 +797,12 @@ func LoadFromFile(path string) *Config {
 // rename retry below stays as a cross-process safety net.
 var saveToFileLocks sync.Map // path -> *sync.Mutex
 
+// saveWriteObserver 是**仅测试替换**的落盘观察钩子：每次真正把配置写进临时文件成功后
+// 调用一次（参数：目标路径、本次写入字节数）。生产环境为 nil —— 只有一次 nil 判断，
+// 不改变任何行为。存在的理由：判断「内容没变时到底有没有落盘」必须能硬计数，
+// 而 mtime / inode 在同一秒内可能无法区分两次写入。
+var saveWriteObserver func(path string, nbytes int)
+
 // SaveToFile writes the config atomically (temp file + rename) with a deep
 // JSON merge to preserve unknown fields from the existing disk file.
 func SaveToFile(path string, cfg *Config) error {
@@ -851,6 +858,32 @@ func SaveToFile(path string, cfg *Config) error {
 					slog.Warn("could not re-encode preserved config keys; keeping the merged content",
 						"keys", strings.Join(missing, ", "), "error", mErr)
 				}
+			}
+		}
+	}
+
+	// ── 幂等短路（2026-11-03 用户要求：内容没变就不要写盘）──
+	// 背景：实测某 3 分钟内 config.json 被保存 11 次，11 个 .bak-* 之间 diff 全为 0 行 ——
+	// 内容一个字没变却每次都 写临时文件 → 备份 → rename → 轮转。
+	//
+	// 判定对象是**本次将要写入的最终字节**（finalData，已经包含未知字段保全的结果），
+	// 不是结构体比较：结构体相等但磁盘上带着本 build 产不出的 key 时，merge 结果与
+	// structData 不同，比结构体会误判。
+	//
+	// 逐字节相等 ⇒ 直接返回：不建临时文件、不留 .bak-*、不轮转、不动 mtime。
+	// 首次保存（无既有文件）走的是 struct 字段序，合并路径走的是 map 键序（encoding/json
+	// 对 map 键排序）—— 同一份内容会有两种字节序，所以再比一次「规范化后的内容」，
+	// 免得仅仅因为键序不同就白写一次（那恰好是本 bug 剩下的那一半）。
+	//
+	// 文件不存在 / 读失败 / 权限错误 ⇒ 一律回落原写入逻辑。绝不能因为「读不到」就跳过
+	// 写入，否则会丢配置。
+	if cur, readErr := os.ReadFile(path); readErr == nil && len(cur) > 0 {
+		if bytes.Equal(cur, finalData) {
+			return nil
+		}
+		if canonCur, okCur := canonicalConfigJSON(cur); okCur {
+			if canonFinal, okFinal := canonicalConfigJSON(finalData); okFinal && bytes.Equal(canonCur, canonFinal) {
+				return nil
 			}
 		}
 	}
@@ -914,6 +947,9 @@ func SaveToFile(path string, cfg *Config) error {
 		os.Remove(tmp) // best-effort cleanup
 		return fmt.Errorf("rename config: %w", renameErr)
 	}
+	if saveWriteObserver != nil { // test-only hook; nil in production (zero behavior change)
+		saveWriteObserver(path, len(finalData))
+	}
 	return nil
 }
 
@@ -953,6 +989,50 @@ func pruneConfigBackups(path string) {
 				"file", name, "error", err)
 		}
 	}
+}
+
+// canonicalConfigJSON 把配置 JSON 规范化为「所有层级 key 排序 + 紧凑编码」的形式，
+// 仅用于 SaveToFile 的幂等判定。理由：同一份内容有两种字节序 ——
+//   ① struct 直写：key 按 **struct 字段序**、2 空格缩进（首次保存、无既有文件时）；
+//   ② merge 直写：key 按 **字典序**、嵌套对象被 json.Marshal 压成单行（有既有文件时）。
+// 只比较原始字节会把这当成「内容变了」，白写一次（本 bug 剩下的一半）。
+// 递归排序 + 紧凑编码后，两种形式逐字节一致；RawMessage 原样保留，数字不会被
+// 转成 float64 丢精度。
+// 输入不是 JSON object 时返回 ok=false，调用方据此回落原逻辑（绝不因此跳过写入）。
+func canonicalConfigJSON(data []byte) ([]byte, bool) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil || top == nil {
+		return nil, false
+	}
+	return canonicalizeRawJSON(data), true
+}
+
+// canonicalizeRawJSON 递归地把 JSON object 的 key 排序并紧凑编码；数组逐元素递归；
+// 标量原样返回。
+func canonicalizeRawJSON(raw json.RawMessage) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err == nil && obj != nil {
+		out := make(map[string]json.RawMessage, len(obj))
+		for k, v := range obj {
+			out[k] = canonicalizeRawJSON(v)
+		}
+		if b, err := json.Marshal(out); err == nil {
+			return b
+		}
+		return raw
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err == nil && arr != nil {
+		out := make([]json.RawMessage, len(arr))
+		for i, v := range arr {
+			out[i] = canonicalizeRawJSON(v)
+		}
+		if b, err := json.Marshal(out); err == nil {
+			return b
+		}
+		return raw
+	}
+	return raw
 }
 
 // mergeJSONPreserveUnknown 将 structData 的顶层 key 深度合并到 existing 上。
