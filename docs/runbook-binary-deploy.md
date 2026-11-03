@@ -8,6 +8,25 @@
 > `/home/daidai/.xbot/xbot.db`），主实例重启碰不到它 —— 根因只有一个：
 > **部署时漏了那一个实例的 restart**，然后潜伏了一天多。
 
+## ⚠️ 执行状态（必读）
+
+**本脚本/本文档未在任何真实生产实例上执行过；仅在 fake supervisorctl / fake curl / 临时日志（`t.TempDir()`）
+下由 `scripts/restart_all_instances_test.go` 验证。** 首次真机使用前，请先用 `--instances` 指向一台
+非生产实例跑通，再对生产实例执行。
+
+机器验证的 5 个失败条件（每个都有独立用例，用例名可直接 `-run`）：
+
+| # | 失败条件 | 用例（`scripts/restart_all_instances_test.go`） |
+|---|---|---|
+| 1 | **漏实例**：supervisor 里 RUNNING 但不在实例清单里 | `TestRestartAllInstancesMissedInstanceFails` |
+| 2 | **旧二进制**：`/api/health` 的 `binary_sha256` 与新二进制不符 | `TestRestartAllInstancesStaleBinaryFails` |
+| 3 | **日志残留**：日志尾部仍有 schema 不匹配告警 | `TestRestartAllInstancesSchemaWarningInLogFails` |
+| 4 | **未就绪**：`GET /` 非 200（例：502） | `TestRestartAllInstancesNon200Fails` |
+| 5 | **用法错误**：实例清单为空 / 缺 base_url | `TestRestartAllInstancesRefusesEmptyList`（exit 2） |
+
+另有健康端点 `schema_newer=true` 与全绿 happy path 两个用例：
+`TestRestartAllInstancesSchemaNewerHealthFails` / `TestRestartAllInstancesHappyPath`。
+
 ## 铁律
 
 1. **二进制与会话库 schema 必须同版本交付。** 换二进制的那一次，必须把该实例

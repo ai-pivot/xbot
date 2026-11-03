@@ -20,6 +20,18 @@
 #
 # 任何一项不过 ⇒ exit 1，并逐个打印失败 / 漏掉的实例名。
 #
+# ⚠️ 本脚本**未在任何真实生产实例上执行过**：它只在 fake supervisorctl /
+#    fake curl / 临时日志（t.TempDir）下由 scripts/restart_all_instances_test.go
+#    验证过。首次真机使用前请先 --instances 指向一台非生产实例跑通。
+#    机器验证的 5 个失败条件（均有用例，见该测试文件）：
+#      1. 漏实例   —— supervisor 里 RUNNING 但不在清单里       TestRestartAllInstancesMissedInstanceFails
+#      2. 旧二进制 —— /api/health 的 binary_sha256 与新二进制不符 TestRestartAllInstancesStaleBinaryFails
+#      3. 日志残留 —— 日志尾部仍有 schema 不匹配告警            TestRestartAllInstancesSchemaWarningInLogFails
+#      4. 未就绪   —— GET / 非 200                            TestRestartAllInstancesNon200Fails
+#      5. 用法错误 —— 实例清单为空/缺 base_url                 TestRestartAllInstancesRefusesEmptyList
+#    另有健康端点 schema_newer=true 与 happy path 两个用例：
+#      TestRestartAllInstancesSchemaNewerHealthFails / TestRestartAllInstancesHappyPath
+#
 # 用法:
 #   scripts/restart-all-instances.sh [--instances FILE] [--binary PATH]
 #
@@ -37,11 +49,13 @@
 #   XBOT_LOG_TAIL_LINES (默认 200)    日志检查的尾部行数
 #
 # exit: 0 全部通过 / 1 有实例未通过验证 / 2 用法或配置错误
+# end-of-header
 
 set -uo pipefail
 
 usage() {
-    sed -n '2,48p' "$0" | sed 's/^#\{1,2\} \{0,1\}//'
+    # 头部以哨兵行结束，避免增删注释后行号漂移把代码打出来
+    sed -n '2,/^# end-of-header$/p' "$0" | sed 's/^#\{1,2\} \{0,1\}//'
 }
 
 INSTANCES_FILE="${XBOT_INSTANCES_FILE:-${XBOT_HOME:-$HOME/.xbot}/deploy/instances.list}"
