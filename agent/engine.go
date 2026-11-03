@@ -415,6 +415,9 @@ type RunConfig struct {
 	// PeerMessageFn sends peer-to-peer messages between CLI sessions.
 	// Used by SendMessage tool for busy/idle routing.
 	PeerMessageFn func(targetSessionKey, message string) string
+	// FatherSessionKeyFn 解析"调用方物理会话 key → 直接父会话 key"，
+	// 供 SendMessage(to="father") 使用（wired from fatherParentKey，nil = 路由不可用）。
+	FatherSessionKeyFn func(sessionKey string) (parentKey string, ok bool)
 	// IterationLoopDetection enables the iteration-loop breaker (consecutive
 	// identical iterations → duplicate tool calls replaced with a fake LOOP
 	// DETECTED result, repeated loops force-terminate the Run). Experimental —
@@ -1312,6 +1315,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		Sandbox:              resolvedSandbox,
 		DataDir:              cfg.DataDir,
 		PeerMessageFn:        cfg.PeerMessageFn,
+		FatherSessionKeyFn:   cfg.FatherSessionKeyFn, // SendMessage(to="father") 的 parent 解析（薄封装 parseInteractiveKeyParent）
 
 		// 注入入站消息
 		InjectInbound: cfg.InjectInbound,

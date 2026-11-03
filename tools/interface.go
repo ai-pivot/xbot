@@ -79,6 +79,12 @@ type ToolContext struct {
 	// Returns a delivery status string.
 	PeerMessageFn func(targetSessionKey, message string) string
 
+	// FatherSessionKeyFn 解析"调用方物理会话 key → 直接父会话 key"（SendMessage
+	// to="father" 用）。ok=false 表示没有父会话（顶层会话 / 非法 key）。
+	// 由 agent 侧注入（薄封装 parseInteractiveKeyParent + qualifyChatID）；
+	// tools 不能 import agent，所以只能以函数字段形式注入，别在这里再写一套 key 解析。
+	FatherSessionKeyFn func(sessionKey string) (parentKey string, ok bool)
+
 	// Stream indicates whether the parent Agent is using streaming LLM calls.
 	// SubAgents inherit this from the parent to ensure consistent behavior.
 	Stream bool

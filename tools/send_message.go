@@ -26,6 +26,7 @@ func (t *SendMessageTool) Description() string {
 
 ## Addressing
 - Agent: "agent:<role>/<instance>" (e.g., "agent:reviewer/cr1")
+- Parent session: "father" — deliver straight into YOUR parent session's conversation stream (sub-agents report upward with this). Top-level sessions have no parent and get an explicit error; there is no silent fallback to IM. Plain text only (kind must be text/omitted).
 - User board: "user" (this session's owner) or "user:<owner_id>" — top-level agents only (see below)
 - Group: "group:<id>" (e.g., "group:g1") — SubAgent meeting mode
 - Peer Group: "peer:<group_id>" (e.g., "peer:dev-team") — async broadcast to independent agent sessions
@@ -92,7 +93,7 @@ type SendMessageParams struct {
 
 func (t *SendMessageTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "to", Type: "string", Description: "Target address (agent:xxx, group:xxx, peer:xxx, session:xxx, feishu:xxx)", Required: true},
+		{Name: "to", Type: "string", Description: "Target address (agent:xxx, group:xxx, peer:xxx, session:xxx, father, feishu:xxx)", Required: true},
 		{Name: "message", Type: "string", Description: "Message content to send. For groups, use @agent:role/instance to trigger specific agents.", Required: true},
 		{Name: "kind", Type: "string", Description: "Optional structured kind: report | ask_user | answer | decision. Omit or 'text' for a plain message. Use kind=decision to approve/reject (批复) an existing report/ask_user — then payload must contain {\"verdict\":\"approve|reject|modify\"} and reply_to must be the target message_id. " +
 			"When kind=ask_user, the `message` field MUST carry the FULL context the user needs to decide — the user sees ONLY this message and the questions, nothing else (no chat history, no tool output). Write it as a self-contained briefing: (a) what triggered this question, (b) the concrete facts/numbers/paths involved, (c) what each option will cause, (d) what happens if the user picks nothing. Example: 'backend盘库发现 b300-9 根盘 97%（剩 6.6G），/tmp 下有 4 个 9 月实验副本共 77G 已导出 patch。A=立即删实验副本释放 77G；B=等今晚低峰再做。不做则明早可能写满触发告警。' A bare question without this context is a defect — the user will not be able to answer it."},
@@ -117,6 +118,12 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 	// 必须在 kind 分支与地址 switch 之前判定 —— "user" 既不是 IM 前缀也不是会话地址。
 	if isUserTarget(addr) {
 		return t.sendToUserBoard(ctx, addr, params)
+	}
+
+	// to="father" 特殊路由：落到**父会话的会话流**（与 user 同级、同样前置判定）。
+	// "father" 同样既不是 IM 前缀也不是会话地址，落到 switch 会被当渠道名解析。
+	if isFatherTarget(addr) {
+		return t.sendToFather(ctx, addr, params)
 	}
 
 	// 结构化分支：kind 缺省/为 text 时完全走旧路径（零回归）。
@@ -323,6 +330,70 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// ── to="father"：上级（父会话）特殊路由 ─────────────────────────────────────
+//
+// 需求：`SendMessage(to="father", message=...)` 直接发给**自己的上级**。
+//
+// 三条语义（与 to="user" 同构，2026-11-03 派发单 C）：
+//  1. **落点是父会话的会话流**：消息像一条普通消息那样进入父会话，由父代理
+//     自己处理；不是用户看板卡片（不走 Structured / Silent）。
+//  2. **顶层会话（无 parent）必须明确报错**，绝不静默降级成 IM 发送 ——
+//     "father" 掉进 IM 分支会被当渠道名解析，消息看似发出、实际到不了任何人。
+//  3. **不越权**：父会话由 key 结构推导（物理链路），不靠调用方自称。
+
+// isFatherTarget 判断地址是否命中 to="father" 特殊路由。
+// 与 isUserTarget 一致：**严格等值、大小写敏感**（"Father"/"father:x" 都不是）。
+func isFatherTarget(addr string) bool {
+	return addr == "father"
+}
+
+// sendToFather 把消息投进**调用方的直接父会话**的会话流。
+//
+// 关键实现约束：
+//   - parent 解析复用注入的 FatherSessionKeyFn（agent 侧是 parseInteractiveKeyParent
+//     的薄封装），这里**不写任何 key 解析**——两套解析必然漂移；
+//   - 投递复用 ctx.PeerMessageFn（busy→伪工具结果 / idle→user message），
+//     与 SendMessage(to="session:...") 同一条通路；
+//   - kind != text 时**显式报错**（不静默丢 payload）：father 路由是"会话流
+//     发言"，不是结构化批复；转发 payload 会让父会话收到一条它无法 CAS 的行。
+func (t *SendMessageTool) sendToFather(ctx *ToolContext, addr string, p SendMessageParams) (*ToolResult, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("to=%q is only available inside an agent session", addr)
+	}
+
+	// ① 先钉住 kind：宁可报错也不静默吞掉结构化字段。
+	if kind := strings.ToLower(strings.TrimSpace(p.Kind)); kind != "" && kind != "text" {
+		return nil, fmt.Errorf("to=%q carries plain conversation messages only: got kind=%q — structured kinds (report/ask_user/answer/decision) target agents or the user board, not the parent session stream", addr, kind)
+	}
+
+	// ② 调用方物理会话 key：interactive 子代理为 CallerSessionKey；主会话为空，
+	//    回落当前会话 key（用于给出可诊断的错误原文）。
+	callerKey := strings.TrimSpace(ctx.CallerSessionKey)
+	if callerKey == "" {
+		callerKey = strings.TrimSpace(ctx.SessionKey)
+	}
+	if callerKey == "" {
+		callerKey = "(unknown session)"
+	}
+
+	parentFn := ctx.FatherSessionKeyFn
+	if parentFn == nil {
+		return nil, fmt.Errorf("father route unavailable: %s has no parent session (this runtime carries no parent-session resolver)", callerKey)
+	}
+	parentKey, ok := parentFn(strings.TrimSpace(ctx.CallerSessionKey))
+	// 顶层会话（无 parent）：明确报错，绝不降级。
+	if !ok || parentKey == "" {
+		return nil, fmt.Errorf("father route unavailable: %s has no parent session", callerKey)
+	}
+
+	// ③ 投递到父会话流（不经用户看板、不 Silent）。
+	if ctx.PeerMessageFn == nil {
+		return nil, fmt.Errorf("father route unavailable: %s has parent %q but no session-messaging channel in this context", callerKey, parentKey)
+	}
+	result := ctx.PeerMessageFn(parentKey, p.Message)
+	return NewResult(fmt.Sprintf("Message delivered to father session %s: %s", parentKey, result)), nil
 }
 
 // sendStructured 提交一条结构化消息（report / ask_user / answer / decision）。

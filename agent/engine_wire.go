@@ -380,6 +380,7 @@ func (a *Agent) buildMainRunConfig(
 
 	// Wire peer message injection for inter-session communication.
 	cfg.PeerMessageFn = a.injectPeerMessage
+	cfg.FatherSessionKeyFn = fatherParentKey
 
 	// 保留 FeishuUserID 供 buildToolContext 等处使用
 	cfg.FeishuUserID = feishuUserID
@@ -892,6 +893,16 @@ func (a *Agent) buildSubAgentRunConfig(
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
 	}
 
+	// SendMessage(to="father") 需要两件东西：父会话解析 + 投递通道。两者都必须
+	// 显式接（buildToolContext 只从 cfg 取，理由同上面的 BgTaskManager）：
+	// 漏接时子代理的 father 路由只能报"no parent session resolver / no messaging
+	// channel"，而交互式子代理正是这个路由的**唯一实际调用方** —— 等于功能不可用。
+	//   - PeerMessageFn = injectPeerMessage：busy→伪工具结果 / idle→user message，
+	//     与 SendMessage(to="session:...") 同一条通路（不是 IM 直发，不越权）。
+	//   - FatherSessionKeyFn = fatherParentKey：parseInteractiveKeyParent 的薄封装。
+	cfg.PeerMessageFn = a.injectPeerMessage
+	cfg.FatherSessionKeyFn = fatherParentKey
+
 	// Per-user token usage tracking：SubAgent 的 token 消耗归属原始用户
 	cfg.RecordUserTokenUsage = func(senderID, model string, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount int) {
 		if err := a.multiSession.RecordUserTokenUsage(originUserID, model, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount); err != nil {
@@ -1182,6 +1193,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 
 	// Wire peer message injection for inter-session communication.
 	cfg.PeerMessageFn = a.injectPeerMessage
+	cfg.FatherSessionKeyFn = fatherParentKey
 
 	// Inherit hook manager from Agent.
 	cfg.HookManager = a.hookManager
