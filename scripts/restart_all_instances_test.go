@@ -38,14 +38,13 @@ type fakeInstance struct {
 
 // fakeWorld 是一次测试用的假部署环境。
 type fakeWorld struct {
-	dir        string
-	instances  string // instances.list 路径
-	binary     string // 新二进制路径
-	supctl     string
-	curl       string
-	restarted  string // 记录被 restart 过的 program
-	shaOfNew   string
-	supervisor string // supervisor status 输出
+	dir       string
+	instances string // instances.list 路径
+	binary    string // 新二进制路径
+	supctl    string
+	curl      string
+	restarted string // 记录被 restart 过的 program
+	shaOfNew  string
 }
 
 func sha16(b []byte) string {
