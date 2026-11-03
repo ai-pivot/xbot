@@ -22,6 +22,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -261,7 +262,6 @@ func TestSubagentFinalToParent_SecondTurnNotSilenced(t *testing.T) {
 }
 
 // ── 日志级证据（验收 C）──────────────────────────────────────────────────
-
 type f2pLogHook struct {
 	mu      sync.Mutex
 	entries []*logrus.Entry
@@ -362,4 +362,208 @@ func TestSubagentFinalToParent_LogEvidence(t *testing.T) {
 	t.Logf("日志证据: dispatch(is_final=%v orig_chat_id=%v) / routed(parent_chat_id=%v) / injected(source=%v)",
 		topEntry.Data["is_final"], topEntry.Data["orig_chat_id"],
 		routed[0].Data["parent_chat_id"], injected[0].Data["source"])
+}
+
+// ── ⑥ 兜底链重发同一帧：父会话只能收到 1 条（真·双投 bug 的回归钉子）──────
+
+// f2pFailRecorder 复刻生产投递形态：channel="agent" 没有注册 dispatcher，
+// directSend 必然返回 "unknown channel: agent"（这正是触发兜底回包的路径）。
+type f2pFailRecorder struct {
+	mu       sync.Mutex
+	attempts []f2pSent
+}
+
+func (r *f2pFailRecorder) send(msg ch.OutboundMsg) (string, error) {
+	r.mu.Lock()
+	r.attempts = append(r.attempts, f2pSent{Channel: msg.Channel, ChatID: msg.ChatID, Content: msg.Content})
+	r.mu.Unlock()
+	if msg.Channel == "agent" {
+		return "", fmt.Errorf("unknown channel: %s", msg.Channel)
+	}
+	return "msg-ok", nil
+}
+
+func (r *f2pFailRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.attempts)
+}
+
+// TestSubagentFinalToParent_FallbackResendNotDoubleInjected 钉住「同一帧被兜底链
+// 重发两次 ⇒ 父会话被注入两次」这条真缺陷（2026-11-03 e2e 实证：父会话
+// session_messages 里同一内容 2 行、request_id 与 turn_id 相同）。
+//
+// 生产链路（agent_process.go:773-783 → agent.go:3966）：
+//
+//	handleRunOutput: a.sendMessage("agent", childKey, final, sendMeta)
+//	  → 注入 parent 1 次；directSend("agent") 失败 "unknown channel: agent"
+//	  → 返回 &OutboundMsg{…, Metadata: sendMeta}（**同一个 map 对象**）
+//	chatProcessLoop: a.sendMessage(msg.Channel, msg.ChatID, content, msg.Metadata)
+//	  → 旧实现第二次仍命中路由 ⇒ 父会话 2 条
+//
+// 修法是一次性标记 metaParentRouted（写在共享 map 上）。变异点：删掉
+// sendMessage 判据里的 `msg.Metadata[metaParentRouted] != "true"` ⇒ 本例父
+// 通知数变 2、routed 日志变 2 ⇒ 必须红。
+func TestSubagentFinalToParent_FallbackResendNotDoubleInjected(t *testing.T) {
+	hook := &f2pLogHook{}
+	std := logrus.StandardLogger()
+	prev := std.ReplaceHooks(make(logrus.LevelHooks))
+	std.AddHook(hook)
+	defer std.ReplaceHooks(prev)
+
+	mgr := tools.NewBackgroundTaskManager()
+	rec := &f2pFailRecorder{}
+	a := &Agent{bus: bus.NewMessageBus(), directSend: rec.send}
+	a.bgTaskMgr.Store(mgr)
+	a.interactiveSubAgents.Store(f2pChildKey, &interactiveAgent{
+		roleName:  "court.shoufu",
+		instance:  "main",
+		parentKey: f2pParentKey,
+		lastUsed:  time.Now(),
+	})
+
+	const finalReply = "E2E-SUB-OK-2"
+	// handleRunOutput 造的 sendMeta：同一个 map 会被兜底回包原样带出来。
+	sendMeta := map[string]string{ch.MetaFinalReply: "true", "turn_id": "3"}
+
+	// 第一次：子会话的终局帧（handleRunOutput 路径）。前置条件必须是投递失败。
+	if err := a.sendMessage("agent", f2pChildKey, finalReply, sendMeta); err == nil {
+		t.Fatalf("前置条件不成立：agent 渠道的 directSend 必须失败（生产 unknown channel: agent）")
+	}
+
+	// 兜底回包：handleRunOutput 返回的 OutboundMsg，Metadata 就是同一个 map。
+	fallback := ch.OutboundMsg{
+		Channel:  "agent",
+		ChatID:   f2pChildKey,
+		Content:  finalReply,
+		Metadata: sendMeta,
+	}
+	// 第二次：chatProcessLoop 用兜底 OutboundMsg 重发 ⇒ 仍然走一次注定失败的
+	// directSend（错误与第一次同源），但**不得**再注入父会话。
+	if err := a.sendMessage(fallback.Channel, fallback.ChatID, fallback.Content, fallback.Metadata); err == nil {
+		t.Fatalf("第二次 sendMessage 应当仍在 directSend 上失败（保持原投递行为，不 early-return）")
+	}
+
+	notifs := drainAsyncNotifications(t, mgr)
+	if len(notifs) != 1 {
+		t.Fatalf("父会话 async 通知数 = %d, want 1（兜底链重发同一帧不得重复注入）: %+v", len(notifs), notifs)
+	}
+	if notifs[0].Key != f2pParentKey || notifs[0].Content != finalReply || notifs[0].Source != tools.AsyncSourcePeer {
+		t.Fatalf("父会话通知字段不对: %+v", notifs[0])
+	}
+
+	// 改投日志也只能有 1 条（第二条被标记拦下，不留"routed"假象）。
+	if routed := hook.withMessage("sendMessage final reply routed to parent session"); len(routed) != 1 {
+		t.Fatalf("parent 改投日志条数 = %d, want 1: %+v", len(routed), routed)
+	}
+
+	// directSend 仍然被调用两次：去重不能以"吞掉原有投递尝试"为代价。
+	if got := rec.count(); got != 2 {
+		t.Fatalf("directSend 调用次数 = %d, want 2（第二次必须仍然尝试原投递，只是跳过注入）", got)
+	}
+
+	// 标记必须落在**共享** map 上（第二次调用拿到的就是这个 map）。
+	if sendMeta[metaParentRouted] != "true" {
+		t.Fatalf("共享 metadata 上的 %s = %q, want \"true\"（否则兜底重发会再注入一次）",
+			metaParentRouted, sendMeta[metaParentRouted])
+	}
+
+	// parent busy：这条通知作为合成工具结果进 Run loop，日志恰好 1 条。
+	rs := &runState{cfg: RunConfig{}}
+	if err := rs.injectAsyncMessageNotification(context.Background(), 1, notifs[0]); err != nil {
+		t.Fatalf("injectAsyncMessageNotification: %v", err)
+	}
+	if injected := hook.withMessage("Injected async message into Run loop"); len(injected) != 1 {
+		t.Fatalf("Run loop 注入日志条数 = %d, want 1: %+v", len(injected), injected)
+	}
+}
+
+// ── ⑦ 真·集成：生产的失败兜底链（handleRunOutput → chatProcessLoop）───────────
+//
+// ① 与 ⑥ 的区别：⑥ 手工把「同一个 map 连调两次 sendMessage」，只证明**标记**本身；
+// ⑦ 走**生产的真实函数**，把缺陷原始路径整条跑一遍：
+//
+//	handleRunOutput(ctx, msg, out, sess, "")   // agent/agent_process.go:765
+//	  ├─ a.sendMessage("agent", 子会话, final, sendMeta)   // 未注册渠道 ⇒ 失败
+//	  │    └─ 注入父会话 1 次 + 给 sendMeta 打一次性标记
+//	  └─ return &OutboundMsg{…, Metadata: sendMeta}        // :773-783 同一个 map
+//	chatProcessLoop（agent/agent.go:3966）
+//	  └─ a.sendMessage(fallback.Channel, fallback.ChatID, fallback.Content, fallback.Metadata)
+//	       ⇒ 第二次必须**不再**注入父会话（否则父会话同一内容 2 行 = 本缺陷）
+//
+// 断言是"数条数"，不是"没报错"；父会话通知数与 routed 日志数都必须是 1。
+// 变异：删掉 `msg.Metadata[metaParentRouted] = "true"` ⇒ 本例必须红（通知数=2）。
+func TestSubagentFinalToParent_RealFallbackResendSingleInjection(t *testing.T) {
+	hook := &f2pLogHook{}
+	std := logrus.StandardLogger()
+	prev := std.ReplaceHooks(make(logrus.LevelHooks))
+	std.AddHook(hook)
+	defer std.ReplaceHooks(prev)
+
+	mgr := tools.NewBackgroundTaskManager()
+	rec := &f2pFailRecorder{}
+	a := &Agent{bus: bus.NewMessageBus(), directSend: rec.send}
+	a.bgTaskMgr.Store(mgr)
+	a.interactiveSubAgents.Store(f2pChildKey, &interactiveAgent{
+		roleName:  "court.shoufu",
+		instance:  "main",
+		parentKey: f2pParentKey,
+		lastUsed:  time.Now(),
+	})
+	_, sess := newAgentHistorySession(t)
+
+	const finalReply = "E2E-REAL-FALLBACK-1"
+	msg := bus.InboundMessage{
+		Channel:  "agent",
+		ChatID:   f2pChildKey,
+		Content:  "父会话交给子代理的问题",
+		Metadata: map[string]string{"turn_id": "7"},
+	}
+	out := &RunOutput{OutboundMsg: &ch.OutboundMsg{Content: finalReply}}
+
+	// ① 生产第一步：首投在未注册的 agent 渠道上失败 ⇒ 返回兜底 OutboundMsg。
+	fallback, err := a.handleRunOutput(context.Background(), msg, out, sess, "")
+	if err != nil {
+		t.Fatalf("handleRunOutput err = %v, want nil（投递失败应走兜底回包，不抛错）", err)
+	}
+	if fallback == nil {
+		t.Fatalf("handleRunOutput 兜底回包 = nil, want 非 nil（否则这一轮终局帧直接丢失）")
+	}
+	if fallback.Channel != "agent" || fallback.ChatID != f2pChildKey || fallback.Content != finalReply {
+		t.Fatalf("兜底回包字段不对: %+v", fallback)
+	}
+	if got := rec.count(); got != 1 {
+		t.Fatalf("首投 directSend 次数 = %d, want 1（首投必须真的尝试过投递）", got)
+	}
+
+	// ② 生产第二步：chatProcessLoop（agent.go:3966）用兜底 OutboundMsg 再发一次。
+	if err := a.sendMessage(fallback.Channel, fallback.ChatID, fallback.Content, fallback.Metadata); err == nil {
+		t.Fatalf("第二次投递应当仍在 directSend 上失败（渠道未注册），不得改变原投递行为")
+	}
+
+	// ③ 硬断言：父会话**恰好 1 条**通知（整条链路只注入一次）。
+	notifs := drainAsyncNotifications(t, mgr)
+	if len(notifs) != 1 {
+		t.Fatalf("父会话 async 通知数 = %d, want 1（真·兜底链：同一帧被注入 2 次就是本缺陷）: %+v",
+			len(notifs), notifs)
+	}
+	if notifs[0].Key != f2pParentKey || notifs[0].Content != finalReply || notifs[0].Source != tools.AsyncSourcePeer {
+		t.Fatalf("父会话通知字段不对: %+v", notifs[0])
+	}
+
+	// ④ 第二次**没有**再触发路由：routed 日志恰好 1 条。
+	if routed := hook.withMessage("sendMessage final reply routed to parent session"); len(routed) != 1 {
+		t.Fatalf("parent 改投日志条数 = %d, want 1（第二次重发不得再走路由）: %+v", len(routed), routed)
+	}
+
+	// ⑤ 两次投递尝试都在（去重不能以吞掉原有投递为代价）。
+	if got := rec.count(); got != 2 {
+		t.Fatalf("directSend 调用次数 = %d, want 2（首投 + 兜底重发，都各自尝试过）", got)
+	}
+
+	// ⑥ 机制自证：标记确实写进了**兜底回包带出来的那个 map**。
+	if fallback.Metadata[metaParentRouted] != "true" {
+		t.Fatalf("兜底回包 Metadata[%s] = %q, want \"true\"（标记没落到共享 map 上，重发必然再注入）",
+			metaParentRouted, fallback.Metadata[metaParentRouted])
+	}
 }

@@ -5079,6 +5079,13 @@ func (a *Agent) outboundTurnID(chName, chatID string, meta map[string]string, ex
 	return a.getActiveTurnID(qualifyChatID(chName, chatID))
 }
 
+// metaParentRouted 是 sendMessage 内部的一次性标记：本帧的最终回复已经注入过
+// 父会话。它只在 metadata 里传播（不参与任何渠道渲染），用途见 sendMessage 里
+// 「终局帧双投」块的注释 —— 兜底链会用**同一个 map** 把同一帧重发一次，
+// 没有这个标记父会话就会收到两份。放在 agent 包内而不是 channel 包：
+// 它是路由层实现细节，渠道不需要知道。
+const metaParentRouted = "parent_routed"
+
 // 通过 directSend 直连或 bus.Outbound 广播。
 func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[string]string) error {
 	key := qualifyChatID(chName, chatID)
@@ -5137,12 +5144,26 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 	//
 	// 卡片（`__FEISHU_CARD__:`）不注进父会话：它是给渠道渲染器的协议标记，
 	// 原样注入 parent 上下文只会变成一段乱码文本。
-	if isFinal && !isCardFinal {
+	//
+	// ⚠️ 一次性标记（metaParentRouted）—— 防**同一帧被兜底链重发**时重复注入：
+	// handleRunOutput 先 sendMessage（agent 渠道在生产未注册 ⇒ directSend 报
+	// "unknown channel: agent"）⇒ 返回 &OutboundMsg{Metadata: sendMeta} 兜底
+	// （agent_process.go:773-783）⇒ chatProcessLoop 拿这个 OutboundMsg 又调一次
+	// sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata)
+	// （agent.go:3966）——**同一个 map 对象**。没有标记时两次都命中路由 ⇒ 父会话
+	// 每条终局帧被注入 2 次（2026-11-03 e2e 实证：父会话 session_messages 里
+	// 同一内容 2 行、request_id/turn_id 相同）。
+	// 标记写在 msg.Metadata 上（第二次调用拿到的就是同一个 map ⇒ 天然幂等）；
+	// directSend 保持原样不 return：第二次仍然走一次注定失败的 directSend，
+	// 不再产生第二份注入。
+	if isFinal && !isCardFinal && msg.Metadata[metaParentRouted] != "true" {
 		if pCh, pChat, ok := a.finalReplyParentTarget(chatID); ok {
 			if mgr := a.bgTaskMgr.Load(); mgr != nil && mgr.NotifyCh != nil {
 				// 走 parent 的异步消息管道 = parent 的会话流（busy 时作为合成
 				// 工具结果注入 Run loop，idle 时作为 user 消息开启一轮）。
 				a.injectAsyncMessage(pCh, pChat, "", content, tools.AsyncSourcePeer)
+				// 兜底回包复用同一个 metadata map ⇒ 第二次必须跳过注入。
+				msg.Metadata[metaParentRouted] = "true"
 				log.WithFields(log.Fields{
 					"orig_channel":   chName,
 					"orig_chat_id":   chatID,
