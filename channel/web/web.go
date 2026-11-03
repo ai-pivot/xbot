@@ -42,10 +42,141 @@ import (
 const (
 	webSendChBufSize     = 64
 	webOfflineMsgBufSize = 50
+	// webSessionCookieName is the LEGACY, unscoped session cookie name. A live
+	// instance no longer *issues* under it (see webSessionCookieNameFor); it is
+	// still READ once per browser to migrate existing sessions, and still
+	// CLEARED on logout so a stale legacy cookie cannot resurrect a session.
 	webSessionCookieName = "xbot_session"
 	webSessionMaxAge     = 30 * 24 * time.Hour // 30 days
 	maxBodySize          = 1 << 20             // 1MB maximum request body size
+
+	// maxCookieScopeIDLen caps the identity suffix so the cookie name stays a
+	// short, readable RFC 6265 token.
+	maxCookieScopeIDLen = 64
 )
+
+// webSessionCookieNameFor derives the session cookie name for ONE instance.
+//
+// RFC 6265 scopes cookies by host, NOT by port. Two xbot instances on the same
+// host (:8080 vs :8081, or two endpoints behind one reverse proxy) therefore
+// used to share the single "xbot_session" key: the later login overwrote it and
+// the earlier instance then looked up a token that lives only in the *other*
+// process's in-memory map ⇒ every request there 401s with zero business logs.
+//
+// The suffix is the instance IDENTITY, not the listen port: behind a reverse
+// proxy the browser only ever sees one host:port, so a port-derived name
+// collides again, while an identity-derived name is stable across ports and
+// across proxies. Identity is resolved in this order (see resolveInstanceID):
+// server.instance_id → XBOT_INSTANCE_ID → basename(XBOT_HOME) → listen port.
+//
+// A random suffix is deliberately NOT used: it would invalidate every browser
+// cookie on restart and be almost impossible to diagnose.
+//
+// instanceID == "" (or unusable after sanitising) means no identity could be
+// determined; fall back to the legacy name so startup and login never fail.
+func webSessionCookieNameFor(instanceID string) string {
+	id := sanitizeCookieScopeID(instanceID)
+	if id == "" {
+		return webSessionCookieName
+	}
+	return webSessionCookieName + "_" + id
+}
+
+// sanitizeCookieScopeID turns an arbitrary instance identity into something
+// usable inside an RFC 6265 cookie name: only [A-Za-z0-9_-] survive, every
+// other byte becomes '_', leading/trailing '_' are trimmed, and the result is
+// capped at maxCookieScopeIDLen. "" means "unusable — try the next source".
+func sanitizeCookieScopeID(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if len(out) > maxCookieScopeIDLen {
+		out = strings.TrimRight(out[:maxCookieScopeIDLen], "_")
+	}
+	return out
+}
+
+// ResolveInstanceID resolves this process's instance identity: the explicit
+// configured value wins, then the XBOT_INSTANCE_ID override, then the basename
+// of XBOT_HOME. Empty = unknown (the caller may still fall back to the port).
+//
+// XBOT_HOME is a legitimate identity source: serverapp/lock.go uses it as the
+// single-instance mutex, so one home can never host two servers — the home
+// basename is therefore unique per running server on a machine (`smith`,
+// `daidai`, …) while remaining stable across restarts and port changes.
+// Instance-identity sources, in resolution order. They are reported verbatim in
+// the startup line `session cookie scope: name=… source=…` so an operator can
+// tell WHY two instances ended up with the same (or different) cookie name.
+const (
+	instanceIDSourceConfig = "instance_id"   // server.instance_id
+	instanceIDSourceEnv    = "env"           // XBOT_INSTANCE_ID
+	instanceIDSourceHome   = "home_basename" // basename of XBOT_HOME
+	instanceIDSourcePort   = "port"          // last resort: listen port
+)
+
+// ResolveInstanceIDWithSource resolves this process's instance identity and
+// reports where it came from: the explicit configured value wins, then the
+// XBOT_INSTANCE_ID override, then the basename of XBOT_HOME. "" / "" = unknown
+// (the caller may still fall back to the listen port).
+//
+// XBOT_HOME is a legitimate identity source: serverapp/lock.go uses it as the
+// single-instance mutex, so one home can never host two servers — the home is
+// therefore unique per running server on a machine while remaining stable
+// across restarts and port changes.
+func ResolveInstanceIDWithSource(explicit string) (id, source string) {
+	if id = sanitizeCookieScopeID(explicit); id != "" {
+		source = instanceIDSourceConfig
+		// config.applyEnvOverrides folds XBOT_INSTANCE_ID into the config value,
+		// so an explicit value that equals the env var really came from the env —
+		// report it as such instead of claiming config.json.
+		if envID := sanitizeCookieScopeID(os.Getenv("XBOT_INSTANCE_ID")); envID != "" && envID == id {
+			source = instanceIDSourceEnv
+		}
+		return id, source
+	}
+	if id = sanitizeCookieScopeID(os.Getenv("XBOT_INSTANCE_ID")); id != "" {
+		return id, instanceIDSourceEnv
+	}
+	if id = instanceIDFromHome(os.Getenv("XBOT_HOME")); id != "" {
+		return id, instanceIDSourceHome
+	}
+	return "", ""
+}
+
+// ResolveInstanceID is ResolveInstanceIDWithSource without the provenance.
+func ResolveInstanceID(explicit string) string {
+	id, _ := ResolveInstanceIDWithSource(explicit)
+	return id
+}
+
+// instanceIDFromHome derives the identity from an XBOT_HOME path.
+//
+// The canonical layout is /home/<user>/.xbot, whose basename is the generic
+// ".xbot" for EVERY user — taking it verbatim would hand both instances on one
+// machine the same cookie name, i.e. the bug this change exists to fix. So for
+// a hidden home directory the distinguishing component is the owner directory
+// (`/home/smith/.xbot` → "smith", `/home/daidai/.xbot` → "daidai").
+//
+// Containers that all use /root/.xbot still collide (→ "root"); that topology
+// must set server.instance_id / XBOT_INSTANCE_ID explicitly.
+func instanceIDFromHome(home string) string {
+	if home == "" {
+		return ""
+	}
+	base := filepath.Base(home)
+	if strings.HasPrefix(base, ".") {
+		base = filepath.Base(filepath.Dir(home))
+	}
+	return sanitizeCookieScopeID(base)
+}
 
 // limitBodySize wraps a handler to limit request body size.
 func limitBodySize(next http.HandlerFunc) http.HandlerFunc {
@@ -71,6 +202,16 @@ type RPCIdentity struct {
 type WebChannelConfig struct {
 	Host string
 	Port int
+	// InstanceID scopes the web session cookie name so co-hosted instances (or
+	// instances behind one reverse proxy) don't evict each other's browser
+	// sessions (see webSessionCookieNameFor). serverapp fills it from
+	// server.instance_id → XBOT_INSTANCE_ID → basename(XBOT_HOME). Empty = let
+	// the channel resolve it itself, then fall back to the listen port.
+	InstanceID string
+	// InstanceIDSource records where InstanceID came from (instance_id | env |
+	// home_basename | port) purely for the startup log line; empty means "not
+	// recorded, assume instance_id".
+	InstanceIDSource string
 	// Store is the backend-agnostic storage layer (SQLite adapter or PG). The
 	// web channel reads user settings, tenants, sessions and web-user auth
 	// through it, so the same code path serves both backends and the channel
@@ -508,6 +649,12 @@ type WebChannel struct {
 	// Auth
 	sessions   map[string]sessionInfo // token → sessionInfo
 	sessionsMu sync.RWMutex
+	// cookieScopeWarnOnce keeps the "no identity ⇒ port-derived name" WARN to one
+	// line per process instead of one per request.
+	cookieScopeWarnOnce sync.Once
+	// cookieLegacyWarnOnce does the same for the "nothing known ⇒ shared legacy
+	// name" WARN.
+	cookieLegacyWarnOnce sync.Once
 
 	// store is the backend-agnostic storage layer (SQLite adapter or PG) — the
 	// single handle for user settings, tenants, sessions and web-user auth.
@@ -1054,6 +1201,14 @@ func (wc *WebChannel) Start() error {
 	// Start PTY manager (idle reaper)
 	wc.ptyMgr.Start()
 
+	// Advertise the cookie scope once, right before serving: one grep-able line
+	// per instance is the only way to notice two instances sharing a cookie name
+	// (see the deploy runbook's post-deploy self-check). Emitted only here —
+	// after every Start() step has completed and before Serve — so "the line
+	// appeared" means the wiring is done (unit-test channels never Start and
+	// therefore never log it).
+	wc.logSessionCookieScope()
+
 	err = wc.server.Serve(wc.listener)
 	if err == http.ErrServerClosed {
 		return nil
@@ -1548,10 +1703,16 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		username = "cli:" + senderID
 	} else {
 		// Authenticate via cookie (web browser clients)
-		si = wc.validateSession(r)
+		var hit sessionCookieHit
+		si, hit = wc.authenticateSession(r)
 		if si == nil {
 			jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
 			return
+		}
+		// One-time migration must ride on the 101 response: set the header now,
+		// Upgrade writes it out with the handshake.
+		if hit.Legacy {
+			http.SetCookie(w, wc.sessionCookie(wc.sessionCookieName(), hit.Token, int(webSessionMaxAge.Seconds())))
 		}
 		senderID = "web-" + strconv.Itoa(si.userID)
 		username = si.username

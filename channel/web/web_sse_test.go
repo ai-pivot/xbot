@@ -2623,7 +2623,7 @@ func loginTestWebUser(t *testing.T, serverURL, username string) *http.Cookie {
 		t.Fatalf("login %s status = %d", username, loginResp.StatusCode)
 	}
 	for _, cookie := range loginResp.Cookies() {
-		if cookie.Name == webSessionCookieName {
+		if cookie.Name == testSessionCookieName() {
 			return cookie
 		}
 	}

@@ -38,7 +38,7 @@ func TestPluginFileUploadLargeBody(t *testing.T) {
 	}
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}

@@ -314,13 +314,21 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 
 	if cfg.Web.Enable {
 		if store != nil {
+			// Instance identity scopes the session cookie name so co-hosted
+			// instances (or instances behind one reverse proxy) stop evicting
+			// each other's browser sessions: server.instance_id →
+			// XBOT_INSTANCE_ID → basename(XBOT_HOME), port only as last resort.
+			// The source is carried along so WebChannel.Start can log it.
+			instanceID, instanceIDSource := web.ResolveInstanceIDWithSource(cfg.Server.InstanceID)
 			webCh = web.NewWebChannel(web.WebChannelConfig{
-				Host:       cfg.Web.Host,
-				Port:       cfg.Web.Port,
-				Store:      store,
-				AdminToken: cfg.Admin.Token,
-				InviteOnly: cfg.Web.IsInviteOnly(),
-				PublicURL:  cfg.Sandbox.PublicURL,
+				Host:             cfg.Web.Host,
+				Port:             cfg.Web.Port,
+				InstanceID:       instanceID,
+				InstanceIDSource: instanceIDSource,
+				Store:            store,
+				AdminToken:       cfg.Admin.Token,
+				InviteOnly:       cfg.Web.IsInviteOnly(),
+				PublicURL:        cfg.Sandbox.PublicURL,
 			}, msgBus)
 			// Auto-detect frontend static files if not explicitly configured.
 			staticDir := resolveStaticDir(cfg)

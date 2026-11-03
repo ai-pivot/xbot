@@ -64,12 +64,25 @@ func newTestStorage(t *testing.T, db *sqlite.DB) storage.Storage {
 	}, func() error { return nil })
 }
 
+// testInstanceID is the instance identity every channel built by
+// newTestWebChannel derives its session cookie name from. Tests must never
+// hardcode the cookie string — assert against testSessionCookieName() instead,
+// so renaming the derivation does not silently keep old tests green.
+const testInstanceID = "test"
+
+// testSessionCookieName is the session cookie name issued by a channel created
+// through newTestWebChannel.
+func testSessionCookieName() string { return webSessionCookieNameFor(testInstanceID) }
+
 func newTestWebChannel(t *testing.T, db *sqlite.DB) (*WebChannel, *bus.MessageBus) {
 	t.Helper()
 	msgBus := bus.NewMessageBus()
 	cfg := WebChannelConfig{
 		Host: "127.0.0.1",
 		Port: 0, // random port
+		// Fixed identity so the scoped-cookie path (not the legacy fallback) is
+		// what the whole web test suite exercises.
+		InstanceID: testInstanceID,
 	}
 	if db != nil {
 		cfg.Store = newTestStorage(t, db)
@@ -115,7 +128,7 @@ func loginTestAdmin(t *testing.T, serverURL string) *http.Cookie {
 	}
 	defer loginResp.Body.Close()
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			return c
 		}
 	}
@@ -191,11 +204,11 @@ func TestRegisterAndLogin(t *testing.T) {
 
 	// Check cookie is set
 	cookies := resp3.Cookies()
-	if !slices.ContainsFunc(cookies, func(c *http.Cookie) bool { return c.Name == webSessionCookieName }) {
+	if !slices.ContainsFunc(cookies, func(c *http.Cookie) bool { return c.Name == testSessionCookieName() }) {
 		t.Error("session cookie not set")
 	}
 	for _, c := range cookies {
-		if c.Name == webSessionCookieName && !c.HttpOnly {
+		if c.Name == testSessionCookieName() && !c.HttpOnly {
 			t.Error("cookie should be HttpOnly")
 		}
 	}
@@ -219,7 +232,7 @@ func TestLogout(t *testing.T) {
 
 	var cookies []*http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			cookies = append(cookies, c)
 		}
 	}
@@ -241,7 +254,7 @@ func TestLogout(t *testing.T) {
 
 	// Cookie should be cleared
 	for _, c := range resp.Cookies() {
-		if c.Name == webSessionCookieName && c.MaxAge != -1 {
+		if c.Name == testSessionCookieName() && c.MaxAge != -1 {
 			t.Error("cookie should be cleared (MaxAge=-1)")
 		}
 	}
@@ -265,7 +278,7 @@ func TestAuthMiddleware(t *testing.T) {
 	// With cookie → 200 (no history, but authenticated)
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}
@@ -326,7 +339,7 @@ func TestWebSocketAuth(t *testing.T) {
 
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}
@@ -373,7 +386,7 @@ func TestWebSocketChat(t *testing.T) {
 
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}
@@ -447,7 +460,7 @@ func TestChatsDefaultListAggregatesWebAndCLIForAdmin(t *testing.T) {
 	defer loginResp.Body.Close()
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}
@@ -667,7 +680,7 @@ func TestSessionTreeReturnsChildrenForAdmin(t *testing.T) {
 	defer loginResp.Body.Close()
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}
@@ -731,7 +744,7 @@ func TestWebSocketBrowserMessageCanTargetCLISessionForAdmin(t *testing.T) {
 	defer loginResp.Body.Close()
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}
@@ -775,7 +788,7 @@ func TestSendToWebSocket(t *testing.T) {
 
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}
@@ -846,7 +859,7 @@ func TestSendGenUIForwardsAsGenuiType(t *testing.T) {
 
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}
@@ -1315,7 +1328,7 @@ func TestConcurrentSends(t *testing.T) {
 
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}
@@ -1491,7 +1504,7 @@ func TestRPCNonBlocking(t *testing.T) {
 
 	var sessionCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			sessionCookie = c
 		}
 	}

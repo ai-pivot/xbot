@@ -158,6 +158,9 @@ func (wc *WebChannel) handleFileDownload(w http.ResponseWriter, r *http.Request)
 // handleCloudUpload uploads a file to cloud OSS (e.g., Qiniu) and returns the upload key.
 func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, filename, ext string, data []byte, mimeType string) {
 	userID := "anonymous"
+	// Read-only session check on purpose: the legacy→scoped cookie migration is
+	// emitted ONLY by authMiddleware (one place, one attribute set). Nothing is
+	// lost for a legacy-cookie browser — its next /api/* request migrates it.
 	if si := wc.validateSession(r); si != nil {
 		userID = fmt.Sprintf("%d", si.userID)
 	}
@@ -221,6 +224,7 @@ func (wc *WebChannel) handleLocalUpload(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	userID := "anonymous"
+	// Read-only session check (see handleCloudUpload): migration is authMiddleware's job.
 	if si := wc.validateSession(r); si != nil {
 		userID = fmt.Sprintf("%d", si.userID)
 	}

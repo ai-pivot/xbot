@@ -36,7 +36,7 @@ func serveStateRequest(t *testing.T, wc *WebChannel, target string) *httptest.Re
 	mux.HandleFunc("/api/session-state", wc.authMiddleware(wc.handleSessionState))
 	rec := httptest.NewRecorder()
 	req := authedAPIRequest(http.MethodGet, target, nil)
-	req.AddCookie(&http.Cookie{Name: webSessionCookieName, Value: "__state_test__"})
+	req.AddCookie(&http.Cookie{Name: wc.sessionCookieName(), Value: "__state_test__"})
 	mux.ServeHTTP(rec, req)
 	return rec
 }

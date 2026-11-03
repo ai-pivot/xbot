@@ -9,7 +9,9 @@ import (
 // newSeqTestChannel builds a minimal WebChannel wired the same way NewWebChannel
 // wires the frame path (hub.seqFn → stampAndBuffer → per-chat counter + ring).
 func newSeqTestChannel() *WebChannel {
-	wc := &WebChannel{hub: newHub()}
+	// Explicit identity: the session cookie name must never depend on the
+	// ambient XBOT_HOME of whoever runs the tests.
+	wc := &WebChannel{hub: newHub(), config: WebChannelConfig{InstanceID: testInstanceID}}
 	wc.evtBuf = make(map[string]*eventStream)
 	wc.hub.seqFn = wc.stampAndBuffer
 	wc.hub.resetReplayFn = wc.clearReplayStream

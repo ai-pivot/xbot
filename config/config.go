@@ -447,6 +447,12 @@ type ServerConfig struct {
 	Port         int      `json:"port"`
 	ReadTimeout  Duration `json:"read_timeout"`
 	WriteTimeout Duration `json:"write_timeout"`
+	// InstanceID names this instance. It scopes the web session cookie name
+	// (channel/web webSessionCookieNameFor) so two instances on one host — or
+	// two instances behind one reverse proxy — stop evicting each other's
+	// browser sessions. Empty = derive from XBOT_INSTANCE_ID, then from the
+	// basename of XBOT_HOME, then from the listen port.
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // LLMConfig LLM 配置
@@ -1055,6 +1061,9 @@ func applyEnvOverrides(cfg *Config) {
 	// Server
 	setStringEnv("SERVER_HOST", &cfg.Server.Host)
 	setIntEnv("SERVER_PORT", &cfg.Server.Port)
+	// Instance identity is what scopes the web session cookie name; it must be
+	// settable without touching config.json (containers, multi-instance hosts).
+	setStringEnv("XBOT_INSTANCE_ID", &cfg.Server.InstanceID)
 	setSecondsEnv("SERVER_READ_TIMEOUT", &cfg.Server.ReadTimeout)
 	setSecondsEnv("SERVER_WRITE_TIMEOUT", &cfg.Server.WriteTimeout)
 

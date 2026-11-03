@@ -45,7 +45,7 @@ func registerAndGetCookie(t *testing.T, server *httptest.Server) string {
 	}
 	defer resp.Body.Close()
 	for _, c := range resp.Cookies() {
-		if c.Name == webSessionCookieName {
+		if c.Name == testSessionCookieName() {
 			return c.Name + "=" + c.Value
 		}
 	}

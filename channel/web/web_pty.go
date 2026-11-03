@@ -611,6 +611,10 @@ var terminalWSUpgrader = websocket.Upgrader{
 
 func (wc *WebChannel) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// Cookie auth (same as handleWS for browser clients).
+	// Session check is read-only here: the legacy→scoped cookie migration is
+	// emitted only by authMiddleware / handleWS, so there is exactly one place
+	// that writes the migration Set-Cookie. A legacy-cookie browser is migrated
+	// by its next /api/* request; nothing breaks in the meantime.
 	si := wc.validateSession(r)
 	if si == nil {
 		log.Warn("terminal/ws: no valid session")

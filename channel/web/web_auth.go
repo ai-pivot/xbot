@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -277,76 +278,239 @@ func (wc *WebChannel) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	wc.sessionsMu.Unlock()
 
-	// Set cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     webSessionCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   wc.isSecureCookie(),
-		MaxAge:   int(webSessionMaxAge.Seconds()),
-	})
+	// Set cookie under this instance's scoped name (see webSessionCookieNameFor).
+	wc.issueSessionCookie(w, wc.sessionCookieName(), token)
 
 	writeJSON(w, http.StatusOK, authResponse{OK: true, UserID: int(id)})
 }
 
 // handleLogout handles POST /api/auth/logout
+//
+// Logout clears BOTH names (this instance's scoped name and the legacy unscoped
+// one) and drops every token presented under either name: a legacy cookie left
+// behind by an old build would otherwise resurrect the session on the next
+// request through the migration read path.
 func (wc *WebChannel) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	// Clear cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     webSessionCookieName,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   wc.isSecureCookie(),
-		MaxAge:   -1,
-	})
+	scoped := wc.sessionCookieName()
+	names := []string{scoped}
+	if legacy := legacySessionCookieName(scoped); legacy != "" {
+		names = append(names, legacy)
+	}
 
-	// Remove session
-	if cookie, err := r.Cookie(webSessionCookieName); err == nil {
+	// Clear every name first (response side).
+	for _, name := range names {
+		wc.clearSessionCookie(w, name)
+	}
+
+	// Remove the sessions those cookies point at (deduped: a browser cannot
+	// hold two cookies with the same name, but it can hold old + new).
+	tokens := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if c, err := r.Cookie(name); err == nil && c.Value != "" {
+			tokens[c.Value] = struct{}{}
+		}
+	}
+	if len(tokens) > 0 {
 		wc.sessionsMu.Lock()
-		delete(wc.sessions, cookie.Value)
+		for token := range tokens {
+			delete(wc.sessions, token)
+		}
 		wc.sessionsMu.Unlock()
 	}
 
 	writeJSON(w, http.StatusOK, authResponse{OK: true})
 }
 
+// ---------------------------------------------------------------------------
+// Session cookie naming (per-instance name; RFC 6265 scopes cookies by host)
+// ---------------------------------------------------------------------------
+
+// legacySessionCookieName returns the legacy unscoped name to fall back to when
+// reading/clearing, or "" when the scoped name already IS the legacy name (no
+// identity known). Only the exact legacy constant is ever returned — a
+// "xbot_session_" prefix match would re-introduce cross-instance reads, i.e.
+// the very bug this file is fixing.
+func legacySessionCookieName(scoped string) string {
+	if scoped == webSessionCookieName {
+		return ""
+	}
+	return webSessionCookieName
+}
+
+// cookieScope resolves the session cookie name for this instance together with
+// the provenance of the identity used to build it (`instance_id` | `env` |
+// `home_basename` | `port` | "" when nothing could be resolved).
+//
+// Identity first (server.instance_id → XBOT_INSTANCE_ID → basename(XBOT_HOME)):
+// identity is stable across ports and across a reverse proxy that hides the
+// real port, which is exactly where a port-derived name collapses. The listen
+// port is only the last resort (ephemeral :0 deploys, tests that build a
+// channel without identity); "" means the legacy shared name.
+func (wc *WebChannel) cookieScope() (name, source string) {
+	id := sanitizeCookieScopeID(wc.config.InstanceID)
+	if id != "" {
+		source = wc.config.InstanceIDSource
+		if source == "" {
+			source = instanceIDSourceConfig
+		}
+		return webSessionCookieNameFor(id), source
+	}
+	if id, source = ResolveInstanceIDWithSource(""); id != "" {
+		return webSessionCookieNameFor(id), source
+	}
+	if port := wc.listenPort(); port > 0 {
+		wc.cookieScopeWarnOnce.Do(func() {
+			log.WithField("port", port).
+				Warn("web: no server.instance_id and no XBOT_HOME, session cookie falls back to a port-derived name; instances behind one reverse proxy will still share it")
+		})
+		return webSessionCookieNameFor(strconv.Itoa(port)), instanceIDSourcePort
+	}
+	return "", ""
+}
+
+// listenPort is the port this channel actually listens on: the configured one
+// when fixed, otherwise the one the listener bound (available after Start —
+// every login/request arrives after that, since Start binds before Serve).
+func (wc *WebChannel) listenPort() int {
+	if wc.config.Port > 0 {
+		return wc.config.Port
+	}
+	if ln := wc.listener; ln != nil && ln.Addr() != nil {
+		if addr, ok := ln.Addr().(*net.TCPAddr); ok && addr.Port > 0 {
+			return addr.Port
+		}
+		if _, port, err := net.SplitHostPort(ln.Addr().String()); err == nil {
+			if p, err := strconv.Atoi(port); err == nil && p > 0 {
+				return p
+			}
+		}
+	}
+	return 0
+}
+
+// sessionCookieName is the name this instance issues, reads first, and clears.
+func (wc *WebChannel) sessionCookieName() string {
+	name, _ := wc.cookieScope()
+	if name != "" {
+		return name
+	}
+	// Never fail a login over this — fall back to the shared legacy name and
+	// say it once, loudly enough to be findable in the log.
+	wc.cookieLegacyWarnOnce.Do(func() {
+		log.WithField("cookie", webSessionCookieName).
+			Warn("web: instance identity unknown, session cookie uses the shared legacy name; instances on this host will evict each other's sessions")
+	})
+	return webSessionCookieName
+}
+
+// sessionCookieScopeLogf is the sink for the startup scope line. It is a
+// variable so a test can capture the exact line without reconfiguring the
+// global logger.
+var sessionCookieScopeLogf = log.Infof
+
+// logSessionCookieScope prints the ONE line an operator can grep on both
+// instances to prove they are not sharing a cookie name:
+//
+//	session cookie scope: name=xbot_session_smith source=home_basename
+//
+// Silent when the identity is unknown (that case already WARNs on first use).
+func (wc *WebChannel) logSessionCookieScope() {
+	name, source := wc.cookieScope()
+	if name == "" {
+		return
+	}
+	sessionCookieScopeLogf("session cookie scope: name=%s source=%s", name, source)
+}
+
+// sessionCookie builds the session cookie. Login, legacy migration and logout
+// all go through it so the attributes stay byte-identical — a migration cookie
+// whose Path/Secure/SameSite differed would not replace the legacy one.
+func (wc *WebChannel) sessionCookie(name, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   wc.isSecureCookie(),
+		MaxAge:   maxAge,
+	}
+}
+
+// issueSessionCookie sets name=token with the full session lifetime.
+func (wc *WebChannel) issueSessionCookie(w http.ResponseWriter, name, token string) {
+	http.SetCookie(w, wc.sessionCookie(name, token, int(webSessionMaxAge.Seconds())))
+}
+
+// clearSessionCookie expires name (logout).
+func (wc *WebChannel) clearSessionCookie(w http.ResponseWriter, name string) {
+	http.SetCookie(w, wc.sessionCookie(name, "", -1))
+}
+
+// sessionCookieHit is the outcome of locating a session token on a request.
+type sessionCookieHit struct {
+	Token string
+	// Legacy is true when the token came from the legacy unscoped cookie name,
+	// so the response must re-issue the scoped name (one-time migration).
+	Legacy bool
+}
+
+// findSessionCookie locates the session token: this instance's scoped name
+// first, then the legacy unscoped name for the one-time migration read.
+// Cookies belonging to OTHER instances are never consulted (exact name match).
+func (wc *WebChannel) findSessionCookie(r *http.Request) sessionCookieHit {
+	scoped := wc.sessionCookieName()
+	if c, err := r.Cookie(scoped); err == nil && c.Value != "" {
+		return sessionCookieHit{Token: c.Value}
+	}
+	if legacy := legacySessionCookieName(scoped); legacy != "" {
+		if c, err := r.Cookie(legacy); err == nil && c.Value != "" {
+			return sessionCookieHit{Token: c.Value, Legacy: true}
+		}
+	}
+	return sessionCookieHit{}
+}
+
 // validateSession checks the session cookie and returns session info.
 // Sessions are automatically renewed when more than half of their lifetime has passed.
 func (wc *WebChannel) validateSession(r *http.Request) *sessionInfo {
-	cookie, err := r.Cookie(webSessionCookieName)
-	if err != nil {
-		return nil
+	si, _ := wc.authenticateSession(r)
+	return si
+}
+
+// authenticateSession is validateSession plus the cookie hit, so the caller can
+// silently migrate a legacy-named cookie onto the scoped name.
+func (wc *WebChannel) authenticateSession(r *http.Request) (*sessionInfo, sessionCookieHit) {
+	hit := wc.findSessionCookie(r)
+	if hit.Token == "" {
+		return nil, sessionCookieHit{}
 	}
 
 	wc.sessionsMu.RLock()
-	si, ok := wc.sessions[cookie.Value]
+	si, ok := wc.sessions[hit.Token]
 	wc.sessionsMu.RUnlock()
 
 	if !ok || time.Now().After(si.expires) {
-		return nil
+		return nil, hit
 	}
 
 	// Auto-renew session if more than half of its lifetime has passed
 	remaining := time.Until(si.expires)
 	if remaining < webSessionMaxAge/2 {
 		wc.sessionsMu.Lock()
-		if _, exists := wc.sessions[cookie.Value]; exists {
+		if _, exists := wc.sessions[hit.Token]; exists {
 			si.expires = time.Now().Add(webSessionMaxAge)
-			wc.sessions[cookie.Value] = si
+			wc.sessions[hit.Token] = si
 		}
 		wc.sessionsMu.Unlock()
 	}
 
-	return &si
+	return &si, hit
 }
 
 // authMiddleware wraps a handler with session validation
@@ -360,10 +524,17 @@ func (wc *WebChannel) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if r.Method != http.MethodGet && r.URL.Path != "/api/files/upload" && r.URL.Path != "/api/plugin-files/upload" {
 			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		}
-		si := wc.validateSession(r)
+		si, hit := wc.authenticateSession(r)
 		if si == nil {
 			jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
 			return
+		}
+		// One-time migration: the browser is still carrying the legacy unscoped
+		// cookie but the session is valid ⇒ re-issue it under the scoped name
+		// with the same token, so the existing login survives and every later
+		// request uses the scoped cookie.
+		if hit.Legacy {
+			wc.issueSessionCookie(w, wc.sessionCookieName(), hit.Token)
 		}
 		senderID := "web-" + strconv.Itoa(si.userID)
 		ctx := contextWithSenderID(r.Context(), senderID)
