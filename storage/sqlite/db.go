@@ -15,6 +15,7 @@ import (
 
 	log "xbot/logger"
 
+	"xbot/internal/runtimeinfo"
 	"xbot/storage/internal"
 
 	_ "modernc.org/sqlite"
@@ -82,6 +83,16 @@ type DB struct {
 }
 
 const schemaVersion = 80
+
+// SchemaVersion returns the schema version compiled into this binary.
+//
+// Exported for the startup self-check (internal/runtimeinfo → GET /api/health):
+// the binary half of the (binary, database) schema pair has to be known before
+// any database is opened, so a process that never touches SQLite still reports
+// what it understands. See the 2026-11-03 P0-1 incident note in
+// internal/runtimeinfo.
+func SchemaVersion() int { return schemaVersion }
+
 const historyLockStripes = 64
 
 // dbLockEntry 是进程内对某个数据库文件持有的 flock，带引用计数。
@@ -573,14 +584,21 @@ func (db *DB) initSchema() error {
 	// 既有库走迁移是**写主库**的操作，而迁移里含会删行的迁移（如 orphan 清理）。这里的
 	// 保护全部是**非阻塞**的（铁律：启动路径永不阻塞 —— xbot-server 由 supervisor 托管，
 	// 一旦返回错误就会「启动失败 → 自动重启 → 再失败」崩溃循环）：
-	//   ① version > schemaVersion（旧二进制配新库）⇒ 只 WARN，**不跑任何迁移**（既有数据
-	//      原样不动），照常启动；
+	//   ① version > schemaVersion（旧二进制配新库）⇒ **ERROR 级别**（2026-11-03 P0-1：
+	//      原先只 WARN，daidai 实例潜伏一天多没人发现），**不跑任何迁移**（既有数据
+	//      原样不动），照常启动 —— 但仍把 (binary, db) 这对版本号写进进程级自检状态，
+	//      由 GET /api/health 的 schema_newer=true 持续暴露；
 	//   ② version < schemaVersion ⇒ **尽力**先整库备份（VACUUM INTO
 	//      <db>.pre-v<from>-<UTC>.bak，与仓库既有迁移的备份约定一致）；备份失败只 WARN，
 	//      **照常迁移、照常启动**。
+	//
+	// 无论走哪条分支都先登记版本对：健康端点是外部探针在「全员 401」时唯一还能读到的
+	// 接口，它必须能直接指出「库比二进制新」这个根因，而不是让人去翻日志。
+	runtimeinfo.Default().SetSchemaVersions(schemaVersion, version)
+
 	if version > schemaVersion {
 		log.WithFields(log.Fields{"db_schema": version, "binary_schema": schemaVersion}).
-			Warn("Stored schema version is NEWER than this binary supports; no migrations will run and existing data is left untouched")
+			Error("Stored schema version is NEWER than this binary supports — this binary is older than the database it is serving; no migrations will run and existing data is left untouched, but the schema mismatch is reported by GET /api/health (schema_newer=true). Deploy the matching binary and restart this instance")
 		return nil
 	}
 	if version == schemaVersion {

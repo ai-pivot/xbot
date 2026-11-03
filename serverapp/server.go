@@ -20,6 +20,7 @@ import (
 	"xbot/channel/web"
 	"xbot/config"
 	"xbot/event"
+	"xbot/internal/runtimeinfo"
 	llm_pkg "xbot/llm"
 	log "xbot/logger"
 	"xbot/oauth"
@@ -573,6 +574,21 @@ func Run(args []string) error {
 
 	setupLogging(cfg)
 	defer log.Close()
+
+	// ── 二进制/库版本自检（2026-11-03 P0-1，daidai 事故）───────────────────────
+	// 11-02 那次部署把二进制换成了不含 v80 的旧版，而该实例自己的库已被迁到 80：
+	// 进程只打一行 WARN 就继续服务，前端随后全员 401（validateSession 是纯内存
+	// map，进程里没有那批 token，业务逻辑根本没进 ⇒ 没有业务日志）。要求变成
+	// 「启动就记、运行期能查」：
+	//   · 这里记录本进程二进制的 sha256+mtime 与编译进来的 schemaVersion；
+	//   · 之后按 XBOT_BINARY_DRIFT_INTERVAL（默认 60s）比对磁盘上的同一路径，
+	//     被替换而未重启 ⇒ ERROR 日志 + 健康端点 binary_changed=true；
+	//   · 库比二进制新 ⇒ db.go 打 ERROR，健康端点 schema_newer=true。
+	// 任何失败只 WARN：启动路径永不因自检失败（仓库铁律）。
+	runtimeinfo.Start()
+	runtimeinfo.Default().SetBinarySchemaVersion(sqlite.SchemaVersion())
+	defer runtimeinfo.Default().StopWatcher()
+
 	log.WithFields(log.Fields{
 		"attempts":  cfg.Agent.LLMRetryAttempts,
 		"delay":     time.Duration(cfg.Agent.LLMRetryDelay),

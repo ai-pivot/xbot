@@ -1066,6 +1066,12 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/ws", wc.handleWS)
 	mux.HandleFunc("/api/sse", wc.authMiddleware(wc.handleSSE))
 
+	// 进程自检（2026-11-03 P0-1）：**故意免鉴权、GET、扁平 JSON**。
+	// 它要报告的正是「全员 401」这种场景，任何基于 token 的中间件都会把探针
+	// 一起打死。载荷只有本进程的二进制指纹 / schema 版本对，无用户数据、无路径。
+	// 契约字段名见 internal/runtimeinfo.Health（部署脚本与外部探针依赖它）。
+	mux.HandleFunc("/api/health", wc.handleHealth)
+
 	mux.HandleFunc("/api/auth/register", limitBodySize(postOnly(wc.handleRegister)))
 	mux.HandleFunc("/api/auth/login", limitBodySize(postOnly(wc.handleLogin)))
 	mux.HandleFunc("/api/auth/logout", postOnly(wc.handleLogout))
