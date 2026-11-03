@@ -73,6 +73,9 @@ vi.mock('@/lib/api', () => ({
     const raw = await response.json()
     return raw.data ?? raw
   },
+  // useSessionStore 的 catch 会调它上报 401/403（统一出口）；本文件只测会话树逻辑，
+  // 统一出口用真实实现也无需断言 —— 这里给个空实现即可。
+  reportAPIError: () => false,
 }))
 
 beforeEach(() => {

@@ -29,7 +29,7 @@ import { toast } from 'sonner'
 import { fetchCwd, fetchHistory } from '@/components/agent/api'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useWSConnection } from '@/hooks/useWSConnection'
-import { postAPI } from '@/lib/api'
+import { postAPI, reportAPIError } from '@/lib/api'
 import type { TabManager } from '@/hooks/useTabManager'
 import type { TerminalSession, TerminalStatus } from '@/types/terminal'
 
@@ -133,7 +133,9 @@ class TerminalStore {
       const data = await postAPI<CreateResponse>('/api/terminal/create', { chatID, cwd })
       if (!data.tid) throw new Error('create response missing tid')
       tid = data.tid
-    } catch {
+    } catch (e) {
+      // 允许吞（返回 null，调用方不建 tab），但 401/403 不许静默。
+      reportAPIError(e)
       return null
     }
 

@@ -1,4 +1,4 @@
-import { APIError, postAPI } from '@/lib/api'
+import { throwResponseError, postAPI } from '@/lib/api'
 import type {
   InboxResolveAction,
   InboxResolveResult,
@@ -20,11 +20,8 @@ async function getAPI<T>(endpoint: string, signal?: AbortSignal): Promise<T> {
     envelope = {}
   }
   if (!response.ok || !envelope.ok) {
-    throw new APIError(
-      envelope.error?.message || `request failed with status ${response.status}`,
-      envelope.error?.code || 'invalid_response',
-      response.status,
-    )
+    // 复用统一拦截点：401（非白名单）→ UnauthorizedError + 全局提示；403 → 上报。
+    throwResponseError(endpoint, response, envelope)
   }
   return envelope.data as T
 }
