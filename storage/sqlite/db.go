@@ -567,6 +567,11 @@ func (db *DB) initSchema() error {
 		}
 		// createSchema creates the full schema at the current schemaVersion.
 		// No migrations needed for fresh databases.
+		//
+		// 新建库同样要登记版本对：否则 GET /api/health 的 schema_db 会一直停在
+		// 上一次打开过的库（或 0），而「全新库 = 本二进制版本」是唯一确定的事实。
+		// 2026-11-03 P0-1 复验：这条路径漏登记会让健康端点读到别的库残留的版本号。
+		runtimeinfo.Default().SetSchemaVersions(schemaVersion, schemaVersion)
 		return nil
 	}
 	if err != nil {

@@ -131,8 +131,12 @@ func TestSchemaNewerLogsAtErrorLevelAndReachesHealth(t *testing.T) {
 // must produce no schema ERROR (a test that always passes would be worthless).
 func TestAlignedSchemaDoesNotLogError(t *testing.T) {
 	rec := installLevelRecorder(t)
+	// 用例自洽（2026-11-03 P0-1 复验）：runtimeinfo.Default() 是进程级单例，
+	// 必须由本用例自己建立起始态并在结束时还原 —— 否则它会读到上一个用例留下的
+	// （binary, db）版本对，`-run` 过滤或 -shuffle 时必红。
 	prevBinary, prevDB := runtimeinfo.Default().SchemaVersions()
 	t.Cleanup(func() { runtimeinfo.Default().SetSchemaVersions(prevBinary, prevDB) })
+	runtimeinfo.Default().SetSchemaVersions(0, 0)
 
 	path := t.TempDir() + "/xbot.db"
 	db, err := Open(path)
@@ -141,10 +145,17 @@ func TestAlignedSchemaDoesNotLogError(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
+	// 新建库必须把版本对登记成 (schemaVersion, schemaVersion)：这条断言同时
+	// 证明「对齐不是靠环境蒙对的」，而是 Open 真的写了。
+	binary, dbVersion := runtimeinfo.Default().SchemaVersions()
+	if binary != schemaVersion || dbVersion != schemaVersion {
+		t.Fatalf("fresh database must register (%d,%d), got (%d,%d)", schemaVersion, schemaVersion, binary, dbVersion)
+	}
+
 	if entry := rec.find(logrus.ErrorLevel, "NEWER than this binary supports"); entry != nil {
 		t.Fatalf("aligned database must not log a schema ERROR: %s", entry.Message)
 	}
-	if h := runtimeinfo.Default().Health(); h.SchemaNewer {
-		t.Fatalf("schema_newer = true for an aligned database (%d/%d)", h.SchemaBinary, h.SchemaDB)
+	if h := runtimeinfo.Default().Health(); h.SchemaNewer || h.Status != runtimeinfo.StatusOK {
+		t.Fatalf("aligned database health = %+v, want ok/%d/%d", h, schemaVersion, schemaVersion)
 	}
 }
