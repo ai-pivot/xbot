@@ -5106,7 +5106,62 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 	// `channel.OutboundMsg` themselves (cancel ack / fallbacks) — cannot drift.
 	msg.TurnID = a.outboundTurnID(chName, chatID, msg.Metadata, 0)
 
-	isFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
+	// ── 终局判定（is_final）──────────────────────────────────────────────
+	// ① 卡片：工具已经把最终回复直接发成飞书卡片，正文以协议前缀开头。
+	// ② 权威最终回复帧：handleRunOutput / cancel ack 都会带
+	//    channel.MetaFinalReply="true"（agent_process.go:583 / 694 / 759）。
+	//    旧实现只看 ①，于是**每一条**正常最终回复在日志里都是 is_final=false
+	//    （2026-11-03 线上：子代理最终答复那条日志 is_final:false，父会话收不到，
+	//    排查时完全看不出"这是终局帧"）。
+	isCardFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
+	isFinal := isCardFinal || msg.Metadata[channel.MetaFinalReply] == "true"
+
+	// ── 终局帧**双投**：子会话自己收尾 + 父会话收到答复（interactive 子代理）──
+	//
+	// 根因与门禁条件见 finalReplyParentTarget 的注释：interactive 子代理的物理
+	// 会话就是它自己（channel="agent", chatID=子会话 key），只投自己 ⇒ 父会话
+	// 永远收不到子代理的答复（生产日志 2026-11-03T12:47:02Z）。
+	//
+	// 为什么是「双投」而不是「改投」：
+	//   · **不删原有投递** = 子会话视图的终局帧行为与改动前逐字节一致，
+	//     不存在"为了修父会话而让子会话收不到"的回归风险；
+	//   · 父会话的投递不能依赖子会话通道是否可用 —— 线上该通道**当前就是坏的**
+	//     （日志 "unknown channel: agent" ⇒ handleRunOutput 的 sendMessage 报错），
+	//     所以父会话这一投必须先发，directSend 失败也照样送达。
+	//   · 子会话视图的 turn 收尾另有权威通道，不依赖这条 outbound：
+	//     handleRunOutput 在 sendMessage **之前**就调了
+	//     a.emitTurnFinal(msg.Channel, msg.ChatID, …)（agent_process.go:675），
+	//     它走 turnFrameSenders（web 实现 TurnFrameSender）按
+	//     progressKey="agent:<子会话 key>" 发 `final` 帧（turnframes.go:143-154），
+	//     与 channel 注册无关。双投因此不是补丁式凑数，而是同时保住两条路径。
+	//
+	// 卡片（`__FEISHU_CARD__:`）不注进父会话：它是给渠道渲染器的协议标记，
+	// 原样注入 parent 上下文只会变成一段乱码文本。
+	if isFinal && !isCardFinal {
+		if pCh, pChat, ok := a.finalReplyParentTarget(chatID); ok {
+			if mgr := a.bgTaskMgr.Load(); mgr != nil && mgr.NotifyCh != nil {
+				// 走 parent 的异步消息管道 = parent 的会话流（busy 时作为合成
+				// 工具结果注入 Run loop，idle 时作为 user 消息开启一轮）。
+				a.injectAsyncMessage(pCh, pChat, "", content, tools.AsyncSourcePeer)
+				log.WithFields(log.Fields{
+					"orig_channel":   chName,
+					"orig_chat_id":   chatID,
+					"parent_channel": pCh,
+					"parent_chat_id": pChat,
+					"is_final":       isFinal,
+				}).Info("sendMessage final reply routed to parent session")
+			} else {
+				// 异步管道不可用（bare Agent / 未注入 bgTaskMgr）：**不丢消息**，
+				// 保持原行为投给自己，并告警留痕。
+				log.WithFields(log.Fields{
+					"orig_channel":   chName,
+					"orig_chat_id":   chatID,
+					"parent_channel": pCh,
+					"parent_chat_id": pChat,
+				}).Warn("sendMessage: parent route unavailable (no bg task manager), falling back to self delivery")
+			}
+		}
+	}
 
 	if a.directSend != nil {
 		// Skip patch for messages that should not overwrite the streaming
@@ -5141,7 +5196,19 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 		if msgID != "" {
 			a.sessionMsgIDs.Store(key, msgID)
 		}
-		if isFinal {
+		// ⛔ 只有**卡片**才给 sessionFinalSent 打标记，**不能**用 isFinal。
+		// 语义：sessionFinalSent = "工具已经直接把最终回复发出去了，本轮后续
+		// sendMessage（尾随进度 / LLM 最终回复）必须跳过"，它的**唯一清理点**是
+		// resetSessionState（agent/agent.go:3008），而 resetSessionState 只在
+		// processMessage 的入站路径上调用（agent.go:4066 / 命令分支 3444）。
+		// interactive 子会话的 Run **不走** processMessage（走
+		// SendToInteractiveSession → runInteractive），也就是说它的
+		// sessionFinalSent 一旦被打上就**永不清除**。若在这里用 isFinal，子会话
+		// 第一轮的权威最终回复就会把 key 标记成"已发最终回复"⇒ 第二轮起它的
+		// 所有 sendMessage（进度块 + 最终回复）都被上面 5087 行静默吞掉 ⇒
+		// 子代理从第二次对话开始变哑巴（只在第二轮才发作，线上极难发现）。
+		// 保持原判据（卡片）即与改动前行为完全一致，零回归。
+		if isCardFinal {
 			a.sessionFinalSent.Store(key, true)
 		}
 		return nil
@@ -5161,6 +5228,67 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 	default:
 		return fmt.Errorf("message bus outbound channel is full")
 	}
+}
+
+// finalReplyParentTarget 解析 interactive 子代理的权威最终回复应当**额外**投往的
+// 父会话地址。
+//
+// 为什么需要（生产 bug，2026-11-03 御前定位，线上日志 12:47:02Z）：
+// interactive 子代理的物理会话 key 形如 `web:web-4/court.shoufu:main`
+// （channel="agent"，chatID=该 key）。它这一轮的最终输出走
+// handleRunOutput → a.sendMessage("agent", key, finalContent, {final_reply:true})，
+// 投递目标就是**它自己**：父会话 `web:web-4` 永远收不到子代理的答复，用户只能在
+// 侧边栏翻子会话。同类 bug 在 tools/send_message.go 的 to="user" 上修过一次，
+// 当时只修了那一条路径，agent 普通输出路径没修 —— 本函数服务于路由层统一修法。
+//
+// ⚠️ 两个必须同时满足的条件（少一个就错投）：
+//  1. 门禁是 `interactiveSubAgents` **命中**。它的 map key 是**裸的** interactive
+//     key（`web:web-4/court.shoufu:main`），而 sendMessage 里的 key 是
+//     `qualifyChatID(ch, chatID)` = `agent:web:web-4/court.shoufu:main`。
+//     ⇒ 查表必须用 chatID，绝不能用带 channel 前缀的 key。
+//  2. `parseInteractiveKeyParent` 对**普通会话 key** 也会返回非空
+//     （`cli:/home/smith/x` → ("cli", "/home/smith/x")），所以**不能**只看解析结果
+//     就改投 —— 否则顶层会话的最终答复会被扔进一个本该没人收的地址。
+//
+// parent 地址解析顺序：
+//   - 先 parseInteractiveKeyParent(chatID)（顶层父会话 = 普通会话，直接用）；
+//   - 嵌套场景（解析出的 chatID 里还带 "/"）或解析失败 ⇒ 退回 ia.parentKey
+//     （spawn 时写入、之后不变的权威值，interactive.go:1322-1333）：
+//     · parentKey 里带 "/" ⇒ 父本身也是 interactive 会话，物理会话是 ("agent", parentKey)；
+//     · 否则 parentKey 是 "channel:chatID"，按首个 ':' 切开。
+//   - 两者都空/不合法 ⇒ ok=false，调用方保持原行为（投给自己），绝不投空地址、不丢消息。
+func (a *Agent) finalReplyParentTarget(subChatID string) (channel, chatID string, ok bool) {
+	if a == nil || subChatID == "" {
+		return "", "", false
+	}
+	val, hit := a.interactiveSubAgents.Load(subChatID)
+	if !hit || val == nil {
+		return "", "", false
+	}
+	ia, _ := val.(*interactiveAgent)
+
+	parentCh, parentChat := parseInteractiveKeyParent(subChatID)
+
+	var parentKey string
+	if ia != nil {
+		// parentKey 只在 spawn 时写入一次（placeholder），注册进 sync.Map 后不再
+		// 变更（interactive.go:2110 是拷贝），因此无需持 ia.mu ——避免在投递路径上
+		// 与 Run 持有的锁互等。
+		parentKey = ia.parentKey
+	}
+
+	if parentKey != "" && (parentCh == "" || parentChat == "" || strings.Contains(parentChat, "/")) {
+		if strings.Contains(parentKey, "/") {
+			return "agent", parentKey, true
+		}
+		if ch, rest, cut := strings.Cut(parentKey, ":"); cut && ch != "" && rest != "" {
+			return ch, rest, true
+		}
+	}
+	if parentCh == "" || parentChat == "" {
+		return "", "", false
+	}
+	return parentCh, parentChat, true
 }
 
 // injectInbound 向入站队列注入消息，触发 Agent 完整处理循环。
