@@ -1653,8 +1653,17 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	// Cron 等"归属型"工具据此把产物归到自己会话（tools/cron.go 的
 	// cronOwnership），而不是继承来的父会话 origin。oneshotKey 由
 	// interactiveKey(...) 生成，形态与 interactive 会话一致
-	// （"web:web-4/<role>:<instance>"），因此到期通知能反解出
-	// (channel, chatID, role, instance) 并投回本会话。
+	// （"web:web-4/<role>:<instance>"），与 interactive 子代理共用同一套
+	// 归属/反解格式。
+	//
+	// ⚠️ 这里**只**保证"归属 key 的格式与 interactive 一致"，**不**保证
+	// "到期时能以子代理身份触发"：one-shot 的 Run 一结束就
+	// destroyInteractiveSession（见本函数下方 Run 收尾的三条路径），cron 是
+	// 长期对象，到期时 interactiveSubAgents 里通常已无该 key ⇒
+	// deliverCronFiredToSubAgentSession 返回 false ⇒ **由主 Agent 执行**
+	// （回落点打 INFO 日志，含 session_key + reason）。持久 interactive
+	// 子代理的归属由 agent/interactive.go 的 spawn 处赋值（cfg.CallerSessionKey
+	// = key），那一类才是"按自身身份触发"。
 	cfg.CallerSessionKey = oneshotKey
 
 	// Register one-shot subagent in interactiveSubAgents so it's visible

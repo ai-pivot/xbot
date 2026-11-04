@@ -65,7 +65,14 @@ type cronParams struct {
 // agent/interactive.go（`cfg.CallerSessionKey = key` + `GetOrCreateSession("agent", key)`）
 // 与 agent/engine_wire.go 的 one-shot 路径。所以子代理创建的 cron job 用
 // Channel="agent" + ChatID=<interactive key> 才与它的物理会话一致，
-// 到期通知（"agent:" + key）才能落回创建它的那个会话。
+// 到期通知（"agent:" + key）才可能落回创建它的那个会话。
+//
+// ⚠️ 能力边界（2026-11-04 工部验收打回项 2）：**只有持久 interactive 子代理
+// 会话还活着时**，到期通知才真的以子代理身份投进该会话。one-shot 子代理的
+// 会话在其 Run 结束时就 destroyInteractiveSession 了（cron 到期通常在那之后），
+// 于是 agent/agent.go 的 deliverCronFiredToSubAgentSession 返回 false，
+// **由主 Agent 在 "agent:"+key 这个 tenant 上执行**（回落点打 INFO 日志，
+// 含 session_key + reason）。别把这条注释读成"一定能按子代理身份触发"。
 const cronSubAgentChannel = "agent"
 
 // cronOwnership 解析本次 Cron 工具调用所属的会话身份（channel, chatID）。

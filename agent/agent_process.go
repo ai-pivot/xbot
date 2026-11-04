@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"xbot/bus"
@@ -118,6 +119,85 @@ func (a *Agent) takePendingBgNotifications(sessionKey string) []tools.BgNotifica
 	pending := a.bgRunPending[sessionKey]
 	delete(a.bgRunPending, sessionKey)
 	return pending
+}
+
+// sameBgNotification 判断两条通知是不是**同一条事件实例**。
+//
+// BgNotification 的四种实现（*BackgroundTask / *SubAgentBgNotify / *CronFired /
+// *AsyncMessageNotification）都是指针，指向同一对象的两个接口值即同一条事件。
+// 这里用 reflect 取指针值而不是直接 `x == y`：接口比较在动态类型不可比较
+// （未来有人加一个含 slice 的值类型实现）时会**直接 panic**，而这条路径在
+// 投递失败的回滚链路上——panic 比丢一条通知更糟。
+func sameBgNotification(x, y tools.BgNotification) bool {
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	vx, vy := reflect.ValueOf(x), reflect.ValueOf(y)
+	if vx.Kind() != reflect.Ptr || vy.Kind() != reflect.Ptr {
+		return false
+	}
+	if vx.Type() != vy.Type() || vx.IsNil() || vy.IsNil() {
+		return false
+	}
+	return vx.Pointer() == vy.Pointer()
+}
+
+// takeOneBgNotification 从 sessionKey 的 pending 队列里精确移除**这一条**通知，
+// 其余兄弟通知按原顺序留在队列里。返回是否真的找到并移除。
+//
+// 为什么必须逐条取（2026-11-04 工部验收打回项 1）：
+// takePendingBgNotifications 是"取走该 key 全部"，调用方只把**自己那一条**
+// 在失败时补回 ⇒ 同一 key 上并发的 N 条 pending 里有 N−1 条被永久吞掉。
+// 典型场景：一个子代理会话的 cron 到期事件与另一条通知同 key 同时在队，
+// 前者投递失败补回自己，后者的兄弟条目就再也不会被任何路径投递。
+//
+// 锁：bgRunPendingMu（与 enqueue/take/acknowledge 共用同一把互斥锁，
+// 所以"移除本条"与"并发入队"之间不会丢事件）。
+func (a *Agent) takeOneBgNotification(sessionKey string, target tools.BgNotification) bool {
+	if target == nil {
+		return false
+	}
+	a.bgRunPendingMu.Lock()
+	defer a.bgRunPendingMu.Unlock()
+	pending := a.bgRunPending[sessionKey]
+	for i, n := range pending {
+		if !sameBgNotification(n, target) {
+			continue
+		}
+		rest := make([]tools.BgNotification, 0, len(pending)-1)
+		rest = append(rest, pending[:i]...)
+		rest = append(rest, pending[i+1:]...)
+		if len(rest) == 0 {
+			delete(a.bgRunPending, sessionKey)
+		} else {
+			a.bgRunPending[sessionKey] = rest
+		}
+		return true
+	}
+	return false
+}
+
+// ensurePendingBgNotification 幂等地把 target 放回 sessionKey 队列：
+// 队列里已有它（同一条事件实例）就什么都不做，没有才追加到队尾。
+//
+// 用于"投递失败补回"：先 takeOne 再 ensure ⇒ 失败路径上这条事件在队列里
+// 恰好出现一次（不双投）；take 没命中（例如并发路径已把它取走）时也不会
+// 静默丢失（补回一条）。兄弟条目一律不动。
+func (a *Agent) ensurePendingBgNotification(sessionKey string, target tools.BgNotification) {
+	if target == nil {
+		return
+	}
+	a.bgRunPendingMu.Lock()
+	defer a.bgRunPendingMu.Unlock()
+	if a.bgRunPending == nil {
+		a.bgRunPending = make(map[string][]tools.BgNotification)
+	}
+	for _, n := range a.bgRunPending[sessionKey] {
+		if sameBgNotification(n, target) {
+			return
+		}
+	}
+	a.bgRunPending[sessionKey] = append(a.bgRunPending[sessionKey], target)
 }
 
 func (a *Agent) pendingBgNotifications(sessionKey string) []tools.BgNotification {

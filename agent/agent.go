@@ -5268,13 +5268,15 @@ func (a *Agent) bgNotifyLoop() {
 
 			// ① cron 的子代理归属（tools/cron.go 的 cronOwnership）：
 			// job.Channel="agent"、job.ChatID=<interactive key> ⇒ 这条到期的
-			// 定时任务属于创建它的子代理会话。必须投进那个**活着的 interactive
-			// session**（以子代理身份起一轮 Run）；若交给下面的通用
-			// bgRunPending → bus.Inbound 路径，chatWorker 会用主 Agent 的
-			// RunConfig（buildMainRunConfig: AgentID="main"、a.tools）在同一个
-			// tenant session 里跑，子代理的 system prompt / 工具集全丢。
-			// 会话已不在内存（重启 / TTL 回收 / unload）时返回 false，
-			// 回落通用路径 —— 至少落在 "agent:"+key 这个子代理会话，而不是父会话。
+			// 定时任务属于创建它的子代理会话。**若该会话还活着**（持久
+			// interactive 子代理），必须投进那个 interactive session（以子代理身份
+			// 起一轮 Run）；若交给下面的通用 bgRunPending → bus.Inbound 路径，
+			// chatWorker 会用主 Agent 的 RunConfig（buildMainRunConfig:
+			// AgentID="main"、a.tools）在同一个 tenant session 里跑，子代理的
+			// system prompt / 工具集全丢。
+			// 会话已不在内存（one-shot 已销毁 / TTL 回收 / unload / 重启）时返回
+			// false，回落通用路径 —— **执行者是主 Agent**（不是"以子代理身份续跑"），
+			// 回落点有 INFO 日志（session_key + reason + executor=main agent）。
 			if c, ok := notif.(*tools.CronFired); ok {
 				if a.deliverCronFiredToSubAgentSession(c) {
 					continue
@@ -5367,6 +5369,18 @@ func interactiveDeliveryFailed(out *channel.OutboundMsg, err error) bool {
 // 通用 bgRunPending → bus.Inbound 路径）；false 表示目标不是子代理会话、
 // 或该会话已不在内存，调用方回落既有通用路径。
 //
+// ⚠️ 能力边界（2026-11-04 工部验收打回项 2，别再对外承诺过头）：
+//   - **只对"持久 interactive 子代理会话"成立**：进程内 interactiveSubAgents
+//     里有活条目 ⇒ 走 ia.cfg 的那一轮 Run，身份、system prompt、工具集都是子代理的。
+//   - **对 one-shot 子代理不成立**：one-shot 的 Run 一结束就
+//     destroyInteractiveSession（engine_wire.go 的 Run 收尾，成功/失败/取消三条
+//     路径都 destroy），cron 是长期对象，到期时 key 早已不在 map ⇒ 本函数返回
+//     false ⇒ **由主 Agent 在 "agent:"+key 这个 tenant 上执行一轮**
+//     （buildMainRunConfig: AgentID="main"）。这里**不静默**：回落点打 INFO
+//     （session_key + reason + executor=main agent）。
+//   - 同理适用于 TTL 回收 / unload / 进程重启后的持久会话：都会回落主 Agent。
+//     期望"重启用旧 key 拿回子代理身份"是不成立的——身份只存在于内存条目里。
+//
 // 为什么不能只靠通用路径：bus.Inbound 的 "agent:<key>" 会被 chatWorker 接住，
 // 但那一轮 Run 用的是 buildMainRunConfig（AgentID="main"、a.tools）——
 // 记事本上落在同一个 tenant session，执行者却是主 Agent：子代理的 system
@@ -5379,8 +5393,9 @@ func interactiveDeliveryFailed(out *channel.OutboundMsg, err error) bool {
 //     最多阻塞 subAgentSendAckWait 才返回，在 bgNotifyLoop 的同步路径里等它
 //     会把所有会话的后台通知一起卡住 ⇒ 必须异步；而异步投递的窗口内事件若仍
 //     留在 bgRunPending，同一会话的 chatWorker 可能把它 drain 一次 ⇒ 双投。
-//   - 所以先 take（同步、防双投），投递失败时在判定点 enqueue + drain 补回。
-//     enqueue/drain 按 sessionKey 精确匹配，不会与既有 pending 重复计数。
+//   - 所以先 take（同步、防双投），投递失败时在判定点 ensure + drain 补回。
+//     take 是**逐条**（takeOneBgNotification）——只取本条，兄弟通知留在队里；
+//     ensure 按事件实例去重，保证"本条恰好一次"。
 func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 	if c == nil {
 		return false
@@ -5391,15 +5406,32 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 	}
 	interactiveKeyRaw := c.Key[len("agent:"):]
 	if _, live := a.interactiveSubAgents.Load(interactiveKeyRaw); !live {
-		// 会话已销毁/尚未恢复内存：交给通用路径（至少落在 "agent:"+key 的
-		// tenant session，而不是父会话）。
+		// 会话已销毁/尚未恢复内存：交给通用路径 —— 那一轮 Run 由**主 Agent** 执行
+		// （buildMainRunConfig: AgentID="main"），事件落在 "agent:"+key 这个 tenant
+		// session 上，父会话看不到。one-shot 子代理是这里的常客：它的 Run 结束即
+		// destroyInteractiveSession，而 cron 到期往往在那之后。
+		//
+		// 不静默（工部打回项 2 选 A 的要求）：这条 INFO 是判断"这条子代理 job
+		// 到期到底由谁执行"的唯一线索，运维/验收按它核对，不要调成 Debug。
+		log.WithFields(log.Fields{
+			"session_key": c.Key,
+			"role":        role,
+			"instance":    instance,
+			"reason":      "interactive session not in memory (one-shot destroyed / TTL-reclaimed / unloaded / lost on restart)",
+			"executor":    "main agent",
+		}).Info("定时任务回落主 Agent 执行（子代理会话已不在内存，不是以子代理身份触发）")
 		return false
 	}
 
-	// 已决定走 interactive 投递：先把自己刚 buffer 的这条取走，
+	// 已决定走 interactive 投递：先把自己刚 buffer 的**这一条**取走，
 	// 否则它会在通用路径上被重复注入（与 SubAgentBgNotify 的父会话投递同一处理）。
 	// 投递失败时下面的判定点会把它补回 bgRunPending。
-	a.takePendingBgNotifications(c.Key)
+	//
+	// ⚠️ 必须逐条取（2026-11-04 工部验收打回项 1）：这里原来是
+	// `a.takePendingBgNotifications(c.Key)` —— 取走该 key **全部** pending 并丢弃
+	// 返回值，失败时只补回 c 一条 ⇒ 同 key 的 N−1 条兄弟通知永久丢失。
+	// takeOneBgNotification 只移除本条，兄弟按原序留在队列里。
+	a.takeOneBgNotification(c.Key, c)
 
 	// 文案与 drainAndProcessNotifications 的 cron 分支保持一致
 	// （那里是 `fmt.Sprintf("⏰ [定时任务触发] %s", n.Message)`）——
@@ -5421,12 +5453,16 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 		}
 		// 投递失败（会话在 Load 与 Send 之间被销毁 / 仍在初始化 / 投递被取消）：
 		// 把它重新排回 bgRunPending 并立刻 drain —— 事件绝不丢。
+		//
+		// 用 ensurePendingBgNotification 而不是 enqueueBgNotification：后者无条件
+		// append，若这条事件此刻已经在队列里（take 没命中同一个实例）就会双投；
+		// ensure 按事件实例去重，保证"本条恰好一次"，且不动兄弟条目。
 		log.WithError(firstNonNilError(err, out)).WithFields(log.Fields{
 			"session_key": c.Key,
 			"role":        role,
 			"instance":    instance,
 		}).Warn("定时任务投递子代理会话失败，回落通用注入")
-		a.enqueueBgNotification(c)
+		a.ensurePendingBgNotification(c.Key, c)
 		a.drainAndProcessNotifications(c.Key)
 	}()
 	return true

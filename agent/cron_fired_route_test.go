@@ -247,8 +247,179 @@ func TestSplitCronSubAgentTarget(t *testing.T) {
 }
 
 // 正例说明（工部要求"做不到就明确写，不要伪造"）：
-// SendToInteractiveSession 的成功路径（idle + cfg 可用）会真的启动一轮 Run
-// （构造 messages、append 到 tenant session、调 a.Run 跑 LLM）。在最小 Agent 构造里
-// 没有 LLM/multiSession/工具链，无法在不发起真实 LLM 调用的情况下覆盖成功路径，
-// 因此**省略正例**。成功路径的风险面也小：成功时不补回、不重复投递；
-// 判定逻辑的正反两面由 TestInteractiveDeliveryFailed 覆盖（含 success 用例）。
+// SendToInteractiveSession 的**空闲**成功路径（idle + cfg 可用）会真的启动一轮
+// Run（构造 messages、append 到 tenant session、调 a.Run 跑 LLM）。在最小 Agent
+// 构造里没有 LLM/multiSession/工具链，无法在不发起真实 LLM 调用的情况下覆盖它。
+// 但 **running=true 的成功分支**（`ia.pendingMessages` 入队 → 最多等
+// subAgentSendAckWait → 返回"已入队"）**不需要** LLM，是真正的"投递成功"返回值
+// （OutboundMsg.Error == nil）—— 下面 TestCronFired_ClaimedEventIsNotReinjectedByDrain
+// 就是用它构造成功路径的，不再用"成功路径省略正例"当挡箭牌。
+
+// collectInbound 收集 bus.Inbound 上陆续到达的消息，直到 quiet 时间内没有新消息
+// 或到达 max 上限。用于断言"某条内容出现几次"（双投/丢失都是次数问题，只收
+// 第一条会把双投漏掉——这正是上一轮 M4 缺口的成因）。
+func collectInbound(t *testing.T, a *Agent, quiet, max time.Duration) []bus.InboundMessage {
+	t.Helper()
+	var got []bus.InboundMessage
+	idle := time.NewTimer(quiet)
+	defer idle.Stop()
+	limit := time.NewTimer(max)
+	defer limit.Stop()
+	for {
+		select {
+		case msg := <-a.bus.Inbound:
+			got = append(got, msg)
+			if !idle.Stop() {
+				<-idle.C
+			}
+			idle.Reset(quiet)
+		case <-idle.C:
+			return got
+		case <-limit.C:
+			return got
+		}
+	}
+}
+
+// TestCronFired_FailedDeliveryKeepsSiblingsAndNoDuplicate 锁住两条**同时成立**的不变量：
+//
+//	① 不丢：同 key 上还有别的 pending（兄弟通知）时，本条投递失败补回**不得**
+//	   把兄弟一起吞掉 —— takePendingBgNotifications 取走整条队列再只补回自己，
+//	   兄弟就永久消失（2026-11-04 工部验收打回项 1）。
+//	② 不双投：本条失败补回后只能出现一次（补回用 ensure 按事件实例去重）。
+//
+// 判别力：
+//   - 把 takeOneBgNotification 换回 takePendingBgNotifications（2743f6be 原样）
+//     ⇒ msg1 不再出现 ⇒ 本用例红（"兄弟被吞"）。
+//   - 把 take 整个删掉 ⇒ msg0 被 enqueue 两次、drain 注入两份 ⇒ msg0 计数 2 ⇒ 红。
+func TestCronFired_FailedDeliveryKeepsSiblingsAndNoDuplicate(t *testing.T) {
+	a, _, _ := newCronRouteTestAgent(t)
+
+	// 必然失败的"活"会话（running=true + cfg==nil ⇒ "still initializing"），
+	// 投递失败后走 ensure + drain 的补回路径。
+	a.interactiveSubAgents.Store(cronSubAgentKey, &interactiveAgent{
+		roleName: "court.gongbu",
+		instance: "inst-1",
+		lastUsed: time.Now(),
+		running:  true,
+	})
+
+	const msg0 = "sibling-probe-0-exactly-once"
+	const msg1 = "sibling-probe-1-must-survive"
+	c0 := &tools.CronFired{Key: "agent:" + cronSubAgentKey, Sid: "admin", Message: msg0}
+	c1 := &tools.CronFired{Key: "agent:" + cronSubAgentKey, Sid: "admin", Message: msg1}
+
+	// 模拟 bgNotifyLoop 的顺序：同 key 两条事件先 buffer（msg0 是本次要被
+	// interactive 路径认领的那条，msg1 是与它同 key 的兄弟事件）。
+	a.enqueueBgNotification(c0)
+	a.enqueueBgNotification(c1)
+
+	if !a.deliverCronFiredToSubAgentSession(c0) {
+		t.Fatal("live sub-agent session must be claimed (return true)")
+	}
+
+	got := collectInbound(t, a, 700*time.Millisecond, 5*time.Second)
+	if len(got) == 0 {
+		t.Fatal("投递失败后 5s 内 bus.Inbound 一条注入都没有：事件被静默吞掉")
+	}
+	n0, n1 := 0, 0
+	for _, m := range got {
+		if strings.Contains(m.Content, msg0) {
+			n0++
+		}
+		if strings.Contains(m.Content, msg1) {
+			n1++
+		}
+	}
+	if n0 != 1 {
+		t.Fatalf("msg0 注入 %d 次（收到 %d 条消息），want 1 —— 双投/或没补回：%v", n0, len(got), contentsOf(got))
+	}
+	if n1 != 1 {
+		t.Fatalf("msg1（同 key 的兄弟 pending）注入 %d 次（收到 %d 条消息），want 1 —— 兄弟通知被 take 整条队列吞掉了：%v",
+			n1, len(got), contentsOf(got))
+	}
+}
+
+// TestCronFired_ClaimedEventIsNotReinjectedByDrain 堵 M4 缺口：**取消 take 调用
+// 时旧测试全绿**，说明没有任何用例能发现"通用 drain 路径会再注入一次"。
+//
+// 构造：活会话 running=true + cfg!=nil ⇒ SendToInteractiveSession 走"入队"
+// 成功分支（不需要 LLM，3s ack 窗口后返回成功，OutboundMsg.Error==nil）。
+// 认领后本条必须已经从 bgRunPending 消失；此时同会话的 chatWorker 在迭代边界
+// 做一次 drain（a.drainAndProcessNotifications）**不得**再注入同一事件。
+//
+// 判别力：删掉 deliverCronFiredToSubAgentSession 里的 takeOne 调用 ⇒ 本条留在
+// bgRunPending ⇒ 下面的 drain 把同一 cron 事件再注入一次（两条路径各注入一次）
+// ⇒ 红。这正是"少一次 take"的变异。
+func TestCronFired_ClaimedEventIsNotReinjectedByDrain(t *testing.T) {
+	a, _, _ := newCronRouteTestAgent(t)
+
+	a.interactiveSubAgents.Store(cronSubAgentKey, &interactiveAgent{
+		roleName: "court.gongbu",
+		instance: "inst-1",
+		lastUsed: time.Now(),
+		running:  true,
+		cfg:      &RunConfig{}, // 非 nil ⇒ 走"入队"成功分支，而不是 still initializing
+	})
+
+	const msg = "claimed-event-must-not-be-injected-twice"
+	c := &tools.CronFired{Key: "agent:" + cronSubAgentKey, Sid: "admin", Message: msg}
+	a.enqueueBgNotification(c)
+
+	if !a.deliverCronFiredToSubAgentSession(c) {
+		t.Fatal("live sub-agent session must be claimed (return true)")
+	}
+
+	// ① 同步不变量：认领即出队（本条恰好被移除一次）。
+	if rem := a.pendingBgNotifications(c.Key); len(rem) != 0 {
+		t.Fatalf("认领后 bgRunPending[%q] 仍有 %d 条 pending，want 0 —— take 没把本条取走，通用 drain 会重复注入", c.Key, len(rem))
+	}
+
+	// ② 第二条路径：同会话 chatWorker 在迭代边界 drain（bgNotifyLoop 在
+	// bgSessionStates 命中时就是发信号让 chatWorker 这样 drain 的）。
+	a.drainAndProcessNotifications(c.Key)
+
+	got := collectInbound(t, a, 500*time.Millisecond, 2*time.Second)
+	for _, m := range got {
+		if strings.Contains(m.Content, msg) {
+			t.Fatalf("同一条 cron 事件被两条路径各注入一次（interactive 认领 + 通用 drain）：%q", m.Content)
+		}
+	}
+}
+
+// TestCronFired_DestroyedSubAgentSessionFallsBackToMainAgent 锁住**诚实的退化语义**
+// （2026-11-04 工部验收打回项 2 选 A）：
+//
+// 子代理会话已不在内存（one-shot 的 Run 结束即 destroyInteractiveSession、
+// 或 TTL 回收 / unload / 重启）时，到期事件**不丢**，但执行者是**主 Agent**
+// —— 落点仍是 (agent, <interactive key>) 这个 tenant session，身份却是主 Agent。
+// 这不是"以子代理身份触发"，别在别处承诺过头。
+//
+// 本用例不构造会话：正是 destroyInteractiveSession 之后的现场。
+func TestCronFired_DestroyedSubAgentSessionFallsBackToMainAgent(t *testing.T) {
+	a, mgr, _ := newCronRouteTestAgent(t)
+	go a.bgNotifyLoop()
+
+	const msg = "one-shot session already destroyed when cron fired"
+	mgr.SendCronFired(&tools.CronFired{Key: "agent:" + cronSubAgentKey, Sid: "admin", Message: msg})
+
+	select {
+	case got := <-a.bus.Inbound:
+		if got.Channel != "agent" || got.ChatID != cronSubAgentKey {
+			t.Fatalf("returnal landing = (%q, %q), want (\"agent\", %q) —— 事件必须留在原 tenant，不许泄漏到父会话", got.Channel, got.ChatID, cronSubAgentKey)
+		}
+		if !strings.Contains(got.Content, msg) {
+			t.Fatalf("回落注入丢了 cron message：%q", got.Content)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("会话已销毁时事件被静默吞掉：bus.Inbound 5s 内没有收到回落注入")
+	}
+}
+
+func contentsOf(msgs []bus.InboundMessage) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, m.Channel+":"+m.ChatID+" | "+m.Content)
+	}
+	return out
+}
