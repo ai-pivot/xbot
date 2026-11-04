@@ -5341,6 +5341,27 @@ func splitCronSubAgentTarget(sessionKey string) (channel, chatID, role, instance
 	return channel, chatID, role, instance, true
 }
 
+// interactiveDeliveryFailed 判定 SendToInteractiveSession 的返回值是否代表
+// "消息没有送进子代理会话"。
+//
+// ⚠️ 这个函数的失败约定很反直觉：**所有失败路径的第二个返回值都是 nil**
+// （agent/interactive.go:2260-2400 一律
+// `return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil`，
+// 失败信息只在 OutboundMsg.Error 里）。只判 `err != nil` 会把
+// "会话已销毁 / 仍在初始化 / 投递被取消"当成投递成功 —— 而调用方在此之前
+// 已经把事件 take 出 bgRunPending，于是这条 cron 事件被静默吞掉。
+//
+// out == nil（没有回执）按失败处理：宁可回落通用路径，也不丢事件。
+func interactiveDeliveryFailed(out *channel.OutboundMsg, err error) bool {
+	if err != nil {
+		return true
+	}
+	if out == nil {
+		return true
+	}
+	return out.Error != nil
+}
+
 // deliverCronFiredToSubAgentSession 把到期的 cron 事件投进**创建它的那个
 // interactive 子代理会话**。返回 true 表示已由本函数接管投递（调用方不要再走
 // 通用 bgRunPending → bus.Inbound 路径）；false 表示目标不是子代理会话、
@@ -5352,11 +5373,19 @@ func splitCronSubAgentTarget(sessionKey string) (channel, chatID, role, instance
 // prompt、工具白名单、CallerSessionKey 全部丢失。真正"以子代理身份继续跑"
 // 的唯一原语是 SendToInteractiveSession（它走 ia.cfg 的那一轮 Run：
 // idle 时起新 turn，running 时排进 pendingMessages 由迭代边界 drain）。
+//
+// take 时机（工部验收要求二选一，这里选"失败时判定后补回"）：
+//   - 不能"先确认投递成功再 take"：SendToInteractiveSession 在 running=true 时
+//     最多阻塞 subAgentSendAckWait 才返回，在 bgNotifyLoop 的同步路径里等它
+//     会把所有会话的后台通知一起卡住 ⇒ 必须异步；而异步投递的窗口内事件若仍
+//     留在 bgRunPending，同一会话的 chatWorker 可能把它 drain 一次 ⇒ 双投。
+//   - 所以先 take（同步、防双投），投递失败时在判定点 enqueue + drain 补回。
+//     enqueue/drain 按 sessionKey 精确匹配，不会与既有 pending 重复计数。
 func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 	if c == nil {
 		return false
 	}
-	channel, chatID, role, instance, ok := splitCronSubAgentTarget(c.Key)
+	channelName, chatID, role, instance, ok := splitCronSubAgentTarget(c.Key)
 	if !ok {
 		return false
 	}
@@ -5369,6 +5398,7 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 
 	// 已决定走 interactive 投递：先把自己刚 buffer 的这条取走，
 	// 否则它会在通用路径上被重复注入（与 SubAgentBgNotify 的父会话投递同一处理）。
+	// 投递失败时下面的判定点会把它补回 bgRunPending。
 	a.takePendingBgNotifications(c.Key)
 
 	// 文案与 drainAndProcessNotifications 的 cron 分支保持一致
@@ -5376,8 +5406,8 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 	// 子代理与主会话看到的定时任务文本必须相同，别各写一份格式。
 	content := fmt.Sprintf("⏰ [定时任务触发] %s", c.Message)
 	go func() {
-		_, err := a.SendToInteractiveSession(context.Background(), role, bus.InboundMessage{
-			Channel:  channel,
+		out, err := a.SendToInteractiveSession(context.Background(), role, bus.InboundMessage{
+			Channel:  channelName,
 			ChatID:   chatID,
 			SenderID: c.Sid,
 			Content:  content,
@@ -5386,19 +5416,32 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 				bgNotificationMetadataKey: "true",
 			},
 		})
-		if err != nil {
-			// 投递瞬间被 unload／TTL 销毁（Load 与 Send 之间的窗口）：
-			// 回落通用路径，绝不把事件丢掉。
-			log.WithError(err).WithFields(log.Fields{
-				"session_key": c.Key,
-				"role":        role,
-				"instance":    instance,
-			}).Warn("定时任务投递子代理会话失败，回落通用注入")
-			a.enqueueBgNotification(c)
-			a.drainAndProcessNotifications(c.Key)
+		if !interactiveDeliveryFailed(out, err) {
+			return
 		}
+		// 投递失败（会话在 Load 与 Send 之间被销毁 / 仍在初始化 / 投递被取消）：
+		// 把它重新排回 bgRunPending 并立刻 drain —— 事件绝不丢。
+		log.WithError(firstNonNilError(err, out)).WithFields(log.Fields{
+			"session_key": c.Key,
+			"role":        role,
+			"instance":    instance,
+		}).Warn("定时任务投递子代理会话失败，回落通用注入")
+		a.enqueueBgNotification(c)
+		a.drainAndProcessNotifications(c.Key)
 	}()
 	return true
+}
+
+// firstNonNilError 返回第一个非 nil 的错误；两个都 nil 时返回 nil
+// （用于日志：SendToInteractiveSession 的失败信息可能只在 OutboundMsg.Error 里）。
+func firstNonNilError(err error, out *channel.OutboundMsg) error {
+	if err != nil {
+		return err
+	}
+	if out != nil && out.Error != nil {
+		return out.Error
+	}
+	return nil
 }
 
 // deliverNotifyToParentSession 把子代理的进度/完成通知投递给**真正派发它的
