@@ -5266,6 +5266,21 @@ func (a *Agent) bgNotifyLoop() {
 			// Always buffer first
 			a.enqueueBgNotification(notif)
 
+			// ① cron 的子代理归属（tools/cron.go 的 cronOwnership）：
+			// job.Channel="agent"、job.ChatID=<interactive key> ⇒ 这条到期的
+			// 定时任务属于创建它的子代理会话。必须投进那个**活着的 interactive
+			// session**（以子代理身份起一轮 Run）；若交给下面的通用
+			// bgRunPending → bus.Inbound 路径，chatWorker 会用主 Agent 的
+			// RunConfig（buildMainRunConfig: AgentID="main"、a.tools）在同一个
+			// tenant session 里跑，子代理的 system prompt / 工具集全丢。
+			// 会话已不在内存（重启 / TTL 回收 / unload）时返回 false，
+			// 回落通用路径 —— 至少落在 "agent:"+key 这个子代理会话，而不是父会话。
+			if c, ok := notif.(*tools.CronFired); ok {
+				if a.deliverCronFiredToSubAgentSession(c) {
+					continue
+				}
+			}
+
 			// ① 先看这条通知是谁派发的：ParentKey 指向一个仍在的 interactive
 			// session（例如首辅派出的工部），就投给那个会话，由它继续处理。
 			// 旧实现把 Key 设为 originChannel:originChatID，而嵌套 spawn 的
@@ -5304,6 +5319,86 @@ func (a *Agent) bgNotifyLoop() {
 			}
 		}
 	}
+}
+
+// splitCronSubAgentTarget 判断 cron 通知的目标会话（"channel:chatID"）是否是
+// 子代理会话，是则解出 (父 channel, 父 chatID, role, instance)。
+//
+// 子代理 job 的归属形态由 tools/cron.go 的 cronOwnership 定义：
+// channel="agent"、chatID=<interactive key>，其中 interactive key 形如
+// "web:web-4/court.gongbu:inst-1"（agent/interactive.go 的 interactiveKey）。
+// 主会话的 job 是 "web:web-4"、"cli:/path" 等，channel 不是 "agent"，
+// 这里直接返回 false —— 主会话路径不受任何影响。
+func splitCronSubAgentTarget(sessionKey string) (channel, chatID, role, instance string, ok bool) {
+	ch, rest, cut := strings.Cut(sessionKey, ":")
+	if !cut || ch != "agent" || rest == "" {
+		return "", "", "", "", false
+	}
+	channel, chatID, role, instance = parseInteractiveKeyTail(rest)
+	if channel == "" || chatID == "" || role == "" {
+		return "", "", "", "", false
+	}
+	return channel, chatID, role, instance, true
+}
+
+// deliverCronFiredToSubAgentSession 把到期的 cron 事件投进**创建它的那个
+// interactive 子代理会话**。返回 true 表示已由本函数接管投递（调用方不要再走
+// 通用 bgRunPending → bus.Inbound 路径）；false 表示目标不是子代理会话、
+// 或该会话已不在内存，调用方回落既有通用路径。
+//
+// 为什么不能只靠通用路径：bus.Inbound 的 "agent:<key>" 会被 chatWorker 接住，
+// 但那一轮 Run 用的是 buildMainRunConfig（AgentID="main"、a.tools）——
+// 记事本上落在同一个 tenant session，执行者却是主 Agent：子代理的 system
+// prompt、工具白名单、CallerSessionKey 全部丢失。真正"以子代理身份继续跑"
+// 的唯一原语是 SendToInteractiveSession（它走 ia.cfg 的那一轮 Run：
+// idle 时起新 turn，running 时排进 pendingMessages 由迭代边界 drain）。
+func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
+	if c == nil {
+		return false
+	}
+	channel, chatID, role, instance, ok := splitCronSubAgentTarget(c.Key)
+	if !ok {
+		return false
+	}
+	interactiveKeyRaw := c.Key[len("agent:"):]
+	if _, live := a.interactiveSubAgents.Load(interactiveKeyRaw); !live {
+		// 会话已销毁/尚未恢复内存：交给通用路径（至少落在 "agent:"+key 的
+		// tenant session，而不是父会话）。
+		return false
+	}
+
+	// 已决定走 interactive 投递：先把自己刚 buffer 的这条取走，
+	// 否则它会在通用路径上被重复注入（与 SubAgentBgNotify 的父会话投递同一处理）。
+	a.takePendingBgNotifications(c.Key)
+
+	// 文案与 drainAndProcessNotifications 的 cron 分支保持一致
+	// （那里是 `fmt.Sprintf("⏰ [定时任务触发] %s", n.Message)`）——
+	// 子代理与主会话看到的定时任务文本必须相同，别各写一份格式。
+	content := fmt.Sprintf("⏰ [定时任务触发] %s", c.Message)
+	go func() {
+		_, err := a.SendToInteractiveSession(context.Background(), role, bus.InboundMessage{
+			Channel:  channel,
+			ChatID:   chatID,
+			SenderID: c.Sid,
+			Content:  content,
+			Metadata: map[string]string{
+				"instance_id":             instance,
+				bgNotificationMetadataKey: "true",
+			},
+		})
+		if err != nil {
+			// 投递瞬间被 unload／TTL 销毁（Load 与 Send 之间的窗口）：
+			// 回落通用路径，绝不把事件丢掉。
+			log.WithError(err).WithFields(log.Fields{
+				"session_key": c.Key,
+				"role":        role,
+				"instance":    instance,
+			}).Warn("定时任务投递子代理会话失败，回落通用注入")
+			a.enqueueBgNotification(c)
+			a.drainAndProcessNotifications(c.Key)
+		}
+	}()
+	return true
 }
 
 // deliverNotifyToParentSession 把子代理的进度/完成通知投递给**真正派发它的

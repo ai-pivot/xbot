@@ -1649,6 +1649,14 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	}
 
+	// one-shot 子代理的物理会话 key（与 interactive 路径同一语义）：
+	// Cron 等"归属型"工具据此把产物归到自己会话（tools/cron.go 的
+	// cronOwnership），而不是继承来的父会话 origin。oneshotKey 由
+	// interactiveKey(...) 生成，形态与 interactive 会话一致
+	// （"web:web-4/<role>:<instance>"），因此到期通知能反解出
+	// (channel, chatID, role, instance) 并投回本会话。
+	cfg.CallerSessionKey = oneshotKey
+
 	// Register one-shot subagent in interactiveSubAgents so it's visible
 	// in the Ctrl+T panel. Kept after completion for history viewing; TTL cleans it up.
 	oneshotIA := &interactiveAgent{

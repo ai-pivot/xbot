@@ -58,17 +58,50 @@ type cronParams struct {
 	JobID        string `json:"job_id"`
 }
 
+// cronSubAgentChannel 是子代理会话的 channel 名。
+//
+// interactive / one-shot 子代理的物理会话是 multiSession 里的
+// GetOrCreateSession("agent", <interactive key>) —— 见
+// agent/interactive.go（`cfg.CallerSessionKey = key` + `GetOrCreateSession("agent", key)`）
+// 与 agent/engine_wire.go 的 one-shot 路径。所以子代理创建的 cron job 用
+// Channel="agent" + ChatID=<interactive key> 才与它的物理会话一致，
+// 到期通知（"agent:" + key）才能落回创建它的那个会话。
+const cronSubAgentChannel = "agent"
+
+// cronOwnership 解析本次 Cron 工具调用所属的会话身份（channel, chatID）。
+//
+// add / list / remove 三条路径共用本函数，禁止各写一遍 —— 归属口径必须唯一，
+// 否则会出现"能建不能删"或"list 看不见自己 job"的错位。
+//
+// 归属规则：
+//   - 子代理发起（CallerSessionKey 非空）：CallerSessionKey 是该子代理的
+//     物理会话 key（interactive key，形如 "web:web-4/court.gongbu:inst-1"，
+//     裸 key —— 不带 "agent:" 前缀，见 agent/interactive.go 的
+//     `cfg.CallerSessionKey = key`）。归属为 channel="agent"、chatID=<该 key>。
+//   - 主会话发起（CallerSessionKey 为空）：沿用 ctx.Channel/ctx.ChatID，
+//     与本次改动前逐字节一致；历史 job 行（channel=web/chatID=web-4 等）
+//     语义不变，不做数据迁移。
+//
+// 为什么不能用 ctx.Channel/ctx.ChatID 认子代理：子代理 run 的 Channel/ChatID
+// 继承自父会话（engine_wire.go buildSubAgentRunConfig: parentCtx.Channel/ChatID），
+// 因此子代理建的 job 会全落父会话名下、且到期后回到父会话执行。
+func cronOwnership(ctx *ToolContext) (channel, chatID string) {
+	if ctx == nil {
+		return "", ""
+	}
+	if key := strings.TrimSpace(ctx.CallerSessionKey); key != "" {
+		return cronSubAgentChannel, key
+	}
+	return ctx.Channel, ctx.ChatID
+}
+
 func (t *CronTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
 	p, err := parseToolArgs[cronParams](input)
 	if err != nil {
 		return nil, err
 	}
 
-	channel, chatID := "", ""
-	if ctx != nil {
-		channel = ctx.Channel
-		chatID = ctx.ChatID
-	}
+	channel, chatID := cronOwnership(ctx)
 
 	switch p.Action {
 	case "add":
@@ -135,10 +168,12 @@ func (t *CronTool) addJob(ctx *ToolContext, p cronParams) (*ToolResult, error) {
 		CreatedAt:    now,
 	}
 
-	// Set channel and sender info
+	// Set channel and sender info — 归属口径统一由 cronOwnership 解析：
+	// 子代理 → ("agent", <interactive key>)，主会话 → (ctx.Channel, ctx.ChatID)。
+	channel, chatID := cronOwnership(ctx)
+	job.Channel = channel
+	job.ChatID = chatID
 	if ctx != nil {
-		job.Channel = ctx.Channel
-		job.ChatID = ctx.ChatID
 		job.SenderID = ctx.SenderID
 	}
 
@@ -170,10 +205,11 @@ func (t *CronTool) addJob(ctx *ToolContext, p cronParams) (*ToolResult, error) {
 
 // listJobs lists the CURRENT session's cron jobs only (session-scoped: each
 // session sees and manages only its own jobs — the same policy as the web
-// task panel's CronTasks callback, ListJobsByChannelChatID). The ToolContext's
-// Channel+ChatID is the session key the job was created with; SubAgents inherit
-// the parent session's origin (ctx.ChatID = root session), so jobs created by
-// a SubAgent belong to the parent session and are managed from there.
+// task panel's CronTasks callback, ListJobsByChannelChatID).
+//
+// 归属由 cronOwnership 决定：子代理创建的任务归属它自己的物理会话
+// （channel="agent"、chatID=<interactive key>），因此子代理的 list 只看得到
+// 自己建的 job，父会话看不到也管不到 —— 与"谁建的谁管"一致。
 func (t *CronTool) listJobs(channel, chatID string) (*ToolResult, error) {
 	jobs, err := t.cronSvc.ListJobsByChannelChatID(channel, chatID)
 	if err != nil {
@@ -202,9 +238,10 @@ func (t *CronTool) listJobs(channel, chatID string) (*ToolResult, error) {
 
 // removeJob deletes a job by ID, verifying it belongs to the CURRENT session
 // (session-scoped ownership: a session can only cancel its own jobs). A job
-// from another session returns "not found" — no existence leak. Jobs created
-// by SubAgents carry the parent session's origin (channel+chatID), so the
-// parent session manages them.
+// from another session returns "not found" — no existence leak.
+//
+// 归属口径与 add/list 同一套（cronOwnership）：子代理只能删自己会话的 job，
+// 父会话删不动子代理的 job（反之亦然）。
 func (t *CronTool) removeJob(jobID, channel, chatID string) (*ToolResult, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("job_id is required for remove")
