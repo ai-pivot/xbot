@@ -3462,11 +3462,13 @@ func canonicalAgentChatID(s string) string {
 // ("agent", "web:web-4") —— 一个父会话树里必然 miss 的身份 ⇒ 行 orphan。
 //
 // 判据复用 isMirrorSessionAddress（与 sessionAddress /
-// drainAndProcessNotifications 同一个判据，注释见 interactive.go:3492）：
+// drainAndProcessNotifications 同一个判据，定义见 interactive.go:3549）：
 // 只有 rest 不含 "/" 的 "agent:<ch>:<chatID>" 才是镜像；真子代理地址
 // "agent:web:web-4/role:inst" 绝不能被剥（会打到 web 渠道的畸形 chatID）。
 //
-// 循环只为防御「镜像套镜像」（每轮至少掉 7 个字符，上限固定防死循环）。
+// 循环只为防御「镜像套镜像」（"agent:agent:web:web-4"）。上限 4 轮的残留条件：
+// ≥5 层镜像会残留一层未剥 —— 不可产生（sessionAddress 每次调用只剥一层，
+// 且剥完就不再是镜像形态），上限只是防死循环的死线，不是功能边界。
 func normalizeStoredParentKey(parentKey string) string {
 	out := parentKey
 	for i := 0; i < 4; i++ {
@@ -3516,14 +3518,11 @@ func (a *Agent) interactiveParentAddress(parentKey string) (channel, chatID stri
 			return ch, rest
 		}
 	}
-	// agent: 前缀既不是可识别的镜像、也不是注册表里的 agent 会话（例如存量
-	// "agent:web-4"，镜像层里连 channel 分隔一起丢了）：这个串**不含可还原的
-	// 父身份**，硬拆成 ("agent","web-4") 只会让行 orphan（agent 渠道下没有
-	// chatID="web-4" 的租户）。返回空让调用方回落到「从自己的 key 推父」
-	// （ListInteractiveSessions 的 parseInteractiveKeyParent），那才是真实父。
-	if strings.HasPrefix(parentKey, "agent:") && !strings.Contains(parentKey, "/") {
-		return "", ""
-	}
+	// agent: 前缀既不是可识别的镜像、也不是注册表里的 agent 会话（例如
+	// 同源形态 "agent:web-4"，即 origin=(channel=agent, chatID=web-4) 的旧结果）：
+	// 这一层里 channel 分隔已经丢了，**无法由字符串还原**父 channel，任何拆分都是
+	// 猜（拆成 ("agent","web-4") 只会让行 orphan）。如实按字符串拆，保持
+	// 45b69ce5 的行为，不做假父；这类形态在生产库里 0 行（见 FIX.md §8）。
 	if ch, rest, ok := splitSessionAddress(parentKey); ok {
 		return ch, rest
 	}

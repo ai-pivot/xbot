@@ -2340,7 +2340,20 @@ func normalizeSubAgentRow(row web.UserChatWithPreview, preview string) (web.User
 	row.Instance = info.instance
 	row.ParentChannel = info.parentChannel
 	row.ParentChatID = info.parentChatID
-	if explicitParentChannel == "agent" && explicitParentChatID != "" {
+	// 显式父（来自内存 InteractiveSessionInfo，已经 Agent.interactiveParentAddress
+	// 归一化）在两种情况下**才是**权威值，key 只作兜底：
+	//   ① explicitParentChannel == "agent"（嵌套子代理，父是另一个 agent 会话）；
+	//   ② key 解析出的父是 explicit 的执行上下文镜像 —— 键形态
+	//      "agent:web:web-4/<role>:<inst>" 的 key 解析只能得到 ("agent","web:web-4")
+	//      （把镜像层当父 ⇒ 必然 orphan），而真父是 ("web","web-4")。
+	// 其它「显式父」保持不采信：历史行的 parent 元数据可能是陈旧的（见
+	// TestNormalizeSubAgentRowIgnoresStaleMainParentMetadata），key 才是事实。
+	explicitTrusted := explicitParentChannel != "" && explicitParentChatID != ""
+	if explicitTrusted && explicitParentChannel != "agent" {
+		explicitTrusted = info.parentChannel == "agent" &&
+			info.parentChatID == explicitParentChannel+":"+explicitParentChatID
+	}
+	if explicitTrusted {
 		row.ParentChannel = explicitParentChannel
 		row.ParentChatID = explicitParentChatID
 	}

@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"xbot/storage/sqlite"
+)
 
 // 2026-11-04 打回项（首辅令）：
 // 存量镜像 parentKey 未归一化 —— df68f64a 之前 spawn 的会话把
@@ -101,9 +105,9 @@ func TestInteractiveParentAddress_StoredMirrorCollapses(t *testing.T) {
 			wantChannel: "agent", wantChatID: "web:web-4/court.shoufu:main",
 		},
 		{
-			name:        "退化形态 agent:web-4 不含可还原 channel ⇒ 不造假父（回落 key 推父）",
+			name:        "同源退化形态 agent:web-4 丢掉了 channel 分隔 ⇒ 不造假父（仍回 (agent,web-4)，已知限制）",
 			parentKey:   "agent:web-4",
-			wantChannel: "", wantChatID: "",
+			wantChannel: "agent", wantChatID: "web-4",
 		},
 		{
 			name:        "镜像套镜像 agent:agent:web:web-4 ⇒ web:web-4",
@@ -142,21 +146,34 @@ func TestNormalizeStoredParentKey(t *testing.T) {
 }
 
 // TestListInteractiveSessions_StoredMirrorParentAttaches 是**行级**端到端：
-// 存量镜像 parentKey 的运行中子代理，在 ListInteractiveSessions 里必须报告
-// 真实父身份 (web, web-4) —— 这正是 serverapp 建树时 lookupAgent/合成父要用
-// 的那一对值。
+// 同源配对：iorigin=(channel=agent, chatID=web:web-4) 在 df68f64a 之前会产生
 //
-// 其中 parentKey="agent:web-4" 是任务书里点名的字面串：它不含可还原的 channel，
-// 单独解析只能返回空，由 ListInteractiveSessions 回落到「从子代理自己的 key 推父」
-// （interactive.go:parseInteractiveKeyParent），最终结果同样是 (web, web-4)。
+//	parentKey = sessionAddress("agent","web:web-4") = "agent:web:web-4"
+//	key       = interactiveKey("agent","web:web-4", role, inst) = "agent:web:web-4/<role>:<inst>"
+//
+// 两者**同源**（parentKey 与 key 出自同一对 origin），这才是存量真实形态；
+// 「parentKey=agent:web-4 配 key=web:web-4/…」在代码里产生不出来
+// （parentKey 是 agent:web-4 ⇒ key 必为 agent:web-4/<role>:<inst>），门下省 P2 已点出。
 func TestListInteractiveSessions_StoredMirrorParentAttaches(t *testing.T) {
 	cases := []struct {
-		name      string
-		key       string
-		parentKey string
+		name        string
+		key         string
+		parentKey   string
+		wantChannel string
+		wantChatID  string
 	}{
-		{"存量镜像（df68f64a 之前 spawn）", "web:web-4/court.gongbu:inst-1", "agent:web:web-4"},
-		{"任务书点名的退化形态", "web:web-4/court.gongbu:inst-1", "agent:web-4"},
+		{
+			name:        "同源存量镜像（一级子代理，父 = 主会话 web:web-4）",
+			key:         "agent:web:web-4/court.gongbu:inst-1",
+			parentKey:   "agent:web:web-4",
+			wantChannel: "web", wantChatID: "web-4",
+		},
+		{
+			name:        "同源嵌套子代理（parentKey 含 /，是真子代理地址，不剥）",
+			key:         "agent:web:web-4/court.shoufu:main/court.gongbu:inst-2",
+			parentKey:   "agent:web:web-4/court.shoufu:main",
+			wantChannel: "agent", wantChatID: "web:web-4/court.shoufu:main",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -166,14 +183,15 @@ func TestListInteractiveSessions_StoredMirrorParentAttaches(t *testing.T) {
 			})
 			defer cleanup()
 
-			sessions := a.ListInteractiveSessions("web", "")
+			sessions := a.ListInteractiveSessions("agent", "")
 			for _, s := range sessions {
 				if s.Key != c.key {
 					continue
 				}
-				if s.ParentChannel != "web" || s.ParentChatID != "web-4" {
-					t.Fatalf("session %q (parentKey=%q) parent = (%q,%q), want (web,web-4) — "+
-						"否则 serverapp 建树必然 orphan", c.key, c.parentKey, s.ParentChannel, s.ParentChatID)
+				if s.ParentChannel != c.wantChannel || s.ParentChatID != c.wantChatID {
+					t.Fatalf("session %q (parentKey=%q) parent = (%q,%q), want (%q,%q) — "+
+						"否则 serverapp 建树必然 orphan", c.key, c.parentKey,
+						s.ParentChannel, s.ParentChatID, c.wantChannel, c.wantChatID)
 				}
 				if !s.Running {
 					t.Fatalf("session %q must report Running=true", c.key)
@@ -182,5 +200,37 @@ func TestListInteractiveSessions_StoredMirrorParentAttaches(t *testing.T) {
 			}
 			t.Fatalf("session %q not listed: %#v", c.key, sessions)
 		})
+	}
+}
+
+// TestRestoredParentKeyFromRegistryIsNormalized 是 layer 2 的**实测 roundtrip**：
+// 注册表里 parent 列被写成镜像形态 ('agent', "web:web-4") 的行，重启后按
+// interactive_persist.go:258 `rec.ParentChannel + ":" + rec.ParentChatID` 重建出来的
+// ia.parentKey 就是 "agent:web:web-4" —— 原样复现镜像形态，再由归一化吃掉。
+//
+// 这里真写库、真读回，不是字符串拼接假设。
+func TestRestoredParentKeyFromRegistryIsNormalized(t *testing.T) {
+	mt, _ := newAgentHistorySession(t)
+	a := &Agent{multiSession: mt}
+	svc := sqlite.NewInteractiveAgentService(mt.DB().Conn())
+
+	// 模拟 pre-fix 落库：parent 列是镜像形态（现存 0 行，机制仍必须成立）。
+	rec := registryRec("agent:court.gongbu:inst-1", "agent", "web:web-4", "court.gongbu", "inst-1",
+		sqlite.InteractiveAgentIdle)
+	if err := svc.Upsert(rec); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := svc.Get("agent:court.gongbu:inst-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	// 与 interactive_persist.go:258 逐字相同地重建 parentKey。
+	restoredParentKey := got.ParentChannel + ":" + got.ParentChatID
+	if restoredParentKey != "agent:web:web-4" {
+		t.Fatalf("restored parentKey = %q, want agent:web:web-4 (roundtrip 形态没复现，本用例前提失效)", restoredParentKey)
+	}
+	ch, chatID := a.interactiveParentAddress(restoredParentKey)
+	if ch != "web" || chatID != "web-4" {
+		t.Fatalf("restored parentKey %q → (%q,%q), want (web,web-4)", restoredParentKey, ch, chatID)
 	}
 }

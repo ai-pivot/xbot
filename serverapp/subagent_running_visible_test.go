@@ -309,57 +309,54 @@ func findTreeRow(res web.SessionTreeResult, key string) (row web.UserChatWithPre
 }
 
 // TestSessionTree_StoredMirrorParentSubAgentAttached 是 2026-11-04 打回项的
-// **端到端复现**：df68f64a 之前 spawn 的会话 ia.parentKey 是执行上下文镜像
-// "agent:web:chat-1"（旧 sessionAddress(agent, "web:chat-1") 的产物）。这种行
-// 在 45b69ce5 的父解析下被标成 (agent, "web:chat-1")，serverapp 建树时
-// lookupAgent("agent:web:chat-1") miss、parseAgentTenantChatID("web:chat-1") 也
-// 失败 ⇒ 落进 OrphanSubAgents ⇒ 前端侧边栏看不到它在跑。
+// **端到端复现**，用**同源配对**（门下省 P2）：
 //
-// 修复后：父标注归一化成 (web, chat-1)，行挂在主会话 chat-1 的 children 下。
+//	origin = (channel="agent", chatID="web:web-4")            ← df68f64a 之前 spawn 的上下文
+//	parentKey = sessionAddress(origin)      = "agent:web:web-4"  （旧代码产物 = 镜像）
+//	key       = interactiveKey(origin,...)  = "agent:web:web-4/<role>:<inst>"
 //
-// 变异自证（回滚 interactiveParentAddress 到 45b69ce5）⇒ 本用例红（落 orphan），
-// 日志见 court/evidence/gongbu/branch-fix-running-20261104/。
+// 注意 key 与 parentKey 同源：parentKey 是 agent:web:web-4 ⇒ key 必是
+// agent:web:web-4/<role>:<inst>。「parentKey=agent:web-4 配 key=web:web-4/…」
+// 这种配对在代码里产生不出来，用它做 e2e 是锁错对象（③ 的判别力会被
+// key-parse 兜底吃掉，删 ③ 仍绿）。
+//
+// 45b69ce5 行为：③ 把 parentKey 拆成 ("agent","web:web-4")，而 key-parse 也得到
+// 同一个值 ⇒ serverapp 里 lookupAgent("agent:web:web-4") miss、
+// parseAgentTenantChatID("web:web-4") 失败 ⇒ 落 OrphanSubAgents ⇒ 侧边栏看不到。
+//
+// 修复后：父标注 = (web, web-4)，行挂在主会话 web:web-4 的 children 下。
+// 变异自证（删掉 interactiveParentAddress 的 ③ 镜像分支）⇒ 本用例红。
 func TestSessionTree_StoredMirrorParentSubAgentAttached(t *testing.T) {
-	cases := []struct {
-		name      string
-		parentKey string
-	}{
-		{"存量镜像 agent:web:chat-1", "agent:web:chat-1"},
-		{"退化镜像 agent:chat-1（任务书点名字面串）", "agent:chat-1"},
+	ag, callbacks := newSubAgentFixture(t)
+	const parentChatID = "web-4"
+	const key = "agent:web:web-4/court.gongbu:inst-1"
+	insertWebTenant(t, ag, parentChatID)
+	insertAgentTenant(t, ag, key)
+
+	cleanup := ag.RegisterInteractiveSessionForTest(agent.InteractiveSessionSeed{
+		Key: key, ParentKey: "agent:web:web-4", Role: "court.gongbu", Instance: "inst-1", Running: true,
+	})
+	defer cleanup()
+
+	res, err := callbacks.SessionTree("web-1", web.SessionSelector{Channel: "web", ChatID: parentChatID}, true, 0, 100)
+	if err != nil {
+		t.Fatalf("SessionTree: %v", err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			ag, callbacks := newSubAgentFixture(t)
-			const key = "web:chat-1/court.gongbu:inst-1"
-			insertWebTenant(t, ag, "chat-1")
-			insertAgentTenant(t, ag, key)
-
-			cleanup := ag.RegisterInteractiveSessionForTest(agent.InteractiveSessionSeed{
-				Key: key, ParentKey: c.parentKey, Role: "court.gongbu", Instance: "inst-1", Running: true,
-			})
-			defer cleanup()
-
-			res, err := callbacks.SessionTree("web-1", web.SessionSelector{Channel: "web", ChatID: "chat-1"}, true, 0, 100)
-			if err != nil {
-				t.Fatalf("SessionTree: %v", err)
-			}
-			if len(res.OrphanSubAgents) != 0 {
-				t.Fatalf("存量镜像 parentKey 的子代理不得 orphan，got %#v", res.OrphanSubAgents)
-			}
-			row, parentChatID, found, orphaned := findTreeRow(res, key)
-			if orphaned {
-				t.Fatalf("sub-agent %q fell into orphan_subagents: %#v", key, row)
-			}
-			if !found {
-				t.Fatalf("sub-agent %q not attached anywhere in the tree", key)
-			}
-			if parentChatID != "chat-1" {
-				t.Fatalf("sub-agent %q attached under %q, want chat-1", key, parentChatID)
-			}
-			if !row.Running {
-				t.Fatalf("attached sub-agent row must be Running=true: %#v", row)
-			}
-		})
+	if len(res.OrphanSubAgents) != 0 {
+		t.Fatalf("存量镜像 parentKey 的子代理不得 orphan，got %#v", res.OrphanSubAgents)
+	}
+	row, attachedParent, found, orphaned := findTreeRow(res, key)
+	if orphaned {
+		t.Fatalf("sub-agent %q fell into orphan_subagents: %#v", key, row)
+	}
+	if !found {
+		t.Fatalf("sub-agent %q not attached anywhere in the tree", key)
+	}
+	if attachedParent != parentChatID {
+		t.Fatalf("sub-agent %q attached under %q, want %q", key, attachedParent, parentChatID)
+	}
+	if !row.Running {
+		t.Fatalf("attached sub-agent row must be Running=true: %#v", row)
 	}
 }
 
