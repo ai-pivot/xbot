@@ -3509,10 +3509,12 @@ func canonicalAgentChatID(s string) string {
 // 不剥这一层，interactiveParentAddress 的字符串拆分分支会把它拆成
 // ("agent", "web:web-4") —— 一个父会话树里必然 miss 的身份 ⇒ 行 orphan。
 //
-// 判据复用 isMirrorSessionAddress（与 sessionAddress /
-// drainAndProcessNotifications 同一个判据，定义见 interactive.go:3549）：
-// 只有 rest 不含 "/" 的 "agent:<ch>:<chatID>" 才是镜像；真子代理地址
-// "agent:web:web-4/role:inst" 绝不能被剥（会打到 web 渠道的畸形 chatID）。
+// 判据复用 isMirrorSessionAddress（定义见 interactive.go:3598；其唯一实现是
+// agentContextMirrorTarget，**与 sessionAddress 共用同一份** —— 生产侧与读侧
+// 各写一份就会漂移，cli 父活洞正是这么漏掉的）：首个 "/" 之前是
+// "<ch>:<非空 chatID>" 的 "agent:<key>" 是真子代理地址，绝不剥（剥了会打到
+// web 渠道的畸形 chatID）；首个 "/" 之前是 "<ch>:"（chatID 为空，cli 路径父
+// "agent:cli:/repo" 就是这种）或整条不含 "/" 的才是镜像。
 //
 // 循环只为防御「镜像套镜像」（"agent:agent:web:web-4"）。上限 4 轮的残留条件：
 // ≥5 层镜像会残留一层未剥 —— 不可产生（sessionAddress 每次调用只剥一层，

@@ -22,7 +22,8 @@ import (
 //   spawn 时 ia.parentKey = sessionAddress(origin)（agent/interactive.go:1344），
 //   一级子代理的父是主会话 ⇒ parentKey="web:chat-1"（不含 "/"）；
 //   ListInteractiveSessions 却把任何非空 parentKey 一律当成 agent 父
-//   （agent/interactive.go:3511-3513：parentChannel="agent"）。于是
+//   （45b69ce5 版 agent/interactive.go:3511-3513：parentChannel="agent"；
+//   现已改由 interactiveParentAddress 归一化，见 interactive.go:3530 起的 ③ 分支）。于是
 //   serverapp 树里 lookupAgent("agent:web:chat-1") 必然 miss，合成父也 parse 失败
 //   ⇒ 行掉进 OrphanSubAgents ⇒ 前端 session-tree 只渲染 nodes 的 children
 //   ⇒ 侧边栏根本没有这条子代理 ⇒ 用户看到「没有子代理在跑」。
