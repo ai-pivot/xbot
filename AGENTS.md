@@ -111,6 +111,7 @@ The highest-priority rules, one line each. **Before changing the related code, R
 - ⛔ `docs/agent/settings.md` — **迭代次数上限已彻底移除**（2026-10-14 用户要求「以后不加这种限制」）：`max_iterations`/`AGENT_MAX_ITERATIONS`/`set_max_iterations`/`DefaultMaxIterations=2000` 全部删除，主循环无上限；⛔ 别再引入每 turn 迭代上限（曾致迭代记录 2000 条后断流 + 压缩点锚点塌陷）。
 - ⛔ `docs/agent/install.md` — **macOS 装完二进制必须 `codesign --force --sign -`**（2026-10-14 事故：`cp` 新二进制使旧签名失效 ⇒ launchd 拒绝 exec ⇒ 服务静默起不来）。`scripts/install.sh` 已自动签名。
 - ⛔ `docs/agent/gotchas-agent-core.md` — `max_concurrency` 只能有一个存储位置（2026-09-17 用户报告根治）：「设了 100 并发，只起 4-5 个子代理就卡」+「统计里的 TTFT 很短、和入库时间对不上」。
+- ⛔ `docs/agent/gotchas-agent-core.md` — **子代理行的父会话标注必须解析成「父会话身份」**（2026-11-04「ia.running=true 但 Web 侧边栏没有子代理在跑」根治）：`ia.parentKey` 有两种形态且无法靠字符串区分（一级父=普通会话 `web:web-4`；嵌套父=另一个子代理 `agent:web:web-4/x:y`），一律当 `(agent, parentKey)` 会让运行中的子代理全部掉进 `OrphanSubAgents`；唯一入口 `Agent.interactiveParentAddress`。另：`tenants.chat_id` 就是 interactive map key，别把「带 agent: 前缀」当 running 查询 miss 的根因。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 模型解析严禁用"裸模型名"——任何时候解析模型必须带订阅 id（用户明确要求，2026-09-11）。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 压缩三把尺子 + 无限循环三重防线（2026-08-30 "200k 上下文无限循环压缩"修复）。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 停机必须先把 WAL 的已提交内容 checkpoint 进主库（2026-09-17 丢数据事故；

@@ -2651,6 +2651,157 @@ describe('sidebar state reconciliation (trust window + lost events)', () => {
     expect(result.current.subAgents[0].status).toBe('idle')
   })
 
+  it('keeps an orphan sub-agent visible when the backend reports an agent-form parent', async () => {
+    // 容错护栏（不是 bug 修复）：后端 2026-11-04 之前的父会话标注是
+    // parent_channel='agent' + parent_chat_id='web:web-4'（把主会话父当成 agent 父），
+    // 该行会落进 orphan_subagents。前端靠 splitQualifiedSessionKey 兜底把它挂回
+    // 主会话，所以「前端看不到子代理」的根因不在前端 —— 这条用例锁定这份兜底，
+    // 避免以后删掉它导致旧后端/边界数据直接空白。
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{ chat_id: 'web-4', channel: 'web', label: 'web-4', last_active: '2026-11-04T10:30:00Z' }],
+            chats: [{ chat_id: 'web-4', channel: 'web', label: 'web-4', last_active: '2026-11-04T10:30:00Z' }],
+            orphan_subagents: [
+              {
+                chat_id: 'web:web-4/proj.xbot.dev:subagent-running-visible',
+                full_key: 'web:web-4/proj.xbot.dev:subagent-running-visible',
+                channel: 'agent',
+                type: 'agent',
+                label: 'proj.xbot.dev/subagent-running-visible',
+                role: 'proj.xbot.dev',
+                instance: 'subagent-running-visible',
+                parent_channel: 'agent',
+                parent_chat_id: 'web:web-4',
+                running: true,
+                status: 'running',
+                historical: false,
+                last_active: '2026-11-04T10:30:00Z',
+              },
+            ],
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    expect(result.current.subAgents).toHaveLength(1)
+    expect(result.current.subAgents[0].running).toBe(true)
+    expect(result.current.sessions[0].children?.map((c) => c.chatID)).toEqual([
+      'web:web-4/proj.xbot.dev:subagent-running-visible',
+    ])
+  })
+
+  it('renders a running sub-agent exactly once using the backend real key form', async () => {
+    // 现场（2026-11-04）：后端 ia.running=true，侧边栏却没有「子代理在跑」。
+    // 这里喂**后端真实产物**：一级子代理的 tenants.chat_id == interactive map key
+    // （'web:web-chat-1/explore:oneshot-1'，无 agent: 前缀），挂在父会话 children
+    // 下，parent_channel='web' / parent_chat_id='web-chat-1' / running=true。
+    // 锁定的契约：这一份行 + SSE lifecycle 合并后必须**恰好一行**且 running，
+    // turn 结束后同一行转 idle（不允许「DB 一行 idle + SSE 一行 running」）。
+    let backendRunning = true
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              {
+                chat_id: 'web-chat-1',
+                channel: 'web',
+                label: 'My Chat',
+                last_active: '2026-08-01T00:00:00Z',
+                children: [
+                  {
+                    chat_id: 'web:web-chat-1/explore:oneshot-1',
+                    full_key: 'web:web-chat-1/explore:oneshot-1',
+                    channel: 'agent',
+                    type: 'agent',
+                    label: 'explore',
+                    role: 'explore',
+                    instance: 'oneshot-1',
+                    parent_channel: 'web',
+                    parent_chat_id: 'web-chat-1',
+                    running: backendRunning,
+                    status: backendRunning ? 'running' : 'idle',
+                    historical: false,
+                    last_active: '2026-08-01T00:00:01Z',
+                  },
+                ],
+              },
+            ],
+            chats: [
+              { chat_id: 'web-chat-1', channel: 'web', label: 'My Chat', last_active: '2026-08-01T00:00:00Z' },
+            ],
+            orphan_subagents: [],
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.subAgents).toHaveLength(1))
+    expect(result.current.subAgents.map((a) => a.chatID)).toEqual(['web:web-chat-1/explore:oneshot-1'])
+    expect(result.current.subAgents[0].running).toBe(true)
+    expect(result.current.sessions[0].children?.map((c) => c.chatID)).toEqual([
+      'web:web-chat-1/explore:oneshot-1',
+    ])
+
+    // SSE subagent_started 用的是 (chat_id=父会话, session_key=裸 key) —— 不得造出第二行。
+    vi.useFakeTimers()
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_started',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        session_key: 'web:web-chat-1/explore:oneshot-1',
+        role: 'explore',
+        instance: 'oneshot-1',
+        parent_id: 'web-chat-1',
+      })
+      await Promise.resolve()
+    })
+    expect(result.current.subAgents).toHaveLength(1)
+    expect(result.current.subAgents[0].running).toBe(true)
+
+    // turn 结束：后端发 subagent_stopped + running=false（会话仍在）。
+    // 同一行必须转 idle，不许消失、也不许残留 running。
+    backendRunning = false
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_stopped',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        session_key: 'web:web-chat-1/explore:oneshot-1',
+        role: 'explore',
+        instance: 'oneshot-1',
+        parent_id: 'web-chat-1',
+      })
+      await Promise.resolve()
+    })
+    expect(result.current.subAgents).toHaveLength(1)
+    expect(result.current.subAgents[0].running).toBe(false)
+    expect(result.current.subAgents[0].status).toBe('idle')
+
+    // 随后的 HTTP 刷新与 SSE 结论一致（仍是同一行 idle，不产生副本）。
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.subAgents).toHaveLength(1)
+    expect(result.current.subAgents[0].running).toBe(false)
+  })
+
   it('subagent_stopped removed=true deletes the sidebar row (destroyed session)', async () => {
     // User report: "subagent 被卸载了却还显示" — destroyInteractiveSession
     // (TTL eviction / unload / spawn-failure cleanup) cascade-deletes the DB

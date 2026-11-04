@@ -3435,6 +3435,60 @@ func sessionAddress(channel, chatID string) (string, bool) {
 	return channel + ":" + chatID, true
 }
 
+// canonicalAgentChatID 剥掉一层 "agent:" 前缀，把 agent 会话地址还原成
+// interactiveSubAgents 的 map key：
+//
+//	"agent:web:web-4/court.shoufu:main" → "web:web-4/court.shoufu:main"
+//
+// 为什么需要（2026-11-04 现场）：同一个子代理会话在不同链路里有两种写法 ——
+// map key 从不带这层前缀，而 sessionAddress 对**含 "/" 的 chatID**（父是 agent
+// 会话的嵌套子代理）不会再剥，于是 parentKey 被写成 "agent:<key>"。裸 Load
+// 这种形态必然 miss，进而把父会话认错（行掉进 orphan，前端不渲染）。
+func canonicalAgentChatID(s string) string {
+	return strings.TrimPrefix(s, "agent:")
+}
+
+// interactiveParentAddress 把子代理的 parentKey（父会话地址 = sessionAddress 的
+// 结果）解析成**父会话的身份**，供列表/树挂载使用。
+//
+// parentKey 有两种形态，且**无法只靠字符串区分**（cli 主会话地址
+// "cli:/repo:x" 同样含 "/"）：
+//   - 一级子代理：父是普通会话，"web:web-4" / "cli:/repo:x"
+//   - 嵌套子代理：父是另一个子代理，其地址就是那个会话的 map key
+//
+// 因此以**注册表存在性**为准：命中 → 父是 agent 会话（返回 map key 本身）；
+// 未命中 → 按 "channel:chatID" 拆成普通会话父。
+func (a *Agent) interactiveParentAddress(parentKey string) (channel, chatID string) {
+	if parentKey == "" {
+		return "", ""
+	}
+	if _, ok := a.interactiveSubAgents.Load(parentKey); ok {
+		return "agent", parentKey
+	}
+	if canon := canonicalAgentChatID(parentKey); canon != parentKey {
+		if _, ok := a.interactiveSubAgents.Load(canon); ok {
+			return "agent", canon
+		}
+	}
+	if ch, rest, ok := splitSessionAddress(parentKey); ok {
+		return ch, rest
+	}
+	return "", ""
+}
+
+// splitSessionAddress 把会话地址 "channel:chatID" 拆回 (channel, chatID)。
+// 与 sessionAddress 互逆，用于把 ia.parentKey 还原成父会话的身份：
+//   - "web:web-4"                          → ("web", "web-4")       主会话父
+//   - "agent:web:web-4/court.shoufu:main"  → ("agent", "web:web-4/court.shoufu:main")
+//     后者正是父子代理的 interactive map key，可直接喂给 lookupAgent。
+func splitSessionAddress(addr string) (channel, chatID string, ok bool) {
+	ch, rest, cut := strings.Cut(addr, ":")
+	if !cut || ch == "" || rest == "" {
+		return "", "", false
+	}
+	return ch, rest, true
+}
+
 // isMirrorSessionAddress 判断地址是否仍是执行上下文镜像（"agent:<ch>:<chatID>"，
 // 且 chatID 不含 "/"）。interactive 子代理的 "agent:web:web-4/role:inst" 是真正的
 // 会话地址，不算镜像。
@@ -3509,7 +3563,9 @@ func (a *Agent) ListInteractiveSessions(channel, chatID string) []InteractiveSes
 		ia.mu.Lock()
 		parentChannel, parentChatID := parseInteractiveKeyParent(keyStr)
 		if ia.parentKey != "" {
-			parentChannel, parentChatID = "agent", ia.parentKey
+			if ch, chatID := a.interactiveParentAddress(ia.parentKey); ch != "" {
+				parentChannel, parentChatID = ch, chatID
+			}
 		}
 		info := InteractiveSessionInfo{
 			Role:          ia.roleName,
