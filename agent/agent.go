@@ -5423,15 +5423,39 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 		return false
 	}
 
-	// 已决定走 interactive 投递：先把自己刚 buffer 的**这一条**取走，
-	// 否则它会在通用路径上被重复注入（与 SubAgentBgNotify 的父会话投递同一处理）。
-	// 投递失败时下面的判定点会把它补回 bgRunPending。
+	// 第一道闸：**认领**本条事件 —— 用 takeOneBgNotification 的**返回值**判定，
+	// 绝不能再写成"调用后丢弃返回值"。
 	//
-	// ⚠️ 必须逐条取（2026-11-04 工部验收打回项 1）：这里原来是
-	// `a.takePendingBgNotifications(c.Key)` —— 取走该 key **全部** pending 并丢弃
-	// 返回值，失败时只补回 c 一条 ⇒ 同 key 的 N−1 条兄弟通知永久丢失。
-	// takeOneBgNotification 只移除本条，兄弟按原序留在队列里。
-	a.takeOneBgNotification(c.Key, c)
+	// 命中（true）：本条已从 bgRunPending 移除，本函数独占它，下面用 interactive
+	// 投递接管；投递失败时放回队列再 drain，注入**恰好 1 次**。
+	//
+	// 未命中（false）：说明**并发路径已经把它取走**了 —— 同 session 的 chatWorker
+	// 在迭代边界调 wireBgNotificationDrain → takePendingBgNotifications 整队列取走
+	// （agent/agent_process.go:319 + agent/engine_run.go:2701），那一轮 Run 已经把
+	// 这条注入给模型（synthetic tool result）。此时必须**立刻放手**：返回 false
+	// 交回 bgNotifyLoop 的通用分支（那边再 drain 只会空转，取不到东西）。
+	//
+	// ⚠️ 未命中时**不能**再投一次、也**不能** ensure 补回（2026-11-04 门下省 N1，
+	// 隔离复现 inbound messages=2 / event occurrences=2）：补回等于把一条**已经
+	// 注入过**的事件重新排队，下一次 drain 再注入一次 ⇒ 同一事件被两条路径各注入
+	// 一次。修前 f50d864a 正是丢弃返回值、"未命中"也照投，才留下这个窗口。
+	//
+	// 由此「恰好一次」是**无条件**的：takeOne 命中/未命中把两条路径分成互斥的两半，
+	// 命中那半独占事件、未命中那半什么都不做。
+	//
+	// 前置条件（调用方责任）：调用前这条事件必须已经 buffer 进 bgRunPending。
+	// 全仓唯一生产调用点 bgNotifyLoop 就是"先 enqueueBgNotification 再分流"
+	// （agent/agent.go:5273-5287），所以未命中只可能是"被并发 drain 取走"。
+	if !a.takeOneBgNotification(c.Key, c) {
+		log.WithFields(log.Fields{
+			"session_key": c.Key,
+			"role":        role,
+			"instance":    instance,
+			"reason":      "already taken by a concurrent drain (same-session chatWorker, injected in that Run)",
+			"executor":    "generic drain path (already injected there, exactly once)",
+		}).Info("定时任务已被并发 drain 认领，放弃 interactive 投递（避免双投）")
+		return false
+	}
 
 	// 文案与 drainAndProcessNotifications 的 cron 分支保持一致
 	// （那里是 `fmt.Sprintf("⏰ [定时任务触发] %s", n.Message)`）——
@@ -5452,17 +5476,20 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 			return
 		}
 		// 投递失败（会话在 Load 与 Send 之间被销毁 / 仍在初始化 / 投递被取消）：
-		// 把它重新排回 bgRunPending 并立刻 drain —— 事件绝不丢。
+		// 把它放回 bgRunPending 并立刻 drain —— 事件绝不丢。
 		//
-		// 用 ensurePendingBgNotification 而不是 enqueueBgNotification：后者无条件
-		// append，若这条事件此刻已经在队列里（take 没命中同一个实例）就会双投；
-		// ensure 按事件实例去重，保证"本条恰好一次"，且不动兄弟条目。
+		// 走到这里时本条**由本函数独占**（上面的 takeOne 命中，把它从队列移除，
+		// 并发 drain 取不到它），所以"放回 1 条 + drain"的注入次数**无条件**是 1：
+		// 队列里不存在同一实例的第二份，兄弟条目也不受影响。
+		// 这里用 enqueueBgNotification（无条件追加）而不是"幂等 ensure"：
+		// 幂等去重在本处无可观察差异（独占语义已经保证队列里没有它），留着只会
+		// 多一个测不出来的分支；正确性不依赖它，就别假装它有用。
 		log.WithError(firstNonNilError(err, out)).WithFields(log.Fields{
 			"session_key": c.Key,
 			"role":        role,
 			"instance":    instance,
 		}).Warn("定时任务投递子代理会话失败，回落通用注入")
-		a.ensurePendingBgNotification(c.Key, c)
+		a.enqueueBgNotification(c)
 		a.drainAndProcessNotifications(c.Key)
 	}()
 	return true

@@ -153,6 +153,11 @@ func sameBgNotification(x, y tools.BgNotification) bool {
 //
 // 锁：bgRunPendingMu（与 enqueue/take/acknowledge 共用同一把互斥锁，
 // 所以"移除本条"与"并发入队"之间不会丢事件）。
+//
+// 返回值是**认领凭证**，调用方必须用它判定（2026-11-04 门下省 N1）：
+// 命中=本条归调用方独占；未命中=事件已被并发路径（同 session chatWorker 的
+// wireBgNotificationDrain）整队列取走并已注入，调用方**必须放手**，
+// 不许再投一次、也不许把它补回队列。
 func (a *Agent) takeOneBgNotification(sessionKey string, target tools.BgNotification) bool {
 	if target == nil {
 		return false
@@ -175,29 +180,6 @@ func (a *Agent) takeOneBgNotification(sessionKey string, target tools.BgNotifica
 		return true
 	}
 	return false
-}
-
-// ensurePendingBgNotification 幂等地把 target 放回 sessionKey 队列：
-// 队列里已有它（同一条事件实例）就什么都不做，没有才追加到队尾。
-//
-// 用于"投递失败补回"：先 takeOne 再 ensure ⇒ 失败路径上这条事件在队列里
-// 恰好出现一次（不双投）；take 没命中（例如并发路径已把它取走）时也不会
-// 静默丢失（补回一条）。兄弟条目一律不动。
-func (a *Agent) ensurePendingBgNotification(sessionKey string, target tools.BgNotification) {
-	if target == nil {
-		return
-	}
-	a.bgRunPendingMu.Lock()
-	defer a.bgRunPendingMu.Unlock()
-	if a.bgRunPending == nil {
-		a.bgRunPending = make(map[string][]tools.BgNotification)
-	}
-	for _, n := range a.bgRunPending[sessionKey] {
-		if sameBgNotification(n, target) {
-			return
-		}
-	}
-	a.bgRunPending[sessionKey] = append(a.bgRunPending[sessionKey], target)
 }
 
 func (a *Agent) pendingBgNotifications(sessionKey string) []tools.BgNotification {

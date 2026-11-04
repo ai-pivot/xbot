@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -281,22 +283,49 @@ func collectInbound(t *testing.T, a *Agent, quiet, max time.Duration) []bus.Inbo
 	}
 }
 
+// cronInjectionText 是 cron 事件被注入时使用的**完整文案**（与
+// deliverCronFiredToSubAgentSession 和 drainAndProcessNotifications 的 cron 分支
+// 逐字节一致：`"⏰ [定时任务触发] " + message`）。用它做 needle 而不是裸 message：
+// 裸 message 无法区分"注入两次"和"同一批里出现两次"，也无法排除别处顺带引用同一
+// 字符串（例如某条通知的正文里恰好复述了它）。
+func cronInjectionText(message string) string {
+	return "⏰ [定时任务触发] " + message
+}
+
+// countOccurrences 统计 needle 在**所有注入内容的拼接**里出现的次数。
+//
+// 为什么不能按消息条数计（2026-11-04 门下省 N2）：drain 会把同一批的多条通知
+// **合并进一条注入**（"Bg notifications: injected N" 形态），此时"同一条事件在同批
+// 出现两次"只产生 1 条消息 ⇒ 按条数计会漏判双投，M4 变异下仍绿。
+func countOccurrences(msgs []bus.InboundMessage, needle string) int {
+	n := 0
+	for _, m := range msgs {
+		n += strings.Count(m.Content, needle)
+	}
+	return n
+}
+
 // TestCronFired_FailedDeliveryKeepsSiblingsAndNoDuplicate 锁住两条**同时成立**的不变量：
 //
 //	① 不丢：同 key 上还有别的 pending（兄弟通知）时，本条投递失败补回**不得**
 //	   把兄弟一起吞掉 —— takePendingBgNotifications 取走整条队列再只补回自己，
 //	   兄弟就永久消失（2026-11-04 工部验收打回项 1）。
-//	② 不双投：本条失败补回后只能出现一次（补回用 ensure 按事件实例去重）。
+//	② 不双投：本条失败补回后，注入内容里 `⏰ [定时任务触发] msg0` 只出现 **1 次**
+//	   （按**事件出现次数**计，不是按消息条数——drain 会合并多条进一条，见 countOccurrences）。
 //
-// 判别力：
+// 判别力（每条都实测过，别再写没测过的判断）：
 //   - 把 takeOneBgNotification 换回 takePendingBgNotifications（2743f6be 原样）
-//     ⇒ msg1 不再出现 ⇒ 本用例红（"兄弟被吞"）。
-//   - 把 take 整个删掉 ⇒ msg0 被 enqueue 两次、drain 注入两份 ⇒ msg0 计数 2 ⇒ 红。
+//     ⇒ msg1 出现 0 次 ⇒ 本用例红（"兄弟被吞"，M1）。
+//   - 删掉 take 调用本身 ⇒ 本用例红：msg0 出现 **2 次**，而且 drain 把这一批合并成
+//     **1 条**消息（"🔔 合并通知 ×3"）——按消息条数计只会看到 1，这正是门下省 N2
+//     点出的漏判（M2 实测）。
+//   - 并发 drain 抢先取走事件后仍投递（门下省 N1 原缺陷）⇒ 本用例仍绿（它不覆盖
+//     并发交错），由 TestCronFired_ConcurrentDrainTakesEventExactlyOnce 抓（2 次）。
 func TestCronFired_FailedDeliveryKeepsSiblingsAndNoDuplicate(t *testing.T) {
 	a, _, _ := newCronRouteTestAgent(t)
 
 	// 必然失败的"活"会话（running=true + cfg==nil ⇒ "still initializing"），
-	// 投递失败后走 ensure + drain 的补回路径。
+	// 投递失败后走"放回队列 + drain"的补回路径。
 	a.interactiveSubAgents.Store(cronSubAgentKey, &interactiveAgent{
 		roleName: "court.gongbu",
 		instance: "inst-1",
@@ -322,20 +351,13 @@ func TestCronFired_FailedDeliveryKeepsSiblingsAndNoDuplicate(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("投递失败后 5s 内 bus.Inbound 一条注入都没有：事件被静默吞掉")
 	}
-	n0, n1 := 0, 0
-	for _, m := range got {
-		if strings.Contains(m.Content, msg0) {
-			n0++
-		}
-		if strings.Contains(m.Content, msg1) {
-			n1++
-		}
-	}
+	n0 := countOccurrences(got, cronInjectionText(msg0))
+	n1 := countOccurrences(got, cronInjectionText(msg1))
 	if n0 != 1 {
-		t.Fatalf("msg0 注入 %d 次（收到 %d 条消息），want 1 —— 双投/或没补回：%v", n0, len(got), contentsOf(got))
+		t.Fatalf("msg0 出现 %d 次（收到 %d 条消息），want 1 —— 双投/或没补回：%v", n0, len(got), contentsOf(got))
 	}
 	if n1 != 1 {
-		t.Fatalf("msg1（同 key 的兄弟 pending）注入 %d 次（收到 %d 条消息），want 1 —— 兄弟通知被 take 整条队列吞掉了：%v",
+		t.Fatalf("msg1（同 key 的兄弟 pending）出现 %d 次（收到 %d 条消息），want 1 —— 兄弟通知被 take 整条队列吞掉了：%v",
 			n1, len(got), contentsOf(got))
 	}
 }
@@ -383,6 +405,151 @@ func TestCronFired_ClaimedEventIsNotReinjectedByDrain(t *testing.T) {
 	for _, m := range got {
 		if strings.Contains(m.Content, msg) {
 			t.Fatalf("同一条 cron 事件被两条路径各注入一次（interactive 认领 + 通用 drain）：%q", m.Content)
+		}
+	}
+}
+
+// TestCronFired_ConcurrentDrainTakesEventExactlyOnce 是门下省 N1 的判别力用例：
+//
+// 现场（确定性构造，不用 sleep 赌时序）：
+//  1. bgNotifyLoop 先把这条 cron buffer 进 bgRunPending；
+//  2. **同 session 的 chatWorker 在迭代边界抢先 drain**（wireBgNotificationDrain →
+//     takePendingBgNotifications 整队列取走）—— 这条事件已经以 synthetic tool
+//     result 注入给模型了；
+//  3. 这时才轮到 deliverCronFiredToSubAgentSession 分流它。
+//
+// 正确行为：takeOne **未命中** ⇒ 必须放手（返回 false），一个字都不许再投。
+// 修前缺陷（f50d864a）：丢弃返回值、"未命中"也照投 → 投递失败（这里用
+// running=true/cfg=nil 让它必然失败）→ 把**已注入过**的事件补回队列 → drain
+// 再注入一次 ⇒ `⏰ [定时任务触发] msg` 出现 **2 次**。
+//
+// 判别力：直接把 deliver 里的 `if !takeOne(...) { return false }` 退回成
+// "调用后丢弃返回值" ⇒ 本用例红，且失败信息打印 occurrences=2。
+func TestCronFired_ConcurrentDrainTakesEventExactlyOnce(t *testing.T) {
+	a, _, _ := newCronRouteTestAgent(t)
+
+	a.interactiveSubAgents.Store(cronSubAgentKey, &interactiveAgent{
+		roleName: "court.gongbu",
+		instance: "inst-1",
+		lastUsed: time.Now(),
+		running:  true, // cfg==nil ⇒ 投递必然失败，逼出"失败补回"这条最危险的路径
+	})
+
+	const msg = "n1-race-probe"
+	c := &tools.CronFired{Key: "agent:" + cronSubAgentKey, Sid: "admin", Message: msg}
+	a.enqueueBgNotification(c)
+
+	// ② 并发路径先赢：chatWorker 的 drain 把整队列取走并注入一次。
+	a.drainAndProcessNotifications(c.Key)
+
+	// ③ 现在才轮到分流。修好后这里必须返回 false（放手）。
+	claimed := a.deliverCronFiredToSubAgentSession(c)
+
+	got := collectInbound(t, a, 700*time.Millisecond, 5*time.Second)
+	n := countOccurrences(got, cronInjectionText(msg))
+	if n != 1 {
+		t.Fatalf("事件出现 %d 次（收到 %d 条消息），want 1 —— 并发 drain 抢走后又被补回重投，同一事件被两条路径各注入一次：%v",
+			n, len(got), contentsOf(got))
+	}
+	if claimed {
+		t.Fatal("事件已被并发 drain 取走时，deliverCronFiredToSubAgentSession 必须返回 false（放手交给通用路径），不能声称接管")
+	}
+}
+
+// TestCronFired_ConcurrentDrainAndDeliverStressExactlyOnce 用**真实并发**跑同一条
+// 契约（配 -race 跑）：每一轮 enqueue 之后同时起 deliver 与 drain，两条路径谁先
+// 拿到都行，但同一条事件最终只能出现 1 次。
+//
+// 修前缺陷下这轮循环里"drain 抢走 + 失败补回"的交错会产生 2 次；修后两种交错
+// 都收敛到 1 次（takeOne 命中 ⇒ 独占投递；未命中 ⇒ 立即放手）。
+//
+// ⚠️ 消费方必须**并发**收 bus.Inbound：注入是同步 publish 到 Inbound 通道的，
+// 轮次内不消费会在通道写满时把 drain/deliver 的 goroutine 卡住（第一版就这么
+// 写挂了：f50d864a 上注入 80 条 > 缓冲，wg.Wait() 永久阻塞）。
+func TestCronFired_ConcurrentDrainAndDeliverStressExactlyOnce(t *testing.T) {
+	a, _, _ := newCronRouteTestAgent(t)
+
+	a.interactiveSubAgents.Store(cronSubAgentKey, &interactiveAgent{
+		roleName: "court.gongbu",
+		instance: "inst-1",
+		lastUsed: time.Now(),
+		running:  true, // 必然失败 ⇒ 每轮都会走"失败补回"分支
+	})
+
+	// 后台收集器：全程并发消费，避免 Inbound 通道写满阻塞被测量路径。
+	var mu sync.Mutex
+	collected := make([]bus.InboundMessage, 0, 128)
+	stop := make(chan struct{})
+	collectorDone := make(chan struct{})
+	go func() {
+		defer close(collectorDone)
+		for {
+			select {
+			case m := <-a.bus.Inbound:
+				mu.Lock()
+				collected = append(collected, m)
+				mu.Unlock()
+			case <-stop:
+				// 收尾：把通道里已有的全部取干净后退出。
+				for {
+					select {
+					case m := <-a.bus.Inbound:
+						mu.Lock()
+						collected = append(collected, m)
+						mu.Unlock()
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	const rounds = 40
+	for i := 0; i < rounds; i++ {
+		c := &tools.CronFired{
+			Key:     "agent:" + cronSubAgentKey,
+			Sid:     "admin",
+			Message: fmt.Sprintf("stress-probe-%02d", i),
+		}
+		a.enqueueBgNotification(c)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			a.deliverCronFiredToSubAgentSession(c)
+		}()
+		go func() {
+			defer wg.Done()
+			a.drainAndProcessNotifications(c.Key)
+		}()
+		wg.Wait()
+	}
+
+	// 等异步失败补回的 goroutine 落地：注入条数连续 150ms 不再增长即可判定收敛。
+	prev := -1
+	for i := 0; i < 40; i++ {
+		time.Sleep(50 * time.Millisecond)
+		mu.Lock()
+		n := len(collected)
+		mu.Unlock()
+		if n == prev {
+			break
+		}
+		prev = n
+	}
+	close(stop)
+	<-collectorDone
+
+	mu.Lock()
+	got := append([]bus.InboundMessage(nil), collected...)
+	mu.Unlock()
+
+	for i := 0; i < rounds; i++ {
+		needle := cronInjectionText(fmt.Sprintf("stress-probe-%02d", i))
+		if n := countOccurrences(got, needle); n != 1 {
+			t.Fatalf("第 %d 轮事件出现 %d 次（共收到 %d 条注入），want 1 —— 并发下同一事件被两条路径各注入一次",
+				i, n, len(got))
 		}
 	}
 }
