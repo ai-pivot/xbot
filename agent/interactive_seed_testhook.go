@@ -57,3 +57,12 @@ func (a *Agent) RegisterChatCancelForTest(channelName, chatID string) {
 func (a *Agent) UnregisterChatCancelForTest(channelName, chatID string) {
 	a.chatCancelCh.Delete(channelName + ":" + chatID)
 }
+
+// SessionAddressForTest exposes the **production** sessionAddress so cross-package
+// tests (serverapp 建树 e2e) can seed the parentKey that spawn would really write,
+// instead of hardcoding a value that may drift from the producer.
+//
+// 仅测试用：生产代码不得调用。
+func SessionAddressForTest(channel, chatID string) (string, bool) {
+	return sessionAddress(channel, chatID)
+}

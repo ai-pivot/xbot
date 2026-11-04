@@ -3418,21 +3418,69 @@ func (a *Agent) CleanupInteractiveSessions(ctx context.Context, channel, chatID 
 //
 // 这是**唯一**允许把 (channel, chatID) 拼成会话地址的地方 —— 任何地方再手拼
 // `a + ":" + b` 都是同一个 bug 的复发入口。
+//
+// 判据与读侧（isMirrorSessionAddress / normalizeStoredParentKey）**共用**
+// agentContextMirrorTarget，不许两边各写一份（2026-11-04 御前补正：生产改了读没改
+// 就是漂移，cli 父活洞就是这么漏掉的）。
 func sessionAddress(channel, chatID string) (string, bool) {
 	if channel == "" || chatID == "" {
 		return "", false
 	}
-	// 只有 `agent:<ch>:<chatID>` 且 chatID **不含 "/"** 时才是执行上下文镜像。
-	// chatID 含 "/" 说明它是 interactive 子代理的 map key
-	// （形如 "web:web-4/court.shoufu:main"）—— 那是**真 agent 会话**，不能剥，
-	// 剥了会把通知投进 web 渠道的畸形 chatID（2026-11-03 实测踩过：
-	// channel=web, chat_id="web-4/court.shoufu:main"）。
-	if channel == "agent" && !strings.Contains(chatID, "/") {
-		if ch, rest, cut := strings.Cut(chatID, ":"); cut && ch != "" && rest != "" {
-			return ch + ":" + rest, true
+	if channel == "agent" {
+		if addr, ok := agentContextMirrorTarget(chatID); ok {
+			return addr, true
 		}
 	}
 	return channel + ":" + chatID, true
+}
+
+// agentContextMirrorTarget 判断 agent 执行上下文里的 chatID 是不是「执行上下文镜像」，
+// 是则返回它对应的**真实会话地址**（= 剥掉一层 "agent:" 后的串）。
+//
+// agent 上下文的 chatID 只有两种，用**结构**区分（不靠「有没有 /」猜）：
+//
+//	① 真 interactive 子代理 map key："<ch>:<chatID>/<role>[:<instance>]"，
+//	   首个 "/" 之前那段是 "<ch>:<非空 chatID>"（例 "web:web-4/court.shoufu:main"）
+//	   —— 真会话，**不剥**（剥了会把通知投进 web 渠道的畸形 chatID，2026-11-03 踩过）。
+//	② 执行上下文镜像："<ch>:<chatID>"，首个 "/" 之前那段是 "<ch>:"（chatID 为空，
+//	   例 "cli:/home/smith/repo"、"web:web-4"）—— 必须剥，否则 cli 父被写成
+//	   "agent:cli:/path"（假祖先活洞）。
+//
+// 两个反例（都在测试里锁死）：
+//
+//	agentContextMirrorTarget("web:web-4")            → ("web:web-4", true)    镜像
+//	agentContextMirrorTarget("cli:/home/smith/repo") → ("cli:/home/smith/repo", true) 镜像
+//	agentContextMirrorTarget("web:web-4/court.x:1")  → ("", false)            真地址
+//	agentContextMirrorTarget("web-4")                → ("", false)            不是地址
+func agentContextMirrorTarget(chatID string) (string, bool) {
+	ch, rest, cut := strings.Cut(chatID, ":")
+	if !cut || ch == "" || rest == "" {
+		return "", false
+	}
+	if isSubAgentMapKey(chatID) {
+		return "", false
+	}
+	return chatID, true
+}
+
+// isSubAgentMapKey 判断「会话地址形态的串」其实是 interactive 子代理的 map key
+// （"<ch>:<chatID>/<role>[:<instance>]"）。
+//
+// 判据：先剥掉可能存在的 "agent:" 层（嵌套 map key 自带一层），剩下的串里
+// 首个 "/" 之前那段必须是 "<ch>:<非空 chatID>"。于是
+//
+//	"web:web-4/court.shoufu:main"            → true  （chatID=web-4 非空）
+//	"agent:web:web-4/court.x:inst-1"         → true  （剥一层后同上）
+//	"cli:/home/smith/repo"                   → false （首个 "/" 前是 "cli:"，chatID 为空 ⇒ 镜像）
+//	"agent:cli:/path"                        → false （剥一层后同上 ⇒ 套镜像，可继续剥）
+func isSubAgentMapKey(addr string) bool {
+	rest := strings.TrimPrefix(addr, "agent:")
+	slash := strings.Index(rest, "/")
+	if slash <= 0 {
+		return false
+	}
+	ch, chatID, cut := strings.Cut(rest[:slash], ":")
+	return cut && ch != "" && chatID != ""
 }
 
 // canonicalAgentChatID 剥掉一层 "agent:" 前缀，把 agent 会话地址还原成
@@ -3542,16 +3590,18 @@ func splitSessionAddress(addr string) (channel, chatID string, ok bool) {
 	return ch, rest, true
 }
 
-// isMirrorSessionAddress 判断地址是否仍是执行上下文镜像（"agent:<ch>:<chatID>"，
-// 且 chatID 不含 "/"）。interactive 子代理的 "agent:web:web-4/role:inst" 是真正的
-// 会话地址，不算镜像。
+// isMirrorSessionAddress 判断地址是否仍是执行上下文镜像（"agent:<ch>:<chatID>"）。
+// 判据与生产侧 sessionAddress **共用同一个** agentContextMirrorTarget：
+// 只有 rest 是「镜像的 chatID 部分」时才为真 —— 真子代理地址
+// （"agent:web:web-4/role:inst"，首个 "/" 前 chatID 非空）不算镜像，
+// 而 cli 路径父 "agent:cli:/home/smith/repo"（首个 "/" 前是 "cli:"）算镜像。
 func isMirrorSessionAddress(addr string) bool {
-	ch, rest, cut := strings.Cut(addr, ":")
-	if !cut || ch != "agent" || strings.Contains(rest, "/") {
+	rest, ok := strings.CutPrefix(addr, "agent:")
+	if !ok {
 		return false
 	}
-	_, _, hasColon := strings.Cut(rest, ":")
-	return hasColon
+	_, mirror := agentContextMirrorTarget(rest)
+	return mirror
 }
 
 func resolveOriginIDs(msg bus.InboundMessage) (channel, chatID, sender string) {

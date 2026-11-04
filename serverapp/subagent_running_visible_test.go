@@ -388,3 +388,84 @@ func TestSessionTree_HistoricalSubAgentRowAttached(t *testing.T) {
 		t.Fatalf("historical row must not be running: %#v", row)
 	}
 }
+
+func insertCLITenant(t *testing.T, ag *agent.Agent, chatID string) {
+	t.Helper()
+	if _, err := ag.MultiSession().DB().Conn().Exec(
+		"INSERT INTO tenants (channel, chat_id, last_active_at) VALUES ('cli', ?, ?)",
+		chatID, time.Now().Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert cli tenant %q: %v", chatID, err)
+	}
+}
+
+// TestSessionTree_CLIParentSubAgentAttachedToRealParent 是 2026-11-04 御前裁定的
+// **cli 父活洞**端到端回归（假祖先，不是 orphan）。
+//
+// 缺陷：旧 sessionAddress 判据是「chatID 不含 / 才剥」，cli 父（chatID="cli:/home/smith/repo"
+// 含 /）不剥 ⇒ spawn 写出 parentKey="agent:cli:/home/smith/repo" ⇒ 建树时当成 agent 父，
+// key 解析出 ("agent","cli:/home/smith/repo") 再合成出 "cli:/home/smith" 父行 ——
+// 子代理被挂成与真主会话同 chatID 的 agent 行，CLI 面板按 ParentChatID==chatID 过滤看不到它。
+//
+// 本用例的 parentKey **由生产函数产**（agent.SessionAddressForTest），不是手写常量：
+// 回滚 sessionAddress ⇒ 本用例红（假祖先重新出现）。
+func TestSessionTree_CLIParentSubAgentAttachedToRealParent(t *testing.T) {
+	ag, callbacks := newSubAgentFixture(t)
+	const parentChatID = "/home/smith/repo"
+	const key = "agent:cli:/home/smith/repo/court.gongbu:inst-1"
+	insertCLITenant(t, ag, parentChatID)
+	insertAgentTenant(t, ag, key)
+
+	parentKey, ok := agent.SessionAddressForTest("agent", "cli:"+parentChatID)
+	if !ok {
+		t.Fatal("SessionAddressForTest rejected a valid cli origin")
+	}
+	// 生产者侧的判据由 agent 包锁定（TestSessionAddress_CLIParentMirrorCollapses）；
+	// 这里只消费它的产物，让「假祖先」在**树层面**自己暴露（变异时本用例会挂在下面的断言上）。
+
+	cleanup := ag.RegisterInteractiveSessionForTest(agent.InteractiveSessionSeed{
+		Key: key, ParentKey: parentKey, Role: "court.gongbu", Instance: "inst-1", Running: true,
+	})
+	defer cleanup()
+
+	res, err := callbacks.SessionTree("web-1", web.SessionSelector{Channel: "cli", ChatID: parentChatID}, true, 0, 100)
+	if err != nil {
+		t.Fatalf("SessionTree: %v", err)
+	}
+	if len(res.OrphanSubAgents) != 0 {
+		t.Fatalf("cli 父的子代理不得 orphan，got %#v", res.OrphanSubAgents)
+	}
+	row, attachedParent, found, _ := findTreeRow(res, key)
+	if !found {
+		t.Fatalf("sub-agent %q not attached in tree", key)
+	}
+	if attachedParent != parentChatID {
+		t.Fatalf("sub-agent %q attached under %q, want the real cli parent %q", key, attachedParent, parentChatID)
+	}
+	if !row.Running {
+		t.Fatalf("attached row must be Running=true: %#v", row)
+	}
+
+	// 假祖先的具体形状必须消失：不存在「与真主会话同 chatID 的 agent 行」，
+	// 也不存在合成出来的 "cli:/home/smith" 父行。
+	var all []web.UserChatWithPreview
+	var walk func(nodes []web.UserChatWithPreview)
+	walk = func(nodes []web.UserChatWithPreview) {
+		for _, n := range nodes {
+			all = append(all, n)
+			walk(n.Children)
+		}
+	}
+	for _, s := range res.Sessions {
+		all = append(all, s.UserChatWithPreview)
+		walk(s.Children)
+	}
+	for _, r := range all {
+		if r.Type == "agent" && (r.ChatID == "cli:"+parentChatID || r.FullKey == "cli:"+parentChatID) {
+			t.Fatalf("假祖先行又出现了（agent 行冒用真主会话 chatID）：%#v", r)
+		}
+		if r.ChatID == "/home/smith" {
+			t.Fatalf("合成了错误的 cli 父行 /home/smith：%#v", r)
+		}
+	}
+}

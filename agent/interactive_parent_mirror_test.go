@@ -95,9 +95,10 @@ func TestInteractiveParentAddress_StoredMirrorCollapses(t *testing.T) {
 			wantChannel: "web", wantChatID: "web-4",
 		},
 		{
-			name:        "cli 父的存量镜像与真子代理地址同形（rest 含 /）⇒ 按判据不归一化（已知限制）",
+			// cli 父的镜像（首个 "/" 前是 "cli:"，chatID 为空）必须剥 —— 2026-11-04 御前裁定。
+			name:        "cli 父的镜像 agent:cli:/repo:x ⇒ 真实会话 cli:/repo:x",
 			parentKey:   "agent:cli:/repo:x",
-			wantChannel: "agent", wantChatID: "cli:/repo:x",
+			wantChannel: "cli", wantChatID: "/repo:x",
 		},
 		{
 			name:        "真子代理地址（rest 含 /）绝不归一化",
@@ -131,9 +132,9 @@ func TestNormalizeStoredParentKey(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"agent:web:web-4", "web:web-4"},
 		{"agent:web:web-4/role:inst", "agent:web:web-4/role:inst"}, // 真子代理地址
-		// cli 父的存量镜像 "agent:cli:/repo:x" 与真子代理地址字符串不可分
-		// （rest 含 "/" 即判为非镜像）—— 保持不归一化，见 FIX.md「已知限制」。
-		{"agent:cli:/repo:x", "agent:cli:/repo:x"},
+		// cli 父的镜像：首个 "/" 前是 "cli:"（chatID 为空）⇒ 剥（2026-11-04 御前裁定）。
+		{"agent:cli:/repo:x", "cli:/repo:x"},
+		{"agent:agent:cli:/path", "cli:/path"}, // 套镜像逐层剥
 		{"web:web-4", "web:web-4"},
 		{"agent:web-4", "agent:web-4"}, // 非镜像（isMirrorSessionAddress 的语义）
 		{"", ""},
