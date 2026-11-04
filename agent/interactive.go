@@ -3448,6 +3448,40 @@ func canonicalAgentChatID(s string) string {
 	return strings.TrimPrefix(s, "agent:")
 }
 
+// normalizeStoredParentKey 剥掉**存量** parentKey 上的执行上下文镜像层：
+//
+//	"agent:web:web-4"  → "web:web-4"          （镜像：agent:<ch>:<chatID>）
+//	"agent:web:web-4/court.shoufu:main"       不变（真子代理地址，rest 含 "/"）
+//
+// 为什么需要（2026-11-04 打回项）：df68f64a 之前 spawn 的会话把
+// sessionAddress(agent, "web:web-4") 的旧结果 "agent:web:web-4" 直接写进了
+// ia.parentKey（见 interactive.go:1336 的事故注释）。新代码已经不会再产生这种
+// 形态，但**存量内存里的会话**（以及按 interactive_persist.go:258
+// `rec.ParentChannel + ":" + rec.ParentChatID` 恢复出来的会话）带着它。
+// 不剥这一层，interactiveParentAddress 的字符串拆分分支会把它拆成
+// ("agent", "web:web-4") —— 一个父会话树里必然 miss 的身份 ⇒ 行 orphan。
+//
+// 判据复用 isMirrorSessionAddress（与 sessionAddress /
+// drainAndProcessNotifications 同一个判据，注释见 interactive.go:3492）：
+// 只有 rest 不含 "/" 的 "agent:<ch>:<chatID>" 才是镜像；真子代理地址
+// "agent:web:web-4/role:inst" 绝不能被剥（会打到 web 渠道的畸形 chatID）。
+//
+// 循环只为防御「镜像套镜像」（每轮至少掉 7 个字符，上限固定防死循环）。
+func normalizeStoredParentKey(parentKey string) string {
+	out := parentKey
+	for i := 0; i < 4; i++ {
+		if !isMirrorSessionAddress(out) {
+			break
+		}
+		next := strings.TrimPrefix(out, "agent:")
+		if next == out || next == "" {
+			break
+		}
+		out = next
+	}
+	return out
+}
+
 // interactiveParentAddress 把子代理的 parentKey（父会话地址 = sessionAddress 的
 // 结果）解析成**父会话的身份**，供列表/树挂载使用。
 //
@@ -3458,6 +3492,10 @@ func canonicalAgentChatID(s string) string {
 //
 // 因此以**注册表存在性**为准：命中 → 父是 agent 会话（返回 map key 本身）；
 // 未命中 → 按 "channel:chatID" 拆成普通会话父。
+//
+// ③ 之前先剥**存量镜像层**（normalizeStoredParentKey）：df68f64a 之前 spawn
+// 的会话 parentKey 是 "agent:web:web-4"，直接拆会得到 ("agent","web:web-4")。
+// 详见 normalizeStoredParentKey 的注释。
 func (a *Agent) interactiveParentAddress(parentKey string) (channel, chatID string) {
 	if parentKey == "" {
 		return "", ""
@@ -3469,6 +3507,22 @@ func (a *Agent) interactiveParentAddress(parentKey string) (channel, chatID stri
 		if _, ok := a.interactiveSubAgents.Load(canon); ok {
 			return "agent", canon
 		}
+	}
+	// ③ 存量镜像兜底（2026-11-04 打回项）：df68f64a 之前写进 parentKey 的
+	// "agent:web:web-4" 先剥成 "web:web-4" 再拆，否则会拆出 ("agent","web:web-4")
+	// 这个不存在的父身份（父会话树里 lookupAgent 必然 miss ⇒ 行 orphan）。
+	if mirror := normalizeStoredParentKey(parentKey); mirror != parentKey {
+		if ch, rest, ok := splitSessionAddress(mirror); ok {
+			return ch, rest
+		}
+	}
+	// agent: 前缀既不是可识别的镜像、也不是注册表里的 agent 会话（例如存量
+	// "agent:web-4"，镜像层里连 channel 分隔一起丢了）：这个串**不含可还原的
+	// 父身份**，硬拆成 ("agent","web-4") 只会让行 orphan（agent 渠道下没有
+	// chatID="web-4" 的租户）。返回空让调用方回落到「从自己的 key 推父」
+	// （ListInteractiveSessions 的 parseInteractiveKeyParent），那才是真实父。
+	if strings.HasPrefix(parentKey, "agent:") && !strings.Contains(parentKey, "/") {
+		return "", ""
 	}
 	if ch, rest, ok := splitSessionAddress(parentKey); ok {
 		return ch, rest

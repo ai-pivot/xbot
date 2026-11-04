@@ -3159,3 +3159,47 @@ describe('session list organisation: project default + collapsible groups', () =
     expect(result.current.collapsedGroups.size).toBe(0)
   })
 })
+
+// ── M6 缺口补齐（门下省 2026-11-04 点出）────────────────────────────────────
+// 旧 web 用例只覆盖「orphan 的父是主会话/agent-form 字符串」这一层，
+// 删掉 attachOrphanAgent 里 **agent 父挂载分支**
+// （useSessionStore.ts:572-578 `if (!parent && agent.parentChannel === 'agent')`）
+// 后 67 测仍全绿 —— 嵌套 orphan 没有覆盖。下面这条用例专门锁那个分支：
+// orphan 的父是**另一个子代理**（不在当前树里），必须现场合成该父并把它挂回
+// 主会话，否则嵌套子代理整条链消失。
+describe('normalizeCanonicalSessionTree — 嵌套 orphan 的 agent 父挂载（M6）', () => {
+  it('synthesizes the missing agent parent of a nested orphan and re-attaches it under the main session', () => {
+    const tree = normalizeCanonicalSessionTree([], [
+      {
+        chat_id: 'agent:web:chat_1/court.shoufu:main/court.gongbu:inst-2',
+        full_key: 'agent:web:chat_1/court.shoufu:main/court.gongbu:inst-2',
+        channel: 'agent',
+        type: 'agent',
+        label: 'court.gongbu/inst-2',
+        parent_channel: 'agent',
+        parent_chat_id: 'web:chat_1/court.shoufu:main',
+        role: 'court.gongbu',
+        instance: 'inst-2',
+        running: true,
+        status: 'running',
+        last_active: '2026-11-04T11:00:00Z',
+      },
+    ] as unknown as Parameters<typeof normalizeCanonicalSessionTree>[1])
+
+    // 主会话 web:chat_1 —— 由 missing agent 父递归合成。
+    expect(tree.mainSessions.map((s) => [s.channel, s.chatID, s.synthetic])).toEqual([
+      ['web', 'chat_1', true],
+    ])
+    // 合成了中间那层 agent 父，nested orphan 挂在它下面（不是被丢掉）。
+    const outer = tree.mainSessions[0].children ?? []
+    expect(outer.map((c) => c.chatID)).toEqual(['web:chat_1/court.shoufu:main'])
+    expect(outer[0].children?.map((c) => c.chatID)).toEqual([
+      'agent:web:chat_1/court.shoufu:main/court.gongbu:inst-2',
+    ])
+    expect(outer[0].children?.[0].running).toBe(true)
+    expect(tree.agents.map((a) => a.chatID)).toEqual([
+      'web:chat_1/court.shoufu:main',
+      'agent:web:chat_1/court.shoufu:main/court.gongbu:inst-2',
+    ])
+  })
+})

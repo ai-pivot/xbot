@@ -279,3 +279,115 @@ func TestMainSessionRow_RunningFromChatCancelCh(t *testing.T) {
 	}
 	t.Fatalf("chat-1 row missing after unregister: %#v", rows)
 }
+
+// findTreeRow 在 session tree 里找 key 对应的行（返回行本身、父 chat_id、是否
+// 落进 orphan_subagents）。
+func findTreeRow(res web.SessionTreeResult, key string) (row web.UserChatWithPreview, parentChatID string, found, orphaned bool) {
+	for _, o := range res.OrphanSubAgents {
+		if o.FullKey == key || o.ChatID == key {
+			return o, "", true, true
+		}
+	}
+	var walk func(nodes []web.UserChatWithPreview, parent string) (web.UserChatWithPreview, string, bool)
+	walk = func(nodes []web.UserChatWithPreview, parent string) (web.UserChatWithPreview, string, bool) {
+		for _, n := range nodes {
+			if n.FullKey == key || n.ChatID == key {
+				return n, parent, true
+			}
+			if r, p, ok := walk(n.Children, n.ChatID); ok {
+				return r, p, true
+			}
+		}
+		return web.UserChatWithPreview{}, "", false
+	}
+	tops := make([]web.UserChatWithPreview, 0, len(res.Sessions))
+	for _, s := range res.Sessions {
+		tops = append(tops, s.UserChatWithPreview)
+	}
+	r, p, ok := walk(tops, "")
+	return r, p, ok, false
+}
+
+// TestSessionTree_StoredMirrorParentSubAgentAttached 是 2026-11-04 打回项的
+// **端到端复现**：df68f64a 之前 spawn 的会话 ia.parentKey 是执行上下文镜像
+// "agent:web:chat-1"（旧 sessionAddress(agent, "web:chat-1") 的产物）。这种行
+// 在 45b69ce5 的父解析下被标成 (agent, "web:chat-1")，serverapp 建树时
+// lookupAgent("agent:web:chat-1") miss、parseAgentTenantChatID("web:chat-1") 也
+// 失败 ⇒ 落进 OrphanSubAgents ⇒ 前端侧边栏看不到它在跑。
+//
+// 修复后：父标注归一化成 (web, chat-1)，行挂在主会话 chat-1 的 children 下。
+//
+// 变异自证（回滚 interactiveParentAddress 到 45b69ce5）⇒ 本用例红（落 orphan），
+// 日志见 court/evidence/gongbu/branch-fix-running-20261104/。
+func TestSessionTree_StoredMirrorParentSubAgentAttached(t *testing.T) {
+	cases := []struct {
+		name      string
+		parentKey string
+	}{
+		{"存量镜像 agent:web:chat-1", "agent:web:chat-1"},
+		{"退化镜像 agent:chat-1（任务书点名字面串）", "agent:chat-1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ag, callbacks := newSubAgentFixture(t)
+			const key = "web:chat-1/court.gongbu:inst-1"
+			insertWebTenant(t, ag, "chat-1")
+			insertAgentTenant(t, ag, key)
+
+			cleanup := ag.RegisterInteractiveSessionForTest(agent.InteractiveSessionSeed{
+				Key: key, ParentKey: c.parentKey, Role: "court.gongbu", Instance: "inst-1", Running: true,
+			})
+			defer cleanup()
+
+			res, err := callbacks.SessionTree("web-1", web.SessionSelector{Channel: "web", ChatID: "chat-1"}, true, 0, 100)
+			if err != nil {
+				t.Fatalf("SessionTree: %v", err)
+			}
+			if len(res.OrphanSubAgents) != 0 {
+				t.Fatalf("存量镜像 parentKey 的子代理不得 orphan，got %#v", res.OrphanSubAgents)
+			}
+			row, parentChatID, found, orphaned := findTreeRow(res, key)
+			if orphaned {
+				t.Fatalf("sub-agent %q fell into orphan_subagents: %#v", key, row)
+			}
+			if !found {
+				t.Fatalf("sub-agent %q not attached anywhere in the tree", key)
+			}
+			if parentChatID != "chat-1" {
+				t.Fatalf("sub-agent %q attached under %q, want chat-1", key, parentChatID)
+			}
+			if !row.Running {
+				t.Fatalf("attached sub-agent row must be Running=true: %#v", row)
+			}
+		})
+	}
+}
+
+// TestSessionTree_HistoricalSubAgentRowAttached 锁住「老数据不需要迁移脚本」这一半：
+// 历史行（不再在内存里跑、只有 tenants 表里的行）的父标注由 **key 本身**解析
+// （serverapp/callbacks.go:2324 normalizeSubAgentRow → parseAgentTenantChatID），
+// 所以 pre-fix 的 parent_channel/parent_chat_id 不会影响它们的挂载。
+func TestSessionTree_HistoricalSubAgentRowAttached(t *testing.T) {
+	ag, callbacks := newSubAgentFixture(t)
+	const key = "web:chat-1/court.gongbu:old-1"
+	insertWebTenant(t, ag, "chat-1")
+	insertAgentTenant(t, ag, key) // 只有 DB 行，没有内存会话（= 历史行）
+
+	res, err := callbacks.SessionTree("web-1", web.SessionSelector{Channel: "web", ChatID: "chat-1"}, true, 0, 100)
+	if err != nil {
+		t.Fatalf("SessionTree: %v", err)
+	}
+	if len(res.OrphanSubAgents) != 0 {
+		t.Fatalf("historical sub-agent row must not be orphaned, got %#v", res.OrphanSubAgents)
+	}
+	row, parentChatID, found, _ := findTreeRow(res, key)
+	if !found {
+		t.Fatalf("historical sub-agent %q not attached in tree", key)
+	}
+	if parentChatID != "chat-1" {
+		t.Fatalf("historical sub-agent %q attached under %q, want chat-1", key, parentChatID)
+	}
+	if row.Running {
+		t.Fatalf("historical row must not be running: %#v", row)
+	}
+}
