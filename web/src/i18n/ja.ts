@@ -1058,6 +1058,8 @@ const ja: Translations = {
     noAccount: 'アカウントをお持ちでないですか？',
     hasAccount: 'すでにアカウントをお持ちですか？',
     loginFailed: 'ユーザー名またはパスワードが正しくありません',
+    sessionExpired: 'ログインの有効期限が切れました。再度ログインしてください',
+    forbidden: 'この操作を実行する権限がありません',
     registerFailed: '登録に失敗しました',
     createAdmin: 'アカウントを作成',
     bootstrapSubtitle: '管理者アカウントを作成 — 招待制モードで唯一の登録機会です',

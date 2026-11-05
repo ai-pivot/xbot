@@ -11,9 +11,12 @@ import {
 } from '@/lib/webCache'
 import { AuthContext, AuthProvider } from './AuthProvider'
 
-vi.mock('@/lib/api', () => ({
-  postAPI: vi.fn(),
-}))
+vi.mock('@/lib/api', async (importOriginal) => {
+  // 保留真实导出（AuthProvider 还要用 onAPIError / UnauthorizedError 等），
+  // 只把 postAPI 换成 mock —— 否则本文件的 mock 会让真实导出变 undefined。
+  const actual = await importOriginal<typeof import('@/lib/api')>()
+  return { ...actual, postAPI: vi.fn() }
+})
 
 const postAPIMock = vi.mocked(postAPI)
 

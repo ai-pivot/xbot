@@ -1060,6 +1060,8 @@ const en: Translations = {
     noAccount: "Don't have an account?",
     hasAccount: 'Already have an account?',
     loginFailed: 'Invalid username or password',
+    sessionExpired: 'Session expired — please sign in again',
+    forbidden: 'You are not allowed to perform this action',
     registerFailed: 'Registration failed',
     createAdmin: 'Create account',
     bootstrapSubtitle: 'Create the operator account — this is the only registration an invite-only deployment accepts',

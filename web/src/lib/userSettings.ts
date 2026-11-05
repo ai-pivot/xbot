@@ -72,6 +72,9 @@ export async function syncAndMigrateSettings(): Promise<void> {
     const data = await postAPI<{ settings: Record<string, string> }>('/api/settings')
     serverSettings = data.settings ?? {}
   } catch (err) {
+    // 白名单探活：`/api/settings` 在 api 层的 401 静默白名单里（见
+    // `UNAUTHORIZED_SILENT_ENDPOINTS`）——未登录时 401 是正常语义，这里直接返回，
+    // 不弹「登录已失效」。其它失败（含 403，403 已由 api 层上报）只记日志。
     if (err instanceof APIError && err.status === 401) return // not logged in
     console.warn('[userSettings] syncAndMigrateSettings failed:', err)
     return
@@ -110,7 +113,10 @@ export async function syncAndMigrateSettings(): Promise<void> {
     if (Object.keys(batch).length > 0) {
       try {
         await postAPI('/api/settings', { settings: batch })
-      } catch { /* ignore — will retry next load */ }
+      } catch {
+        // 允许吞：一次性迁移，下次加载会重试。401/403 的**可见提示**不依赖这里
+        // （api 层抛错前已上报统一出口；401 属白名单探活语义）。
+      }
     }
   }
 }
@@ -140,7 +146,10 @@ export function syncSettingToServer(lsKey: string, value: string): void {
     for (const k of Object.keys(pendingSettings)) delete pendingSettings[k]
     try {
       await postAPI('/api/settings', { settings: batch })
-    } catch { /* silent — next write will retry */ }
+    } catch {
+      // 允许吞：debounced 同步失败由下次写入重试。401/403 的可见提示已由 api 层
+      // 统一出口负责（抛错前上报），此处吞掉不会让「登录失效」变成无声失败。
+    }
   }, SYNC_DEBOUNCE_MS)
 }
 

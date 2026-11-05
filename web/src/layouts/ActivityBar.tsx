@@ -27,7 +27,7 @@ import type { ComponentType, SVGProps } from 'react'
 import { useI18n } from '@/providers/i18n'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useSessionStore } from '@/hooks/useSessionStore'
-import { postAPI } from '@/lib/api'
+import { postAPI, reportAPIError } from '@/lib/api'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -66,8 +66,10 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollap
     try {
       const data = await postAPI<ChannelsResponse>('/api/channels/list')
       setDiscoveredChannels(data.channels || [])
-    } catch {
-      // Degraded: show only aggregate + web
+    } catch (e) {
+      // Degraded: show only aggregate + web —— 允许吞（频道列表失败不致命），
+      // 但 401/403 不许静默（统一出口提示登录失效 / 无权限）。
+      reportAPIError(e)
     }
   }, [])
 
