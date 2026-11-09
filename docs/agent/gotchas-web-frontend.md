@@ -459,3 +459,19 @@ openAutoFocus**。守护：`ModelSelector.test.tsx`（触屏 → activeElement �
 - Regression coverage: `web/src/lib/previewTransport.test.ts`, `web/src/lib/appUrl.test.ts`, `web/src/providers/AuthProvider.test.tsx`, and `web/src/providers/sseConnection.test.ts`. Changing HTTP helpers alone does not authenticate image/CSS/iframe resources; those need the separate protected-resource handling.
 
 - **Preview activation/acceptance boundary**: `http://localhost:8082` is only the gate default. The existing backend must run the preview-handler code and be started with `web.preview_origins` in config.json or `XBOT_PREVIEW_ORIGINS` (env replaces the config list; empty env disables) — exact origins, or one single-label HTTPS pattern like `https://xbot-preview-*-<team>.vercel.app` — `previewPatternMatch` rejects anything broader; grants stay bound to the exact origin. `channel/web` only reads `WebChannelConfig.PreviewOrigins`, never the env directly; any required restart is user-managed, never performed by an agent. Build/tests or PR publication do not establish browser-to-localhost/gate acceptance. Browser access is paused until the user explicitly permits continuation; user browser verification remains required. See `docs/vercel-preview.md`.
+
+## ⛔ 裸 URL 紧贴 Markdown 语法时，GFM 字面 autolink 会把语法吞进链接（2026-11-09 用户截图报障）
+
+**症状**：模型回复
+
+```
+PR 已提: **https://github.com/org/repo/pull/92**（`ops/branch` → `main`, 1 文件 +9/-5）
+```
+
+渲染成**字面 `**`** + 一条 href/label 都是 `https://…/92**（`ops/branch`` 的链接（点开 404、下划线拖到行内代码上），后面的 `ops/branch` / `main` 失去 code 样式。
+
+**为什么不是「等上游修」**：这是 GFM 的既定行为 —— 字面 autolink（remark-gfm / micromark）从 `https://` 起一直吃到**下一个空白或 `<`**，路径里允许 `*`、反引号、全角标点。实测 GitHub 自己的 API（`POST /markdown`）渲染结果一模一样（`**` 留在外面、href 带 `%60`/`%EF%BC%88`）。所以只能由宿主决定「人类写的 URL 到哪里结束」。
+
+**修法（`web/src/lib/markdownSource.ts` 的 `protectBareURLs`，在 `ParsedMarkdown` 里紧跟 `normalizeMathDelimiters` 执行）**：把「紧贴 greedy 分隔符」的裸 URL 改写成 CommonMark **硬 autolink**（`<https://…>`），URL 末尾由 `>` 显式结束，外围的 `**`、反引号、全角括号归内联解析器处理。**只改需要改的**：URL 后面必须是 `*`、反引号、`__`/`~~`（run ≥ 2 且后面不是 URL 路径字符，`foo__bar` / `~user` 不动）、或全角标点（`（）「」【】《》“”，。、；：！？…—`）才重写；普通散文 URL 仍交给 remark（它自己的尾标点裁剪更完备）。同时跳过：围栏代码块 / 行内代码 span、`<…>` 硬 autolink、`[label]` 与 `](destination)`（会造出嵌套链接）、以及紧贴 ASCII 字母的 URL（`previousProtocol` 同样不链接）。URL 尾部 GFM 会裁掉的 ASCII 标点（`. , ; : ! ? ' " ]`、未配对的 `)`）留在链接外。
+
+**守护**：`web/src/lib/markdownSource.test.ts`（15 例：报告原文、全角标点、`**`/`~~`/`__`/反引号、代码块/行内 code 不动、`(bar)` 平衡括号、`foo__bar`、`<…>`/`[..](..)` 不动、尾标点外移）× `web/src/components/agent/MarkdownRenderer.test.tsx`（`strong a` 的 href/文本 == URL、页面无字面 `**`、两个 `code` 都在）× **E2E** `web/e2e/markdown-autolink.spec.ts`（真实浏览器；变异自证：去掉 `protectBareURLs` 调用 ⇒ 单测与 E2E 同时红）。**别改成"后处理 mdast 修补 link 节点"**——那只能截断 URL，前面那个 `**` 仍是普通 text，强调永远回不来；必须回到**源级**让解析器重新看到完整的 `**…**`。

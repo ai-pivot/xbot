@@ -42,6 +42,7 @@ import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
 import { stripFrontmatter } from '@/lib/markdown'
+import { codeFenceAfterLine, protectBareURLs } from '@/lib/markdownSource'
 import { MarkdownSelectionBoundary } from './MarkdownSelectionBoundary'
 
 
@@ -347,15 +348,6 @@ const REMARK_PLUGINS: PluggableList = [remarkGfm, remarkMath];
 // KaTeX 数千节点是主要成分）。MathML 副本仅服务读屏 a11y，视觉零变化。
 const REHYPE_PLUGINS: PluggableList = [[rehypeKatex, { throwOnError: false, katexOptions: { output: 'html' as const } }]];
 
-/** A closing fence must match the opener's marker and be at least as long. */
-function codeFenceAfterLine(line: string, fence: string): string {
-  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-  if (!match) return fence;
-  const [ , marker, suffix ] = match;
-  if (!fence) return marker[0] === "`" && suffix.includes("`") ? "" : marker;
-  return marker[0] === fence[0] && marker.length >= fence.length && /^[ \t]*$/.test(suffix) ? "" : fence;
-}
-
 /**
  * remark-math follows Markdown math syntax ($ / $$), while models commonly
  * emit TeX delimiters (\\( / \\[). Normalize only outside fenced and inline
@@ -525,7 +517,10 @@ const ParsedMarkdown = memo(function ParsedMarkdown({
   // never clipped. Frontmatter is stripped BEFORE math normalization (the
   // closing `---` would parse as a setext heading underline, and `$` in YAML
   // values must not become math delimiters).
-  const normalized = normalizeMathDelimiters(stripFrontmatter(content));
+  // `protectBareURLs` turns bare URLs that are glued to Markdown syntax into
+  // hard autolinks (`<https://…>`), so GFM's greedy literal autolink cannot
+  // swallow the syntax that follows the URL (2026-11-09 user report).
+  const normalized = protectBareURLs(normalizeMathDelimiters(stripFrontmatter(content)));
   const src = streaming ? clipTrailingUnclosedMath(normalized) : normalized;
   return (
     <StreamingContext.Provider value={streaming}>
