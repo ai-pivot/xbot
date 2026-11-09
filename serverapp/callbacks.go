@@ -859,18 +859,18 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		if err != nil {
 			return nil, err
 		}
-		seen := make(map[string]bool, len(rows))
-		for _, row := range rows {
-			seen[subAgentRowKey(row)] = true
+		index := make(map[string]int, len(rows)+64)
+		for i, row := range rows {
+			index[subAgentRowKey(row)] = i
 		}
 		for _, s := range ag.ListInteractiveSessions("web", "") {
-			rows = upsertSubAgentRow(rows, seen, "web", s)
+			rows = upsertSubAgentRow(rows, index, "web", s)
 		}
 		for _, s := range ag.ListInteractiveSessions("cli", "") {
-			rows = upsertSubAgentRow(rows, seen, "cli", s)
+			rows = upsertSubAgentRow(rows, index, "cli", s)
 		}
 		for _, s := range ag.ListInteractiveSessions("agent", "") {
-			rows = upsertSubAgentRow(rows, seen, "agent", s)
+			rows = upsertSubAgentRow(rows, index, "agent", s)
 		}
 		applyWebRunningStatusesFast(ag, rows)
 		return rows, nil
@@ -884,10 +884,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// v63 single-operator: always use the full cross-channel view.
 		// (The non-admin per-sender pagination path was removed — there is
 		// no non-admin user in single-operator mode.)
-		channels, err := store.Tenant().ListDistinctChannels()
-		if err != nil {
-			return web.SessionTreeResult{}, err
-		}
+		// 分段计时（2026-11-09）：/api/session-tree 曾出现 1.6-3.5s，而 SQL 层实测仅
+		// ~14ms —— 必须用数据定位而不是猜。超过 300ms 打印各段耗时，永久保留为可观测性。
+	treeStart := time.Now()
+	channels, err := store.Tenant().ListDistinctChannels()
+	tChannels := time.Since(treeStart)
+	if err != nil {
+		return web.SessionTreeResult{}, err
+	}
 		// Split channels: cli rows come from the chat-session reader (different
 		// row source), everything else is a tenants query.
 		var tenantChannels []string
@@ -903,8 +907,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			}
 		}
 
+	tCLI := time.Duration(0)
 		if hasCLI && webSQL != nil {
+			cliStart := time.Now()
 			cliChats, err := listCLIChatSessions(webSQL, "")
+			tCLI = time.Since(cliStart)
 			if err != nil {
 				return web.SessionTreeResult{}, err
 			}
@@ -912,10 +919,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		}
 
 		// ONE query for every remaining channel instead of one per channel.
+	tTenants := time.Duration(0)
 		if len(tenantChannels) > 0 {
 			var tenants []web.UserChatWithPreview
 			if webSQL != nil {
+				tenantsStart := time.Now()
 				tenants, err = listTenantsByChannels(webSQL, tenantChannels)
+				tTenants = time.Since(tenantsStart)
 			} else {
 				// PG path: use TenantStore (already a single full read).
 				allTenants, tErr := store.Tenant().ListTenants()
@@ -954,7 +964,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// a session cache lookup each) cost 400–700ms per request and made
 		// /api/session-tree the slowest endpoint in the log; only the rows that
 		// are actually returned need it.
+	tSort := time.Since(time.Now())
+		sortStart := time.Now()
 		sortSessionTreeMains(mains)
+		tSort = time.Since(sortStart)
 		total := len(mains)
 		if limit < 0 {
 			limit = total
@@ -984,9 +997,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 
 		// Runtime state is only needed for the page we return, and it is
 		// classified from one in-memory snapshot rather than a DB probe per row.
+	runStart := time.Now()
 		applyWebRunningStatusesFast(ag, mains)
+		tRun := time.Since(runStart)
 
+		subStart := time.Now()
 		subagents, err := callbacks.SubAgentList(senderID, admin)
+		tSub := time.Since(subStart)
 		if err != nil {
 			return web.SessionTreeResult{}, err
 		}
@@ -995,9 +1012,29 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// SessionServiceFor 打开该会话的库。子代理有上百个，每次 session-tree
 		// 请求就要开上百个会话库 —— 生产实测 7 分钟内累积 620 个打开的库。
 		applyWebRunningStatusesFast(ag, subagents)
+	buildStart := time.Now()
 		result := buildSessionTree(mains, subagents)
+		tBuild := time.Since(buildStart)
 		result.HasMore = hasMore
 		result.NextOffset = nextOffset
+
+		if tot := time.Since(treeStart); tot > 300*time.Millisecond {
+			log.WithFields(log.Fields{
+				"total_ms":      tot.Milliseconds(),
+				"channels_ms":   tChannels.Milliseconds(),
+				"cli_ms":        tCLI.Milliseconds(),
+				"tenants_ms":    tTenants.Milliseconds(),
+				"sort_ms":       tSort.Milliseconds(),
+				"running_ms":    tRun.Milliseconds(),
+				"subagents_ms":  tSub.Milliseconds(),
+				"build_ms":      tBuild.Milliseconds(),
+				"mains":         len(mains),
+				"subagents":     len(subagents),
+				"total_mains":   total,
+				"limit":         limit,
+				"offset":        offset,
+			}).Warn("session-tree slow — segment breakdown")
+		}
 		return result, nil
 	}
 	callbacks.ChatCreate = func(senderID, label string, subscriptionID, model string) (string, error) {
@@ -1986,9 +2023,24 @@ func buildSessionTree(mains, subagents []web.UserChatWithPreview) web.SessionTre
 		}
 		normalized = append(normalized, row)
 	}
-	sort.SliceStable(normalized, func(i, j int) bool {
-		return agentTreeDepth(normalized[i]) < agentTreeDepth(normalized[j])
+	// 2026-11-09：agentTreeDepth 每次都循环解析 key（最多 32 层），在比较器里调用
+	// 等于 O(n log n) 次重复解析。改为排序前算一次、用下标排序。
+	depths := make([]int, len(normalized))
+	for i := range normalized {
+		depths[i] = agentTreeDepth(normalized[i])
+	}
+	order := make([]int, len(normalized))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return depths[order[a]] < depths[order[b]]
 	})
+	sortedAgents := make([]web.UserChatWithPreview, len(normalized))
+	for i, j := range order {
+		sortedAgents[i] = normalized[j]
+	}
+	normalized = sortedAgents
 	var orphans []web.UserChatWithPreview
 	for _, sa := range normalized {
 		sa.Channel = "agent"
@@ -2369,21 +2421,23 @@ func subAgentRowKey(row web.UserChatWithPreview) string {
 	return row.ChatID
 }
 
-func upsertSubAgentRow(rows []web.UserChatWithPreview, seen map[string]bool, parentChannel string, s agent.InteractiveSessionInfo) []web.UserChatWithPreview {
+// upsertSubAgentRow 在 rows 里插入/更新一行子代理记录。
+//
+// 2026-11-09 性能修复：旧实现用 `seen map[string]bool` + **线性扫描 rows** 找命中行，
+// 并且每次比较都重算 subAgentRowKey（字符串）。471 个子代理 × 数百行 = 十几万次
+// 字符串操作，是 /api/session-tree 1-3s 的主要来源之一。改为 `index map[string]int`
+// （key → 行下标），命中即 O(1) 原地更新，缺失则 append 并登记新下标。
+// 注意：index 存的是下标而非指针，append 触发的底层数组扩容不会让它失效。
+func upsertSubAgentRow(rows []web.UserChatWithPreview, index map[string]int, parentChannel string, s agent.InteractiveSessionInfo) []web.UserChatWithPreview {
 	row := subAgentRowFromInteractiveSession(parentChannel, s)
 	key := subAgentRowKey(row)
-	if seen[key] {
-		for i := range rows {
-			if subAgentRowKey(rows[i]) == key {
-				lastActive := rows[i].LastActive
-				rows[i] = row
-				rows[i].LastActive = lastActive
-				break
-			}
-		}
+	if i, ok := index[key]; ok && i < len(rows) {
+		lastActive := rows[i].LastActive
+		rows[i] = row
+		rows[i].LastActive = lastActive
 		return rows
 	}
-	seen[key] = true
+	index[key] = len(rows)
 	return append(rows, row)
 }
 
