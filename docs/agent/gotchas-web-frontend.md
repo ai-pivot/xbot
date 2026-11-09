@@ -468,7 +468,7 @@ openAutoFocus**。守护：`ModelSelector.test.tsx`（触屏 → activeElement �
 PR 已提: **https://github.com/org/repo/pull/92**（`ops/branch` → `main`, 1 文件 +9/-5）
 ```
 
-渲染成**字面 `**`** + 一条 href/label 都是 `https://…/92**（`ops/branch`` 的链接（点开 404、下划线拖到行内代码上），后面的 `ops/branch` / `main` 失去 code 样式。
+渲染成**字面 `**`** + 一条 href/label 都是 `` https://…/92**（`ops/branch` `` 的链接（点开 404、下划线拖到行内代码上），后面的 `ops/branch` / `main` 失去 code 样式。
 
 **为什么不是「等上游修」**：这是 GFM 的既定行为 —— 字面 autolink（remark-gfm / micromark）从 `https://` 起一直吃到**下一个空白或 `<`**，路径里允许 `*`、反引号、全角标点。实测 GitHub 自己的 API（`POST /markdown`）渲染结果一模一样（`**` 留在外面、href 带 `%60`/`%EF%BC%88`）。所以只能由宿主决定「人类写的 URL 到哪里结束」。
 
