@@ -863,14 +863,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		for i, row := range rows {
 			index[subAgentRowKey(row)] = i
 		}
-		for _, s := range ag.ListInteractiveSessions("web", "") {
-			rows = upsertSubAgentRow(rows, index, "web", s)
-		}
-		for _, s := range ag.ListInteractiveSessions("cli", "") {
-			rows = upsertSubAgentRow(rows, index, "cli", s)
-		}
-		for _, s := range ag.ListInteractiveSessions("agent", "") {
-			rows = upsertSubAgentRow(rows, index, "agent", s)
+		// 一次遍历拿到全部 channel（旧路径三次 ListInteractiveSessions ⇒ 三次
+		// cleanupExpiredSessions + 三次全量 Range，2026-11-09 合并）。
+		byChannel := ag.ListAllInteractiveSessions()
+		for _, ch := range []string{"web", "cli", "agent"} {
+			for _, s := range byChannel[ch] {
+				rows = upsertSubAgentRow(rows, index, ch, s)
+			}
 		}
 		applyWebRunningStatusesFast(ag, rows)
 		return rows, nil

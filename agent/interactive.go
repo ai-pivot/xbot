@@ -1713,6 +1713,7 @@ func (a *Agent) SpawnInteractiveSession(
 					// Prevent zombie session: clean up state so send/spawn can proceed
 					placeholder.mu.Lock()
 					placeholder.running = false
+					placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 					placeholder.cancelCurrent = nil
 					placeholder.lastError = fmt.Sprintf("panic: %v", r)
 					placeholder.mu.Unlock()
@@ -1803,6 +1804,7 @@ func (a *Agent) SpawnInteractiveSession(
 				placeholder.mu.Lock()
 				wasInterrupted := placeholder.interrupted
 				placeholder.running = false
+				placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 				placeholder.cancelCurrent = nil
 				placeholder.interrupted = false // reset for next send
 
@@ -1907,6 +1909,7 @@ func (a *Agent) SpawnInteractiveSession(
 			// 绝不对已 close 的库 AppendMessage（use-after-close）。
 			if placeholder.isDestroyed() {
 				placeholder.running = false
+				placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 				placeholder.cancelCurrent = nil
 				placeholder.lastError = destroyedSessionError(key, roleName, instance).Error()
 				log.WithFields(log.Fields{"key": key, "role": roleName, "instance": instance}).
@@ -1915,6 +1918,7 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 
 			placeholder.running = false
+			placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 			placeholder.cancelCurrent = nil
 			placeholder.lastReply = out.Content
 			placeholder.promptTokens = out.LastPromptTokens
@@ -2069,6 +2073,7 @@ func (a *Agent) SpawnInteractiveSession(
 
 	placeholder.mu.Lock()
 	placeholder.running = false
+	placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 	placeholder.cancelCurrent = nil
 	placeholder.mu.Unlock()
 
@@ -2655,6 +2660,7 @@ func (a *Agent) SendToInteractiveSession(
 				clipanic.Report("agent.interactive.SendAsync", fmt.Sprintf("%s:%s", roleName, instance), r)
 				ia.mu.Lock()
 				ia.running = false
+				ia.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 				ia.cancelCurrent = nil
 				ia.lastError = fmt.Sprintf("panic: %v", r)
 				ia.mu.Unlock()
@@ -2697,6 +2703,7 @@ func (a *Agent) SendToInteractiveSession(
 
 		ia.mu.Lock()
 		ia.running = false
+		ia.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 		ia.cancelCurrent = nil
 		wasInterrupted := ia.interrupted
 		ia.interrupted = false
@@ -2842,6 +2849,7 @@ func (a *Agent) SendToInteractiveSession(
 		// 错误 —— 而不是一条含糊的 sqlite 报错或静默丢失。
 		if ia.isDestroyed() {
 			ia.running = false
+			ia.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 			ia.cancelCurrent = nil
 			destroyedErr := destroyedSessionError(key, roleName, instance)
 			if out.Error == nil {
@@ -3005,6 +3013,7 @@ func (a *Agent) InterruptInteractiveSession(
 	// without waiting for the background goroutine to detect cancellation.
 	// The goroutine will see runCtx.Err() != nil and know it was interrupted.
 	ia.running = false
+	ia.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 	ia.interrupted = true
 	log.WithFields(log.Fields{
 		"role":     roleName,
@@ -3311,6 +3320,31 @@ func (a *Agent) UnloadInteractiveSession(
 
 // buildParentToolContext 从 InboundMessage 构建 SubAgent 需要的 parent ToolContext。
 // 与 spawnSubAgent 中的 parentCtx 构建保持一致。
+// rootSessionAddress 把 (channel, chatID) 归一化成**用户可见根会话**地址。
+//
+// ⛔ 2026-11-04 P0：spawn/restore 时传入的 origin 可能是子代理自己的 interactive key
+// （`agent` / `web:web-4/court.shoufu:main`，来自 SendMessage(to="session:...") 注入），
+// 直接 `qualifyChatID(channel, chatID)` 会把 RootSessionKey 写成子代理 key，
+// 进而让 `SendMessage(to="user")` 解析出 (agent, web:web-4/court.shoufu:main) 而报
+// "cannot resolve the user's session"。
+//
+// 归一化规则（与 sessionAddress 互补：这里额外剥 "/<role>:<instance>" 后缀）：
+//
+//	agent:web:web-4/court.shoufu:main  →  web:web-4
+//	web:web-4                          →  web:web-4
+//	agent:web:web-4                    →  web:web-4
+func rootSessionAddress(channel, chatID string) string {
+	if i := strings.Index(chatID, "/"); i > 0 {
+		chatID = chatID[:i]
+	}
+	if channel == "agent" {
+		if i := strings.Index(chatID, ":"); i > 0 {
+			channel, chatID = chatID[:i], chatID[i+1:]
+		}
+	}
+	return qualifyChatID(channel, chatID)
+}
+
 func (a *Agent) buildParentToolContext(ctx context.Context, channel, chatID, senderID string, msg bus.InboundMessage) *tools.ToolContext {
 	workspaceRoot := a.workspaceRoot(senderID)
 	if !a.isRemoteUser(senderID) {
@@ -3342,7 +3376,17 @@ func (a *Agent) buildParentToolContext(ctx context.Context, channel, chatID, sen
 		// 个 offload store 目录（都写 root key → 互相可见），这里显式给出，避免
 		// 依赖 buildSubAgentRunConfig 里 "parentCtx.Channel+":"+ChatID" 的回落
 		// （嵌套 SubAgent 的 channel/chatID 一旦不是 root，回落就会指向错误目录）。
-		RootSessionKey: qualifyChatID(channel, chatID),
+		//
+		// ⛔ 2026-11-04 P0（「我批的是首辅的 report，批复却发给了御前」暴露的第二层）：
+		// `channel/chatID` 来自 `resolveOriginIDs(msg)` —— 当消息由
+		// `SendMessage(to="session:agent:web:web-4/court.shoufu:main")` 注入时，
+		// origin 就是**子代理自己的会话**，于是 RootSessionKey 被写成
+		// `agent:web:web-4/court.shoufu:main`（子代理 key），而不是用户可见根会话
+		// `web:web-4`。后果：`rootSessionOf(ctx)` 解析出 (agent, web:web-4/court.shoufu:main)
+		// ⇒ `SendMessage(to="user")` 报 "cannot resolve the user's session"。
+		// 根 key 必须是**用户可见会话**，用 sessionAddress 剥掉 agent 镜像前缀与
+		// `/<role>:<instance>` 后缀。
+		RootSessionKey: rootSessionAddress(channel, chatID),
 	}
 	// Restore parent's CWD for SubAgent directory inheritance
 	if msg.Metadata != nil {
@@ -3690,6 +3734,53 @@ func (a *Agent) ListInteractiveSessions(channel, chatID string) []InteractiveSes
 		return true
 	})
 	return results
+}
+
+// ListAllInteractiveSessions 一次遍历返回**所有 channel** 的会话（key 前缀按
+// channel 分组）。
+//
+// 2026-11-09 性能：/api/session-tree 旧路径先 ListInteractiveSessions("web")、
+// 再 ("cli")、再 ("agent") —— 三次都跑 cleanupExpiredSessions（各遍历 471 项并加锁）
+// 且各自完整 Range 一遍 map。单次遍历按前缀分组，语义完全等价、开销降到 1/3。
+func (a *Agent) ListAllInteractiveSessions() map[string][]InteractiveSessionInfo {
+	a.cleanupExpiredSessions()
+	out := make(map[string][]InteractiveSessionInfo, 4)
+	a.interactiveSubAgents.Range(func(key, value any) bool {
+		keyStr, ok := key.(string)
+		if !ok {
+			return true
+		}
+		ia, ok := value.(*interactiveAgent)
+		if !ok || ia == nil || ia.isDestroyed() {
+			return true
+		}
+		channel := keyStr
+		if i := strings.Index(keyStr, ":"); i > 0 {
+			channel = keyStr[:i]
+		}
+		ia.mu.Lock()
+		parentChannel, parentChatID := parseInteractiveKeyParent(keyStr)
+		if ia.parentKey != "" {
+			parentChannel, parentChatID = "agent", ia.parentKey
+		}
+		info := InteractiveSessionInfo{
+			Role:          ia.roleName,
+			Instance:      ia.instance,
+			Running:       ia.running,
+			Background:    ia.background,
+			Task:          ia.task,
+			Preview:       summarizeInteractivePreviewLocked(ia),
+			ChatID:        parseInteractiveKeyChatID(keyStr),
+			Key:           keyStr,
+			ParentKey:     ia.parentKey,
+			ParentChannel: parentChannel,
+			ParentChatID:  parentChatID,
+		}
+		ia.mu.Unlock()
+		out[channel] = append(out[channel], info)
+		return true
+	})
+	return out
 }
 
 func parseInteractiveKeyParent(key string) (channel, chatID string) {
