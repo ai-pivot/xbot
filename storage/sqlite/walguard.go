@@ -129,6 +129,12 @@ type connHolder struct {
 	shmID       os.FileInfo
 	maxIdle     int
 	maxIdleTime time.Duration
+
+	// pinned 是常驻守护连接（2026-11-09 "不能坏"机制，见 DB.pinnedDB 注释的由来）。
+	// 放在 holder 里而不是 DB 上：**自愈换池必须能一起处理它** —— 否则换池后旧
+	// pinned 连接仍抱着已删除的 -wal/-shm inode，孤儿 fd 残留（walguard 测试实测）。
+	// 它独立于 db 池（单独 sql.Open），因此换池时 db 关闭不影响它，需要显式重建。
+	pinned *sql.DB
 }
 
 func (h *connHolder) get() *sql.DB {
@@ -147,6 +153,30 @@ func (h *connHolder) snapshot() (db *sql.DB, walID, shmID os.FileInfo) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.db, h.walID, h.shmID
+}
+
+// openPinnedConn 建立一个独立于连接池的常驻连接（见 connHolder.pinned）。
+// 失败返回 nil（不阻塞启动/不阻塞自愈）。
+func openPinnedConn(path string) *sql.DB {
+	if path == "" || path == ":memory:" {
+		return nil
+	}
+	pdb, err := sql.Open("sqlite", "file:"+path+
+		"?_pragma=busy_timeout(3000)&_pragma=journal_mode(WAL)")
+	if err != nil {
+		log.WithError(err).Warn("pinned guard: open failed (external closers may unlink WAL)")
+		return nil
+	}
+	pdb.SetMaxOpenConns(1)
+	pdb.SetMaxIdleConns(1)
+	pdb.SetConnMaxLifetime(0)
+	var one int
+	if err := pdb.QueryRow("SELECT 1").Scan(&one); err != nil {
+		_ = pdb.Close()
+		log.WithError(err).Warn("pinned guard: probe failed (external closers may unlink WAL)")
+		return nil
+	}
+	return pdb
 }
 
 // captureWALIdentity 记录当前路径上 -wal/-shm 的身份（可能为 nil：文件尚未创建）。
@@ -391,7 +421,13 @@ func healForeignWALDeletion(path string, h *connHolder, anomaly string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	old := h.db
-	h.db, h.walID, h.shmID = nil, nil, nil
+	oldPinned := h.pinned
+	h.db, h.walID, h.shmID, h.pinned = nil, nil, nil, nil
+	// 先关 pinned 再关主池：pinned 是独立连接，若留到主池之后关闭会变成
+	// "最后一个连接"，触发 SQLite 的 last-close checkpoint/unlink（正是我们要避免的）。
+	if oldPinned != nil {
+		_ = oldPinned.Close()
+	}
 	if old != nil {
 		_ = old.Close()
 	}
@@ -416,6 +452,11 @@ func healForeignWALDeletion(path string, h *connHolder, anomaly string) error {
 		return fmt.Errorf("reopened pool did not recreate %s-wal", path)
 	}
 	h.db, h.walID, h.shmID = newConn, walID, shmID
+	// 重建 pinned（换池后必须重新建立，否则外部进程的下一次 open+close 又会被
+	// 判定为最后一连接）
+	if pinnedGuardEnabled {
+		h.pinned = openPinnedConn(path)
+	}
 
 	log.WithFields(log.Fields{
 		"path":          path,

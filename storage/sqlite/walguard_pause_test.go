@@ -20,6 +20,10 @@ import (
 // 只有测试会调用：生产进程里巡检只有这一条 goroutine，不存在「两条执行流抢同一个
 // 异常」的问题。
 func pauseWALGuard() (resume func()) {
+	// pinned 守护连接会让 -wal 在外部删除后立刻重建（这是它防 unlink 的原理），
+	// 而本组测试要验证「无防护」时的检测/自愈路径 ⇒ 隔离期内一并关闭。
+	oldPinned := pinnedGuardEnabled
+	pinnedGuardEnabled = false
 	walGuard.mu.Lock()
 	walGuard.suppress = true
 	stop, done := walGuard.stop, walGuard.done
@@ -33,6 +37,7 @@ func pauseWALGuard() (resume func()) {
 	}
 
 	return func() {
+		pinnedGuardEnabled = oldPinned
 		walGuard.mu.Lock()
 		walGuard.suppress = false
 		walGuard.mu.Unlock()

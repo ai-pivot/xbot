@@ -237,9 +237,44 @@ func Open(path string) (*DB, error) {
 		cancel()
 	}
 
+	db.openPinnedGuard()
+
 	log.WithFields(log.Fields{"path": path, "caller": callerTag(1)}).Info("SQLite database opened")
 	db.logWALState("open")
 	return db, nil
+}
+
+// pinnedGuardEnabled 允许测试关闭 pinned 守护连接（walguard_test 要模拟"无防护"
+// 状态下外部 unlink 的自愈路径 —— pinned 会让 -wal 在删除后立刻重建，破坏其
+// precondition）。生产恒为 true。
+var pinnedGuardEnabled = true
+
+// openPinnedGuard 在共享 connHolder 上建立常驻守护连接（见 connHolder.pinned）。
+// 只做一件事：让本进程永远持有一个打开的 WAL 句柄，使外部进程的 open+close
+// 不再被 SQLite 判定为「最后一个连接」。失败不阻塞启动（只告警）。
+func (db *DB) openPinnedGuard() {
+	if !pinnedGuardEnabled || db.path == ":memory:" || db.holder == nil {
+		return
+	}
+	h := db.holder
+	h.mu.Lock()
+	if h.pinned != nil {
+		h.mu.Unlock()
+		return
+	}
+	h.mu.Unlock()
+	pdb := openPinnedConn(db.path)
+	if pdb == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.pinned == nil {
+		h.pinned = pdb
+	} else {
+		_ = pdb.Close() // 并发 Open 竞争：保留已有的
+	}
+	h.mu.Unlock()
+	log.WithField("path", db.path).Debug("pinned guard connection established — external open/close can no longer unlink WAL")
 }
 
 // historyLock serializes compound history operations using a bounded striped
@@ -264,6 +299,9 @@ func (db *DB) Close() error {
 	if !db.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	// pinned 由共享 connHolder 持有（换池时自愈一并重建），这里不单独关闭：
+	// 同一路径可能有多个 DB handle，提前关 pinned 会让外部进程的下一次 open+close
+	// 重新被判定为"最后一个连接"。它随 holder 的最后一个引用一起释放。
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	// D-02（2026-10-22 审计）：conn.Close() 失败时也必须释放锁并清空 conn。

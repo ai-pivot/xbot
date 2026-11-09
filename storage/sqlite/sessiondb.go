@@ -233,6 +233,17 @@ func releaseSharedConn(path string) error {
 		return nil
 	}
 	delete(sharedConns.m, path)
+	// 释放 holder 的 pinned 守护连接（2026-11-09）：它与池同生命周期，
+	// 不在这里关就会在 DB.Close 后继续持有 -wal/-shm inode ⇒ fd 泄漏
+	// （walguard 测试逐条检查进程级 fd，残留会导致后续用例误判）。
+	if e.holder != nil {
+		e.holder.mu.Lock()
+		if e.holder.pinned != nil {
+			_ = e.holder.pinned.Close()
+			e.holder.pinned = nil
+		}
+		e.holder.mu.Unlock()
+	}
 	conn := e.holder.get()
 	if conn == nil {
 		return nil
