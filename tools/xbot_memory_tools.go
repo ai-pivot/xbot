@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -83,7 +84,7 @@ type MemoryAddTool struct{}
 
 func (t *MemoryAddTool) Name() string { return "memory_add" }
 func (t *MemoryAddTool) Description() string {
-	return "Save a memory for future conversations. Memories persist across sessions and can be searched with memory_search. Use this for important facts, user preferences, key decisions, or anything worth remembering. Default scope is 'global' (injected into every session); use scope='session' for task-local state that should NOT appear in other sessions."
+	return "Stage a memory for future conversations (two-phase write). First call: scope='global' (default) creates a PROPOSAL — nothing is persisted until you confirm with memory_confirm(proposal_id); scope='session' writes directly (session-local only). Duplicates, injection patterns, oversized or garbage content are rejected. Use this for important facts, user preferences, key decisions, or anything worth remembering."
 }
 func (t *MemoryAddTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
@@ -136,14 +137,21 @@ func (t *MemoryAddTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 	}
 
 	// SourceSession: scope='session' 必须带上会话标识（CR xbotgh 🔴）——
-	// AddMemory 落库 source_session='' 时 Recall 的 sessionMemories 过滤
+	// 落库 source_session='' 时 Recall 的 sessionMemories 过滤
 	//（scope='session' AND source_session = ?）永不命中，仅 memory_search
 	// 可搜、注入永远看不到（工具描述引导的用法即静默失效）。
 	var sourceSession string
 	if params.Scope == "session" && ctx.ChatID != "" {
 		sourceSession = ctx.ChatID
 	}
-	id, err := mem.AddMemory(ctx.Ctx, xbotmemory.LongTermMemory{
+
+	// Two-phase write (2026-11-07 redesign): the first call NEVER persists
+	// global-scope memories — it stages a proposal the caller must confirm
+	// via memory_confirm (TTL 10 minutes). Session-scope writes go straight
+	// through the validation + duplicate gates. The unconfirmed gate was the
+	// 2026-11 incident's amplifier: the model re-added the same garbage 6
+	// times because nothing pushed back.
+	proposalID, memoryID, err := mem.ProposeMemory(ctx.Ctx, xbotmemory.LongTermMemory{
 		Type:          params.Type,
 		Content:       params.Content,
 		Keywords:      params.Keywords,
@@ -153,16 +161,93 @@ func (t *MemoryAddTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		SourceSession: sourceSession,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to add memory: %w", err)
+		var dup *xbotmemory.DuplicateMemoryError
+		if errors.As(err, &dup) {
+			return NewErrorResult(fmt.Sprintf(
+				"NOT saved — duplicate of existing memory #%d. If you meant to UPDATE that fact, change the content so it states the new fact distinctly; if it is already correct, do nothing.",
+				dup.ExistingID)), nil
+		}
+		return nil, fmt.Errorf("memory rejected: %w", err)
+	}
+
+	if memoryID > 0 {
+		// session scope: direct write (already passed validation + dedup gates).
+		log.WithFields(log.Fields{
+			"id":    memoryID,
+			"type":  params.Type,
+			"scope": params.Scope,
+		}).Info("Memory added via tool (session scope, direct write)")
+
+		return NewResult(fmt.Sprintf("Memory saved directly (ID: %d, scope: session — only this session's Recall injects it). Use memory_search to find it later.", memoryID)), nil
+	}
+
+	// global scope: staged as proposal — nothing persisted yet.
+	log.WithFields(log.Fields{
+		"proposal_id": proposalID,
+		"type":        params.Type,
+		"scope":       params.Scope,
+	}).Info("Memory staged as proposal via tool (awaiting memory_confirm)")
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "PROPOSAL %d（未写入）\n\n", proposalID)
+	fmt.Fprintf(&sb, "Type: %s\n", params.Type)
+	fmt.Fprintf(&sb, "Scope: %s\n", params.Scope)
+	fmt.Fprintf(&sb, "Content: %s\n\n", params.Content)
+	sb.WriteString("⚠️ 确认后该记忆将持久化，并在未来任何时候被注入（即使当时的情况已改变）。请确认内容正确、无重复、无过时信息。\n\n")
+	fmt.Fprintf(&sb, "确认方式：memory_confirm(proposal_id=%d)\n", proposalID)
+	sb.WriteString("如内容有误或不再需要，忽略该 proposal 即可（10 分钟后自动过期）。\n")
+	return NewResult(sb.String()), nil
+}
+
+// --- memory_confirm ---
+
+// MemoryConfirmTool persists a staged memory proposal (the second phase of
+// memory_add's two-phase write).
+type MemoryConfirmTool struct{}
+
+func (t *MemoryConfirmTool) Name() string { return "memory_confirm" }
+func (t *MemoryConfirmTool) Description() string {
+	return "Confirm and persist a memory proposal created by memory_add (two-phase write). Only call this after verifying the proposal's content is correct, non-duplicate, and not outdated — confirmed memories are injected into future sessions even when circumstances have changed. Expired/unknown proposal IDs error out."
+}
+func (t *MemoryConfirmTool) Parameters() []llm.ToolParam {
+	return []llm.ToolParam{
+		{Name: "proposal_id", Type: "integer", Description: "The proposal ID returned by memory_add (valid for 10 minutes)", Required: true},
+	}
+}
+
+func (t *MemoryConfirmTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
+	params, err := parseToolArgs[struct {
+		ProposalID int64 `json:"proposal_id"`
+	}](input)
+	if err != nil {
+		return nil, err
+	}
+	if params.ProposalID == 0 {
+		return nil, fmt.Errorf("proposal_id is required")
+	}
+
+	mem := getXbotMemory(ctx)
+	if mem == nil {
+		return NewResult("Memory is not available (memory provider is not xbot)."), nil
+	}
+
+	id, err := mem.ConfirmProposal(ctx.Ctx, params.ProposalID)
+	if err != nil {
+		var dup *xbotmemory.DuplicateMemoryError
+		if errors.As(err, &dup) {
+			return NewErrorResult(fmt.Sprintf(
+				"NOT saved — duplicate of existing memory #%d (the same fact was persisted between proposal and confirm). Nothing further needed.",
+				dup.ExistingID)), nil
+		}
+		return nil, fmt.Errorf("confirm proposal failed: %w", err)
 	}
 
 	log.WithFields(log.Fields{
-		"id":    id,
-		"type":  params.Type,
-		"scope": params.Scope,
-	}).Info("Memory added via tool")
+		"proposal_id": params.ProposalID,
+		"id":          id,
+	}).Info("Memory persisted via memory_confirm")
 
-	return NewResult(fmt.Sprintf("Memory saved (ID: %d, scope: %s). Use memory_search to find it later.", id, params.Scope)), nil
+	return NewResult(fmt.Sprintf("Memory saved (ID: %d). Use memory_search to find it later.", id)), nil
 }
 
 // --- memory_manage ---
@@ -262,6 +347,7 @@ func XbotMemoryTools() []Tool {
 	return []Tool{
 		&MemorySearchTool{},
 		&MemoryAddTool{},
+		&MemoryConfirmTool{},
 		&MemoryManageTool{},
 	}
 }

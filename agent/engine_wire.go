@@ -1006,6 +1006,9 @@ func (a *Agent) buildSubAgentRunConfig(
 		subTools.Unregister("recall_memory_search")
 		subTools.Unregister("memory_search")
 		subTools.Unregister("memory_add")
+		subTools.Unregister("memory_confirm")
+		subTools.Unregister("core_memory_delete")
+		subTools.Unregister("core_memory_clear")
 		subTools.Unregister("memory_manage")
 	}
 

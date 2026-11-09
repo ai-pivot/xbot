@@ -15,8 +15,8 @@ import (
 func TestMemoryTools_ProviderExclusiveSets(t *testing.T) {
 	want := map[string][]string{
 		"flat":  {"memory_write", "memory_list"},
-		"xbot":  {"memory_search", "memory_add", "memory_manage"},
-		"letta": {"core_memory_append", "core_memory_replace", "rethink", "archival_memory_insert", "archival_memory_search", "recall_memory_search"},
+		"xbot":  {"memory_search", "memory_add", "memory_confirm", "memory_manage"},
+		"letta": {"core_memory_append", "core_memory_replace", "rethink", "core_memory_delete", "core_memory_clear", "archival_memory_insert", "archival_memory_search", "recall_memory_search"},
 	}
 
 	for provider, expected := range want {

@@ -213,7 +213,7 @@ func Open(path string) (*DB, error) {
 
 	// 主库连接池：MaxIdleConns(4)（常驻热连接，主库是全局单点）；会话库走
 	// openSQLite 的会话参数（MaxIdleConns(1) + ConnMaxIdleTime，见 OpenSessionDB）。
-	db, err := openSQLite(path, 4, 0)
+	db, err := openSQLite(path, 8, 0) // maxIdle=8 ⇒ MaxOpenConns=64（见 sessiondb.go 注释）
 	if err != nil {
 		releaseDBLock(path)
 		return nil, err

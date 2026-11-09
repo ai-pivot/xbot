@@ -9,6 +9,8 @@ package serverapp
 // 另有 471 条 interactive_agents 会话在内存注册表里）、user_chats≈424。
 
 import (
+	"sync"
+	"encoding/json"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -140,4 +142,100 @@ func TestSessionTreePerfBreakdown(t *testing.T) {
 		t.Logf("NOTE: query layer alone is %.0fms — SQL/索引/CTE is the primary bottleneck",
 			float64(total.Microseconds())/1000)
 	}
+}
+
+// TestBuildSessionTreeAndMarshalPerf 量化内存侧：1382 mains + 471 subagents 的
+// 构树 + JSON 序列化耗时（SQL 层已证明只有 13.8ms，这里验证其余部分）。
+func TestBuildSessionTreeAndMarshalPerf(t *testing.T) {
+	mains := make([]web.UserChatWithPreview, 0, 1382)
+	now := time.Now()
+	for i := 0; i < 1382; i++ {
+		mains = append(mains, web.UserChatWithPreview{
+			ChatID:     fmt.Sprintf("chat_web_%04d", i),
+			Channel:    "web",
+			Label:      fmt.Sprintf("session %d", i),
+			LastActive: now.Add(-time.Duration(i) * time.Minute).Format(time.RFC3339),
+			CreatedAt:  now.Add(-time.Duration(i) * time.Hour).Format(time.RFC3339),
+			Preview:    fmt.Sprintf("preview text for session %d", i),
+		})
+	}
+	subagents := make([]web.UserChatWithPreview, 0, 471)
+	for i := 0; i < 471; i++ {
+		subagents = append(subagents, web.UserChatWithPreview{
+			ChatID:     fmt.Sprintf("web:chat_web_%04d/explore:inst%d", i%1382, i),
+			Channel:    "agent",
+			Type:       "agent",
+			FullKey:    fmt.Sprintf("web:chat_web_%04d/explore:inst%d", i%1382, i),
+			Label:      fmt.Sprintf("subagent %d", i),
+			LastActive: now.Add(-time.Duration(i) * time.Minute).Format(time.RFC3339),
+		})
+	}
+
+	start := time.Now()
+	tree := buildSessionTree(mains, subagents)
+	buildDur := time.Since(start)
+
+	start = time.Now()
+	payload, err := json.Marshal(tree)
+	marshalDur := time.Since(start)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	t.Logf("buildSessionTree: %.2f ms (nodes=%d orphans=%d)", float64(buildDur.Microseconds())/1000, len(tree.Sessions), len(tree.OrphanSubAgents))
+	t.Logf("json.Marshal:     %.2f ms (%d bytes)", float64(marshalDur.Microseconds())/1000, len(payload))
+}
+
+// TestReadLatencyUnderWriteLoad 验证「连接池饥饿」假设：生产 471 个子代理并发写，
+// 而主库 MaxOpenConns 曾是 4 ⇒ session-tree 的读查询排队等连接（端到端 1.6-3.5s），
+// 而单线程只有 13.8ms。这里在并发写压力下对比 4 与 64 两种上限。
+func TestReadLatencyUnderWriteLoad(t *testing.T) {
+	conn := seedPerfDB(t, 900, 400, 82, 424)
+	const writers = 8
+	measure := func(maxOpen int) time.Duration {
+		conn.SetMaxOpenConns(maxOpen)
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := 0; i < writers; i++ {
+			wg.Add(1)
+			go func(n int) {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					_, _ = conn.Exec(`INSERT OR REPLACE INTO tenants
+						(channel, chat_id, created_at, last_active_at, preview)
+						VALUES ('web', ?, datetime('now'), datetime('now'), 'load')`,
+						fmt.Sprintf("load_%d", n))
+				}
+			}(i)
+		}
+		time.Sleep(50 * time.Millisecond) // 让写者进入稳态
+		start := time.Now()
+		for i := 0; i < 5; i++ {
+			if _, err := listTenantsByChannels(conn, []string{"web", "feishu"}); err != nil {
+				t.Fatalf("query: %v", err)
+			}
+		}
+		avg := time.Since(start) / 5
+		close(stop)
+		wg.Wait()
+		return avg
+	}
+
+	slow := measure(4)
+	fast := measure(64)
+	t.Logf("并发 %d 写者时：MaxOpenConns=4 → 读平均 %.1fms；MaxOpenConns=64 → %.1fms（提升 %.1fx）",
+		writers, float64(slow.Microseconds())/1000, float64(fast.Microseconds())/1000,
+		float64(slow)/float64(max64(fast, time.Microsecond)))
+}
+
+func max64(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
 }

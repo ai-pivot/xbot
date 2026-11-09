@@ -27,10 +27,13 @@ func TestAddMemorySupersedesStaleMatch(t *testing.T) {
 	m, db := newTestMemory(t)
 	// Filler corpus for realistic BM25 IDF.
 	for i := 0; i < 8; i++ {
+		// Scope='session' mirrors the real auto-extraction path; scope-less
+		// entries would now be demoted to proposals (2026-11-07 redesign).
 		if err := m.addLongTermMemory(LongTermMemory{
 			Type:     "fact",
 			Content:  strings.Repeat("filler unrelated content ", i+1),
 			Keywords: "filleruniquetokens" + strings.Repeat("z", i+1),
+			Scope:    "session",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -102,10 +105,13 @@ func TestAddMemorySupersedesStaleMatch(t *testing.T) {
 func TestSessionScopedAutoExtractionDoesNotSupersede(t *testing.T) {
 	m, db := newTestMemory(t)
 	for i := 0; i < 8; i++ {
+		// Scope='session' mirrors the real auto-extraction path; scope-less
+		// entries would now be demoted to proposals (2026-11-07 redesign).
 		if err := m.addLongTermMemory(LongTermMemory{
 			Type:     "fact",
 			Content:  strings.Repeat("filler unrelated content ", i+1),
 			Keywords: "filleruniquetokens" + strings.Repeat("z", i+1),
+			Scope:    "session",
 		}); err != nil {
 			t.Fatal(err)
 		}

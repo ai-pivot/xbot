@@ -280,7 +280,21 @@ func openRawConn(path string, maxIdleConns int, maxIdleTime time.Duration) (*sql
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	conn.SetMaxOpenConns(4)
+	// 2026-11-09：连接池上限从硬编码 4 提到 maxIdleConns*8（主库调用方传 8 ⇒ 64）。
+	//
+	// 为什么：生产有 ~471 个 interactive 子代理 + 多个会话并发写（写由 writeMu
+	// 串行化，但每条写事务都要占一个池连接）。MaxOpenConns(4) 时 /api/session-tree
+	// 的 4 次查询（channels/cli/tenants/agent）会排队等连接，实测端到端 1.6-3.5s；
+	// 而单线程 benchmark 同一组查询只要 13.8ms —— 差距就在「等连接」。
+	//
+	// 安全性：SQLite 的 WAL 模式天然支持「多读者 + 单写者」，读连接并发不会冲突；
+	// 写冲突已在进程内由 writeMu 串行化。Connection 是懒创建的，上限提高不会立即
+	// 占用 fd/内存。会话库（maxIdleConns=1）保持不变（4）。
+	maxOpen := 4
+	if maxIdleConns > 1 {
+		maxOpen = maxIdleConns * 8
+	}
+	conn.SetMaxOpenConns(maxOpen)
 	conn.SetMaxIdleConns(maxIdleConns)
 	conn.SetConnMaxLifetime(0)
 	if maxIdleTime > 0 {

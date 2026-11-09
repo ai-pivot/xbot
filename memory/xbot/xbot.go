@@ -264,8 +264,11 @@ func (m *XbotMemory) Recall(ctx context.Context, query, sessionID string) (strin
 	sb.WriteString("# Memory\n\n")
 
 	// 1. Core summary (MEMORY.md, ≤2000 chars)
-	coreSummary := m.readCoreSummary()
-	if coreSummary != "" {
+	// 2026-11-09：core summary（## Core 段）已**彻底移除**（用户裁定：自动 LLM 重写
+	// 会产生腐烂文本并每轮注入污染上下文；MEMORY.md 曾累积 27 轮 prompt 回显 +
+	// 注入探针串）。readCoreSummary/writeCoreSummary 保留但不再被注入路径调用。
+	coreSummary := ""
+	if false {
 		sb.WriteString("## Core\n")
 		sb.WriteString(coreSummary)
 		sb.WriteString("\n\n")
@@ -591,7 +594,8 @@ func (m *XbotMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 	}
 
 	// 3. Update core summary
-	m.updateCoreSummary(ctx, client, model)
+	// 2026-11-09：core 自动重写已删除（同上裁定）。不再调用 updateCoreSummary ——
+	// 它是 MEMORY.md 腐烂（27 轮 prompt 回显 + 探针串）的根源。
 
 	// 4. Decay heat scores
 	m.decayMemories()
@@ -1536,7 +1540,10 @@ func (m *XbotMemory) PostCompress(ctx context.Context, input memory.PostCompress
 	}
 
 	// 2. Update core summary
-	m.updateCoreSummary(ctx, input.LLMClient, input.Model)
+	// 2026-11-09：PostCompress 的 core-summary LLM 调用已删除（用户裁定 core 彻底
+	// 移除）。曾实测该调用在压缩管道里复活会导致每次压缩多一次 LLM 往返。
+	_ = input.LLMClient
+	_ = input.Model
 
 	// 3. Decay heat scores
 	m.decayMemories()
