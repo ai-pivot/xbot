@@ -1054,6 +1054,8 @@ const zhCN = {
     noAccount: '没有账号？',
     hasAccount: '已有账号？',
     loginFailed: '用户名或密码错误',
+    sessionExpired: '登录已失效，请重新登录',
+    forbidden: '没有权限执行该操作',
     registerFailed: '注册失败',
     createAdmin: '创建账号',
     bootstrapSubtitle: '创建管理员账号——这是 invite-only 模式下唯一一次注册机会',

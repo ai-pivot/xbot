@@ -25,7 +25,7 @@ import { createElement, createContext, useCallback, useContext, useEffect, useMe
 import { toast } from 'sonner'
 import { getContextUsage, setCwd } from '@/components/agent/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
-import { postAPI } from '@/lib/api'
+import { postAPI, reportAPIError } from '@/lib/api'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import { DEFAULT_SESSION_CATEGORY, groupSessions, isSessionCategory, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
@@ -1452,7 +1452,10 @@ export function useSessionStoreImpl(): SessionStore {
           `/api/chats/${encodeURIComponent(id)}/switch`,
           { channel: useChannel },
         )
-      } catch {
+      } catch (e) {
+        // 允许吞（切会话失败不弹业务错误，UI 停在原会话），但 401/403 不许静默：
+        // 上报统一出口（401 → 提示登录失效 + 切登录页）。
+        reportAPIError(e)
         return
       }
       if (switchSeq !== switchSeqRef.current) return
@@ -1509,7 +1512,9 @@ export function useSessionStoreImpl(): SessionStore {
         const data = await postAPI<CreateChatResponse>('/api/chats/create', { label: label ?? '', model: effectiveModel, subscription_id: effectiveSubID })
         if (!data.chat_id) return null
         chatID = data.chat_id
-      } catch {
+      } catch (e) {
+        // 允许吞（建会话失败由调用方回落到「无新会话」），但 401/403 不许静默。
+        reportAPIError(e)
         return null
       }
       if (workPath) {
@@ -1591,7 +1596,9 @@ export function useSessionStoreImpl(): SessionStore {
         // retarget) and the sidebar current marker never reconciled.
         await switchSession(chatID, DEFAULT_CHANNEL)
         return chatID
-      } catch {
+      } catch (e) {
+        // 允许吞（fork 失败返回 null，UI 不切换），但 401/403 不许静默。
+        reportAPIError(e)
         return null
       }
     },
@@ -1632,7 +1639,9 @@ export function useSessionStoreImpl(): SessionStore {
   const renameSession = useCallback(async (id: string, channel: string, label: string): Promise<boolean> => {
     try {
       await postAPI(`/api/chats/${encodeURIComponent(id)}/rename`, { channel, label })
-    } catch {
+    } catch (e) {
+      // 允许吞（返回 false，UI 提示由调用方决定），但 401/403 不许静默。
+      reportAPIError(e)
       return false
     }
     setSessions((prev) => prev.map((s) => (sameSession(s, { channel, chatID: id }) ? { ...s, label } : s)))
@@ -1645,7 +1654,9 @@ export function useSessionStoreImpl(): SessionStore {
     orderedIDs.forEach((id, i) => { orders[id] = i + 1 })
     try {
       await postAPI('/api/chats/reorder', { channel, orders })
-    } catch {
+    } catch (e) {
+      // 允许吞（返回 false，拖拽顺序回滚），但 401/403 不许静默。
+      reportAPIError(e)
       return false
     }
     // Optimistically update sortOrder in local state.
@@ -1660,7 +1671,9 @@ export function useSessionStoreImpl(): SessionStore {
     async (id: string, channel: string): Promise<boolean> => {
       try {
         await postAPI(`/api/chats/${encodeURIComponent(id)}/delete`, { channel })
-      } catch {
+      } catch (e) {
+        // 允许吞（返回 false，会话保留），但 401/403 不许静默。
+        reportAPIError(e)
         return false
       }
       const selector = { channel, chatID: id }

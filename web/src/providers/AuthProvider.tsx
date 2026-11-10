@@ -18,10 +18,13 @@ import {
   createContext,
   useCallback,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
-import { postAPI } from '@/lib/api'
+import { toast } from 'sonner'
+import i18n from '@/i18n'
+import { onAPIError, postAPI } from '@/lib/api'
 import { clearWebCaches } from '@/lib/webCache'
 import { registerCurrentWebPush, unregisterCurrentWebPush } from '@/lib/webpush'
 
@@ -52,6 +55,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [inviteOnly, setInviteOnly] = useState(false)
   const [bootstrap, setBootstrap] = useState(false)
+  /** Ref mirror of `user` — the API error listener runs outside render and must
+   *  know whether a session existed (未登录时的探活 401 不该弹「登录已失效」). */
+  const userRef = useRef<AuthUser | null>(null)
+
+  const applyUser = useCallback((next: AuthUser | null) => {
+    userRef.current = next
+    setUser(next)
+  }, [])
+
+  // --- 统一错误出口：401 会话失效 / 403 无权限（收敛点，不在调用点各写一遍） ---
+  useEffect(() => onAPIError((error) => {
+    if (error.status === 401) {
+      // 只有「本来已登录」才谈得上会话失效；白名单探活的 401 已在 api 层静默。
+      if (!userRef.current) return
+      // 1) 清本地登录态 → AuthGuard 检测到 user=null 即 <Navigate to="/login">
+      clearWebCaches()
+      try { localStorage.removeItem(USERNAME_KEY) } catch { /* storage 不可用也不影响内存态 */ }
+      applyUser(null)
+      // 2) 明确告诉用户「登录已失效，请重新登录」（不是「操作失败」）
+      toast.error(i18n.t('auth.sessionExpired') as string, { id: 'session-expired' })
+      return
+    }
+    if (error.status === 403) {
+      // 403 不许静默：给出可见提示 + 保留服务端原因。
+      const detail = error.message && error.message !== 'invalid_response' ? `：${error.message}` : ''
+      toast.error(`${i18n.t('auth.forbidden') as string}${detail}`, { id: 'forbidden-error' })
+    }
+  }), [applyUser])
 
   // --- Init: check auth status + fetch auth config ---
   useEffect(() => {
@@ -75,7 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Auth status: 200 → logged in, 401 → not logged in
         if (settingsRes.status === 'fulfilled') {
           const username = localStorage.getItem(USERNAME_KEY) ?? ''
-          setUser({ username })
+          applyUser({ username })
           // Re-bind an existing browser subscription to this session's user.
           void registerCurrentWebPush().catch(() => {})
         }
@@ -84,7 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     })()
     return () => { cancelled = true }
-  }, [])
+  }, [applyUser])
 
   // --- login ---
   const login = useCallback(async (username: string, password: string): Promise<boolean> => {
@@ -92,14 +123,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await postAPI('/api/auth/login', { username, password })
       clearWebCaches()
       localStorage.setItem(USERNAME_KEY, username)
-      setUser({ username })
+      applyUser({ username })
       // Bind the existing browser subscription to the newly logged-in user.
       void registerCurrentWebPush().catch(() => {})
       return true
     } catch {
+      // 允许吞：`/api/auth/login` 在 401 白名单里 → 401 = 用户名或密码错误，
+      // 由 LoginPage 显示 `auth.loginFailed`，不是「登录已失效」。403 仍会走统一出口。
       return false
     }
-  }, [])
+  }, [applyUser])
 
   // --- register ---
   const register = useCallback(async (username: string, password: string): Promise<boolean> => {
@@ -108,6 +141,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Auto-login after successful registration.
       return await login(username, password)
     } catch {
+      // 允许吞：同 login —— 注册失败（含 401 白名单）由 RegisterPage 显示；
+      // 403（邀请制关闭）已由统一出口提示。
       return false
     }
   }, [login])
@@ -121,9 +156,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       clearWebCaches()
       localStorage.removeItem(USERNAME_KEY)
-      setUser(null)
+      applyUser(null)
     }
-  }, [])
+  }, [applyUser])
 
   return (
     <AuthContext.Provider value={{ user, loading, inviteOnly, bootstrap, login, register, logout }}>

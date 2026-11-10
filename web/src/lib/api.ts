@@ -25,6 +25,114 @@ export class APIError extends Error {
   }
 }
 
+/**
+ * 401 —— **会话失效**（cookie 过期 / 后端换了库不认旧 token / 服务端重启换了签名）。
+ *
+ * 故意继承 `APIError`：既有 `instanceof APIError` 的调用点不受影响；但 `name`
+ * 与 `status` 让调用方能区分「登录失效」和「业务失败」，**不得**再把 401 当
+ * 业务错误静默吞掉（那正是 daidai 现场的病：用户看到"操作失败"，没人去重登）。
+ *
+ * 语义保证：抛出本错误之前，统一错误出口（`onAPIError`）已经收到同一个错误，
+ * 由订阅方（AuthProvider）负责清登录态 + 提示 + 切登录页。
+ */
+export class UnauthorizedError extends APIError {
+  constructor(message = 'unauthorized', code = 'unauthorized', status = 401) {
+    super(message, code, status)
+    this.name = 'UnauthorizedError'
+  }
+}
+
+/**
+ * 401 静默白名单：这些端点的 401 是**正常语义**，不是「登录已失效」。
+ *
+ * - `/api/settings` —— 主动探活端点。`AuthProvider` 初始化与
+ *   `userSettings.syncAndMigrateSettings()` 用它判断「是否已登录」
+ *   （200 = 已登录，401 = 未登录），未登录时 401 是预期结果，弹「登录已失效」
+ *   属于误判。代价：会话过期后设置同步（debounce 写）的 401 也不会立刻弹窗，
+ *   由下一次普通 API 调用拦截 —— 有意的取舍（探活正确性优先）。
+ * - `/api/auth/config` —— 公开配置（无需登录）。
+ * - `/api/auth/login` / `/api/auth/register` —— 401 = 用户名或密码错误，
+ *   是**业务失败**，必须由登录页显示「用户名或密码错误」，不能提示会话失效。
+ * - `/api/auth/logout` —— 会话已失效时登出仍必须成功清理本地态。
+ */
+export const UNAUTHORIZED_SILENT_ENDPOINTS: ReadonlySet<string> = new Set([
+  '/api/settings',
+  '/api/auth/config',
+  '/api/auth/login',
+  '/api/auth/register',
+  '/api/auth/logout',
+])
+
+/** 去掉 query / hash，只按路径匹配白名单（`/api/push/config?ts=…` 之类）。 */
+function endpointPath(endpoint: string): string {
+  const cut = endpoint.search(/[?#]/)
+  return cut === -1 ? endpoint : endpoint.slice(0, cut)
+}
+
+/** 该端点的 401 是否应静默（白名单探活）。 */
+export function isUnauthorizedSilenced(endpoint: string): boolean {
+  return UNAUTHORIZED_SILENT_ENDPOINTS.has(endpointPath(endpoint))
+}
+
+// ── 统一错误出口（401 / 403）────────────────────────────────────────────────
+
+export type APIErrorListener = (error: APIError) => void
+
+const apiErrorListeners = new Set<APIErrorListener>()
+/** 同一个 error 只上报一次：postAPI 已上报过的错误，调用方再 reportAPIError 不会重复弹窗。 */
+const reportedErrors = new WeakSet<APIError>()
+
+/** 订阅统一错误出口（401 会话失效 / 403 无权限）。返回反订阅函数。 */
+export function onAPIError(listener: APIErrorListener): () => void {
+  apiErrorListeners.add(listener)
+  return () => { apiErrorListeners.delete(listener) }
+}
+
+/**
+ * 把错误上报到统一出口（幂等）。只处理 401/403 —— 它们是「全局状态问题」，
+ * 不该由几十个调用点各写一遍提示。返回 true 表示是全局类错误。
+ */
+export function reportAPIError(error: unknown): boolean {
+  if (!(error instanceof APIError)) return false
+  if (error.status !== 401 && error.status !== 403) return false
+  if (reportedErrors.has(error)) return true
+  reportedErrors.add(error)
+  for (const listener of apiErrorListeners) {
+    try {
+      listener(error)
+    } catch (listenerError) {
+      // 订阅方崩了不许影响请求本身。
+      console.error('[api] onAPIError listener failed:', listenerError)
+    }
+  }
+  return true
+}
+
+/**
+ * 唯一的失败收敛点：所有走本模块的请求（含自带信封解析的层）都从这里抛错。
+ * 401 非白名单 ⇒ `UnauthorizedError` + 上报；403 ⇒ 上报（不许静默）+ 照常抛出。
+ */
+export function throwResponseError(
+  endpoint: string,
+  response: Response,
+  envelope: { error?: { code?: string; message?: string } | null },
+): never {
+  const status = response.status
+  const message = envelope.error?.message || `request failed with status ${status}`
+  const code = envelope.error?.code || 'invalid_response'
+
+  if (status === 401 && !isUnauthorizedSilenced(endpoint)) {
+    const unauthorized = new UnauthorizedError(message, code, status)
+    reportAPIError(unauthorized)
+    throw unauthorized
+  }
+
+  const error = new APIError(message, code, status)
+  // 403 不许静默：进统一出口（可见提示由订阅方负责），再照常抛给调用方。
+  if (status === 403) reportAPIError(error)
+  throw error
+}
+
 /** Send a JSON or multipart POST and unwrap the shared {ok,data,error} envelope. */
 export async function postAPI<T>(
   endpoint: string,
@@ -43,12 +151,8 @@ export async function postAPI<T>(
 
   const envelope = await readEnvelope<T>(response)
   if (!response.ok || !envelope.ok) {
-    const error = envelope.error
-    throw new APIError(
-      error?.message || `request failed with status ${response.status}`,
-      error?.code || 'invalid_response',
-      response.status,
-    )
+    // 唯一拦截点：401（非白名单）→ UnauthorizedError + 全局提示；403 → 上报。
+    throwResponseError(endpoint, response, envelope)
   }
   return envelope.data as T
 }
@@ -68,11 +172,7 @@ export async function postRawAPI(
   if (response.ok) return response
 
   const envelope = await readEnvelope<unknown>(response)
-  throw new APIError(
-    envelope.error?.message || `request failed with status ${response.status}`,
-    envelope.error?.code || 'invalid_response',
-    response.status,
-  )
+  throwResponseError(endpoint, response, envelope)
 }
 
 export interface WebPushSubscription {
@@ -135,11 +235,7 @@ export async function getPushSettings(): Promise<PushSettings> {
   })
   const envelope = await readEnvelope<PushSettings>(response)
   if (!response.ok || !envelope.ok) {
-    throw new APIError(
-      envelope.error?.message || `request failed with status ${response.status}`,
-      envelope.error?.code || 'invalid_response',
-      response.status,
-    )
+    throwResponseError('/api/push/settings', response, envelope)
   }
   return (envelope.data || { enable: false, include_preview: false }) as PushSettings
 }
