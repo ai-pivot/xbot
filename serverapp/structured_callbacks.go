@@ -12,7 +12,8 @@ import (
 	"xbot/channel/web"
 	log "xbot/logger"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage"
+	"xbot/storage/common"
 	"xbot/tools"
 
 	"github.com/google/uuid"
@@ -269,7 +270,7 @@ func buildStructuredEnvelope(senderID string, sel web.SessionSelector, input pro
 }
 
 // toProtocolStructured 把存储行转换为前端可渲染形态。
-func toProtocolStructured(m sqlite.StructuredMessage) *protocol.StructuredMessage {
+func toProtocolStructured(m common.StructuredMessage) *protocol.StructuredMessage {
 	payload := map[string]any{}
 	envelope := map[string]any{}
 	if m.StructuredJSON != "" {
@@ -323,49 +324,56 @@ func refuseSelfTarget(kind string, caller tools.CallerScope, channel, realChatID
 }
 
 // structuredCallbacks 构造 WebCallbacks 的结构化消息五件套。
+// noticeResolver / structuredAppender 按能力取用后端，而不是断言 *sqlite.SessionService。
+//
+// #463 之后 serverapp 不允许 import storage/sqlite（有 import_boundary_test 守着），
+// 而 PG 后端目前只实现了 structured_messages 的基础方法、没有 notice 闭环 ——
+// 所以这里断言能力：能力缺失时返回可读错误，绝不静默降级。
+type noticeResolver interface {
+	ResolveNotice(tenantID int64, chatID string, targetID int64, action, content, resolutionJSON, idempotencyKey, senderID, senderName string) (*common.NoticeResolution, error)
+}
+
+type structuredAppender interface {
+	AppendStructuredMessage(tenantID int64, m common.StructuredMessage) (int64, bool, error)
+}
+
 func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error), answerFn func(string, web.SessionSelector, protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error), inboxFn func(web.SessionSelector, int64, int) ([]protocol.StructuredMessage, bool, int64, error), countFn func(web.SessionSelector) (int, error), listFn func(web.SessionSelector, string, int64, int64, int) ([]protocol.StructuredMessage, bool, int64, error), resolveFn func(string, web.SessionSelector, protocol.StructuredResolveInput) (*protocol.StructuredResolveResult, error)) {
-	sessionOf := func(sel web.SessionSelector) (*sqlite.SessionService, int64, error) {
+	sessionOf := func(sel web.SessionSelector) (storage.SessionStore, int64, error) {
 		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
 		if err != nil {
 			return nil, 0, err
 		}
-		// master #444 起 SessionService() 返回存储抽象的 storage.SessionStore：
-		// 结构化消息（report/ask_user/decision/inbox）目前只有 SQLite 后端实现，
-		// PG 后端尚未落地该特性（**未覆盖项**，不是静默降级）—— 显式断言并给出
-		// 可读错误，避免批复写进一张不存在的表、消息凭空蒸发。
-		svc, ok := sess.SessionService().(*sqlite.SessionService)
-		if !ok {
-			return nil, 0, fmt.Errorf("structured messages are not supported by this storage backend (channel=%s)", sel.Channel)
-		}
-		return svc, sess.TenantID(), nil
+		// Structured messages / group messages are now part of SessionStore on
+		// every backend (SQLite + PG), so no concrete-type capability probe.
+		return sess.SessionService(), sess.TenantID(), nil
 	}
 
-	// activityIdx 是主库活动索引（跨会话活动流的唯一写入口）。PG 后端没有这张
-	// 表 ⇒ nil，Insert 静默跳过（视图退化为空列表，而不是 500）。
-	var activityIdx *sqlite.ActivityIndex
-	if ms := ag.MultiSession(); ms != nil && ms.DB() != nil {
-		activityIdx = sqlite.NewActivityIndex(ms.DB().Conn())
+	// 主库活动索引（跨会话活动流的唯一写入口）。后端无关：SQLite/PG 都实现
+	// ActivityStore；索引是派生物，失败只记日志。
+	var activityIdx storage.ActivityStore
+	if ms := ag.MultiSession(); ms != nil && ms.Store() != nil {
+		activityIdx = ms.Store().Activity()
 	}
 
 	// indexActivity 把一条**已落库**的结构化消息摘要写进主库索引。
 	//
 	// 时序铁律：只在原文写成功之后调用（索引可以有延迟，但绝不能出现「索引里有、
 	// 原文没有」—— 用户点进去会 404）。普通 text 不入索引（见 ActivityKindIndexed）。
-	indexActivity := func(tenantID int64, sel web.SessionSelector, row *sqlite.StructuredMessage, summary string) {
+	indexActivity := func(tenantID int64, sel web.SessionSelector, row *common.StructuredMessage, summary string) {
 		if activityIdx == nil || row == nil {
 			return
 		}
 		kind := row.Kind
 		if kind == "" {
-			kind = sqlite.StructuredKindText
+			kind = common.StructuredKindText
 		}
-		if !sqlite.ActivityKindIndexed(kind) {
+		if !common.ActivityKindIndexed(kind) {
 			return
 		}
 		if strings.TrimSpace(summary) == "" {
 			summary = row.Content
 		}
-		err := activityIdx.Insert(sqlite.ActivityItem{
+		err := activityIdx.Insert(common.ActivityItem{
 			TenantID:   tenantID,
 			ChatID:     sel.ChatID,
 			Channel:    sel.Channel,
@@ -374,7 +382,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			SenderID:   row.SenderID,
 			SenderName: row.SenderName,
 			Summary:    summary,
-			CreatedAt:  sqlite.FormatActivityTime(row.CreatedAt),
+			CreatedAt:  common.FormatActivityTime(row.CreatedAt),
 		})
 		if err != nil {
 			// 派生物失败不影响主流程：丢掉一行索引只是少一条活动，原消息仍在会话库。
@@ -415,13 +423,13 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			// 卡片是 agent 发给用户的：发起方不是"用户"，看板要能显示是谁发的。
 			senderType = "agent"
 		}
-		recordType := sqlite.HistoryRecordType("")
+		recordType := common.HistoryRecordType("")
 		if input.Silent {
 			// to="user" 卡片：**出流** —— 只进看板，不进聊天流/历史回放/LLM 上下文。
 			// 存储仍是同一张 session_messages（record_type='notice'），不新造第二套存储。
-			recordType = sqlite.HistoryRecordNotice
+			recordType = common.HistoryRecordNotice
 		}
-		stored := sqlite.StructuredMessage{
+		stored := common.StructuredMessage{
 			ChatID:         sel.ChatID,
 			RecordType:     recordType,
 			Kind:           input.Kind,
@@ -522,7 +530,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			return nil, false, 0, err
 		}
 		// afterID > 0 ⇒ 增量补齐（SSE 重连），按 id 升序；否则走分页（id DESC）。
-		var rows []sqlite.StructuredMessage
+		var rows []common.StructuredMessage
 		var more bool
 		var next int64
 		if afterID > 0 {
@@ -552,7 +560,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			return nil, err
 		}
 		action := strings.ToLower(strings.TrimSpace(input.Action))
-		status, ok := sqlite.NoticeStatusOfAction(action)
+		status, ok := common.NoticeStatusOfAction(action)
 		if !ok {
 			return nil, fmt.Errorf("invalid action %q (want approve|reject|answer|dismiss)", input.Action)
 		}
@@ -563,7 +571,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		if err != nil {
 			return nil, err // ErrStructuredNotFound → 404
 		}
-		if row.Kind != sqlite.StructuredKindReport && row.Kind != sqlite.StructuredKindAskUser {
+		if row.Kind != common.StructuredKindReport && row.Kind != common.StructuredKindAskUser {
 			return nil, fmt.Errorf("invalid: message_id %d is kind=%q, not a user board card (want report|ask_user)", input.MessageID, row.Kind)
 		}
 		originSession, originAgent := userNoticeOrigin(row)
@@ -582,7 +590,12 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			// 默认幂等键：同一张卡的同一个动作只生效一次（双击/刷新重点都安全）。
 			idem = fmt.Sprintf("notice:%d:%s", row.ID, action)
 		}
-		res, rerr := svc.ResolveNotice(tenantID, sel.ChatID, input.MessageID, action, content, string(resolutionJSON), idem, senderID, senderID)
+		resolver, rok := svc.(noticeResolver)
+		if !rok {
+			// PG 后端尚未实现 notice 闭环：显式报错而不是静默丢回流。
+			return nil, fmt.Errorf("notice resolution is not supported by this storage backend")
+		}
+		res, rerr := resolver.ResolveNotice(tenantID, sel.ChatID, input.MessageID, action, content, string(resolutionJSON), idem, senderID, senderID)
 		if rerr != nil {
 			return nil, rerr // 409（已处理）/ 404（不存在）
 		}
@@ -669,7 +682,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 
 // userNoticeOrigin 从卡片信封里取出回流目标（origin.session / origin.agent）。
 // 老行（没有 origin）返回空串：卡片仍可在看板上处理，只是没有 agent 可回流。
-func userNoticeOrigin(row *sqlite.StructuredMessage) (session, agentAddr string) {
+func userNoticeOrigin(row *common.StructuredMessage) (session, agentAddr string) {
 	if row == nil || strings.TrimSpace(row.StructuredJSON) == "" {
 		return "", ""
 	}
@@ -749,13 +762,13 @@ func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 	if err != nil {
 		return err
 	}
-	svc, ok := sess.SessionService().(*sqlite.SessionService)
+	svc, ok := sess.SessionService().(structuredAppender)
 	if !ok {
 		return fmt.Errorf("session backend does not support structured messages")
 	}
-	kind := sqlite.StructuredKindDecision
+	kind := common.StructuredKindDecision
 	if status == "dismissed" || status == "answered" {
-		kind = sqlite.StructuredKindAnswer
+		kind = common.StructuredKindAnswer
 	}
 	correlationID := strings.TrimSpace(cardCorrelationID)
 	if correlationID == "" {
@@ -769,7 +782,7 @@ func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 		"payload":        map[string]any{"status": status, "card_kind": cardKind, "card_id": messageID, "text": content},
 		"text":           content,
 	})
-	_, _, err = svc.AppendStructuredMessage(sess.TenantID(), sqlite.StructuredMessage{
+	_, _, err = svc.AppendStructuredMessage(sess.TenantID(), common.StructuredMessage{
 		ChatID:         chatID,
 		Kind:           kind,
 		CorrelationID:  correlationID,
@@ -856,7 +869,7 @@ func parseStructuredCreatedAt(raw string) (time.Time, error) {
 //
 // 与 /api/answer 的唯一区别是寻址方式：这里用 reply_to（message_id）定位问题行，
 // correlation_id 从目标行派生（客户端显式传了就必须一致）。
-func answerViaMessage(senderID string, sel web.SessionSelector, svc *sqlite.SessionService, tenantID int64, ag *agent.Agent, activityIdx *sqlite.ActivityIndex, input protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
+func answerViaMessage(senderID string, sel web.SessionSelector, svc storage.SessionStore, tenantID int64, ag *agent.Agent, activityIdx storage.ActivityStore, input protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error) {
 	targetID, perr := strconv.ParseInt(strings.TrimSpace(input.ReplyTo), 10, 64)
 	if perr != nil || targetID <= 0 {
 		return nil, false, fmt.Errorf("invalid: reply_to must be the ask_user message_id for kind=answer")
@@ -924,7 +937,7 @@ func answersFromPayload(payload map[string]any) ([]protocol.StructuredAnswer, bo
 
 // applyStructuredAnswer 是 /api/answer 与 /api/message(kind=answer) 的共同闭环：
 // 校验答案形状 → CAS 置位目标 ask_user → 写 answer 行 → 投递 agent。
-func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc *sqlite.SessionService, tenantID int64, ag *agent.Agent, activityIdx *sqlite.ActivityIndex, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error) {
+func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage.SessionStore, tenantID int64, ag *agent.Agent, activityIdx storage.ActivityStore, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error) {
 	// 校验答案形状（multi_select=false 时 option_ids ≤ 1 等）。
 	if err := validateAskUserAnswers(svc, tenantID, input); err != nil {
 		return nil, false, err
@@ -950,16 +963,16 @@ func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc *sqlite
 		if activityIdx == nil || stored == nil {
 			return
 		}
-		if err := activityIdx.Insert(sqlite.ActivityItem{
+		if err := activityIdx.Insert(common.ActivityItem{
 			TenantID:   tenantID,
 			ChatID:     sel.ChatID,
 			Channel:    sel.Channel,
 			MessageID:  stored.ID,
-			Kind:       sqlite.StructuredKindAnswer,
+			Kind:       common.StructuredKindAnswer,
 			SenderID:   stored.SenderID,
 			SenderName: stored.SenderName,
 			Summary:    text,
-			CreatedAt:  sqlite.FormatActivityTime(stored.CreatedAt),
+			CreatedAt:  common.FormatActivityTime(stored.CreatedAt),
 		}); err != nil {
 			log.WithError(err).WithFields(log.Fields{
 				"chat_id": sel.ChatID, "message_id": stored.ID, "kind": "answer",
@@ -984,7 +997,7 @@ func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc *sqlite
 }
 
 // validateAskUserAnswers 按 ask_user 信封校验回答。
-func validateAskUserAnswers(svc *sqlite.SessionService, tenantID int64, input protocol.StructuredAnswerInput) error {
+func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input protocol.StructuredAnswerInput) error {
 	if input.Cancelled {
 		return nil
 	}
@@ -992,7 +1005,7 @@ func validateAskUserAnswers(svc *sqlite.SessionService, tenantID int64, input pr
 	if err != nil {
 		return err
 	}
-	var target *sqlite.StructuredMessage
+	var target *common.StructuredMessage
 	for i := range rows {
 		if rows[i].CorrelationID == input.CorrelationID {
 			target = &rows[i]

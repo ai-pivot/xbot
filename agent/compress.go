@@ -13,7 +13,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/session"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -374,7 +374,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		}
 	}
 
-	if _, err := tenantSession.AppendContextSnapshot(sqlite.HistoryRecordCompress, result.LLMView); err != nil {
+	if _, err := tenantSession.AppendContextSnapshot(common.HistoryRecordCompress, result.LLMView); err != nil {
 		return nil, fmt.Errorf("append compression history: %w", err)
 	}
 

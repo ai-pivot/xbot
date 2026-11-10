@@ -8,6 +8,7 @@
  * - `diagnostics`: real-time PWA installability criteria for display.
  */
 import { useEffect, useState } from 'react'
+import { pwaEnabled } from '@/lib/appUrl'
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>
@@ -40,6 +41,7 @@ export function usePwaInstall() {
 
   // Collect PWA diagnostics.
   useEffect(() => {
+    if (!pwaEnabled()) return
     let cancelled = false
     async function collect() {
       const ua = navigator.userAgent
@@ -82,6 +84,7 @@ export function usePwaInstall() {
   }, [])
 
   useEffect(() => {
+    if (!pwaEnabled()) return
     const handler = (e: Event) => {
       e.preventDefault()
       setPromptEvent(e as BeforeInstallPromptEvent)
@@ -93,6 +96,7 @@ export function usePwaInstall() {
   // Listen for the global 'sw-updated' event (dispatched by registerSW
   // when a new SW has activated via skipWaiting).
   useEffect(() => {
+    if (!pwaEnabled()) return
     const handler = () => setUpdateAvailable(true)
     window.addEventListener('sw-updated', handler)
     return () => window.removeEventListener('sw-updated', handler)
@@ -101,6 +105,7 @@ export function usePwaInstall() {
   // Manually check for SW updates (called by the update button).
   // Returns true if an update was found and applied (reload needed).
   const checkForUpdate = async () => {
+    if (!pwaEnabled()) return false
     if (!('serviceWorker' in navigator)) return false
 
     // Strategy: fetch the SW script that this page's registration ACTUALLY uses
@@ -168,6 +173,10 @@ export function usePwaInstall() {
   }
 
   const refreshSW = async () => {
+    if (!pwaEnabled()) {
+      window.location.reload()
+      return
+    }
     if (!('serviceWorker' in navigator)) {
       window.location.reload()
       return
@@ -219,6 +228,7 @@ export function usePwaInstall() {
   // can prompt the user — no manual "check for updates" needed.
   // Dedup: track the SW version (scriptURL) so we only notify once per version.
   useEffect(() => {
+    if (!pwaEnabled()) return
     if (!('serviceWorker' in navigator)) return
 
     let lastSwUrl = ''

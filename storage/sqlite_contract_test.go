@@ -21,12 +21,11 @@ func newSQLiteTestStorage(t *testing.T) Storage {
 	// Create the shared tenant (schema init may not create it)
 	db.Conn().Exec(`INSERT OR IGNORE INTO tenants (id, channel, chat_id) VALUES (0, '_shared', '_shared')`)
 
-	store := NewSQLiteStorage(
+	store := sqlite.NewSQLiteStorage(
 		db,
 		func(tenantID int64) (SessionStore, error) {
 			// For SQLite: each session uses the same main DB (no per-session DB in tests)
-			svc := sqlite.NewSessionService(db)
-			return &sqliteSessionStore{svc}, nil
+			return sqlite.NewSessionService(db), nil
 		},
 		func() error { return db.Close() },
 	)

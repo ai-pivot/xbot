@@ -79,6 +79,10 @@ type WebChannelConfig struct {
 	AdminToken string // global admin token for privileged auth
 	InviteOnly bool   // 禁止自主注册，新账号只能由 admin 创建
 	PublicURL  string // 对外访问地址，用于生成 Runner 连接命令
+	// PreviewOrigins: external preview frontends allowed to request short-lived
+	// grants (config web.preview_origins, replaced by XBOT_PREVIEW_ORIGINS).
+	// Empty = preview authorization disabled.
+	PreviewOrigins []string
 }
 
 // WebCallbacks holds callback functions for Web channel API endpoints.
@@ -506,8 +510,10 @@ type WebChannel struct {
 	callbacks WebCallbacks
 
 	// Auth
-	sessions   map[string]sessionInfo // token → sessionInfo
-	sessionsMu sync.RWMutex
+	sessions      map[string]sessionInfo // token → sessionInfo
+	sessionsMu    sync.RWMutex
+	previewMu     sync.Mutex
+	previewGrants map[string]*previewGrant
 
 	// store is the backend-agnostic storage layer (SQLite adapter or PG) — the
 	// single handle for user settings, tenants, sessions and web-user auth.
@@ -1061,8 +1067,13 @@ func (wc *WebChannel) Start() error {
 	return err
 }
 
-func (wc *WebChannel) newServeMux() *http.ServeMux {
+func (wc *WebChannel) newServeMux() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/preview/authorize", wc.handlePreviewConsent)
+	mux.HandleFunc("/preview/authorize.js", wc.handlePreviewConsent)
+	mux.HandleFunc("/api/preview/authorize", wc.handlePreviewAuthorize)
+	mux.HandleFunc("/api/preview/session", wc.handlePreviewSession)
+	mux.HandleFunc("/api/preview/revoke", wc.handlePreviewRevoke)
 	mux.HandleFunc("/ws", wc.handleWS)
 	mux.HandleFunc("/api/sse", wc.authMiddleware(wc.handleSSE))
 
@@ -1202,7 +1213,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	}
 	// Plugin web modules (ESM) — served before "/" fallback, so they never hit SPA.
 	mux.HandleFunc("/plugins/", wc.handlePluginStatic)
-	return mux
+	return wc.previewMiddleware(mux)
 }
 
 // Stop 停止 Web 渠道
@@ -1210,6 +1221,12 @@ func (wc *WebChannel) Stop() {
 	wc.stopOnce.Do(func() {
 		log.Info("Web channel stopping...")
 		close(wc.stopCh)
+		wc.previewMu.Lock()
+		for token, g := range wc.previewGrants {
+			g.cancel()
+			delete(wc.previewGrants, token)
+		}
+		wc.previewMu.Unlock()
 
 		wc.hub.stopAll()
 		wc.ptyMgr.Stop()
@@ -1494,6 +1511,9 @@ func (wc *WebChannel) wsUpgrader() *websocket.Upgrader {
 		WriteBufferSize: 1024,
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
+			if g := previewFromRequest(r); g != nil {
+				return origin == g.origin && wc.previewValid(g)
+			}
 			if origin == "" {
 				return true // non-browser clients
 			}
@@ -1537,7 +1557,11 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Support token-based auth for CLI clients (RemoteBackend).
 	// Query params: ?token=<runner_token>&client_type=cli
-	if token := r.URL.Query().Get("token"); token != "" && isCLI {
+	if g := previewFromRequest(r); g != nil {
+		si = &g.session
+		senderID = "web-" + strconv.Itoa(si.userID)
+		username = si.username
+	} else if token := r.URL.Query().Get("token"); token != "" && isCLI {
 		var err error
 		senderID, err = wc.validateCLIToken(token)
 		if err != nil {
@@ -1564,6 +1588,8 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	stopPreviewClose := context.AfterFunc(r.Context(), func() { _ = conn.Close() })
+	defer stopPreviewClose()
 	client := &Client{
 		connType:     clientConnTypeWS,
 		wsConn:       conn,
@@ -1578,6 +1604,7 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	if si != nil {
 		client.webUserID = si.userID
+		client.preview = previewFromRequest(r) != nil
 	}
 
 	if !wc.hub.addClient(client.id, client) {
@@ -1630,11 +1657,11 @@ func (wc *WebChannel) validateCLIToken(token string) (string, error) {
 		return "admin", nil
 	}
 	// Fall back to runner token lookup
-	db := tools.GetRunnerTokenDB()
-	if db == nil {
+	store := tools.GetRunnerStore()
+	if store == nil {
 		return "", fmt.Errorf("runner token auth not available")
 	}
-	if _, ok := tools.NewRunnerStore(db).FindByToken(token); !ok {
+	if _, ok := store.FindByToken(token); !ok {
 		return "", fmt.Errorf("invalid token")
 	}
 	return "cli_user", nil
@@ -2013,6 +2040,13 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 			}
 			if err := json.Unmarshal(raw, &rpcReq); err != nil {
 				log.WithError(err).Debug("Invalid RPC message from CLI client")
+				continue
+			}
+			if c.preview && previewRPCBlocked(rpcReq.Method) {
+				select {
+				case c.sendCh <- protocol.WSMessage{Type: protocol.MsgTypeRPCResponse, ID: rpcReq.ID, Error: "preview cannot manage administrator credentials"}:
+				case <-c.done:
+				}
 				continue
 			}
 			go func(id, method string, params json.RawMessage, identity RPCIdentity) {

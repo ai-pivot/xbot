@@ -12,21 +12,6 @@ import (
 )
 
 // CronJob represents a scheduled cron job
-type CronJob struct {
-	ID           string     `json:"id"`
-	Message      string     `json:"message"`
-	Channel      string     `json:"channel"`
-	ChatID       string     `json:"chat_id"`
-	SenderID     string     `json:"sender_id,omitempty"`
-	CronExpr     string     `json:"cron_expr,omitempty"`
-	EverySeconds int        `json:"every_seconds,omitempty"`
-	DelaySeconds int        `json:"delay_seconds,omitempty"`
-	At           string     `json:"at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	NextRun      time.Time  `json:"next_run"`
-	LastTrigger  *time.Time `json:"last_trigger,omitempty"` // 上次触发时间，用于防重复
-	OneShot      bool       `json:"one_shot"`
-}
 
 // CronService provides SQLite storage for cron jobs
 type CronService struct {

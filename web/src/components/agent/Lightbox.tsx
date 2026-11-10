@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
+import { usePreviewResource } from '@/hooks/usePreviewResource'
 
 type LightboxImage = { src: string; alt: string }
 
@@ -54,6 +55,7 @@ export function ImageLightboxHost() {
       document.body.style.overflow = prevOverflow
     }
   }, [img])
+  const resource = usePreviewResource(img?.src || '', Boolean(img))
   if (!img) return null
   return createPortal(
     <div
@@ -68,16 +70,19 @@ export function ImageLightboxHost() {
       style={{ cursor: 'zoom-out' }}
     >
       <div className="relative flex max-h-full max-w-full flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
-        <img
-          src={img.src}
+        {resource.loading && <span role="status" className="text-white">Loading image…</span>}
+        {resource.error && <span role="alert" className="text-white">{resource.error}</span>}
+        {resource.src && <img
+          src={resource.src}
           alt={img.alt}
           className="max-h-[85vh] max-w-full rounded-lg object-contain shadow-2xl"
           style={{ cursor: 'default' }}
-        />
+        />}
         <div className="flex items-center gap-3 text-xs text-white/70">
           <span className="max-w-[60ch] truncate">{img.alt || 'image'}</span>
           <a
-            href={img.src}
+            href={resource.src}
+            download={resource.protectedResource && resource.src ? true : undefined}
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-md border border-white/20 px-2 py-1 text-white/80 transition-colors hover:bg-white/10"

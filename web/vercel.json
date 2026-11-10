@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "routes": [
+    { "handle": "filesystem" },
+    {
+      "src": "^/(?!api(?:/|$)|ws(?:/|$)|plugins(?:/|$)|assets(?:/|$)|static(?:/|$)|images(?:/|$)|fonts(?:/|$)|icons(?:/|$)|smg-new(?:/|$)|_vercel(?:/|$))(?!.*\\.).*$",
+      "dest": "/index.html"
+    },
+    { "src": "/.*", "status": 404 }
+  ]
+}

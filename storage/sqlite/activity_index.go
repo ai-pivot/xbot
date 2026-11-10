@@ -21,81 +21,9 @@ import (
 //     text 不入索引 —— 否则索引会被聊天文本撑成第二个消息库。
 //   - created_at 是**固定宽度 UTC 文本**，见 activityTimeLayout。
 
-const (
-	// ActivitySummaryMaxRunes 是 summary 列的截断长度（按 rune，不按 byte ——
-	// 中文摘要按 byte 截断会切出半个字）。
-	ActivitySummaryMaxRunes = 200
-	// ActivityLimitDefault 是 /api/activity 的默认条数。
-	ActivityLimitDefault = 200
-	// ActivityLimitMax 是 /api/activity 的条数上限（挡住 ?limit=999999 这种）。
-	ActivityLimitMax = 500
-	// ActivityWindowDefault 是默认活跃窗口（72h）：更老的记录不参与活动流。
-	ActivityWindowDefault = 72 * time.Hour
-)
-
-// activityTimeLayout 是 activity_index.created_at 的唯一合法形态。
-//
-// 固定宽度 UTC（纳秒补齐 9 位、后缀恒为 Z）⇒ TEXT 的字符串序 == 时间序，
-// ORDER BY created_at DESC 可以直走 idx_activity_created。
-// ⛔ 不要改用 canonicalTimestamp（本地偏移，DST 处字符串序与时间序相反），
-// 也不要用 time.RFC3339Nano（纳秒为 0 时省略小数位 ⇒ 宽度不定，"…07Z" 会排在
-// "…07.5Z" 之后，时间序反了）。
+// activityTimeLayout is kept for tests and callers that need the exact wire
+// form; the canonical helper lives in storage/common.
 const activityTimeLayout = "2006-01-02T15:04:05.000000000Z"
-
-// FormatActivityTime 把时间规范成 activity_index.created_at 的落库形态（UTC）。
-func FormatActivityTime(t time.Time) string { return t.UTC().Format(activityTimeLayout) }
-
-// ParseActivityTime 解析 activity_index.created_at（宽容：也接受 RFC3339）。
-func ParseActivityTime(s string) (time.Time, error) {
-	for _, layout := range []string{activityTimeLayout, time.RFC3339Nano, time.RFC3339} {
-		if ts, err := time.Parse(layout, s); err == nil {
-			return ts.UTC(), nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("invalid activity timestamp %q", s)
-}
-
-// ActivityIndexedKinds 是允许进入活动流索引的 kind 集合。
-//
-// text 被**刻意排除**：聊天正文量大且无视图价值，进索引只会把索引撑大。
-var ActivityIndexedKinds = map[string]bool{
-	StructuredKindReport:   true,
-	StructuredKindAskUser:  true,
-	StructuredKindAnswer:   true,
-	StructuredKindDecision: true,
-	StructuredKindCommand:  true,
-	StructuredKindEvent:    true,
-}
-
-// ActivityKindIndexed 报告某个 kind 是否应该写入活动流索引。
-func ActivityKindIndexed(kind string) bool { return ActivityIndexedKinds[kind] }
-
-// TruncateActivitySummary 按 rune 截断摘要（不切断多字节字符）。
-func TruncateActivitySummary(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= ActivitySummaryMaxRunes {
-		return s
-	}
-	return string(runes[:ActivitySummaryMaxRunes])
-}
-
-// ActivityItem 是活动流里的一行（对外 JSON 即 /api/activity 的 items 元素）。
-type ActivityItem struct {
-	TenantID   int64  `json:"-"`
-	ChatID     string `json:"chat_id"`
-	Channel    string `json:"channel"`
-	MessageID  int64  `json:"message_id"`
-	Kind       string `json:"kind"`
-	SenderID   string `json:"-"`
-	SenderName string `json:"sender_name"`
-	Summary    string `json:"summary"`
-	// CreatedAt 是固定宽度 UTC 文本（activityTimeLayout）。
-	CreatedAt string `json:"created_at"`
-}
 
 // ActivityIndex 是 activity_index 的唯一读写入口（只绑主库连接）。
 //
@@ -140,29 +68,6 @@ func (a *ActivityIndex) Insert(rec ActivityItem) error {
 	return nil
 }
 
-// NormalizeActivityLimit 归一 limit：<=0 → 默认 200，>上限 → 上限 500。
-func NormalizeActivityLimit(limit int) int {
-	if limit <= 0 {
-		return ActivityLimitDefault
-	}
-	if limit > ActivityLimitMax {
-		return ActivityLimitMax
-	}
-	return limit
-}
-
-// NormalizeActivityWindow 归一活跃窗口：<=0 → 默认 72h。
-func NormalizeActivityWindow(d time.Duration) time.Duration {
-	if d <= 0 {
-		return ActivityWindowDefault
-	}
-	return d
-}
-
-// List 返回最近的活动流（新→旧），并在**主库**上完成时间窗 + kind 过滤。
-//
-// 只打主库：查询路径不涉及任何会话分库（这是本重构的验收点之一）。返回的
-// has_more 通过多取一行的方式判定（不做 COUNT，避免全表扫）。
 func (a *ActivityIndex) List(limit int, within time.Duration, kinds []string) ([]ActivityItem, bool, error) {
 	if a == nil || a.db == nil {
 		return nil, false, nil

@@ -1,4 +1,9 @@
 /// <reference types="vite/client" />
+declare const __PWA_ENABLED__: boolean
+/** Vercel preview or local XBOT_WEB_PREVIEW=1; never inferred from hostname. */
+declare const __PREVIEW_ENABLED__: boolean
+/** Suggested web.preview_origins wildcard for this Vercel project; '' if unknown. */
+declare const __PREVIEW_ORIGIN_PATTERN__: string
 
 // __BUILD_INFO__ — injected at build time by vite.config.ts (define). Carries
 // the frontend build identity shown in the About panel: release version (from
@@ -9,4 +14,3 @@ declare const __BUILD_INFO__: {
   commit: string
   buildTime: string
 }
-

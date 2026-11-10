@@ -8,7 +8,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/session"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // dynamicContextRe matches <dynamic-context>...</dynamic-context> blocks for stripping
@@ -139,7 +139,7 @@ func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, 
 		}
 		clean = append(clean, persistMsg)
 	}
-	historyID, err := b.session.AppendContextSnapshot(sqlite.HistoryRecordCompress, clean)
+	historyID, err := b.session.AppendContextSnapshot(common.HistoryRecordCompress, clean)
 	if err != nil {
 		log.WithError(err).Error("Failed to append compression history record")
 		return 0, err
@@ -153,7 +153,7 @@ func (b *PersistenceBridge) AppendPrune(sessionView []llm.ChatMessage, totalMsgC
 	if b.session == nil {
 		return nil
 	}
-	if _, err := b.session.AppendContextSnapshot(sqlite.HistoryRecordPrune, sessionView); err != nil {
+	if _, err := b.session.AppendContextSnapshot(common.HistoryRecordPrune, sessionView); err != nil {
 		return fmt.Errorf("append prune history: %w", err)
 	}
 	b.lastPersistedCount = totalMsgCount

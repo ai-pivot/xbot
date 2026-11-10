@@ -8,7 +8,7 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 const setLLMUsage = `设置/更新个人 LLM 订阅
@@ -131,7 +131,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 	seenKeys := make(map[string]bool)
 	var subName string
 	nameFound := false
-	cfg := &sqlite.UserLLMConfig{
+	cfg := &common.UserLLMConfig{
 		SenderID: msg.SenderID,
 	}
 	for _, part := range parts {
@@ -222,7 +222,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 
 	// Find the existing subscription by name (case-insensitive).
 	subs, _ := svc.List(msg.SenderID)
-	var existing *sqlite.LLMSubscription
+	var existing *common.LLMSubscription
 	for _, s := range subs {
 		if existing == nil && strings.EqualFold(s.Name, subName) {
 			existing = s
@@ -269,7 +269,7 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 		}
 		// No "default subscription" concept — subscriptions are model sources.
 		// IsDefault is always false; the first subscription does NOT become default.
-		sub := &sqlite.LLMSubscription{
+		sub := &common.LLMSubscription{
 			SenderID:        msg.SenderID,
 			Name:            subName,
 			Provider:        cfg.Provider,
@@ -426,7 +426,7 @@ func (a *Agent) handleListLLMs(ctx context.Context, msg bus.InboundMessage) (*ch
 
 // activeSubModel resolves the subscription and model that the given session is
 // currently using, via the UserContext's ResolveActiveSubModel closure.
-func (a *Agent) activeSubModel(senderID, chatID, channel string) (*sqlite.LLMSubscription, string, error) {
+func (a *Agent) activeSubModel(senderID, chatID, channel string) (*common.LLMSubscription, string, error) {
 	if a.userSys == nil || a.userSys.llmFactory == nil {
 		return nil, "", fmt.Errorf("LLM 工厂未初始化")
 	}
@@ -733,7 +733,7 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*ch
 
 	// Find subscription by name (case-insensitive).
 	subs, _ := svc.List(msg.SenderID)
-	var target *sqlite.LLMSubscription
+	var target *common.LLMSubscription
 	for _, s := range subs {
 		if strings.EqualFold(s.Name, subName) {
 			target = s
@@ -948,7 +948,7 @@ func (a *Agent) handleSetModel(ctx context.Context, msg bus.InboundMessage) (*ch
 		}, nil
 	}
 
-	var targetSub *sqlite.LLMSubscription
+	var targetSub *common.LLMSubscription
 	for _, s := range subs {
 		if s.Name == subName {
 			targetSub = s

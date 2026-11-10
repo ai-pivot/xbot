@@ -200,7 +200,7 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 ```json
 {
   "agent": {
-    "memory_provider": "flat",
+    "memory_provider": "xbot",
     "work_dir": ".",
     "prompt_file": "prompt.md",
     "max_context_tokens": 200000,
@@ -223,7 +223,7 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_concurrency` | int | `5` | Concurrency cap. ⚠️ **Not a config.json key** — a per-user setting stored in the `user_settings` table; change it from the settings panel (`/settings`, range 1–100) or the Web LLM console |
-| `memory_provider` | string | `"flat"` | Memory system: `flat` or `letta` |
+| `memory_provider` | string | `"xbot"` | Memory system: `xbot`, `flat`, `letta`, or `none` (no memory tools or prompts) |
 | `work_dir` | string | `"."` | Working directory |
 | `prompt_file` | string | `"prompt.md"` | Custom system prompt file |
 | `max_context_tokens` | int | `200000` | Max context window (tokens) |
@@ -273,6 +273,23 @@ For backward compatibility, legacy nanosecond numbers are also accepted.
 | `public_url` | string | `""` | Public URL the runner connects to |
 
 See the [Sandbox guide](/guides/sandbox/) for Docker setup details.
+
+## Web search configuration (Tavily)
+
+The `WebSearch` tool queries the Tavily API. You can set the key at runtime in
+the Web UI under **Settings → Web Search**: it takes effect on the next search
+(no restart) and is shared by every channel (Web / CLI / Feishu). The top-level
+`tavily_api_key` in `config.json` remains the global default used when no
+runtime value is configured:
+
+```json
+{
+  "tavily_api_key": "tvly-your-key"
+}
+```
+
+Runtime values are stored in the settings database and are never returned in
+plaintext to clients (the settings API returns `***`).
 
 ## Channel configuration
 

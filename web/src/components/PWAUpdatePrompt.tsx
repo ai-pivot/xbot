@@ -10,7 +10,10 @@
  * breaks API calls and dev workflow. The "check for updates" button in
  * About panel fetches /sw.js directly (no SW needed) and compares hashes.
  */
+import { pwaEnabled } from '@/lib/appUrl'
+
 export function registerSW() {
+  if (!pwaEnabled()) return
   if (!('serviceWorker' in navigator)) return
 
   const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1'

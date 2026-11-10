@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"xbot/llm"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -103,7 +103,7 @@ func CollectSyntheticToolPairs(msgs []llm.ChatMessage, toolResults map[string]st
 // 必须在 ConvertMessagesToHistoryWithIterationsView 组装 HistoryIteration
 // 【之前】调用 —— MapIterationRecord 是 tools JSON 的唯一解析入口，合并后的
 // 记录经它自然获得工具，无需第二条装配路径。
-func MergeSyntheticToolPairs(msgs []llm.ChatMessage, toolResults map[string]string, turnIterMap map[uint64][]sqlite.IterationRecord) map[uint64][]sqlite.IterationRecord {
+func MergeSyntheticToolPairs(msgs []llm.ChatMessage, toolResults map[string]string, turnIterMap map[uint64][]common.IterationRecord) map[uint64][]common.IterationRecord {
 	if len(turnIterMap) == 0 {
 		return turnIterMap
 	}
@@ -133,7 +133,7 @@ func MergeSyntheticToolPairs(msgs []llm.ChatMessage, toolResults map[string]stri
 		}
 		if !mapCopied {
 			// 首次改动才拷贝整个 map（copy-on-write）；未受影响的 turn 共享原切片。
-			clone := make(map[uint64][]sqlite.IterationRecord, len(turnIterMap))
+			clone := make(map[uint64][]common.IterationRecord, len(turnIterMap))
 			for id, rs := range turnIterMap {
 				clone[id] = rs
 			}
@@ -152,7 +152,7 @@ func MergeSyntheticToolPairs(msgs []llm.ChatMessage, toolResults map[string]stri
 // 迭代的段时那一次请求会补上）。
 //
 // copy-on-write：无命中时返回原切片（零分配）。
-func MergeSyntheticPairsIntoSegment(recs []sqlite.IterationRecord, pairs []SyntheticToolPair, anchors []sqlite.IterationRecord) []sqlite.IterationRecord {
+func MergeSyntheticPairsIntoSegment(recs []common.IterationRecord, pairs []SyntheticToolPair, anchors []common.IterationRecord) []common.IterationRecord {
 	out, _ := mergePairsWithAnchors(recs, pairs, anchors)
 	return out
 }
@@ -161,8 +161,8 @@ func MergeSyntheticPairsIntoSegment(recs []sqlite.IterationRecord, pairs []Synth
 // POST /api/iteration_detail 的旧数据修复）。仅锚定到该迭代号的对会并入；
 // anchors 与 MergeSyntheticPairsIntoSegment 同一来源。返回值可能是原值
 // （无命中时零分配）。
-func MergeSyntheticPairsIntoRecord(rec sqlite.IterationRecord, pairs []SyntheticToolPair, anchors []sqlite.IterationRecord) sqlite.IterationRecord {
-	out, _ := mergePairsWithAnchors([]sqlite.IterationRecord{rec}, pairs, anchors)
+func MergeSyntheticPairsIntoRecord(rec common.IterationRecord, pairs []SyntheticToolPair, anchors []common.IterationRecord) common.IterationRecord {
+	out, _ := mergePairsWithAnchors([]common.IterationRecord{rec}, pairs, anchors)
 	return out[0]
 }
 
@@ -176,7 +176,7 @@ func MergeSyntheticPairsIntoRecord(rec sqlite.IterationRecord, pairs []Synthetic
 //   - 段/单条视图未覆盖锚定迭代 ⇒ 跳过（该对不归本段渲染）。
 //
 // recs 只读；返回 (可能新的切片, 是否有改动)。未改动时返回原切片。
-func mergePairsWithAnchors(recs []sqlite.IterationRecord, pairs []SyntheticToolPair, anchors []sqlite.IterationRecord) ([]sqlite.IterationRecord, bool) {
+func mergePairsWithAnchors(recs []common.IterationRecord, pairs []SyntheticToolPair, anchors []common.IterationRecord) ([]common.IterationRecord, bool) {
 	if len(recs) == 0 || len(pairs) == 0 {
 		return recs, false
 	}
@@ -184,7 +184,7 @@ func mergePairsWithAnchors(recs []sqlite.IterationRecord, pairs []SyntheticToolP
 	copied := false
 	ensureCopy := func() {
 		if !copied {
-			out = append([]sqlite.IterationRecord(nil), recs...)
+			out = append([]common.IterationRecord(nil), recs...)
 			copied = true
 		}
 	}
@@ -249,7 +249,7 @@ func mergePairsWithAnchors(recs []sqlite.IterationRecord, pairs []SyntheticToolP
 //     却出现 pill」的根因）；
 //   - 时间不可用（老数据无 created_at / 注入行无时间戳），或注入晚于全部快照
 //     （pre_turn_end 在最终快照之后注入）⇒ 末迭代（与 live 渲染一致）。
-func anchorPairRecord(recs []sqlite.IterationRecord, ts time.Time) (int, bool) {
+func anchorPairRecord(recs []common.IterationRecord, ts time.Time) (int, bool) {
 	if len(recs) == 0 {
 		return 0, false
 	}

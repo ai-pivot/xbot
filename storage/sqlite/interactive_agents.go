@@ -13,49 +13,6 @@ import (
 // 只存「重建所需的最小事实」：可寻址身份（agent_key / parent_*）、角色与运行
 // 参数、运行状态、以及重建 RunConfig 需要的上下文快照。messages 不在这里 ——
 // 它们在各自子代理的 TenantSession 里（channel="agent"）。
-type InteractiveAgentRecord struct {
-	// AgentKey 是 AgentChannel 名，也是 SendMessage 的地址：`agent:<role>/<instance>`。
-	AgentKey string
-	// ParentChannel / ParentChatID 是「谁 spawn 了它」。主会话是 web/cli/feishu；
-	// 孙代理的父是 channel="agent"、chatID="<role>/<instance>" —— 递归恢复据此展开整棵树。
-	ParentChannel string
-	ParentChatID  string
-	RoleName      string
-	Instance      string
-	GroupID       string
-	Task          string
-	Background    bool
-	// Status ∈ {idle, running, interrupted, unloaded}。
-	Status string
-	// TurnID 是该子代理当前 turn 的编号；恢复后必须接续（否则撞 TURN_ID_INVARIANT）。
-	TurnID uint64
-	// ModelName / SubID 决定恢复后用的模型 —— 必须沿用，否则同一会话突然换模型，
-	// 历史 token 计费与 KV cache 全部错位。
-	ModelName string
-	SubID     string
-	// OriginUserID / WorkspaceRoot / ParentAgentID 是 buildSubAgentRunConfig 的输入快照。
-	OriginUserID  string
-	WorkspaceRoot string
-	ParentAgentID string
-	LastError     string
-	LastReply     string
-	// LastReplyAt 是「最近一次记录到新回复文本」的时刻（RFC3339 UTC）；没有回复时为空。
-	LastReplyAt string
-	CreatedAt   string
-	UpdatedAt   string
-}
-
-// InteractiveAgentStatus* 是 status 列的取值（字符串直接落库，便于人工排查）。
-const (
-	InteractiveAgentIdle        = "idle"
-	InteractiveAgentRunning     = "running"
-	InteractiveAgentInterrupted = "interrupted"
-	InteractiveAgentUnloaded    = "unloaded"
-)
-
-// ErrInteractiveAgentNotFound 表示注册表里没有这个 agent_key。
-var ErrInteractiveAgentNotFound = errors.New("interactive agent not found")
-
 // InteractiveAgentService 是 interactive_agents 表的唯一读写入口。
 type InteractiveAgentService struct {
 	db *sql.DB
@@ -306,14 +263,6 @@ func scanInteractiveAgent(sc interface{ Scan(...any) error }) (InteractiveAgentR
 }
 
 // AgentActivity 是「活跃子代理」视图的一行（/api/agents 的 items 元素）。
-type AgentActivity struct {
-	AgentKey    string `json:"agent_key"`
-	RoleName    string `json:"role_name"`
-	Instance    string `json:"instance"`
-	Status      string `json:"status"`
-	UpdatedAt   string `json:"updated_at"`
-	LastReplyAt string `json:"last_reply_at"`
-}
 
 // ListActive 返回最近活跃的子代理，按 updated_at 倒序。
 //

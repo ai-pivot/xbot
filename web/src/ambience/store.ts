@@ -16,6 +16,7 @@
  * React 桥：useSyncExternalStore（useAmbience）——AmbienceRoot 消费快照渲染。
  */
 import { useSyncExternalStore, type ComponentType } from 'react'
+import { appResourceUrl } from '@/lib/appUrl'
 import type {
   AmbienceProfile,
   GlassParams,
@@ -273,7 +274,7 @@ export const ambienceStore = {
       presets.map((preset) => ({
         ...preset,
         resolvedId: `${pluginId}:${preset.id}`,
-        url: preset.src ? `/plugins/${pluginId}/web/${preset.src.replace(/^\/+/, '')}` : null,
+        url: preset.src ? appResourceUrl(`/plugins/${pluginId}/web/${preset.src.replace(/^\/+/, '')}`) : null,
       })),
     )
   },
@@ -307,7 +308,7 @@ export const ambienceStore = {
     if (!id) return null
     // 服务器文件 URL（ctx.files 上传——/api/plugin-files/{plugin_id}/{filename}）。
     if (id.startsWith('/api/plugin-files/') || id.startsWith('http://') || id.startsWith('https://')) {
-      return { css: `url(${JSON.stringify(id)}) center/cover no-repeat`, focus: 'center' }
+      return { css: `url(${JSON.stringify(appResourceUrl(id))}) center/cover no-repeat`, focus: 'center' }
     }
     // 用户上传（dataURL 内存缓存）。
     if (id.startsWith('user:')) {
@@ -319,7 +320,7 @@ export const ambienceStore = {
     for (const { pluginId, presets } of state.pluginWallpapers) {
       for (const preset of presets) {
         if (`${pluginId}:${preset.id}` === id) {
-          const url = preset.src ? `/plugins/${pluginId}/web/${preset.src.replace(/^\/+/, '')}` : null
+          const url = preset.src ? appResourceUrl(`/plugins/${pluginId}/web/${preset.src.replace(/^\/+/, '')}`) : null
           return {
             css: url ? `url(${JSON.stringify(url)}) center/cover no-repeat` : (preset.css ?? ''),
             focus: preset.focus ?? 'center',

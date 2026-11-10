@@ -276,20 +276,22 @@ func (a *Agent) ResolveStructuredTarget(callerChannel, callerChatID, channel, ch
 	// ② 进程重启后内存空了：用持久化注册表重建物理 key。agent_key 全局唯一
 	// （"agent:role/instance"），所以 DB 侧最多一条；父不匹配就只能报错。
 	if a.multiSession != nil {
-		if rec, err := a.interactiveAgentSvc().Get("agent:" + role + "/" + instance); err == nil && rec != nil &&
-			rec.RoleName == role && rec.Instance == instance {
-			switch {
-			case rec.ParentChannel == "" || rec.ParentChatID == "":
-				// 老版本写进来的空父键记录（2026-10-21 之前），无法判定归属。
-				foreign = append(foreign, fmt.Sprintf("%s (registry row has no parent session — written before 2026-10-21)", rec.AgentKey))
-			case inScope(candidateScopeForms("", qualifyChatID(rec.ParentChannel, rec.ParentChatID))):
-				rebuilt := interactiveKey(rec.ParentChannel, rec.ParentChatID, rec.RoleName, rec.Instance)
-				if rebuilt != "" {
-					return rebuilt, nil
+		if svc := a.interactiveAgentSvc(); svc != nil {
+			if rec, err := svc.Get("agent:" + role + "/" + instance); err == nil && rec != nil &&
+				rec.RoleName == role && rec.Instance == instance {
+				switch {
+				case rec.ParentChannel == "" || rec.ParentChatID == "":
+					// 老版本写进来的空父键记录（2026-10-21 之前），无法判定归属。
+					foreign = append(foreign, fmt.Sprintf("%s (registry row has no parent session — written before 2026-10-21)", rec.AgentKey))
+				case inScope(candidateScopeForms("", qualifyChatID(rec.ParentChannel, rec.ParentChatID))):
+					rebuilt := interactiveKey(rec.ParentChannel, rec.ParentChatID, rec.RoleName, rec.Instance)
+					if rebuilt != "" {
+						return rebuilt, nil
+					}
+					return "", fmt.Errorf("sub-agent %q is registered but its session key cannot be rebuilt (parent=%s:%s)", chatID, rec.ParentChannel, rec.ParentChatID)
+				default:
+					foreign = append(foreign, fmt.Sprintf("%s (parent session %s:%s)", rec.AgentKey, rec.ParentChannel, rec.ParentChatID))
 				}
-				return "", fmt.Errorf("sub-agent %q is registered but its session key cannot be rebuilt (parent=%s:%s)", chatID, rec.ParentChannel, rec.ParentChatID)
-			default:
-				foreign = append(foreign, fmt.Sprintf("%s (parent session %s:%s)", rec.AgentKey, rec.ParentChannel, rec.ParentChatID))
 			}
 		}
 	}

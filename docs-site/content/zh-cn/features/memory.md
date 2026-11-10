@@ -5,22 +5,24 @@ weight: 50
 
 # 记忆系统
 
-xbot 支持可插拔的记忆提供者。Agent 使用记忆在对话间持久化信息、回忆过往交互、维护用户专属上下文。
+xbot 支持可插拔的记忆提供者。Agent 使用记忆在对话间持久化信息、回忆过往交互、维护用户专属上下文。内置默认是 `xbot`；`flat`、`letta` 是可选实现，`none` 则完全关闭记忆（无工具、无提示词）。
 
 ## 提供者对比
 
-| | Flat（默认） | Letta（MemGPT 风格） |
-|--|------------|---------------------|
-| 核心记忆 | 内存块 | SQLite（始终在提示词中） |
-| 归档记忆 | Grep 可搜索的文本块 | 向量搜索（chromem-go） |
-| 回顾记忆 | 事件历史 | FTS5 全文搜索 |
-| 依赖 | 无 | 需要嵌入模型 |
+| | Flat | Letta（MemGPT 风格） | None |
+|--|------|---------------------|------|
+| 核心记忆 | 内存块 | SQLite（始终在提示词中） | 无 |
+| 归档记忆 | Grep 可搜索的文本块 | 向量搜索（chromem-go） | 无 |
+| 回顾记忆 | 事件历史 | FTS5 全文搜索 | 无 |
+| 依赖 | 无 | 需要嵌入模型 | 无 |
 
 ## 配置
 
 ```bash
-MEMORY_PROVIDER=flat    # 或: letta
+MEMORY_PROVIDER=xbot    # xbot（默认）| flat | letta | none
 ```
+
+`none` 是显式模式：Agent 完全拿不到记忆工具和记忆提示词——不回忆、不整理、不注入任何记忆内容。
 
 Letta 模式需配置嵌入模型：
 
@@ -31,7 +33,7 @@ LLM_EMBEDDING_API_KEY=sk-xxx
 LLM_EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-## Flat Provider（默认）
+## Flat Provider
 
 所有长期记忆存储为单个文本块，每次请求时注入系统提示词。当你通过 `/new` 归档记忆并重置当前对话时，LLM 会合并和压缩记忆块。
 
@@ -45,7 +47,7 @@ LLM_EMBEDDING_MODEL=text-embedding-3-small
 | 搜索 | 基础文本匹配（grep 风格） |
 
 {{< hint type=tip >}}
-**大多数用户应该选择 Flat。** 它极其简单，无需额外配置，记住偏好和关键信息效果很好。
+**Flat 极其简单**——想要人类可读、不依赖 SQLite 的文本块时很合适。内置 `xbot` 才是默认值。
 {{< /hint >}}
 
 ## Letta Provider
@@ -75,6 +77,18 @@ LLM_EMBEDDING_MODEL=text-embedding-3-small
 完整的对话历史，可按日期范围搜索。由 SQLite FTS5（全文搜索）提供支持，关键词匹配速度极快。
 
 **工具:** `recall_memory_search`
+
+## None（无记忆）
+
+设置 `memory_provider: "none"` 后，Agent 完全不具备记忆能力：
+
+- 不注册任何记忆工具（`memory_*`、`core_memory_*`、`archival_memory_*`、`recall_memory_search`），模型根本看不到它们。
+- 系统提示词中不注入任何记忆章节。
+- 不注入回忆内容、不做自动记忆整理、不触发压缩记忆钩子；SubAgent 同样没有记忆。
+
+{{< hint type=note >}}
+`none` 是显式模式，不是兜底。未知/未注册的 provider 名仍会拿到通用的 flat 提示词引导；只有 `none` 会关闭记忆。
+{{< /hint >}}
 
 ## 记忆合并
 

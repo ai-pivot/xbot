@@ -9,7 +9,7 @@ implementations (SQLite adapter + native PG), one contract test suite that both 
 backend-specific concept. They depend only on the `storage.*` interfaces, so the same
 call sites serve SQLite (default) and PostgreSQL (`storage.type = "pg"`).
 
-## The five interfaces
+## The interfaces
 
 `storage.Storage` is the single top-level entry point (one instance per process):
 
@@ -19,9 +19,23 @@ type Storage interface {
     Tenant() TenantStore                          // tenant registry + per-session DB metadata + model binding
     Memory() MemoryStore                          // core memory + long-term + events
     Config() ConfigStore                          // user profile/settings, LLM subs, usage, cron, triggers, share, web auth
+    Cron() CronStore                              // scheduled jobs (cron_jobs)
+    Trigger() event.TriggerStore                  // webhook triggers (event_triggers)
+    OAuth() OAuthTokenStore                       // OAuth credentials (oauth_tokens)
+    InteractiveAgents() InteractiveAgentStore     // interactive SubAgent registry (interactive_agents)
+    Groups() GroupStore                           // group metadata (groups / group_members)
+    Activity() ActivityStore                      // cross-session activity feed (activity_index)
+    Runners() RunnerStore                         // managed runners (runners)
+    CopySessionFrom(dst, src int64) (int, error)  // session fork
     Close() error
 }
 ```
+
+The last four accessors exist because their runtime owners previously held a concrete
+`*sqlite.*` service. On PG the SQLite handle is nil, so a concrete handle meant the
+feature either panicked (interactive registry: `DB().Conn()` on nil) or silently
+disappeared (cron / webhook / OAuth). **Any new cross-cutting store must be added
+here, not threaded as `MultiSession().DB()`.**
 
 Sub-interfaces decouple the SQLite-specific concrete types that used to leak upward:
 
@@ -36,13 +50,52 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
 
 ## Files
 
-- `storage/interfaces.go` — the interfaces (single source of truth for the method set)
-- `storage/sqlite_adapter.go` — thin wrappers over the existing `storage/sqlite` services
-  (`sqliteSessionStore` / `sqliteTenantStore` / `sqliteMemoryStore` / `sqliteConfigStore`);
-  `NewSQLiteStorage`, `NewSQLiteConfigStore`, `NewSQLiteTenantStore`, `NewSQLiteMemoryStore`
-- `storage/pg_storage.go` — `NewPGStorage(ctx, dsn)` / `NewPGStorageWithPool(pool)`
-- `storage/pg_schema.go` — `initPGSchema(ctx, pool)` — idempotent DDL for all 25 tables
-- `storage/pg_{session,tenant,memory,config}.go` — the PG implementations
+Production code is split by responsibility (the root `storage` package is a thin
+compatibility facade so the ~50 existing import sites keep compiling):
+
+- `storage/common/interfaces.go` — the interfaces (single source of truth for the method set)
+- `storage/common/types.go` — backend-neutral value types shared by both backends
+  (`IterationRecord`, `HistoryRecord`, `CronJob`, `LLMSubscription`, tenant/chat DTOs, …)
+- `storage/common/session_copy.go` — replay-aware session copy helpers
+- `storage/sqlite/` — the SQLite implementation: low-level services, plus
+  `adapter.go` (`NewSQLiteStorage` / `NewSQLiteConfigStore` / `NewSQLiteTenantStore` /
+  `NewSQLiteMemoryStore`) and `migrate.go`. `common_aliases.go` keeps `sqlite.X`
+  value-type aliases for SQLite-internal code/tests.
+- `storage/internal/pg/` — the PostgreSQL implementation (`storage.go`, `schema.go`,
+  `{session,tenant,memory,config}.go`, `interactive_agents.go`, …). It is a Go
+  `internal` package: outside `storage/` it is **unimportable**.
+- `storage/facade.go` — public re-exports + backend constructors
+  (`storage.NewSQLiteStorage`, `storage.NewPGStorage`, `storage.MigrateIfNeeded`, …)
+- `storage/contract_*.go` — cross-backend contract suite (`TestSQLiteStorageContract`,
+  `TestPGStorageContract`)
+
+Dependency direction: `common` imports **no** backend; `sqlite` and `internal/pg`
+import `common`; the root facade imports both. Never make `common` import a backend
+(that is the import cycle the split exists to prevent).
+
+### Import boundary (enforced)
+
+Runtime code must depend on `Storage` / `SessionStore` / `storage/common`, never on a
+concrete backend:
+
+- ✅ `storage`, `storage/common` — public contract + DTOs
+- ✅ `session` — **composition root** (it owns the per-session SQLite DB pool and
+  builds the backend via `storage.NewSQLiteStorage`)
+- ✅ `cmd/xbot-migrate`, `scripts` — migration/dev tooling
+- ✅ `oauth/storage.go` — legacy unused SQLite OAuth implementation (kept for API/tests)
+- ⛔ any other non-test package importing `xbot/storage/sqlite`, `xbot/storage/pg`,
+  or `xbot/storage/internal/pg`
+
+Guards:
+
+- `storage/import_boundary_test.go` — scans every non-test `.go` file in the repo and
+  fails on raw backend imports (the allowlist above is the only exception).
+- `storage/common/import_boundary_test.go` — `common` must not import a backend.
+- `storage/internal/pg` is additionally protected by Go's `internal` rule.
+
+If SQLite is ever made `internal` too, the remaining work is moving the session DB
+pool (`session/sessiondb.go`) into `storage/sqlite` so `session` no longer needs the
+raw handle. Until then, `session` is the single documented composition-root exception.
 
 ## Wiring
 
@@ -57,7 +110,12 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   `MultiTenantSession.SessionServiceForSQLite(tenantID)` which returns an explicit error
   on PG (**never a silent degradation**).
 - `agent.MultiSession().DB()` is the raw SQLite handle (nil on PG) — used only for the
-  WAL checkpoint on shutdown and legacy browse SQL; nothing new should depend on it.
+  WAL checkpoint on shutdown and runner-token/legacy browse SQL that has no PG store
+  yet. **Nothing in the agent loop may depend on it**; session, tenant, config, cron,
+  trigger, OAuth and the interactive SubAgent registry all go through `Storage`.
+- `NewMultiTenantWithStorage(store)` builds a session on an injected backend (no SQLite
+  handle). It is the dependency-injection entry point and makes the “nil DB” contract
+  testable without a PG server.
 
 ## Gotchas (PG)
 
@@ -69,13 +127,13 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   through `pgText` = `textutil.SanitizeText` (invalid sequences **and** NUL → U+FFFD);
   `cmd/xbot-migrate` uses the same function so migrated rows match runtime writes.
   Do NOT "fix" this by rejecting the write — a lost turn is worse than a U+FFFD.
-  Guard: `storage/pg_sanitize_test.go`,
+  Guard: `storage/internal/pg/sanitize_test.go`,
   `TestPGSessionStoreNULMessageStoredSanitized`, and the shared
   `AddMessage_NULAndInvalidUTF8_DoesNotFail` contract case.
 
 - **`sql.ErrNoRows` ≠ `pgx.ErrNoRows`.** All PG code must check `pgx.ErrNoRows`; a
   `sql.ErrNoRows` check never fires → the "not found" branch is dead (silent wrong result).
-- **Native `BOOLEAN`, not `INTEGER 0/1` — in BOTH directions.** `pg_schema.go`
+- **Native `BOOLEAN`, not `INTEGER 0/1` — in BOTH directions.** `storage/internal/pg/schema.go`
   declares real `BOOLEAN`, so: scans must target `*bool` (scanning into `*int` fails
   with `cannot scan bool (OID 16) into *int`), predicates must be `= true` / `= false`
   (or `COALESCE(col, false)`), and **writes must use `true`/`false` literals**
@@ -110,7 +168,7 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   2026-10-20, so a forked session rendered the source session's `⏰` cron
   notifications where SQLite showed nothing — a bug that looks like "the fork
   received the source's notification" but is purely a projection difference.
-  `displayRowPredicate` in `storage/pg_session.go` is that rule; the contract test
+  `displayRowPredicate` in `storage/internal/pg/session.go` is that rule; the contract test
   `GetHistoryBeforeForDisplay_MatchesReplayDisplay` pins it on both backends.
 - **Round trips, not SQL, dominate on a remote PG.** A single `INSERT` costs one
   network round trip (~50ms on a cross-host link), so any loop that writes "one row
@@ -134,7 +192,7 @@ drop-in for the old `LLMSubscriptionService` + `UserSettingsService` + web-auth 
   3-byte rune and leaves a 1–2 byte orphan (observed: `0xe6 0x2e 0x2e`). Two rules:
   **never truncate a string that can reach a message or the DB with `s[:n]`** — use
   `internal/textutil` (`TruncateBytes`, `TruncateBytesWithSuffix`, `TruncateRunes`);
-  and treat `pgText()` in `storage/pg_sanitize.go` as the write-boundary backstop, so
+  and treat `pgText()` in `storage/internal/pg/sanitize.go` as the write-boundary backstop, so
   an unforeseen producer (third-party API, PDF/OCR extractor) degrades to U+FFFD
   instead of killing the turn. `encoding/json` already repairs invalid bytes, so JSON
   columns are safe by construction.
@@ -379,6 +437,29 @@ nil on PG. They are now reached through `Storage`:
 | `Storage.Cron()` | `CronStore` | `cron.Scheduler`, `tools.CronTool`, `plugin.WirePluginCrons`, web cron panel |
 | `Storage.Trigger()` | `event.TriggerStore` | `event.Router` (webhook dispatch) |
 | `Storage.OAuth()` | `OAuthTokenStore` | `oauth.Manager` via a thin adapter in `serverapp` |
+| `Storage.InteractiveAgents()` | `InteractiveAgentStore` | `agent.ReconcileInteractiveAgentsOnStartup` / restore / persist / unload |
+| `Storage.Groups()` | `GroupStore` | web group endpoints (`/api/groups*`) |
+| `Storage.Activity()` | `ActivityStore` | structured-message activity feed (`/api/activity`) |
+| `Storage.Runners()` | `RunnerStore` | runner CRUD/RPC, token validation, `tools.GetRunnerStore()` |
+
+`SessionStore` also embeds `StructuredStore` + `GroupMessageStore`, so structured
+messages (report/ask_user/answer/decision/inbox) and per-session group messages no
+longer depend on a `*sqlite.SessionService` type assertion.
+
+### Remaining explicitly SQLite-only capabilities
+
+Most of the old gaps are now implemented on PG. These are the remaining
+physical/legacy escape hatches:
+
+| Capability | PG behaviour | Why it stays SQLite-only |
+|---|---|---|
+| Raw SQLite browse helpers (`listTenantsByChannel` etc.) | **functional fallback**: `TenantStore.ListTenants` supplies the same rows (label/preview/sort order/runner id) | kept for SQLite because they can use `rowid` tie-breaks; PG uses the store |
+| WAL checkpoint on shutdown | skipped (no file) | physical SQLite concept |
+| `SessionServiceForSQLite` (legacy synthetic-pair repair / regions endpoints) | explicit error | SQLite-specific SQL; the normal SessionStore paths work on both |
+
+Implemented on PG now: structured messages, groups/groups members, group messages,
+activity index, runner registry/tokens. Contract coverage:
+`storage/contract_feature_parity_test.go` runs against both backends.
 
 Consequences worth knowing:
 

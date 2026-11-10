@@ -27,30 +27,11 @@ import (
 	"xbot/push"
 	"xbot/session"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
 // newGroupUUID 生成群组 id 的随机部分（grp_<12 hex>）。
-// groupMessageStore 是本分支新增的「群组消息信封」能力（主库 v74 / 会话库 v5）。
-//
-// master #444 把会话存储抽象成 storage.SessionStore，但该接口没有群组消息方法
-// （PG 后端未实现该特性 ⇒ **未覆盖项**）。这里按能力取用，拿不到就明确报错，
-// 绝不静默降级 —— 静默降级会让群发写进不存在的表，消息凭空蒸发。
-type groupMessageStore interface {
-	AppendGroupMessage(tenantID int64, msg llm.ChatMessage, env sqlite.GroupMessageEnvelope) (int64, error)
-	ListGroupMessages(tenantID int64, groupID string, beforeID int64, limit int) ([]sqlite.GroupMessageRow, bool, int64, error)
-}
-
-// groupMessagesOf 取出群组消息能力；后端不支持时返回可读错误。
-func groupMessagesOf(sess *session.TenantSession) (groupMessageStore, error) {
-	gm, ok := sess.SessionService().(groupMessageStore)
-	if !ok {
-		return nil, fmt.Errorf("group messages are not supported by this storage backend")
-	}
-	return gm, nil
-}
-
 func newGroupUUID() string { return uuid.NewString() }
 
 // runnerCallbacks builds the shared Runner callback closures.
@@ -61,15 +42,15 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			return tools.ListAllRunners()
 		},
 		RunnerCreate: func(name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
 			// Make sure the WebSocket listener is up before the machine dials in.
 			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 				router.EnsureRemote()
 			}
-			token, err := tools.NewRunnerStore(db).Create(name, mode, dockerImage, workspace, llm)
+			token, err := store.Create(name, mode, dockerImage, workspace, llm)
 			if err != nil {
 				return "", err
 			}
@@ -91,28 +72,27 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			return buildRunnerConnectCmd(cfg, name, token, mode, dockerImage, workspace, llm), nil
 		},
 		RunnerDelete: func(name string) error {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return fmt.Errorf("runner management not configured")
 			}
 			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 				router.DisconnectRunner(name)
 			}
-			return tools.NewRunnerStore(db).Delete(name)
+			return store.Delete(name)
 		},
 		RunnerRename: func(oldName, newName string) error {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return fmt.Errorf("runner management not configured")
 			}
-			return tools.NewRunnerStore(db).Rename(oldName, newName)
+			return store.Rename(oldName, newName)
 		},
 		RunnerConnectCmd: func(name string) (string, error) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
-			store := tools.NewRunnerStore(db)
 			info, err := store.Get(name)
 			if err != nil {
 				return "", err
@@ -274,7 +254,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	if store != nil {
 		shareStore := store.Config()
 		callbacks.ShareCreate = func(createdBy int, pluginID, contentType, payload, title, expiresAt string) (*protocol.SharedArtifact, error) {
-			a := &sqlite.SharedArtifact{
+			a := &common.SharedArtifact{
 				PluginID:    pluginID,
 				ContentType: contentType,
 				Payload:     payload,
@@ -311,9 +291,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	}
 
 	// ─── Agent 通信指挥室（群组可视化）────────────────────────────────────
-	// 群元数据在主库两张小表；消息仍读调用者自己的会话库（不跨库聚合）。
-	if webDB := ag.MultiSession().DB(); webDB != nil {
-		groupSvc := sqlite.NewGroupService(webDB.Conn())
+	// 群元数据在 groups/group_members（storage.GroupStore，SQLite/PG 同接口）；
+	// 消息仍读调用者自己的会话库（不跨库聚合）。
+	if store != nil && store.Groups() != nil {
+		groupSvc := store.Groups()
 		callbacks.GroupList = func(memberAddr string) ([]protocol.Group, error) {
 			rows, err := groupSvc.ListGroupsFor(context.Background(), memberAddr)
 			if err != nil {
@@ -332,7 +313,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
 				return nil, err
 			} else if !ok {
-				return nil, sqlite.ErrNotGroupMember
+				return nil, common.ErrNotGroupMember
 			}
 			rows, err := groupSvc.ListMembers(context.Background(), groupID)
 			if err != nil {
@@ -351,7 +332,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
 				return nil, 0, false, err
 			} else if !ok {
-				return nil, 0, false, sqlite.ErrNotGroupMember
+				return nil, 0, false, common.ErrNotGroupMember
 			}
 			if channelName == "" || chatID == "" {
 				return nil, 0, false, fmt.Errorf("session selector is required")
@@ -360,10 +341,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if err != nil {
 				return nil, 0, false, err
 			}
-			gm, gerr := groupMessagesOf(sess)
-			if gerr != nil {
-				return nil, 0, false, gerr
-			}
+			gm := sess.SessionService()
 			rows, hasMore, next, err := gm.ListGroupMessages(sess.TenantID(), groupID, cursor, limit)
 			if err != nil {
 				return nil, 0, false, err
@@ -390,7 +368,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
 				return nil, err
 			} else if !ok {
-				return nil, sqlite.ErrNotGroupMember
+				return nil, common.ErrNotGroupMember
 			}
 			m, err := groupSvc.AddMember(context.Background(), groupID, addr)
 			if err != nil {
@@ -405,7 +383,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
 				return nil, err
 			} else if !ok {
-				return nil, sqlite.ErrNotGroupMember
+				return nil, common.ErrNotGroupMember
 			}
 			if channelName == "" || chatID == "" {
 				return nil, fmt.Errorf("session selector is required")
@@ -419,15 +397,12 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				role = "user"
 			}
 			now := time.Now()
-			env := sqlite.GroupMessageEnvelope{
+			env := common.GroupMessageEnvelope{
 				GroupID: groupID, Kind: input.Kind, CorrelationID: input.CorrelationID,
 				To: input.To, Payload: input.Payload,
 				SenderType: input.SenderType, SenderID: input.SenderID, SenderName: input.SenderName,
 			}
-			gm, gerr := groupMessagesOf(sess)
-			if gerr != nil {
-				return nil, gerr
-			}
+			gm := sess.SessionService()
 			id, err := gm.AppendGroupMessage(sess.TenantID(), llm.ChatMessage{
 				Role: role, Content: input.Content, SenderType: input.SenderType,
 				SenderID: input.SenderID, SenderName: input.SenderName, Timestamp: now,
@@ -533,7 +508,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// intermediate assistant + one final). Querying by turn_id merges them
 		// into a complete list. Falls back to Detail JSON when no structured
 		// data exists (old data pre-v55).
-		var turnIterMap map[uint64][]sqlite.IterationRecord
+		var turnIterMap map[uint64][]common.IterationRecord
 		tenantID := sess.TenantID()
 		if tenantID > 0 {
 			// Collect unique turn_ids
@@ -557,7 +532,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				}
 				batch, _ := svc.GetIterationHistoryByTurns(tenantID, turnIDs)
 				if len(batch) > 0 {
-					turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(batch))
+					turnIterMap = make(map[uint64][]common.IterationRecord, len(batch))
 					for turnID, recs := range batch {
 						if len(recs) > 0 {
 							turnIterMap[turnID] = recs
@@ -645,7 +620,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// 旧数据修复（2026-09-30 事故）：锚定到该迭代的注入型工具对补进详情
 		//（新数据由 Fix A 持久化，去重短路）。foldTools=false ⇒ 完整字段（这是
 		//「完整覆盖轻字段」的唯一来源）。
-		recs, err := legacySyntheticPairRepair(svc, tenantID, turnID, []sqlite.IterationRecord{rec})
+		recs, err := legacySyntheticPairRepair(svc, tenantID, turnID, []common.IterationRecord{rec})
 		if err != nil {
 			return protocol.HistoryIteration{}, false, err
 		}
@@ -838,7 +813,19 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			return chats, err
 		}
 		if webSQL == nil {
-			return nil, nil
+			// PG / backend-agnostic fallback: browse tenants through TenantStore.
+			if channel == "cli" {
+				tenants, terr := listTenantsViaStore(store.Tenant(), "cli", currentChatID)
+				if terr != nil {
+					return nil, terr
+				}
+				rows, lerr := mergeCLISessionRows(currentChatID, tenants)
+				applyWebRunningStatusesFast(ag, rows)
+				return rows, lerr
+			}
+			rows, lerr := listTenantsViaStore(store.Tenant(), channel, currentChatID)
+			applyWebRunningStatusesFast(ag, rows)
+			return rows, lerr
 		}
 		// For non-web channels (admin only): list all tenants in that channel.
 		if channel == "cli" {
@@ -916,12 +903,23 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			cliStart := time.Now()
 			var cliChats []web.UserChatWithPreview
 			var cliErr error
+			cliCurrent := ""
+			if current.Channel == "cli" {
+				cliCurrent = current.ChatID
+			}
 			if webSQL != nil {
-				cliChats, cliErr = listCLIChatSessions(webSQL, "")
+				// SQLite 路径：listCLIChatSessions 内部已经 merge 本地 CLI session 文件。
+				cliChats, cliErr = listCLIChatSessions(webSQL, cliCurrent)
 			} else {
-				// PG 部署没有本地 cli session 文件，直接取 tenant 行（2026-11-10 CR 第 1 轮 P1 修复：
-				// 此前 `webSQL != nil` 条件会让 PG 下的 CLI 主会话整类消失）。
-				cliChats, cliErr = listTenantsViaStore(store.Tenant(), "cli", "")
+				// PG 部署没有 webSQL：先取 tenant 行，再用同一个 mergeCLISessionRows
+				// 把本地 CLI session 文件并进去（2026-11-10 CR 第 1 轮 P1：此前
+				// `webSQL != nil` 条件会让 PG 下的 CLI 主会话整类消失）。
+				tenants, terr := listTenantsViaStore(store.Tenant(), "cli", cliCurrent)
+				if terr != nil {
+					cliErr = terr
+				} else {
+					cliChats, cliErr = mergeCLISessionRows(cliCurrent, tenants)
+				}
 			}
 			tCLI = time.Since(cliStart)
 			if cliErr != nil {
@@ -939,28 +937,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				tenants, err = listTenantsByChannels(webSQL, tenantChannels)
 				tTenants = time.Since(tenantsStart)
 			} else {
-				// PG path: use TenantStore (already a single full read).
-				allTenants, tErr := store.Tenant().ListTenants()
-				if tErr != nil {
-					log.WithError(tErr).Warn("Failed to list tenants")
-				} else {
-					want := make(map[string]bool, len(tenantChannels))
-					for _, ch := range tenantChannels {
-						want[ch] = true
-					}
-					for _, t := range allTenants {
-						if !want[t.Channel] {
-							continue
-						}
-						tenants = append(tenants, web.UserChatWithPreview{
-							ChatID:     t.ChatID,
-							Channel:    t.Channel,
-							Label:      t.Label,
-							LastActive: t.LastActiveAt.Format(time.RFC3339),
-							Preview:    "",
-						})
-					}
-				}
+				// PG path: TenantStore.ListTenants 本来就是全量读 —— 一次取回全部
+				// tenantChannels 的行，避免逐 channel 重复全表读（session-tree 热路径，
+				// 2026-11-09 三遍历合并的动机）。转换逻辑与单 channel 版共用
+				// tenantToSessionRow，Preview/SortOrder/subagent 规范化不会丢。
+				tenants, err = listTenantsViaStoreChannels(store.Tenant(), tenantChannels, "")
 			}
 			if err != nil {
 				log.WithError(err).Warn("Failed to list tenants")
@@ -1095,7 +1076,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			}
 		}
 		if err := tenantStore.DeleteChat(channel, senderID, chatID); err != nil {
-			if !removedLocal || !errors.Is(err, sqlite.ErrChatNotFound) {
+			if !removedLocal || !errors.Is(err, common.ErrChatNotFound) {
 				return err
 			}
 		}
@@ -1225,11 +1206,34 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	callbacks.StructuredResolve = structuredResolve
 
 	// ─── 跨会话活动流（通信视图性能重构）───
-	// 只绑主库连接（webSQL）。PG 后端没有 activity_index/interactive_agents 的
-	// 兼容实现 ⇒ 两个回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
-	if webSQL != nil {
-		activityIdx := sqlite.NewActivityIndex(webSQL)
-		agentSvc := sqlite.NewInteractiveAgentService(webSQL)
+	// AgentActivityList 走后端无关的 InteractiveAgents store（SQLite / PG 均可）。
+	// ActivityList 仍依赖 activity_index（结构化消息的 SQLite 派生索引）——
+	// PG 没有该表 ⇒ 回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
+	if store != nil {
+		if agentSvc := store.InteractiveAgents(); agentSvc != nil {
+			callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
+				cutoff := time.Now().Add(-common.NormalizeActivityWindow(within))
+				rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]web.AgentActivityEntry, 0, len(rows))
+				for _, r := range rows {
+					out = append(out, web.AgentActivityEntry{
+						AgentKey:    r.AgentKey,
+						RoleName:    r.RoleName,
+						Instance:    r.Instance,
+						Status:      r.Status,
+						UpdatedAt:   r.UpdatedAt,
+						LastReplyAt: r.LastReplyAt,
+					})
+				}
+				return out, nil
+			}
+		}
+	}
+	if store != nil && store.Activity() != nil {
+		activityIdx := store.Activity()
 		callbacks.ActivityList = func(limit int, within time.Duration, kinds []string) ([]web.ActivityEntry, bool, error) {
 			rows, hasMore, err := activityIdx.List(limit, within, kinds)
 			if err != nil {
@@ -1248,25 +1252,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				})
 			}
 			return out, hasMore, nil
-		}
-		callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
-			cutoff := time.Now().Add(-sqlite.NormalizeActivityWindow(within))
-			rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
-			if err != nil {
-				return nil, err
-			}
-			out := make([]web.AgentActivityEntry, 0, len(rows))
-			for _, r := range rows {
-				out = append(out, web.AgentActivityEntry{
-					AgentKey:    r.AgentKey,
-					RoleName:    r.RoleName,
-					Instance:    r.Instance,
-					Status:      r.Status,
-					UpdatedAt:   r.UpdatedAt,
-					LastReplyAt: r.LastReplyAt,
-				})
-			}
-			return out, nil
 		}
 	}
 
@@ -1478,6 +1463,98 @@ func appendMissingSessionRows(base, extra []web.UserChatWithPreview) []web.UserC
 		base = append(base, row)
 	}
 	return base
+}
+
+// listTenantsViaStore is the backend-agnostic equivalent of listTenantsByChannel.
+// It uses storage.TenantStore.ListTenants (SQLite adapter or PG) instead of a raw
+// *sql.DB, so session browsing works on the PG backend too.
+// tenantToSessionRow 把一条 tenant 记录转成 session-tree 行（含 preview 截断、
+// displayLabel、subagent 规范化）。ok=false 表示该行应被跳过。
+//
+// 抽出来是为了让「单 channel」与「多 channel 一次读」两条路径共用同一套转换 ——
+// 否则 PG 路径会悄悄丢掉 Preview / SortOrder / subagent 规范化（见 2026-11-10
+// CR 的 session-tree 审计）。
+func tenantToSessionRow(t common.TenantInfo, channel, currentChatID string) (web.UserChatWithPreview, bool) {
+	if t.Channel != channel || t.ChatID == "_shared" {
+		return web.UserChatWithPreview{}, false
+	}
+	preview := t.Preview
+	if runes := []rune(preview); len(runes) > 80 {
+		preview = string(runes[:80])
+	}
+	createdAt := t.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = t.LastActiveAt
+	}
+	chat := web.UserChatWithPreview{
+		ChatID:     t.ChatID,
+		Channel:    t.Channel,
+		Label:      displayLabelForTenant(t.Channel, t.ChatID, t.Label),
+		LastActive: t.LastActiveAt.Format(time.RFC3339),
+		CreatedAt:  createdAt.Format(time.RFC3339),
+		SortOrder:  t.SortOrder,
+		Preview:    preview,
+		IsCurrent:  t.ChatID == currentChatID,
+	}
+	if channel == "agent" {
+		normalized, ok := normalizeSubAgentRow(chat, preview)
+		if !ok {
+			return web.UserChatWithPreview{}, false
+		}
+		chat = normalized
+	} else if isInteractiveSubAgentTenant(channel, t.ChatID) {
+		return web.UserChatWithPreview{}, false
+	}
+	return chat, true
+}
+
+func listTenantsViaStore(ts storage.TenantStore, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
+	if ts == nil {
+		return nil, fmt.Errorf("tenant store is unavailable")
+	}
+	all, err := ts.ListTenants()
+	if err != nil {
+		return nil, fmt.Errorf("list tenants: %w", err)
+	}
+	var result []web.UserChatWithPreview
+	for _, t := range all {
+		if chat, ok := tenantToSessionRow(t, channel, currentChatID); ok {
+			result = append(result, chat)
+		}
+	}
+	return result, nil
+}
+
+// listTenantsViaStoreChannels 一次 ListTenants 取回多个 channel 的行。
+//
+// TenantStore.ListTenants 本来就是全量读，逐 channel 调 listTenantsViaStore 会让
+// 同一个全表读重复 N 次（session-tree 热路径，2026-11-09 三遍历合并的动机）。
+// 转换逻辑与单 channel 版共用 tenantToSessionRow，行为完全一致。
+func listTenantsViaStoreChannels(ts storage.TenantStore, channels []string, currentChatID string) ([]web.UserChatWithPreview, error) {
+	if ts == nil {
+		return nil, fmt.Errorf("tenant store is unavailable")
+	}
+	if len(channels) == 0 {
+		return nil, nil
+	}
+	all, err := ts.ListTenants()
+	if err != nil {
+		return nil, fmt.Errorf("list tenants: %w", err)
+	}
+	want := make(map[string]bool, len(channels))
+	for _, ch := range channels {
+		want[ch] = true
+	}
+	var result []web.UserChatWithPreview
+	for _, t := range all {
+		if !want[t.Channel] {
+			continue
+		}
+		if chat, ok := tenantToSessionRow(t, t.Channel, currentChatID); ok {
+			result = append(result, chat)
+		}
+	}
+	return result, nil
 }
 
 func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, error) {
@@ -1785,6 +1862,13 @@ func listCLIChatSessions(db *sql.DB, currentChatID string) ([]web.UserChatWithPr
 	if err != nil {
 		return nil, err
 	}
+	return mergeCLISessionRows(currentChatID, tenantRows)
+}
+
+// mergeCLISessionRows merges the local CLI session files into the tenant rows
+// (which may come from SQLite's raw browse query or the backend-agnostic
+// TenantStore). Extracted so the PG fallback gets the same CLI session list.
+func mergeCLISessionRows(currentChatID string, tenantRows []web.UserChatWithPreview) ([]web.UserChatWithPreview, error) {
 	tenantByChatID := make(map[string]web.UserChatWithPreview, len(tenantRows))
 	for _, row := range tenantRows {
 		tenantByChatID[row.ChatID] = row
@@ -2455,50 +2539,6 @@ func upsertSubAgentRow(rows []web.UserChatWithPreview, index map[string]int, par
 // listTenantsViaStore 是 webSQL 不可用（PG 后端）时的 tenant 行来源。
 // 2026-11-10 CR（第 1 轮 P1）恢复：master→HEAD 的重构把它删掉了，导致 PG 部署下
 // SubAgentList 恒空、CLI 主会话行消失（PG session-tree 双回归）。
-func listTenantsViaStore(ts storage.TenantStore, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
-	if ts == nil {
-		return nil, fmt.Errorf("tenant store is unavailable")
-	}
-	all, err := ts.ListTenants()
-	if err != nil {
-		return nil, fmt.Errorf("list tenants: %w", err)
-	}
-	var result []web.UserChatWithPreview
-	for _, t := range all {
-		if t.Channel != channel || t.ChatID == "_shared" {
-			continue
-		}
-		// HEAD 的 sqlite.TenantInfo 没有 Preview/SortOrder（master 后加），
-		// PG fallback 里这两项留空：preview 由 PG schema 的 preview 列经
-		// 其它路径补齐，sort_order 仅影响置顶排序（PG 部署暂不支持置顶）。
-		preview := ""
-		createdAt := t.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = t.LastActiveAt
-		}
-		chat := web.UserChatWithPreview{
-			ChatID:     t.ChatID,
-			Channel:    t.Channel,
-			Label:      displayLabelForTenant(t.Channel, t.ChatID, t.Label),
-			LastActive: t.LastActiveAt.Format(time.RFC3339),
-			CreatedAt:  createdAt.Format(time.RFC3339),
-			Preview:    preview,
-			IsCurrent:  t.ChatID == currentChatID,
-		}
-		if channel == "agent" {
-			normalized, ok := normalizeSubAgentRow(chat, preview)
-			if !ok {
-				continue
-			}
-			chat = normalized
-		} else if isInteractiveSubAgentTenant(channel, t.ChatID) {
-			continue
-		}
-		result = append(result, chat)
-	}
-	return result, nil
-}
-
 func subAgentRowFromInteractiveSession(parentChannel string, s agent.InteractiveSessionInfo) web.UserChatWithPreview {
 	chatID := s.Key
 	if chatID == "" {
@@ -2698,7 +2738,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		},
 		LLMAddSubscription: func(senderID string, sub *channel.Subscription) error {
 			svc := ag.LLMFactory().GetSubscriptionSvc()
-			newSub := &sqlite.LLMSubscription{
+			newSub := &common.LLMSubscription{
 				SenderID: senderID,
 				Name:     sub.Name,
 				Provider: sub.Provider,
@@ -2848,7 +2888,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 // shareToProtocol converts a storage row into the wire contract. The two types
 // stay separate on purpose: the wire contract must not drag storage concerns
 // (or a storage import) into channel/web.
-func shareToProtocol(a *sqlite.SharedArtifact) *protocol.SharedArtifact {
+func shareToProtocol(a *common.SharedArtifact) *protocol.SharedArtifact {
 	if a == nil {
 		return nil
 	}
@@ -2892,7 +2932,7 @@ const (
 //
 // 错误冒泡（绝不静默降级）：修复查询失败让端点显式失败，而不是返回与主
 // 快照不一致的未修复段。
-func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID uint64, recs []sqlite.IterationRecord) ([]sqlite.IterationRecord, error) {
+func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID uint64, recs []common.IterationRecord) ([]common.IterationRecord, error) {
 	rows, err := svc.GetSyntheticPairRowsByTurn(tenantID, turnID)
 	if err != nil {
 		return nil, err
@@ -2921,7 +2961,7 @@ func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID 
 // 详情由 /api/iteration_detail 按需补齐。
 //
 // regionLimit <= 0 ⇒ DefaultHistoryRegionRequest；> MaxHistoryRegionRequest ⇒ 钳到上限。
-func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]protocol.HistoryIteration, int) {
+func historyRegionSegment(recs []common.IterationRecord, regionLimit int) ([]protocol.HistoryIteration, int) {
 	limit := regionLimit
 	if limit <= 0 {
 		limit = DefaultHistoryRegionRequest
@@ -2944,7 +2984,7 @@ func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]pro
 }
 
 // foldHistoryIterations 把一段记录映射为折叠视图的迭代形态（轻字段 + ToolsFolded）。
-func foldHistoryIterations(recs []sqlite.IterationRecord) []protocol.HistoryIteration {
+func foldHistoryIterations(recs []common.IterationRecord) []protocol.HistoryIteration {
 	out := make([]protocol.HistoryIteration, 0, len(recs))
 	for _, rec := range recs {
 		out = append(out, channel.MapIterationRecord(rec, channel.FoldToolsForRecord(rec)))

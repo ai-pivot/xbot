@@ -10,7 +10,7 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/session"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // ContextEditAction 定义 context_edit 工具的操作类型。
@@ -111,7 +111,7 @@ func (e *ContextEditor) BindSession(sess *session.TenantSession) {
 	defer e.mu.Unlock()
 	e.PersistFn = func(editedIndices []int) error {
 		msgs := e.messages // caller holds e.mu
-		mutations := make([]sqlite.MessageMutation, 0, len(editedIndices))
+		mutations := make([]common.MessageMutation, 0, len(editedIndices))
 		for _, idx := range editedIndices {
 			if idx < 0 || idx >= len(msgs) || msgs[idx].Role == "system" || msgs[idx].DisplayOnly {
 				continue
@@ -125,14 +125,14 @@ func (e *ContextEditor) BindSession(sess *session.TenantSession) {
 					occurrence++
 				}
 			}
-			mutations = append(mutations, sqlite.MessageMutation{
+			mutations = append(mutations, common.MessageMutation{
 				TargetHistoryID: msgs[idx].ID, TargetOccurrence: occurrence, Message: msgs[idx],
 			})
 		}
 		if len(mutations) == 0 {
 			return nil
 		}
-		_, err := sess.AppendControl(sqlite.HistoryRecordContextEdit, mutations[0].TargetHistoryID, sqlite.MessageMutations{Mutations: mutations})
+		_, err := sess.AppendControl(common.HistoryRecordContextEdit, mutations[0].TargetHistoryID, common.MessageMutations{Mutations: mutations})
 		return err
 	}
 }

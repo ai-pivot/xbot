@@ -148,13 +148,21 @@ func enrichPromptData(data PromptData) PromptData {
 	data.Environment = prompt.Environment
 	data.CodeRules = prompt.CodeRules
 
-	// Use registered prompt parts (no hardcoded provider names)
+	// Use registered prompt parts (no hardcoded provider names).
+	//
+	// "none" is an explicit, first-class mode: no memory tools are registered
+	// (tools.GetMemoryTools returns nil) and NO memory prompt fragment may be
+	// injected. It still gets the provider-neutral tool guide (ToolsFlat —
+	// generic execution/skill/TUI guidance, no memory instructions).
 	parts := memory.GetPromptParts(data.MemoryProvider)
-	if parts.ToolsPrompt != "" || parts.MemoryPrompt != "" {
+	if data.MemoryProvider == "none" {
+		data.Tools = prompt.ToolsFlat
+		data.Memory = ""
+	} else if parts.ToolsPrompt != "" || parts.MemoryPrompt != "" {
 		data.Tools = parts.ToolsPrompt
 		data.Memory = parts.MemoryPrompt
 	} else {
-		// Default for unknown/none providers
+		// Default for unknown providers
 		data.Tools = prompt.ToolsFlat
 		data.Memory = ""
 	}

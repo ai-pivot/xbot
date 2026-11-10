@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"xbot/storage/common"
 )
 
 // structured_resolve.go — 用户看板卡片的"用户处理"闭环（to="user" 路由的落地端）。
@@ -23,41 +25,20 @@ import (
 //      并发双点只有一次 RowsAffected()==1。
 // 调用方只在 Created==true 时投递回流（见 serverapp 的 resolve 回调）。
 
-// 用户看板卡片支持的四个动作（与派发单 §2 的 approve/reject/answer/dismiss 对齐）。
+// 用户看板卡片的动作常量 / 状态映射 / 结果 DTO 都定义在 storage/common
+// （handler 层需要它们，但 #463 之后 serverapp 不允许 import 具体后端）。
 const (
-	NoticeActionApprove = "approve"
-	NoticeActionReject  = "reject"
-	NoticeActionAnswer  = "answer"
-	NoticeActionDismiss = "dismiss"
+	NoticeActionApprove = common.NoticeActionApprove
+	NoticeActionReject  = common.NoticeActionReject
+	NoticeActionAnswer  = common.NoticeActionAnswer
+	NoticeActionDismiss = common.NoticeActionDismiss
 )
 
-// NoticeStatusOfAction 把动作映射成卡片状态（approved / rejected / answered / dismissed）。
-func NoticeStatusOfAction(action string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case NoticeActionApprove:
-		return "approved", true
-	case NoticeActionReject:
-		return "rejected", true
-	case NoticeActionAnswer:
-		return "answered", true
-	case NoticeActionDismiss:
-		return "dismissed", true
-	default:
-		return "", false
-	}
-}
+// NoticeStatusOfAction 见 common.NoticeStatusOfAction。
+func NoticeStatusOfAction(action string) (string, bool) { return common.NoticeStatusOfAction(action) }
 
-// NoticeResolution 是一次"用户处理卡片"的结果。
-type NoticeResolution struct {
-	// WrittenID 是写入的 decision/answer 行 id（重复提交时指向首次那一行）。
-	WrittenID int64
-	// Created 为 false 表示幂等命中：状态早已 resolved，**不得再次回流**。
-	Created bool
-	// Written 是写入行的完整形态（用于广播）。
-	Written *StructuredMessage
-	// Target 是被处理卡片行的完整形态（CAS 之后的状态）。
-	Target *StructuredMessage
-}
+// NoticeResolution 见 common.NoticeResolution。
+type NoticeResolution = common.NoticeResolution
 
 // ResolveNotice 原子地把一张用户看板卡片推进到 resolved，并留下处理记录行。
 //

@@ -7,7 +7,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -91,7 +91,7 @@ type UserContext struct {
 	InvalidateLLM    func()
 	InvalidateSender func()
 	ResolveLLM       func(chatID string) (llm.LLM, string, int, string, int)
-	ResolveActiveSub func(chatID string) (*sqlite.LLMSubscription, string, error)
+	ResolveActiveSub func(chatID string) (*common.LLMSubscription, string, error)
 	SelectModel      func(chatID, subID, model string) error
 	RefreshModels    func() ([]protocol.ModelEntry, []RefreshResult)
 	ListModels       func() []protocol.ModelEntry

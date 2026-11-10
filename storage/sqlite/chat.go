@@ -25,15 +25,6 @@ type UserChat struct {
 }
 
 // UserChatWithPreview extends UserChat with tenant metadata (last active, message preview).
-type UserChatWithPreview struct {
-	ChatID     string    `json:"chat_id"`
-	Label      string    `json:"label"`
-	LastActive time.Time `json:"last_active"`
-	Preview    string    `json:"preview"`
-	IsCurrent  bool      `json:"is_current"`
-	CreatedAt  time.Time `json:"created_at"`
-	SortOrder  int       `json:"sort_order"`
-}
 
 // ChatService manages user chatrooms (multi-chat support).
 type ChatService struct {

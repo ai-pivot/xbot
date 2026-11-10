@@ -60,7 +60,10 @@ test.describe('Chat interaction', () => {
     await composer.click()
     await page.keyboard.type('hello test')
 
-    // Click send（输入到 React 状态生效之间可能有几帧延迟，先等按钮可用）
+    // Click send（输入到 React 状态生效之间可能有几帧延迟，先等按钮可用）。
+    // 编辑器的可见性由 beforeEach 负责（显式 .tiptap + 30s 等待）。这里不再探测
+    // textarea：composer 是 contenteditable，textarea 从未存在，旧的回退分支只会
+    // 在 CI 负载下变成一次看不懂的 60s 超时。
     const sendBtn = page
       .locator('button[aria-label="发送"], button[aria-label="Send"], button.send-btn, button:has-text("发送")')
       .first()

@@ -427,6 +427,10 @@ func (wc *WebChannel) handleRPC(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusBadRequest, "method is required")
 		return
 	}
+	if previewFromRequest(r) != nil && previewRPCBlocked(request.Method) {
+		jsonErrorResponse(w, 403, "preview cannot manage administrator credentials")
+		return
+	}
 	rpcMethod = request.Method
 	identity := wc.rpcIdentityFromRequest(r)
 	if status, err := wc.authorizeRESTRPC(r, identity, request.Method, request.Params); err != nil {

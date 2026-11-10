@@ -315,6 +315,11 @@ func (m *cliModel) saveSettings(values map[string]string) {
 			if k == "thinking_mode" {
 				continue // handled above
 			}
+			// Sensitive settings are returned to the panel masked ("***"). Saving
+			// untouched values must never overwrite the real credential with it.
+			if ch.IsMaskedSettingValue(v) {
+				continue
+			}
 			if v != "" && ch.IsUserScopedSettingKey(k) && !ch.IsSubscriptionScopedSettingKey(k) {
 				if err := m.channel.settingsSvc.SetSetting(m.channelName, m.senderID, k, v); err != nil {
 					logrus.WithFields(logrus.Fields{"key": k, "err": err}).Warn("saveSettings: SetSetting failed")
@@ -355,6 +360,10 @@ func (m *cliModel) saveSettings(values map[string]string) {
 			// Tier settings already persisted above via settingsSvc. Strip them
 			// to avoid redundant DB write in main.go's ApplySettings loop.
 			if isTierSettingKey(k) {
+				continue
+			}
+			// Masked values are "unchanged" placeholders — never apply them.
+			if ch.IsMaskedSettingValue(v) {
 				continue
 			}
 			runtimeValues[k] = v

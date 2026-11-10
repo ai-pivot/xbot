@@ -170,8 +170,11 @@ jobs:
 
   e2e:
     name: E2E (Playwright)
-    # Playwright 目前不支持 ubuntu26.04（ubuntu-latest 在 2026 已滚到 26.04）。
-    # 与 master 上 #443 的修复一致：显式 pin 到 24.04。
+    # Pinned, NOT `ubuntu-latest`: GitHub rolled `ubuntu-latest` onto 26.04 and
+    # `npx playwright install --with-deps chromium` (Playwright 1.60) aborts with
+    # "Playwright does not support chromium on ubuntu26.04-x64" ⇒ every E2E job
+    # dies before running a single test. 24.04 is the newest LTS Playwright 1.60
+    # officially supports; re-evaluate when the Playwright dependency is bumped.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

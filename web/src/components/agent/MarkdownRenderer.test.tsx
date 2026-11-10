@@ -13,7 +13,17 @@ import '@testing-library/jest-dom'
 import { MarkdownRenderer } from '@/components/agent/MarkdownRenderer'
 import { MarkdownSelectionBoundary } from './MarkdownSelectionBoundary'
 
+afterEach(() => vi.unstubAllEnvs())
+
 describe('MarkdownRenderer', () => {
+  it('renders canonical attachment images and links through the preview path', () => {
+    vi.stubEnv('BASE_URL', '/xbot/session-shortcuts/')
+    const { container } = render(<MarkdownRenderer content={'![photo](/api/files/download?key=a&inline=1)\n\n[file](/api/files/download?key=a)\n\n[external](https://example.com/api/files/a)'} />)
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/xbot/session-shortcuts/api/files/download?key=a&inline=1')
+    expect(container.querySelectorAll('a')[0].getAttribute('href')).toBe('/xbot/session-shortcuts/api/files/download?key=a')
+    expect(container.querySelectorAll('a')[1].getAttribute('href')).toBe('https://example.com/api/files/a')
+  })
+
   it('renders headings, paragraphs, and lists', () => {
     const { container } = render(
       <MarkdownRenderer content={'# Title\n\nA paragraph.\n\n- a\n- b\n'} />,

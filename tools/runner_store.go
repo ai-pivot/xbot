@@ -9,59 +9,13 @@ import (
 	"time"
 
 	log "xbot/logger"
+	"xbot/storage/common"
 )
 
-// RunnerLLMSettings holds the optional local LLM configuration of a runner.
-//
-// A runner may execute the LLM locally (its own model endpoint) instead of
-// proxying back to the server. Only "can this runner do LLM" is needed at the
-// server side; the credentials live in the runner's own config, so APIKey is
-// informational here.
-type RunnerLLMSettings struct {
-	Provider string
-	APIKey   string
-	Model    string
-	BaseURL  string
-}
-
-// HasLLM reports whether the runner declares LLM capability.
-func (l *RunnerLLMSettings) HasLLM() bool {
-	return l != nil && l.Provider != ""
-}
-
-// RunnerInfo describes one managed remote machine (runner).
-//
-// Single-operator design: runners are globally scoped — there is no owner
-// column and no per-user partitioning. The Token is deliberately NOT part of
-// this struct: listing runners must never leak credentials to the UI. Use
-// RunnerStore.Token/RotateToken for the explicit accessors.
-type RunnerInfo struct {
-	Name        string `json:"name"`
-	Mode        string `json:"mode"`
-	DockerImage string `json:"docker_image"`
-	Workspace   string `json:"workspace"`
-	CreatedAt   string `json:"created_at"`
-	// Online is a read-side projection filled by the caller from the live
-	// WebSocket connection registry (never persisted).
-	Online bool `json:"online"`
-	// Version is reported by the runner at registration (empty when unknown).
-	Version string `json:"version,omitempty"`
-
-	LLMProvider string `json:"llm_provider,omitempty"`
-	LLMAPIKey   string `json:"llm_api_key,omitempty"`
-	LLMModel    string `json:"llm_model,omitempty"`
-	LLMBaseURL  string `json:"llm_base_url,omitempty"`
-}
-
-// LLMSettings returns the runner's LLM configuration.
-func (r RunnerInfo) LLMSettings() RunnerLLMSettings {
-	return RunnerLLMSettings{
-		Provider: r.LLMProvider,
-		APIKey:   r.LLMAPIKey,
-		Model:    r.LLMModel,
-		BaseURL:  r.LLMBaseURL,
-	}
-}
+// RunnerLLMSettings and RunnerInfo are backend-neutral DTOs (storage/common);
+// aliases keep the tools API and JSON wire shape unchanged.
+type RunnerLLMSettings = common.RunnerLLMSettings
+type RunnerInfo = common.RunnerInfo
 
 // RunnerStore persists the managed runners in SQLite.
 //
@@ -324,11 +278,11 @@ func (s *RunnerStore) Validate(token string) bool {
 // ListAllRunners returns every runner with live online status populated from
 // the shared sandbox router. Token is never included.
 func ListAllRunners() ([]RunnerInfo, error) {
-	db := GetRunnerTokenDB()
-	if db == nil {
+	store := GetRunnerStore()
+	if store == nil {
 		return nil, fmt.Errorf("runner management not configured")
 	}
-	runners, err := NewRunnerStore(db).List()
+	runners, err := store.List()
 	if err != nil {
 		return nil, err
 	}

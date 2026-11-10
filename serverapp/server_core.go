@@ -143,7 +143,12 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// we retrieve the *sql.DB from MultiSession to avoid a second sqlite.Open.
 	if db := ag.MultiSession().DB(); db != nil {
 		tools.SetRunnerTokenDB(db.Conn())
-		wireRunnerBindingStore(db)
+	}
+	// Session→runner bindings persist in tenants.runner_id on every backend
+	// (SQLite and PG) — this must not be gated on the SQLite handle.
+	if ms := ag.MultiSession(); ms != nil && ms.Store() != nil {
+		wireRunnerBindingStore(ms.Store().Tenant())
+		tools.SetRunnerStore(ms.Store().Runners())
 	}
 
 	// 3. Create RPCTable.

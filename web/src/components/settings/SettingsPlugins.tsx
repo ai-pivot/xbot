@@ -1,3 +1,4 @@
+import { backendFetch } from '@/lib/api'
 /**
  * Settings → 插件 —— 按插件声明的配置 schema（contributes.configuration）
  * 自动渲染配置表单（VSCode 风格）。支持顶部搜索过滤配置项、按 section 分组。
@@ -10,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ImagePlus, Loader2, Search, X } from 'lucide-react'
 
 import { postAPI } from '@/lib/api'
+import { appResourceUrl } from '@/lib/appUrl'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useI18n } from '@/providers/i18n'
 import { resolvePluginText, type PluginI18nTable } from '@/plugin-runtime/i18n'
@@ -237,7 +239,7 @@ function ImageSelectControl({
 
   const refreshImages = useCallback(async () => {
     try {
-      const res = await fetch(`/api/plugin-files/${encodeURIComponent(pluginId)}`)
+      const res = await backendFetch(`/api/plugin-files/${encodeURIComponent(pluginId)}`)
       if (!res.ok) return
       const json = (await res.json()) as {
         ok: boolean
@@ -262,7 +264,7 @@ function ImageSelectControl({
       const form = new FormData()
       form.append('plugin_id', pluginId)
       form.append('file', file)
-      const res = await fetch('/api/plugin-files/upload', { method: 'POST', body: form })
+      const res = await backendFetch('/api/plugin-files/upload', { method: 'POST', body: form })
       if (!res.ok) throw new Error(`upload failed: ${res.statusText}`)
       const json = (await res.json()) as { ok: boolean; data?: { url: string }; error?: string }
       if (!json.ok || !json.data) throw new Error(json.error || 'upload failed')
@@ -280,7 +282,7 @@ function ImageSelectControl({
     // 正在使用的图片禁删 —— 当前值指向它，删除后壁纸 404。
     if (saving || uploading || current === img.url) return
     try {
-      const res = await fetch(img.url, { method: 'DELETE' })
+      const res = await backendFetch(img.url, { method: 'DELETE' })
       if (!res.ok) throw new Error(`delete failed: ${res.statusText}`)
       await refreshImages()
     } catch (e) {
@@ -315,7 +317,7 @@ function ImageSelectControl({
               onClick={() => void onChange(propKey, img.url)}
               className="h-full w-full"
               style={{
-                backgroundImage: `url(${img.url})`,
+                backgroundImage: `url(${appResourceUrl(img.url)})`,
                 backgroundSize: 'cover',
                 backgroundPosition: 'center',
               }}

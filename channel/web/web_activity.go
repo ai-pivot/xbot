@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // web_activity.go — 跨会话活动流（通信视图性能重构）。
@@ -35,7 +35,7 @@ func (wc *WebChannel) handleActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	limit := parseActivityLimit(q.Get("limit"))
-	within := parseActivityWindow(q.Get("active_within"), sqlite.ActivityWindowDefault)
+	within := parseActivityWindow(q.Get("active_within"), common.ActivityWindowDefault)
 	kinds, ok := parseActivityKinds(q.Get("kind"))
 	if !ok {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid kind")
@@ -68,7 +68,7 @@ func (wc *WebChannel) handleAgentActivity(w http.ResponseWriter, r *http.Request
 		return
 	}
 	q := r.URL.Query()
-	within := parseActivityWindow(q.Get("active_within"), sqlite.ActivityWindowDefault)
+	within := parseActivityWindow(q.Get("active_within"), common.ActivityWindowDefault)
 	includeUnloaded := parseBoolParam(q.Get("include_unloaded"))
 	items, err := wc.callbacks.AgentActivityList(within, includeUnloaded)
 	if err != nil {
@@ -92,9 +92,9 @@ func (wc *WebChannel) handleAgentActivity(w http.ResponseWriter, r *http.Request
 func parseActivityLimit(raw string) int {
 	n, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil {
-		return sqlite.ActivityLimitDefault
+		return common.ActivityLimitDefault
 	}
-	return sqlite.NormalizeActivityLimit(n)
+	return common.NormalizeActivityLimit(n)
 }
 
 // parseActivityWindow 解析 ?active_within=（"72h"、"30d"、空）。

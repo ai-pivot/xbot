@@ -183,7 +183,7 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 ```json
 {
   "agent": {
-    "memory_provider": "flat",
+    "memory_provider": "xbot",
     "work_dir": ".",
     "prompt_file": "prompt.md",
     "max_context_tokens": 200000,
@@ -206,7 +206,7 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `max_concurrency` | int | `5` | 并发上限。⚠️ **不在 config.json** —— per-user 设置，存于 `user_settings` 表，通过设置面板（`/settings`，范围 1–100）或 Web LLM 控制台修改 |
-| `memory_provider` | string | `"flat"` | 记忆系统：`flat` 或 `letta` |
+| `memory_provider` | string | `"xbot"` | 记忆系统：`xbot`、`flat`、`letta` 或 `none`（无记忆工具与提示词） |
 | `work_dir` | string | `"."` | 工作目录 |
 | `prompt_file` | string | `"prompt.md"` | 自定义系统 prompt 文件 |
 | `max_context_tokens` | int | `200000` | 最大上下文窗口 token |
@@ -366,7 +366,7 @@ Server 模式安装时自动配置，一般不需要手动修改。
 
 | 字段 | 说明 |
 |------|------|
-| `tavily_api_key` | Tavily 网页搜索 API Key（配置后 Agent 可搜索网页） |
+| `tavily_api_key` | Tavily 网页搜索 API Key（全局默认值；也可在 Web 设置 → **联网搜索** 中运行时设置，立即生效且所有渠道共享） |
 | `oauth` | OAuth 2.0 服务配置（Web 渠道认证用） |
 | `pprof` | 性能分析端点（开发调试用） |
 

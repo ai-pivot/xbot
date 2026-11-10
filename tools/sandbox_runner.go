@@ -6,12 +6,14 @@ import (
 
 	"xbot/config"
 	log "xbot/logger"
+	"xbot/storage/common"
 )
 
 var (
 	globalSandbox       Sandbox
 	globalSandboxMu     sync.RWMutex
 	globalRunnerTokenDB *sql.DB
+	globalRunnerStore   common.RunnerStore
 )
 var sandboxInitOnce sync.Once
 
@@ -66,6 +68,31 @@ func SetSandbox(s Sandbox) {
 	globalSandboxMu.Unlock()
 }
 
+// SetRunnerStore wires the backend-agnostic runner registry (Storage.Runners()).
+// This is the production path on BOTH SQLite and PG; SetRunnerTokenDB remains as
+// a legacy SQLite helper for tests/tools that still hold a *sql.DB.
+func SetRunnerStore(store common.RunnerStore) {
+	globalSandboxMu.Lock()
+	defer globalSandboxMu.Unlock()
+	globalRunnerStore = store
+	if store == nil {
+		return
+	}
+	switch sb := globalSandbox.(type) {
+	case *SandboxRouter:
+		sb.SetRunnerStore(store)
+	case *RemoteSandbox:
+		sb.SetRunnerStore(store)
+	}
+}
+
+// GetRunnerStore returns the injected backend-agnostic runner registry.
+func GetRunnerStore() common.RunnerStore {
+	globalSandboxMu.RLock()
+	defer globalSandboxMu.RUnlock()
+	return globalRunnerStore
+}
+
 // SetRunnerTokenDB wires the DB used for runner persistence plus the
 // session→runner binding store. Must be called before any runner connects.
 func SetRunnerTokenDB(db *sql.DB) {
@@ -73,6 +100,7 @@ func SetRunnerTokenDB(db *sql.DB) {
 	defer globalSandboxMu.Unlock()
 	globalRunnerTokenDB = db
 	store := NewRunnerStore(db)
+	globalRunnerStore = store
 	switch sb := globalSandbox.(type) {
 	case *SandboxRouter:
 		sb.SetRunnerStore(store)

@@ -9,7 +9,7 @@ import (
 
 	"xbot/llm"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -26,7 +26,7 @@ type HistoryIteration = protocol.HistoryIteration
 type HistoryMessage = protocol.HistoryMessage
 
 // DailyTokenUsage represents token usage for a specific day+model.
-// Mirror of sqlite.DailyTokenUsage — used in CLIChannelConfig.UsageQuery callback
+// Mirror of common.DailyTokenUsage — used in CLIChannelConfig.UsageQuery callback
 // so that cmd/xbot-cli does not need to import the sqlite package.
 type DailyTokenUsage struct {
 	Date              string `json:"date"` // YYYY-MM-DD
@@ -263,7 +263,7 @@ func filterInternalMessages(msgs []llm.ChatMessage) []llm.ChatMessage {
 // 本函数 = ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, false)：
 // **全量视图**（零区域窗口、零工具折叠）—— CLI/RPC get_history 走的就是这一条，
 // 行为与历史上逐字节一致（R5）。
-func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord) []HistoryMessage {
+func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap map[uint64][]common.IterationRecord) []HistoryMessage {
 	return ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, false)
 }
 
@@ -286,7 +286,7 @@ const HistoryRegionWindow = 100
 //	  连续迭代号区间），未下发部分有确定取回通路 ⇒ 不构成任何 gap。
 //	foldView=false —— CLI/RPC 路径，与 ConvertMessagesToHistoryWithIterations 完全同构
 //	  （无结构化数据的 turn / Detail 回落路径在两种模式下都不窗口化、不折叠）。
-func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord, foldView bool) []HistoryMessage {
+func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIterMap map[uint64][]common.IterationRecord, foldView bool) []HistoryMessage {
 	// Internal 消息（仅模型可见的载体）不属于用户可见历史 —— 见
 	// filterInternalMessages 的说明。
 	msgs = filterInternalMessages(msgs)
@@ -779,7 +779,7 @@ func relocateIncompleteTurnUsers(history []HistoryMessage) []HistoryMessage {
 // 区域原子性由 RegionWindow 保证：窗口 = 连续迭代号区间 [a..N]，起点必是某个
 // 区域的 head ⇒ 工具组永不劈开，窗口内迭代号连续（前端 assertIterationContinuity
 // 只查内部断号，任意起点合法）。
-func windowTurnIterations(recs []sqlite.IterationRecord) ([]HistoryIteration, int) {
+func windowTurnIterations(recs []common.IterationRecord) ([]HistoryIteration, int) {
 	window, regionsBefore := RegionWindow(recs, HistoryRegionWindow)
 	iters := make([]HistoryIteration, 0, len(window))
 	for _, rec := range window {
@@ -794,7 +794,7 @@ func windowTurnIterations(recs []sqlite.IterationRecord) ([]HistoryIteration, in
 // 无最终回复行）路径填迭代级指标（Tokens/TTFTMs/TokensPerSec/TotalMs），主装配
 // 路径不填。R5 要求 CLI/RPC（get_history）载荷零变化 ⇒ 如实保留该差异，不顺手
 // 「统一修正」（否则 View(false) 与原函数不再逐字节一致）。
-func fullTurnIterations(recs []sqlite.IterationRecord, keepMetrics bool) []HistoryIteration {
+func fullTurnIterations(recs []common.IterationRecord, keepMetrics bool) []HistoryIteration {
 	iters := make([]HistoryIteration, 0, len(recs))
 	for _, rec := range recs {
 		it := MapIterationRecord(rec, false)
@@ -870,7 +870,7 @@ type pendingCompaction struct {
 //
 // ok=false 当位置无法确定（该 turn 无结构化迭代，或迭代记录都没有 created_at
 // —— 老数据），调用方回落为独立的 standalone 标记行（基本兼容）。
-func compactionIteration(turnIterMap map[uint64][]sqlite.IterationRecord, turnID uint64, ts time.Time) (int, bool) {
+func compactionIteration(turnIterMap map[uint64][]common.IterationRecord, turnID uint64, ts time.Time) (int, bool) {
 	if turnID == 0 || ts.IsZero() {
 		return 0, false
 	}
@@ -922,7 +922,7 @@ type turnSpan struct {
 
 // buildTurnSpans 把 turn → 迭代记录表压成**按 first 升序**的时间线。
 // 无任何时间戳的 turn 不进时间线（无法定位 ⇒ 调用方回落旧行为）。
-func buildTurnSpans(turnIterMap map[uint64][]sqlite.IterationRecord) []turnSpan {
+func buildTurnSpans(turnIterMap map[uint64][]common.IterationRecord) []turnSpan {
 	spans := make([]turnSpan, 0, len(turnIterMap))
 	for turnID, recs := range turnIterMap {
 		var first, last time.Time
@@ -955,7 +955,7 @@ func buildTurnSpans(turnIterMap map[uint64][]sqlite.IterationRecord) []turnSpan 
 //     仍属它，锚点落它的末尾）；⛔ 不能用"第一个 first > ts 的 turn"，那会把压缩前移一个 turn。
 //  3. 时间线为空 / ts 为零 ⇒ 回落 `fallbackTurn`（= 旧行为 cmdAnchor），保持老数据兼容。
 func compactionAnchor(
-	turnIterMap map[uint64][]sqlite.IterationRecord,
+	turnIterMap map[uint64][]common.IterationRecord,
 	spans []turnSpan,
 	fallbackTurn uint64,
 	ts time.Time,
@@ -1412,22 +1412,22 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 
 // ConvertHistoryRecords exposes one row for every raw message and compression
 // marker while keeping internal history controls private.
-func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
-	ordered := append([]sqlite.HistoryRecord(nil), records...)
+func ConvertHistoryRecords(records []common.HistoryRecord) []HistoryMessage {
+	ordered := append([]common.HistoryRecord(nil), records...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return ordered[i].HistoryID < ordered[j].HistoryID
 	})
 
 	toolResults := make(map[string]string)
 	for _, record := range ordered {
-		if record.Type == sqlite.HistoryRecordMessage && record.Message.Role == "tool" && record.Message.ToolCallID != "" {
+		if record.Type == common.HistoryRecordMessage && record.Message.Role == "tool" && record.Message.ToolCallID != "" {
 			toolResults[record.Message.ToolCallID] = record.Message.Content
 		}
 	}
 
 	history := make([]HistoryMessage, 0, len(ordered))
 	for _, record := range ordered {
-		if record.Type == sqlite.HistoryRecordMessage {
+		if record.Type == common.HistoryRecordMessage {
 			message := record.Message
 
 			// Skip tool-role messages: their results are already embedded in
@@ -1483,13 +1483,13 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 				Timestamp:        timestamp,
 				TurnID:           message.TurnID,
 				Iterations:       iters,
-				RecordType:       string(sqlite.HistoryRecordMessage),
+				RecordType:       string(common.HistoryRecordMessage),
 				CompactedBy:      record.CompactedBy,
 				DisplayOnly:      message.DisplayOnly,
 			})
 			continue
 		}
-		if record.Type != sqlite.HistoryRecordCompress {
+		if record.Type != common.HistoryRecordCompress {
 			continue
 		}
 		control := HistoryMessage{
@@ -1498,7 +1498,7 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 		}
 		control.Role = "system"
 		control.Content = "[Compacted context]"
-		var snapshot sqlite.ContextSnapshot
+		var snapshot common.ContextSnapshot
 		if err := json.Unmarshal(record.Data, &snapshot); err == nil {
 			for _, msg := range snapshot.Messages {
 				if strings.HasPrefix(strings.TrimSpace(msg.Content), "[Compacted context]") {

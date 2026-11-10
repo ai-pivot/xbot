@@ -112,7 +112,7 @@ FCM / WebPush / APNs / Feishu Provider
 | `config/config.go` | `PushConfig` / `FCMConfig` / `WebPushConfig` / `APNsConfig` |
 | `storage/interfaces.go` | `PushTarget` / `PushStore`，嵌入 `ConfigStore` |
 | `storage/sqlite/schema.go` + `migrations.go`（v74） | `push_targets` 表（SQLite，时间存 unix 秒） |
-| `storage/pg_schema.go` + `pg_push.go` | PG 表（`metadata JSONB`、`TIMESTAMPTZ`） |
+| `storage/internal/pg/schema.go` + `storage/internal/pg/push.go` | PG 表（`metadata JSONB`、`TIMESTAMPTZ`） |
 | `push/notifier.go` | 去重/限流/presence/busy→idle/重试 |
 | `push/fcm.go` | service account → JWT → OAuth token 缓存 → FCM v1 |
 | `push/webpush.go` | VAPID + aes128gcm（`webpush-go`） |

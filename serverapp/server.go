@@ -30,7 +30,7 @@ import (
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 	"xbot/tools/feishu_mcp"
 	"xbot/version"
@@ -42,8 +42,8 @@ import (
 // routingKey is the session key ("channel:chatID") — with session-scoped runner
 // bindings there is no user-level "active runner" any more.
 func injectProxyLLM(routingKey string, ag *agent.Agent) {
-	db := tools.GetRunnerTokenDB()
-	if db == nil {
+	store := tools.GetRunnerStore()
+	if store == nil {
 		return
 	}
 	router, _ := tools.GetSandbox().(*tools.SandboxRouter)
@@ -54,7 +54,6 @@ func injectProxyLLM(routingKey string, ag *agent.Agent) {
 	if activeName == "" || !router.IsRunnerOnline(activeName) {
 		return
 	}
-	store := tools.NewRunnerStore(db)
 	runners, err := store.List()
 	if err != nil {
 		return
@@ -321,7 +320,13 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				AdminToken: cfg.Admin.Token,
 				InviteOnly: cfg.Web.IsInviteOnly(),
 				PublicURL:  cfg.Sandbox.PublicURL,
+				// Explicit: config.json web.preview_origins, already replaced by
+				// XBOT_PREVIEW_ORIGINS in applyEnvOverrides when that is set.
+				PreviewOrigins: cfg.Web.PreviewOrigins,
 			}, msgBus)
+			if len(cfg.Web.PreviewOrigins) > 0 {
+				log.WithField("preview_origins", cfg.Web.PreviewOrigins).Info("Web preview authorization enabled for configured origins")
+			}
 			// Auto-detect frontend static files if not explicitly configured.
 			staticDir := resolveStaticDir(cfg)
 			if staticDir != "" {
@@ -910,17 +915,11 @@ func Run(args []string) error {
 		Timeout:  time.Duration(cfg.Agent.LLMRetryTimeout),
 	})
 
-	// PG 后端：token DB / runner token 持久化是 SQLite 文件专属 —— 跳过
-	// （tools.SetRunnerTokenDB / wireRunnerBindingStore 不接线）。
-	var tokenDB *sqlite.DB
-	if !pgBackend {
-		tokenDB, err = sqlite.Open(dbPath)
-		if err != nil {
-			log.WithError(err).Warn("Failed to open token database, runner tokens disabled")
-		} else {
-			tools.SetRunnerTokenDB(tokenDB.Conn())
-			wireRunnerBindingStore(tokenDB)
-		}
+	// Runner persistence is backend-agnostic: Storage.Runners() is the single
+	// authority on both SQLite and PG. No separate token DB is opened.
+	if ms := ag.MultiSession(); ms != nil && ms.Store() != nil {
+		wireRunnerBindingStore(ms.Store().Tenant())
+		tools.SetRunnerStore(ms.Store().Runners())
 	}
 
 	// Backend-agnostic storage layer (SQLite adapter or PG). The web channel and
@@ -1181,13 +1180,6 @@ func Run(args []string) error {
 
 	// OAuth token 存储由存储后端（SQLite 主库 / PG）持有，随 storage 一起关闭 ——
 	// 这里不再单独关闭 sharedDB（那个独立 SQLite 文件已删除）。
-
-	// 关闭 runner token 数据库连接
-	if tokenDB != nil {
-		if err := tokenDB.Close(); err != nil {
-			log.WithError(err).Warn("Token DB close error")
-		}
-	}
 
 	disp.Stop()
 	log.Info("xbot stopped")
@@ -1541,7 +1533,7 @@ func migrateConfigSubscriptions(cfg *config.Config, subSvc storage.SubscriptionB
 		return nil
 	}
 	for i, s := range cfg.Subscriptions {
-		sub := &sqlite.LLMSubscription{
+		sub := &common.LLMSubscription{
 			SenderID:        senderID,
 			Name:            s.Name,
 			Provider:        s.Provider,

@@ -6,7 +6,7 @@ import (
 
 	"xbot/protocol"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 )
 
 // ---------------------------------------------------------------------------
@@ -50,14 +50,14 @@ func (a *Agent) stateSession(channelName, chatID string) *sqliteIterationSource 
 type sqliteIterationSource struct {
 	session interface {
 		// master #444 起 TenantSession.SessionService() 返回存储抽象的
-		// storage.SessionStore（不再是具体 *sqlite.SessionService）。
+		// storage.SessionStore（不再是具体 *common.SessionService）。
 		SessionService() storage.SessionStore
 		TenantID() int64
 	}
 }
 
 // iterationRecords returns the committed iteration records of a turn.
-func (s *sqliteIterationSource) iterationRecords(turnID uint64) ([]sqlite.IterationRecord, error) {
+func (s *sqliteIterationSource) iterationRecords(turnID uint64) ([]common.IterationRecord, error) {
 	if s == nil || s.session == nil {
 		return nil, nil
 	}
@@ -69,19 +69,19 @@ func (s *sqliteIterationSource) iterationRecords(turnID uint64) ([]sqlite.Iterat
 }
 
 // iterationRecord returns one committed iteration record.
-func (s *sqliteIterationSource) iterationRecord(turnID uint64, iteration int) (sqlite.IterationRecord, bool, error) {
+func (s *sqliteIterationSource) iterationRecord(turnID uint64, iteration int) (common.IterationRecord, bool, error) {
 	if s == nil || s.session == nil {
-		return sqlite.IterationRecord{}, false, nil
+		return common.IterationRecord{}, false, nil
 	}
 	svc := s.session.SessionService()
 	if svc == nil {
-		return sqlite.IterationRecord{}, false, nil
+		return common.IterationRecord{}, false, nil
 	}
 	return svc.GetIterationHistoryByNumber(s.session.TenantID(), turnID, iteration)
 }
 
 // recordToBlock converts one DB iteration row to its wire block.
-func recordToBlock(rec sqlite.IterationRecord) protocol.IterationBlock {
+func recordToBlock(rec common.IterationRecord) protocol.IterationBlock {
 	tools := decodeRecordTools(rec.Tools)
 	if tools == nil {
 		tools = []protocol.ToolProgress{}

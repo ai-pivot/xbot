@@ -21,7 +21,8 @@ mode, and persona isolation.
     "static_dir": "",
     "upload_dir": "",
     "persona_isolation": false,
-    "invite_only": true
+    "invite_only": true,
+    "preview_origins": []
   },
   "admin": {
     "token": "your-secret-token"
@@ -38,6 +39,7 @@ mode, and persona isolation.
 | `upload_dir` | ❌ | `""` | Custom directory for uploaded files |
 | `persona_isolation` | ❌ | `false` | Isolate each web user's persona from others |
 | `invite_only` | ❌ | **`true`** | Disable self-registration. **Defaults to true (secure default)** — the first account can still register (first-user bootstrap); after that only an admin can create accounts. Set explicitly to `false` to re-open public registration. |
+| `preview_origins` | ❌ | `[]` | External preview frontends (e.g. Vercel PR previews) allowed to request a short-lived backend grant. Empty disables preview authorization. Exact origins, or one single-label HTTPS pattern such as `https://xbot-preview-*-<team>.vercel.app`. `XBOT_PREVIEW_ORIGINS` (comma-separated) replaces it when set. Read at startup. |
 
 {{< hint type=warning >}}
 The JSON key is `enable` (not `enabled`), unlike other channels.
@@ -71,6 +73,34 @@ referenced by `index.html` exists and contains a probe symbol; it exits 1 if the
 ## Access
 
 After starting the server, open `http://your-server:8082` in a browser.
+
+## Frontend Feature Previews
+
+Build a frontend for a path such as `/xbot/session-shortcuts/`:
+
+```bash
+cd web
+XBOT_WEB_BASE_PATH=/xbot/session-shortcuts/ npm run build
+```
+
+Serve that build at the same path. Forward its `api/`, `ws/`, and `plugins/`
+requests to the existing Web backend after removing the feature prefix. Keep
+SSE unbuffered and preserve WebSocket upgrades. Rewrite backend cookie paths
+to the preview namespace (and use Secure cookies over HTTPS) so preview login
+does not overwrite a root deployment's login. Unknown features/assets return
+404; SPA routes such as `login` serve that feature's `index.html`.
+
+The default build base remains `/`. Subpath builds disable PWA caching and
+worker updates. Login, page reloads and session browser tabs keep the feature
+path; stored attachment references remain independent of the preview version.
+This is a **frontend preview, not a separate data environment**: using the same
+backend means edits and deletion affect real conversations. No backend restart
+is needed. A local backend exposed through an SSH reverse tunnel requires the
+local machine to remain online.
+
+### Vercel PR preview backend connection
+
+Vercel hosts only the static frontend. A preview build first shows a connection gate whose backend address defaults to `http://localhost:8082`; a successful probe is not authorization. The operator lists allowed preview origins in `web.preview_origins` (or `XBOT_PREVIEW_ORIGINS`, which replaces it) and restarts the backend once: exact origins, or one single-label deployment pattern such as `https://xbot-preview-*-<team>.vercel.app` so new deployments need no backend restart (each grant is still bound to the exact requesting origin). Log in on the backend, approve the origin shown on the consent page, then paste the short-lived token into the gate. The token is kept in memory only and carries full workspace abilities; it is not a read-only sandbox. See `docs/vercel-preview.md`. Never put credentials in Vercel, and never restart a backend automatically for a frontend deployment.
 
 ## Message Composer
 
@@ -147,7 +177,9 @@ actions and menu labels, persist on refresh, and sync with your account.
 Custom Control and Command keys remain distinct; `Mod` accepts Ctrl/Cmd on
 Mac/Linux and Ctrl only on Windows.
 Unmodified text/navigation keys are not accepted (F1-F24 are supported).
-Escape cancels recording; IME and held-key events are ignored. System/browser
+Escape cancels recording; IME and held-key events are ignored. Generic events
+named `keydown` are ignored; programmatic shortcut input must use `KeyboardEvent`.
+System/browser
 reserved combinations may never reach the page: enter a different binding
 manually when recording cannot capture one. The table below lists defaults.
 

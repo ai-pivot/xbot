@@ -51,7 +51,7 @@ Flat（默认）vs Letta（MemGPT 向量搜索）。
 | **群聊** | 主持多 Agent 会议，通过 @mention 触发 | [skills-agents.md](skills-agents/) |
 | **多模态视觉** | 图片进模型视觉上下文（上传/飞书/view_image 工具，手动 per-model 开关） | [vision.md](vision/) |
 | **MCP** | 模型上下文协议，集成外部工具 | [mcp.md](mcp/) |
-| **记忆** | Flat（默认）或 Letta（MemGPT）记忆提供者 | [memory.md](memory/) |
+| **记忆** | xbot（默认）、Flat、Letta（MemGPT），或 none（关闭记忆） | [memory.md](memory/) |
 | **插件** | 脚本插件：信息栏 widget、工具提示、自定义工具 | [plugins.md](plugins/) |
 | **Hooks** | 生命周期事件钩子，支持命令/HTTP/MCP 处理器 | [hooks.md](hooks/) |
 

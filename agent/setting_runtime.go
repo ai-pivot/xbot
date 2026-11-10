@@ -64,7 +64,11 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	"memory_provider": {
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Agent.MemoryProvider = value },
 	},
-	"tavily_api_key": {}, // Stored in user_settings; WebSearchTool reads dynamically
+	"tavily_api_key": {}, // No side effect needed: WebSearchTool resolves the
+	// key through ToolContext.ConfigGet on EVERY Execute, and ConfigGet routes
+	// this key to its canonical row (channel.TavilyKeyChannel) so a value saved
+	// from the Web settings tab takes effect immediately for CLI/Feishu/Web
+	// sessions alike — no restart, no per-agent setter.
 
 	// allow_self_compact: registers/unregisters the compact_context tool LIVE
 	// (server_core.go registers it at boot from config.json — saveServerConfig
@@ -156,6 +160,21 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 			ag.userSys.llmFactory.InvalidateSender(senderID)
 		},
 	},
+}
+
+// settingStorageKey resolves the (channel, sender) row a user setting is stored
+// under. Cross-channel keys (tavily_api_key) use ONE canonical row so a value
+// saved from any surface (Web settings tab, CLI /set, Feishu) is visible to
+// every channel on the next read; all other keys keep the historical
+// per-caller-channel + origin-user scope.
+//
+// Both ConfigGet and ConfigSet must go through this: writing to the caller's
+// channel and reading from another is a silent no-op.
+func settingStorageKey(key, callerChannel, originUserID string) (string, string) {
+	if canonical := channel.CanonicalChannelForSetting(key); canonical != "" {
+		return canonical, canonicalSettingsSender
+	}
+	return callerChannel, originUserID
 }
 
 // ApplyRuntimeSetting applies a single setting change to the in-memory config and agent.

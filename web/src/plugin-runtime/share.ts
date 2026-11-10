@@ -9,6 +9,7 @@
  */
 import type { CreateShareInput, ShareAPI, ShareLink, ShareRendererContribution } from '@/plugin-api'
 import { postAPI } from '@/lib/api'
+import { appResourceUrl } from '@/lib/appUrl'
 
 interface ShareCreateResponse {
   token: string
@@ -56,7 +57,7 @@ export function createShareAPI(deps: ShareServiceDeps): ShareAPI {
         title: data.title,
         createdAt: data.created_at,
         expiresAt: data.expires_at,
-        path: data.path,
+        path: appResourceUrl(data.path),
       }
     },
 
@@ -71,7 +72,7 @@ export function createShareAPI(deps: ShareServiceDeps): ShareAPI {
         title: s.title,
         createdAt: s.created_at,
         expiresAt: s.expires_at,
-        path: `/s/${s.token}`,
+        path: appResourceUrl(`/s/${s.token}`),
       }))
     },
 
