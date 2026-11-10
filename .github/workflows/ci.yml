@@ -250,9 +250,17 @@ jobs:
             e2e/turn-iter-perf.spec.ts \
             e2e/stream-jitter.spec.ts \
             e2e/frame-budget.spec.ts \
+            e2e/scroll.spec.ts \
+            e2e/scroll-stick.spec.ts \
             e2e/scroll-overlap-guard.spec.ts \
             e2e/queue-reorder.spec.ts \
             e2e/region-window.spec.ts \
+            e2e/standalone-command-layout.spec.ts \
+            e2e/turn-order-consistency.spec.ts \
+            e2e/web-render-consistency.spec.ts \
+            e2e/iteration-commit-flicker.spec.ts \
+            e2e/notification-flicker.spec.ts \
+            e2e/todo-order.spec.ts \
             --project=chromium --reporter=line --workers=1
 
       - name: Run E2E tests (all remaining specs — mock + real backend)
@@ -264,7 +272,7 @@ jobs:
           E2E_PASSWORD: "admin"
         # 其余 spec 是功能断言，并行安全。显式排除上面那批，避免重复执行。
         run: |
-          SPECS=$(ls e2e/*.spec.ts | grep -v -E 'turn-iter-perf|stream-jitter|frame-budget|scroll-overlap-guard|queue-reorder|region-window')
+          SPECS=$(ls e2e/*.spec.ts | grep -v -E 'turn-iter-perf|stream-jitter|frame-budget|scroll-overlap-guard|scroll-stick|scroll\.spec|queue-reorder|region-window|standalone-command-layout|turn-order-consistency|web-render-consistency|iteration-commit-flicker|notification-flicker|todo-order')
           npx playwright test $SPECS --project=chromium --reporter=line --workers=4
 
       - name: Stop backend server
