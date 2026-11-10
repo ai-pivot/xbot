@@ -784,6 +784,20 @@ test.describe('history-loaded long turn is windowed', () => {
     // 等渲染 + 高度稳定（settle 需两次同值测量，间隔 ≥200ms；复核再 +400ms）
     await page.waitForTimeout(4000)
 
+    // 但**不能**把 4s 当成"窗口化已生效"的证明：慢 runner 上一次性采样可能拿到
+    // muted=0，被误判成回归（2026-11-10 CI 上的 flaky 就是这条）。先 poll 等窗口化
+    // 真的落地再采样；真回归（窗口化彻底失效）仍会 30s 超时失败，不掩盖问题。
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
+            return blocks.filter((b) => b.dataset.windowMuted === 'true').length
+          }),
+        { timeout: 30000, intervals: [200, 500, 1000] },
+      )
+      .toBeGreaterThan(0)
+
     const stats = await page.evaluate(() => {
       const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
       return {
@@ -852,6 +866,20 @@ test.describe('short (tool-only) iterations must be windowed too', () => {
     await page.locator('input[type="password"]').fill('test')
     await page.locator('button[type="submit"]').click()
     await page.waitForTimeout(6000)
+
+    // 6s 不是"窗口化已生效"的证明：慢 runner 上一次性采样会把还没窗口化完的
+    // 状态判成回归。先 poll 等 muted 占比过半再采样（判据不变，只是不再赌时长）。
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const bs = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
+            if (bs.length === 0) return 0
+            return bs.filter((b) => b.dataset.windowMuted === 'true').length / bs.length
+          }),
+        { timeout: 30000, intervals: [200, 500, 1000] },
+      )
+      .toBeGreaterThan(0.5)
 
     const stats = await page.evaluate(() => {
       const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
