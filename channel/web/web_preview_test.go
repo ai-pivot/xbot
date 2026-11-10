@@ -438,3 +438,86 @@ func TestPreviewRPCSecretPolicy(t *testing.T) {
 		})
 	}
 }
+
+// XBOT_PREVIEW_ORIGINS 支持单标签通配，免得每个 Vercel 部署（主机名带 hash）都要改环境变量重启后端。
+// 通配只能是 HTTPS、恰好一个 `*`、位于最左标签内、两侧都有字面量，且只匹配 [a-z0-9-]（不跨点）。
+func TestPreviewOriginPatternAllowlist(t *testing.T) {
+	const pattern = "https://xbot-preview-*-mattos-projects-6bf6c006.vercel.app"
+	t.Setenv("XBOT_PREVIEW_ORIGINS", "http://localhost:5173, "+pattern)
+	for origin, want := range map[string]bool{
+		"https://xbot-preview-ouws4udwi-mattos-projects-6bf6c006.vercel.app":                 true,
+		"https://xbot-preview-git-fix-markdown-a-46d8f7-mattos-projects-6bf6c006.vercel.app": true,
+		"http://localhost:5173": true,
+		"http://xbot-preview-ouws4udwi-mattos-projects-6bf6c006.vercel.app":       false, // scheme
+		"https://xbot-preview--mattos-projects-6bf6c006.vercel.app":               false, // empty wildcard
+		"https://xbot-preview-a.b-mattos-projects-6bf6c006.vercel.app":            false, // crosses a dot
+		"https://evil.xbot-preview-x-mattos-projects-6bf6c006.vercel.app":         false, // extra label
+		"https://xbot-preview-x-mattos-projects-6bf6c006.vercel.app.evil.example": false, // suffix
+		"https://xbot-preview-x-mattos-projects-6bf6c006.vercel.app:8443":         false, // port
+		"https://XBOT-PREVIEW-X-mattos-projects-6bf6c006.vercel.app":              false, // not canonical
+		"https://xbot-preview-x_y-mattos-projects-6bf6c006.vercel.app":            false, // charset
+		"https://other-preview-x-mattos-projects-6bf6c006.vercel.app":             false,
+		"https://xbot-preview-x-other.vercel.app":                                 false,
+	} {
+		if got := previewAllowed(origin); got != want {
+			t.Errorf("previewAllowed(%q) = %v, want %v", origin, got, want)
+		}
+	}
+}
+
+// 过宽或畸形的通配条目整条作废（fail closed），绝不退化成放行。
+func TestPreviewOriginPatternRejectsBroadEntries(t *testing.T) {
+	const origin = "https://xbot-preview-abc-team.vercel.app"
+	for _, entry := range []string{
+		"*",
+		"https://*",
+		"https://*.vercel.app",                    // whole label wildcard: any Vercel user
+		"https://*-team.vercel.app",               // no literal prefix
+		"https://xbot-preview-*",                  // no literal suffix / public suffix
+		"https://xbot-preview-*.vercel.app",       // no literal suffix inside the label
+		"https://xbot-preview-*-team.app",         // only one label after the wildcard label
+		"https://xbot-preview-**-team.vercel.app", // two wildcards
+		"https://xbot-preview-*-*.vercel.app",
+		"https://xbot.preview-*-team.vercel.app/", // path
+		"http://xbot-preview-*-team.vercel.app",   // HTTP patterns never allowed
+		"https://xbot-preview-*-team.vercel.app:443",
+		"https://xbot-preview-*-team.*.app",
+	} {
+		t.Run(entry, func(t *testing.T) {
+			t.Setenv("XBOT_PREVIEW_ORIGINS", entry)
+			if previewAllowed(origin) {
+				t.Fatalf("entry %q must not allow %q", entry, origin)
+			}
+		})
+	}
+}
+
+// 端到端：通配条目下同源 consent 能为匹配的部署签发 grant，grant 绑定的是**具体** origin，
+// 换一个同样匹配通配的 origin 也不能复用。
+func TestPreviewOriginPatternGrantBindsExactOrigin(t *testing.T) {
+	wc := previewTestChannel(t)
+	t.Setenv("XBOT_PREVIEW_ORIGINS", "https://preview-*-team.vercel.app")
+	h := wc.newServeMux()
+	const first, second = "https://preview-aaa111-team.vercel.app", "https://preview-bbb222-team.vercel.app"
+	w := previewReq(h, "POST", "/api/preview/authorize", "http://localhost", "", `{"origin":"`+first+`"}`)
+	if w.Code != 200 {
+		t.Fatalf("authorize matching origin: %d %s", w.Code, w.Body)
+	}
+	var res struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil || res.Data.Token == "" {
+		t.Fatalf("bad envelope: %s", w.Body)
+	}
+	if w := previewReq(h, "POST", "/api/preview/session", first, res.Data.Token, `{}`); w.Code != 200 {
+		t.Fatalf("session from bound origin: %d %s", w.Code, w.Body)
+	}
+	if w := previewReq(h, "POST", "/api/preview/session", second, res.Data.Token, `{}`); w.Code == 200 {
+		t.Fatalf("grant reused from another matching origin: %d %s", w.Code, w.Body)
+	}
+	if w := previewReq(h, "POST", "/api/preview/authorize", "http://localhost", "", `{"origin":"https://preview-x-other.vercel.app"}`); w.Code != 403 {
+		t.Fatalf("non-matching origin authorized: %d %s", w.Code, w.Body)
+	}
+}

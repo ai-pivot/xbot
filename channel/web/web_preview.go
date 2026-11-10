@@ -43,11 +43,57 @@ func previewAllowed(origin string) bool {
 		return false
 	}
 	for _, s := range strings.Split(os.Getenv("XBOT_PREVIEW_ORIGINS"), ",") {
-		if strings.TrimSpace(s) == origin {
+		entry := strings.TrimSpace(s)
+		if entry == origin || previewPatternMatch(entry, origin) {
 			return true
 		}
 	}
 	return false
+}
+
+// previewPatternMatch matches one single-label wildcard allowlist entry such as
+// https://xbot-preview-*-team-slug.vercel.app, so per-deployment hostnames do not
+// need a backend restart each. The entry must be HTTPS without a port, contain
+// exactly one `*` inside its leftmost label with literal text on both sides,
+// and keep at least two fixed labels after it. `*` matches one or more
+// [a-z0-9-] characters and never crosses a dot. Malformed or broader entries
+// match nothing. Consent still binds each grant to the exact requesting origin.
+func previewPatternMatch(entry, origin string) bool {
+	const scheme = "https://"
+	if !strings.HasPrefix(entry, scheme) || strings.Count(entry, "*") != 1 || !strings.HasPrefix(origin, scheme) {
+		return false
+	}
+	pattern := strings.Split(strings.TrimPrefix(entry, scheme), ".")
+	host := strings.Split(strings.TrimPrefix(origin, scheme), ".")
+	if len(pattern) < 3 || len(host) != len(pattern) {
+		return false
+	}
+	for i := 1; i < len(pattern); i++ {
+		if !previewLabelChars(pattern[i]) || host[i] != pattern[i] {
+			return false
+		}
+	}
+	prefix, suffix, ok := strings.Cut(pattern[0], "*")
+	if !ok || prefix == "" || suffix == "" || !previewLabelChars(prefix) || !previewLabelChars(suffix) {
+		return false
+	}
+	label := host[0]
+	if len(label) > 63 || len(label) <= len(prefix)+len(suffix) || !strings.HasPrefix(label, prefix) || !strings.HasSuffix(label, suffix) {
+		return false
+	}
+	return previewLabelChars(label)
+}
+
+func previewLabelChars(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 func (wc *WebChannel) previewSameOrigin(r *http.Request) bool {
 	// PublicURL is operator-configured, unlike untrusted forwarded headers.

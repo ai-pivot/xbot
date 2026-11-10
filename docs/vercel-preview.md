@@ -44,7 +44,7 @@ The editable default `http://localhost:8082` is an address, **not evidence that 
 Before connecting, the user must:
 
 1. Build/install the backend version containing this change.
-2. Set `XBOT_PREVIEW_ORIGINS` in the **backend process startup environment** to the exact trusted preview origin, for example `https://your-preview.vercel.app` (no wildcard or path).
+2. Set `XBOT_PREVIEW_ORIGINS` in the **backend process startup environment** to the exact trusted preview origin, for example `https://your-preview.vercel.app` (no path), or to the single-label deployment pattern described under *Enable the approved backend protocol*.
 3. **Manually arrange the backend restart** needed to load the new binary and environment, then log in locally and complete explicit preview authorization. Agents must not restart the user's backend. Existing grants are lost on restart.
 
 Build and focused test checks do **not** prove the deployed gate or authenticated browser-to-localhost connection. Real-browser gate, local-network permission/CORS, SSE, terminal WebSocket and resource acceptance remain **unverified**. Browser operation is paused under user control: do not open or automate a browser until the user explicitly says to continue. A follow-up PR may be published before this acceptance, but must state that user verification is still required; publication is not end-to-end approval.
@@ -108,7 +108,17 @@ Preview authorization is **off by default**. On the existing backend, the user/o
 XBOT_PREVIEW_ORIGINS=https://review-example.vercel.app,http://localhost:5173
 ```
 
-Entries are origins only: scheme, hostname and optional port, with no trailing slash/path, query, fragment or wildcard. HTTPS origins are accepted; HTTP origins are restricted to loopback (`localhost`, `127.0.0.1`, `::1`). Add each trusted deployment origin explicitly; do not replace this with `*.vercel.app`. This is a backend process setting, not a Vercel build secret. If the running backend must be updated or its startup environment changed, **the user must arrange any necessary restart manually; agents must not restart the server**. Static frontend hosting itself needs no backend restart.
+Entries are origins only: scheme, hostname and optional port, with no trailing slash/path, query or fragment. HTTPS origins are accepted; HTTP origins are restricted to loopback (`localhost`, `127.0.0.1`, `::1`).
+
+Every Vercel deployment gets its own hostname (`<project>-<hash>-<team>.vercel.app`, branch alias `<project>-git-<branch>-<team>.vercel.app`), so exact entries would need a backend restart per PR. An entry may therefore carry **one single-label wildcard** for the project's own deployments:
+
+```text
+XBOT_PREVIEW_ORIGINS=https://xbot-preview-*-mattos-projects-6bf6c006.vercel.app
+```
+
+The pattern must be HTTPS without a port, contain exactly one `*` inside the leftmost DNS label with literal text on both sides, and keep at least two fixed labels after it. `*` matches one or more `[a-z0-9-]` characters and never crosses a dot. Broader or malformed entries (`*.vercel.app`, `https://*-team.vercel.app`, `xbot-preview-*.vercel.app`, HTTP patterns, two wildcards) match nothing. Grants are still minted for, and bound to, the **exact** requesting origin; one matching deployment cannot reuse another's token.
+
+A pattern trusts every hostname that can match it. On `vercel.app` the literal suffix is the team slug; another Vercel team whose slug ends with the same text (for example `evil-mattos-projects-6bf6c006`) could produce a matching hostname. The consent page shows the exact origin — confirm it is a deployment of this repository before approving. Never use `*.vercel.app`. This is a backend process setting, not a Vercel build secret. If the running backend must be updated or its startup environment changed, **the user must arrange any necessary restart manually; agents must not restart the server**. Static frontend hosting itself needs no backend restart; with a deployment pattern, new PR deployments need none either.
 
 1. In a separate tab on the backend origin, log in using the existing normal cookie-authenticated UI. Preview requests do not borrow this cookie.
 2. Open the gate's authorization link, `/preview/authorize?origin=<URL-encoded-preview-origin>`, on that backend. Check the displayed account and exact origin before approving. The consent page requires an existing local login and an allowlisted origin.

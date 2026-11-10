@@ -96,6 +96,10 @@ backend means edits and deletion affect real conversations. No backend restart
 is needed. A local backend exposed through an SSH reverse tunnel requires the
 local machine to remain online.
 
+### Vercel PR preview backend connection
+
+Vercel hosts only the static frontend. A preview build first shows a connection gate whose backend address defaults to `http://localhost:8082`; a successful probe is not authorization. The operator must start the backend with `XBOT_PREVIEW_ORIGINS` set to exact preview origins, or to one single-label deployment pattern such as `https://xbot-preview-*-<team>.vercel.app` so new deployments need no backend restart (each grant is still bound to the exact requesting origin). Log in on the backend, approve the origin shown on the consent page, then paste the short-lived token into the gate. The token is kept in memory only and carries full workspace abilities; it is not a read-only sandbox. See `docs/vercel-preview.md`. Never put credentials in Vercel, and never restart a backend automatically for a frontend deployment.
+
 ## Message Composer
 
 > **New session**: you may pick a working directory; **a missing directory is created automatically** (including parent directories). If a regular file blocks the path (or permissions fail), the panel reports "failed to set working directory" instead of silently using a wrong one.
