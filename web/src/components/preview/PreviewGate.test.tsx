@@ -64,3 +64,38 @@ describe('preview provider boundary', () => {
     expect(screen.getByText('Change backend')).toBeVisible()
   })
 })
+
+// 打开预览部署后立即提示后端如何放行本预览：给出可直接复制的 config.json 片段。
+describe('backend setup hint', () => {
+  it('shows the project-wide wildcard derived at build time and copies the config snippet', async () => {
+    vi.stubGlobal('__PREVIEW_ORIGIN_PATTERN__', 'https://xbot-preview-*-team.vercel.app')
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    render(<PreviewGate><div>business app</div></PreviewGate>)
+    const setup = screen.getByRole('region', { name: 'Allow this preview on your backend' })
+    expect(setup).toHaveTextContent('~/.xbot/config.json')
+    const snippet = '"web": {\n  "preview_origins": [\n    "https://xbot-preview-*-team.vercel.app"\n  ]\n}'
+    expect(setup.querySelector('pre')?.textContent).toBe(snippet)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await screen.findByText('Copied')
+    expect(writeText).toHaveBeenCalledWith(snippet)
+    expect(fetchMock).not.toHaveBeenCalled()
+    Reflect.deleteProperty(navigator, 'clipboard')
+  })
+  it('falls back to the exact page origin when no pattern was derived', () => {
+    vi.stubGlobal('__PREVIEW_ORIGIN_PATTERN__', '')
+    vi.stubGlobal('fetch', vi.fn())
+    render(<PreviewGate><div>business app</div></PreviewGate>)
+    const setup = screen.getByRole('region', { name: 'Allow this preview on your backend' })
+    expect(setup.querySelector('pre')?.textContent).toContain(`\n    "${window.location.origin}"\n`)
+  })
+  it('points a failed connection test at the setup hint', async () => {
+    vi.stubGlobal('__PREVIEW_ORIGIN_PATTERN__', '')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    render(<PreviewGate><div>business app</div></PreviewGate>)
+    fireEvent.click(screen.getByText('Test connection'))
+    await screen.findByText(/preview_origins/, { selector: '.preview-result' })
+  })
+})

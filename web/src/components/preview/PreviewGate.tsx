@@ -4,6 +4,7 @@ import {
   activatePreviewConnection, backendUrl, clearPreviewBackend, clearPreviewConnection, normalizeBackendUrl,
   PreviewConnectionError, readPreviewBackend, revokePreviewConnection, savePreviewBackend, testPreviewConnection, verifyPreviewToken,
 } from '@/lib/previewConnection'
+import { previewOriginsSnippet } from '@/lib/previewOriginPattern'
 import { previewCopy, previewLocale } from './copy'
 import './preview.css'
 
@@ -19,6 +20,9 @@ export function PreviewGate({ children }: { children: ReactNode }) {
   const [consent, setConsent] = useState(false)
   const expiryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [authorized, setAuthorized] = useState(false)
+  const [copyState, setCopyState] = useState('')
+  const setupPattern = __PREVIEW_ORIGIN_PATTERN__
+  const setupSnippet = previewOriginsSnippet(setupPattern || window.location.origin)
 
   function cancel() {
     attempt.current.controller?.abort()
@@ -42,7 +46,8 @@ export function PreviewGate({ children }: { children: ReactNode }) {
     } catch (error) {
       if (attempt.current.id !== id) return
       if (error instanceof PreviewConnectionError) {
-        setStatus(error.reason === 'http' ? `${copy.http} ${error.status}.` : copy[error.reason])
+        setStatus(error.reason === 'http' ? `${copy.http} ${error.status}.`
+          : error.reason === 'network' ? `${copy.network} ${copy.networkSetup}` : copy[error.reason])
       } else setStatus(copy.cancelled)
     } finally {
       if (attempt.current.id === id) setBusy(false)
@@ -97,6 +102,18 @@ export function PreviewGate({ children }: { children: ReactNode }) {
     {authorized ? <div className="preview-application">{children}</div> : <main className="preview-main">
       <div className="preview-heading"><p className="preview-eyebrow">{copy.eyebrow}</p>
         <h1>{copy.title}</h1><p>{copy.intro}</p></div>
+      <section className="preview-setup" aria-labelledby="preview-setup-title">
+        <h2 id="preview-setup-title">{copy.setupTitle}</h2>
+        <p>{copy.setupBody}</p>
+        <pre>{setupSnippet}</pre>
+        <div className="preview-setup-actions">
+          <button type="button" onClick={() => {
+            navigator.clipboard.writeText(setupSnippet).then(() => setCopyState(copy.copied), () => setCopyState(copy.copyFailed))
+          }}>{copy.copy}</button>
+          {copyState && <span role="status">{copyState}</span>}
+        </div>
+        <p>{setupPattern ? copy.setupNote : copy.setupNoteExact}</p>
+      </section>
       <section className="preview-settings" aria-label={copy.title}>
         <form onSubmit={event => { event.preventDefault(); save() }}>
           <label htmlFor="preview-backend">{copy.label}</label>

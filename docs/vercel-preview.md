@@ -41,6 +41,8 @@ Preview mode is compiled when `VERCEL_ENV=preview` or `XBOT_WEB_PREVIEW=1`. The 
 
 The editable default `http://localhost:8082` is an address, **not evidence that an existing localhost backend supports preview connections**. The backend must run a build containing this follow-up's preview authorization, CORS and transport handlers. An older running backend cannot acquire these handlers from a frontend deployment.
 
+The gate opens with an **"Allow this preview on your backend"** hint containing a copyable `config.json` fragment. At build time `vite.config.ts` derives the project-wide wildcard from Vercel's `VERCEL_URL` and `VERCEL_BRANCH_URL` (their common prefix/suffix cut back to dashes, see `web/src/lib/previewOriginPattern.ts`), e.g. `https://xbot-preview-*-mattos-projects-6bf6c006.vercel.app`; when that is unavailable (local `XBOT_WEB_PREVIEW=1`, missing branch URL) it suggests the exact page origin instead. A failed connection test also points back to this hint. The browser cannot tell an unconfigured backend from an unreachable one, so the hint is always shown rather than inferred.
+
 Before connecting, the user must:
 
 1. Build/install the backend version containing this change.

@@ -18,6 +18,12 @@ export const previewCopy = {
     network: 'Could not reach the backend. This may be CORS, browser local-network permission, mixed content, TLS or an offline server; the browser cannot distinguish them reliably.',
     response: 'The server did not return the expected xbot public auth configuration. Check the backend address and subpath.',
     http: 'The backend returned HTTP', cancelled: 'Connection test cancelled.',
+    setupTitle: 'Allow this preview on your backend',
+    setupBody: 'Previews are off by default. On the machine running xbot, add this to ~/.xbot/config.json (merge into an existing "web" block) and restart the backend once. The backend must be a version with preview support.',
+    setupNote: 'The wildcard covers every deployment of this project, so later PR previews need no further changes. XBOT_PREVIEW_ORIGINS, if set, replaces this list.',
+    setupNoteExact: 'This allows only the current deployment address. XBOT_PREVIEW_ORIGINS, if set, replaces this list.',
+    copy: 'Copy', copied: 'Copied', copyFailed: 'Copy failed. Select the text manually.',
+    networkSetup: 'If the backend is running, check that its web.preview_origins allows this preview (see above).',
   },
   'zh-CN': {
     authorize: '打开后端授权页面', token: '短期预览令牌', enter: '验证并连接', consent: '我信任此 PR，并授权其访问真实文件、工具和完整工作区。这不是只读访问。', verified: '预览授权已过期，请重新授权。',
@@ -30,6 +36,12 @@ export const previewCopy = {
     invalid: '请输入完整的 http:// 或 https:// 地址，不含用户凭据、查询参数或片段。', saved: '地址已保存在当前浏览器中。', storage: '浏览器存储不可用，无法保存此地址。',
     timeout: '连接超时。请检查后端与浏览器权限后重试。', network: '无法连接后端。可能是 CORS、本地网络权限、混合内容、TLS 或服务离线；浏览器无法可靠区分这些原因。',
     response: '服务器未返回预期的 xbot 公共认证配置，请检查后端地址与子路径。', http: '后端返回 HTTP', cancelled: '已取消连接测试。',
+    setupTitle: '让后端允许这个预览',
+    setupBody: '预览连接默认关闭。在运行 xbot 的机器上，把下面这段加进 ~/.xbot/config.json（已有 "web" 时合并进去），然后重启一次后端。后端需要是支持预览的版本。',
+    setupNote: '这条通配覆盖本项目的所有部署，之后的 PR 预览无需再改。如果设置了 XBOT_PREVIEW_ORIGINS，会以它为准。',
+    setupNoteExact: '这只放行当前这个部署地址。如果设置了 XBOT_PREVIEW_ORIGINS，会以它为准。',
+    copy: '复制', copied: '已复制', copyFailed: '复制失败，请手动选中文本。',
+    networkSetup: '如果后端正在运行，请确认它的 web.preview_origins 已放行这个预览（见上方）。',
   },
   ja: {
     authorize: 'バックエンドの承認画面を開く', token: '短期プレビュートークン', enter: '検証して接続', consent: 'この PR を信頼し、実際のファイル・ツール・ワークスペース全体へのアクセスを許可します。読み取り専用ではありません。', verified: 'プレビュー認証が期限切れです。再度承認してください。',
@@ -42,6 +54,12 @@ export const previewCopy = {
     invalid: '認証情報・クエリ・フラグメントを含まない http:// または https:// の完全なアドレスを入力してください。', saved: 'このブラウザーにアドレスを保存しました。', storage: 'ブラウザーのストレージが使用できないため、保存できませんでした。',
     timeout: '接続がタイムアウトしました。バックエンドとブラウザーの権限を確認してください。', network: '接続できません。CORS・ローカルネットワーク権限・混在コンテンツ・TLS・サーバー停止などが考えられ、ブラウザーでは確実に区別できません。',
     response: 'xbot の公開認証設定が返されませんでした。アドレスとサブパスを確認してください。', http: 'バックエンドの HTTP ステータス:', cancelled: '接続テストを中止しました。',
+    setupTitle: 'バックエンドでこのプレビューを許可',
+    setupBody: 'プレビュー接続は既定で無効です。xbot を実行しているマシンで、次の内容を ~/.xbot/config.json に追加し（既存の "web" があれば統合）、バックエンドを一度再起動してください。プレビュー対応版のバックエンドが必要です。',
+    setupNote: 'このワイルドカードはこのプロジェクトの全デプロイを対象とするため、以降の PR プレビューでは変更不要です。XBOT_PREVIEW_ORIGINS を設定している場合はそちらが優先されます。',
+    setupNoteExact: '現在のデプロイアドレスのみを許可します。XBOT_PREVIEW_ORIGINS を設定している場合はそちらが優先されます。',
+    copy: 'コピー', copied: 'コピーしました', copyFailed: 'コピーできませんでした。手動で選択してください。',
+    networkSetup: 'バックエンドが起動している場合は、web.preview_origins でこのプレビューが許可されているか確認してください（上記参照）。',
   },
 } as const
 

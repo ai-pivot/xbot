@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
+import { deriveVercelOriginPattern } from './src/lib/previewOriginPattern'
 
 // __BUILD_INFO__ — 前端构建身份（About 面板展示「前端版本」）。
 // release CI 传 VITE_APP_VERSION / VITE_APP_CHANNEL（与后端二进制同源）；
@@ -244,6 +245,12 @@ export default defineConfig(({ mode }) => {
     __BUILD_INFO__: buildInfo(),
     __PWA_ENABLED__: !isDev,
     __PREVIEW_ENABLED__: previewEnabled,
+    // Project-wide `web.preview_origins` wildcard the preview gate suggests,
+    // derived from Vercel's system env (deployment host + branch alias); '' when
+    // unavailable, and the gate then suggests the exact page origin.
+    __PREVIEW_ORIGIN_PATTERN__: JSON.stringify(previewEnabled
+      ? deriveVercelOriginPattern(process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL)
+      : ''),
   },
   }
 })
