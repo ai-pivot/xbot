@@ -159,13 +159,37 @@ async function sampleScrollAndIndex(page: Page, id: string, stop: (v: number) =>
 
 /** 按住 `srcID` 的拖拽柄，**分步**把指针移到 (toX,toY)，每一步后采样列表总高。
  *  返回采样序列 —— 用来证明"拖动全程列表总高稳定（≤1px）"。 */
-async function pressAndDragInSteps(page: Page, srcID: string, toX: number, toY: number, steps = 12) {
+async function pressAndDragInSteps(
+  page: Page,
+  srcID: string,
+  toX: number,
+  toY: number,
+  steps = 12,
+  settle?: { targetID: string; edge: 'before' | 'after'; want: string },
+) {
   // 同 pressHandle：按压必须真的命中（含自检与重试），否则整段拖拽是空操作。
   const { x: fromX, y: fromY } = await beginDrag(page, srcID)
   const heights = [await listScrollHeight(page)]
   for (let s = 1; s <= steps; s++) {
     await page.mouse.move(fromX + ((toX - fromX) * s) / steps, fromY + ((toY - fromY) * s) / steps)
     heights.push(await listScrollHeight(page))
+  }
+  if (settle) {
+    // 传入的 toX/toY 是**按下那一刻**的目标几何。拖动期间列表会按预览顺序重排
+    // （被拖卡片让位、目标卡片位移），固定落点可能已经指向别的卡片或空白 ——
+    // 那就白拖了（CI 上「reverse direction」实测过：顺序完全没变）。
+    // 这里用**当前**几何重取目标位置补移动，直到预览顺序真的等于 want。
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await waitForOrder(page, settle.want, 1200)) break
+      const tb = await page.locator(`[data-queue-id="${settle.targetID}"]`).boundingBox()
+      if (!tb) break
+      await page.mouse.move(
+        tb.x + tb.width / 2,
+        settle.edge === 'before' ? tb.y + 4 : tb.y + tb.height - 4,
+        { steps: 4 },
+      )
+      heights.push(await listScrollHeight(page))
+    }
   }
   return { heights }
 }
@@ -523,7 +547,11 @@ test.describe('staging tray drag-to-reorder — live preview while still holding
     const toX = targetBox.x + targetBox.width / 2
     const toY = targetBox.y + targetBox.height - 4
 
-    const { heights } = await pressAndDragInSteps(page, 'm1', toX, toY)
+    const { heights } = await pressAndDragInSteps(page, 'm1', toX, toY, 12, {
+      targetID: 'm4',
+      edge: 'after',
+      want: ['m2', 'm3', 'm4', 'm1', 'm5', 'm6'].join(' '),
+    })
 
     // ① **松手前** DOM 顺序 = 预览顺序：第 1 张已落到第 4 张之后（其它卡片让位）。
     await expect.poll(() => domOrder(page)).toEqual(['m2', 'm3', 'm4', 'm1', 'm5', 'm6'])
@@ -603,7 +631,11 @@ test.describe('staging tray drag-to-reorder — live preview while still holding
     const toX = targetBox.x + targetBox.width / 2
     const toY = targetBox.y + 4 // 第 1 张卡的**上半** → 插到最前
 
-    const { heights } = await pressAndDragInSteps(page, 'm6', toX, toY)
+    const { heights } = await pressAndDragInSteps(page, 'm6', toX, toY, 12, {
+      targetID: 'm1',
+      edge: 'before',
+      want: ['m6', 'm1', 'm2', 'm3', 'm4', 'm5'].join(' '),
+    })
 
     // 2026-10-22 CI：拖拽后的 DOM 重排可能慢于 poll 默认 5s（CI runner 慢 +
     // pointer 事件分步派发）。放宽等待，不断言放宽：顺序必须完全一致。
