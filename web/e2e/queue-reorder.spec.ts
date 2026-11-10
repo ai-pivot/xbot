@@ -85,19 +85,13 @@ async function visibleCardIDs(page: Page): Promise<string[]> {
 
 /** 在拖拽柄上按下（指针停在卡片处，**尚未进入**边缘热区）。 */
 async function pressHandle(page: Page, srcID: string) {
-  const list = page.getByTestId('staging-list')
-  const handle = page.locator(`[data-queue-id="${srcID}"] [data-testid="staging-drag-handle"]`)
-  const hb = await handle.boundingBox()
-  const lb = await list.boundingBox()
-  if (!hb || !lb) throw new Error('missing bounding box for the drag')
-  // 注意：不要用 locator.hover() —— 它内部做 scrollIntoViewIfNeeded，会先给列表
-  // 制造一段 ~11px 的杂散滚动，污染「拖拽期间 scrollTop 是否增长」的判据。
-  await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2)
-  await page.mouse.down()
-  // 拖拽会话真的建立（幽灵出现）之后再交棒：否则后续 pointermove 会被
-  // handleDragMove 的 `if (!sessionRef.current) return` 丢掉，自动滚动根本不会启动，
-  // 「scrollTop 必须增长」就成了赌事件批处理的时序（CI 上正是这条 flaky）。
-  await expect(page.getByTestId('staging-drag-ghost')).toBeVisible()
+  // 走 beginDrag：按压前有 elementFromPoint 命中自检 + 幽灵确认 + 失败重试，
+  // 而不是"按下就祈祷 pointerdown 落在卡片上"。命中落空时后续 pointermove 会被
+  // handleDragMove 的 `if (!sessionRef.current) return` 丢掉，自动滚动根本不会
+  // 启动 —— CI 上那条 flaky（pointerup in edge hot zone）就是这个形态。
+  await beginDrag(page, srcID)
+  const lb = await page.getByTestId('staging-list').boundingBox()
+  if (!lb) throw new Error('missing bounding box for the staging list')
   return { lb }
 }
 
@@ -166,17 +160,8 @@ async function sampleScrollAndIndex(page: Page, id: string, stop: (v: number) =>
 /** 按住 `srcID` 的拖拽柄，**分步**把指针移到 (toX,toY)，每一步后采样列表总高。
  *  返回采样序列 —— 用来证明"拖动全程列表总高稳定（≤1px）"。 */
 async function pressAndDragInSteps(page: Page, srcID: string, toX: number, toY: number, steps = 12) {
-  const handle = page.locator(`[data-queue-id="${srcID}"] [data-testid="staging-drag-handle"]`)
-  const hb = await handle.boundingBox()
-  if (!hb) throw new Error('missing bounding box for the drag handle')
-  const fromX = hb.x + hb.width / 2
-  const fromY = hb.y + hb.height / 2
-  // 不要用 hover()：它内部的 scrollIntoViewIfNeeded 会制造一段杂散滚动。
-  await page.mouse.move(fromX, fromY)
-  await page.mouse.down()
-  // 同 pressHandle：等幽灵出现，确认 pointerdown 真的建立了拖拽会话，
-  // 后面的分步移动才会被 updatePreviewAt 接住（否则整段拖拽是空操作）。
-  await expect(page.getByTestId('staging-drag-ghost')).toBeVisible()
+  // 同 pressHandle：按压必须真的命中（含自检与重试），否则整段拖拽是空操作。
+  const { x: fromX, y: fromY } = await beginDrag(page, srcID)
   const heights = [await listScrollHeight(page)]
   for (let s = 1; s <= steps; s++) {
     await page.mouse.move(fromX + ((toX - fromX) * s) / steps, fromY + ((toY - fromY) * s) / steps)
@@ -292,7 +277,7 @@ async function waitForOrder(page: Page, want: string, ms: number): Promise<boole
  *  之后继续动 —— 按压落在别的元素上时 pointerdown 不会进 handleHandleDown，
  *  幽灵永不出现，后续所有 move 都是空操作。2026-11-10 CI 上那条 flaky 就是
  *  这个形态（等 ghost 10s 超时），不是落点算错。 */
-async function beginDrag(page: Page, srcID: string): Promise<void> {
+async function beginDrag(page: Page, srcID: string): Promise<{ x: number; y: number }> {
   const handle = page.locator(`[data-queue-id="${srcID}"] [data-testid="staging-drag-handle"]`)
   const ghost = page.getByTestId('staging-drag-ghost')
   let lastErr: unknown = null
@@ -324,7 +309,7 @@ async function beginDrag(page: Page, srcID: string): Promise<void> {
 
     await page.mouse.down()
     if (await ghost.isVisible({ timeout: 2000 }).catch(() => false)) {
-      return
+      return { x, y }
     }
     // pointerdown 没建立拖拽会话：松开再试。
     await page.mouse.up()
