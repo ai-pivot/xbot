@@ -475,3 +475,13 @@ PR 已提: **https://github.com/org/repo/pull/92**（`ops/branch` → `main`, 1 
 **修法（`web/src/lib/markdownSource.ts` 的 `protectBareURLs`，在 `ParsedMarkdown` 里紧跟 `normalizeMathDelimiters` 执行）**：把「紧贴 greedy 分隔符」的裸 URL 改写成 CommonMark **硬 autolink**（`<https://…>`），URL 末尾由 `>` 显式结束，外围的 `**`、反引号、全角括号归内联解析器处理。**只改需要改的**：URL 后面必须是 `*`、反引号、`__`/`~~`（run ≥ 2 且后面不是 URL 路径字符，`foo__bar` / `~user` 不动）、或全角标点（`（）「」【】《》“”，。、；：！？…—`）才重写；普通散文 URL 仍交给 remark（它自己的尾标点裁剪更完备）。同时跳过：围栏代码块 / 行内代码 span、`<…>` 硬 autolink、`[label]` 与 `](destination)`（会造出嵌套链接）、以及紧贴 ASCII 字母的 URL（`previousProtocol` 同样不链接）。URL 尾部 GFM 会裁掉的 ASCII 标点（`. , ; : ! ? ' " ]`、未配对的 `)`）留在链接外。
 
 **守护**：`web/src/lib/markdownSource.test.ts`（15 例：报告原文、全角标点、`**`/`~~`/`__`/反引号、代码块/行内 code 不动、`(bar)` 平衡括号、`foo__bar`、`<…>`/`[..](..)` 不动、尾标点外移）× `web/src/components/agent/MarkdownRenderer.test.tsx`（`strong a` 的 href/文本 == URL、页面无字面 `**`、两个 `code` 都在）× **E2E** `web/e2e/markdown-autolink.spec.ts`（真实浏览器；变异自证：去掉 `protectBareURLs` 调用 ⇒ 单测与 E2E 同时红）。**别改成"后处理 mdast 修补 link 节点"**——那只能截断 URL，前面那个 `**` 仍是普通 text，强调永远回不来；必须回到**源级**让解析器重新看到完整的 `**…**`。
+
+## ⛔ CJK 文本紧贴 `**` 时 CommonMark 不加粗（2026-11-10 用户截图：`是** “…” 的领取器**——` 全是字面星号）
+
+**症状**：`` `reserve_sidecar_trace` 是** “每个 maintenance tick 最多把 N 个 sidecar delete RPC 挂回本 tick 的 trace” 的原子配额领取器**——… `` 渲染成**字面 `**`**、整句没有加粗。
+
+**原因（不是我们的 parser bug）**：CommonMark 的 flanking 规则 —— 一个 `**` 只有在「后面不是空白」且「后面不是标点，除非前面是空白/标点」时才是**开**标记。`是**“…”` 前面是汉字、后面是引号 ⇒ 不是 left-flanking ⇒ 开不了；镜像的 `**“…”**的` 收尾同理（payload 后面是标点、再后面是汉字 ⇒ 不是 right-flanking）。实测 GitHub 自己的 `POST /markdown`（`mode: gfm`）渲染结果**完全一致**。同样中招的常见写法：`中文**（括号）**后`、`说**：注意**——`、`是__“x”__的`、`是~~“x”~~的`。
+
+**修法（`web/src/lib/remarkCjkEmphasis.ts`，注册进 `REMARK_PLUGINS`）**：在 **mdast** 上重建，**不改源码**。被拒绝的 `**…**` 在 AST 里就是**一个 text 节点**（没有 strong 节点），因此可以无损拆成 `text + strong + text` —— **一个字符都不改**（作者写在分隔符里的空格会移到强调外面，渲染字符不变）。⚠️ **源码级修法是错的**：要让 `是**“…”` 满足 flanking 只能在分隔符外侧插空格 ⇒ 用户看到的文本被改了（中文里凭空多空格）。边界：只有分隔符**外侧**紧邻 CJK 文本（汉字/假名/谚文）才修 —— `a ** b ** c`、`2**3**4`（CommonMark 本来就加粗）、`a**"b"**c` 一律不动；span 内含 `` ` `` `[` `]` `\` `*` `_` `~` 时跳过（需要真正重解析，保持旧行为）。**已知不覆盖**：无空格的多段 `**“A”**和**“B”**` 会被 parser 自身错配成「和」加粗 —— 该形态仍然渲染错，但本插件至少不会让它更糟。
+
+**守护**：`web/src/lib/remarkCjkEmphasis.test.ts`（9 例：报告原文、无空格变体、收尾方向、括号/冒号、`__`/`~~`、英文与无 CJK 相邻不动、代码块/行内 code 不动、字符守恒）× `web/src/components/agent/MarkdownRenderer.test.tsx`（`<strong>` 内容断言 + 页面无字面 `**`，含两个方向）× **E2E** `web/e2e/markdown-cjk-emphasis.spec.ts`（真实浏览器；变异自证：把 `remarkCjkEmphasis` 从 `REMARK_PLUGINS` 移除 ⇒ 组件测试与 E2E 同时红）。只作用于聊天渲染（`MarkdownRenderer`）；文件预览 `MarkdownPreview` 走独立插件列表，未改。
