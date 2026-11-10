@@ -75,6 +75,9 @@ func TestCheckpointCallback_WithStoreStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Windows 上 TempDir 的 RemoveAll 会因 changes.jsonl 仍被打开而 unlinkat 失败
+	// （"The process cannot access the file"）。Close 打开的文件句柄后再让清理跑。
+	t.Cleanup(func() { _ = store.Close() })
 	cs := protocol.NewCheckpointState(store)
 	cs.SetTurnIdx(7)
 	cb := CheckpointCallback(cs)

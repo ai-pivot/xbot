@@ -59,6 +59,7 @@ func TestWALGuardKillSwitchInvalidValueFallsBackToDefault(t *testing.T) {
 // off：守卫整体停摆 —— 外部 unlink 之后既不检测也不自愈，deleted fd 留在那儿（RED 语义）。
 func TestWALGuardKillSwitchOffDisablesDetectionAndHeal(t *testing.T) {
 	withWALGuardGlobals(t, func() {
+		requirePOSIXUnlink(t)
 		applyWALGuardEnv(lookupFrom(map[string]string{envWALGuard: "off"}))
 		if walGuardEnabled {
 			t.Fatalf("XBOT_WAL_GUARD=off must disable the guard")
@@ -93,6 +94,7 @@ func TestWALGuardKillSwitchOffDisablesDetectionAndHeal(t *testing.T) {
 // warn：仍然检测（不装作没看见），但**不动作** —— 判据是 deleted fd 还在。
 func TestWALGuardKillSwitchWarnDoesNotHeal(t *testing.T) {
 	withWALGuardGlobals(t, func() {
+		requirePOSIXUnlink(t)
 		applyWALGuardEnv(lookupFrom(map[string]string{
 			envWALGuard:     "on",
 			envWALGuardHeal: "warn",

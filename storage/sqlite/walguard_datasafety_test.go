@@ -82,6 +82,7 @@ func externalCount(t *testing.T, dbPath string) (int, string) {
 }
 
 func TestWALGuardDataSafetyAcrossForeignUnlink(t *testing.T) {
+	requirePOSIXUnlink(t)
 	// 断言 healed 精确值 ⇒ 必须独占「这一轮巡检」，否则后台 ticker 会在 unlink
 	// 之后抢先自愈，手动 tick 只能看到已一致的状态（G-20261027-14 -race 红灯）。
 	resumeGuard := pauseWALGuard()

@@ -114,6 +114,7 @@ func TestWALGuardIgnoresOwnIdleClose(t *testing.T) {
 // TestWALGuardStillAlarmsOnExternalUnlinkWithLiveHandle 是上一条的对照：
 // 外部进程删掉 -wal 且我们还有活连接指着它 ⇒ 必须仍然报警（不许用「关掉守卫」充数）。
 func TestWALGuardStillAlarmsOnExternalUnlinkWithLiveHandle(t *testing.T) {
+	requirePOSIXUnlink(t)
 	resumeGuard := pauseWALGuard()
 	defer resumeGuard()
 

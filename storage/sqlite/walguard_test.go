@@ -41,6 +41,7 @@ func deletedSidecarFDs(t *testing.T, path string) []string {
 }
 
 func TestWALGuardHealsForeignWALRemoval(t *testing.T) {
+	requirePOSIXUnlink(t)
 	// 断言 healed 精确值 ⇒ 必须独占「这一轮巡检」，否则后台 ticker 会在 unlink
 	// 之后抢先自愈，手动 tick 只能看到已一致的状态（G-20261027-14 -race 红灯）。
 	resumeGuard := pauseWALGuard()
@@ -132,6 +133,7 @@ func TestWALGuardHealsForeignWALRemoval(t *testing.T) {
 // RED 基线：守卫关闭时，同样的外部删除必须留下孤儿 —— 这条用例证明上面那条
 // 断言有判别力（mutation：把 walGuardTick 变成 no-op，本用例仍绿而上一条变红）。
 func TestWALGuardDisabledLeavesOrphanedWAL(t *testing.T) {
+	requirePOSIXUnlink(t)
 	oldEnabled, oldHeal := walGuardEnabled, walGuardHealEnabled
 	walGuardEnabled, walGuardHealEnabled = false, false
 	defer func() { walGuardEnabled, walGuardHealEnabled = oldEnabled, oldHeal }()
