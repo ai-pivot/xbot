@@ -6,4 +6,4 @@
   - `memory_add` — Save a memory for future conversations (fact/preference/event/decision/skill)
   - `memory_manage` — List, update, or delete memories
 - **TUI operations** (switch sessions, sidebar, themes): use `tui_control`
-- **Configuration changes** (max_iterations, context_mode, etc.): use `config`
+- **Configuration changes** (compression_threshold, context_mode, etc.): use `config`

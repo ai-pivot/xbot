@@ -102,6 +102,14 @@ enableGitInfo = true
     name = "Development"
     pageRef = "/development"
     weight = 70
+  [[languages.en.menu.main]]
+    name = "Privacy"
+    pageRef = "/privacy"
+    weight = 80
+  [[languages.en.menu.main]]
+    name = "Terms"
+    pageRef = "/terms"
+    weight = 85
 
 # ──────────────────────────────────────────────
 # Chinese (中文, served at /zh-cn/)
@@ -169,3 +177,11 @@ enableGitInfo = true
     name = "开发指南"
     pageRef = "/development"
     weight = 70
+  [[languages.zh-cn.menu.main]]
+    name = "隐私政策"
+    pageRef = "/privacy"
+    weight = 80
+  [[languages.zh-cn.menu.main]]
+    name = "用户协议"
+    pageRef = "/terms"
+    weight = 85

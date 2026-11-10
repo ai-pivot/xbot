@@ -33,9 +33,11 @@ import { SessionSearch, SessionSearchToggle } from './SessionSearch'
 import { SessionList } from './SessionList'
 import { SessionViewBar } from './SessionViewBar'
 import { useSessionSelection } from '@/hooks/useSessionSelection'
+import { InboxEntry } from '@/components/panel/InboxEntry'
 import { SessionBatchActions, SessionMultiSelectButton } from './SessionBatchActions'
 import { NewSessionDialog } from './NewSessionDialog'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
+import { usePushChatNavigation } from '@/hooks/usePushChatNavigation'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -156,6 +158,12 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
     [store.sessions, store.subAgents, store.switchSession, store.activateSession, tabManager, onSessionSelected, onSubAgentSelect],
   )
 
+  // WebPush click (mobile layout): select the session; AgentPanel follows activeSession.
+  usePushChatNavigation((chatID) => {
+    void store.switchSession(chatID, 'web')
+    onSessionSelected?.()
+  })
+
   // Export handler: download a session in the specified format
   const handleExport = useCallback(
     async (session: SessionInfo, format: ExportFormat) => {
@@ -179,7 +187,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
         className="flex h-9 shrink-0 items-center justify-between px-2"
         style={{ borderBottom: '1px solid var(--border)' }}
       >
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 items-center gap-1">
           <Popover open={channelPickerOpen} onOpenChange={setChannelPickerOpen}>
             <PopoverTrigger asChild>
               <button
@@ -232,6 +240,10 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
                 })}
             </PopoverContent>
           </Popover>
+          {/* 收件箱入口：手机抽屉里唯一的常驻入口（桌面走 CoreSessionsPanel
+              的 headerExtra）。此前只有 ask_user 横幅的「去处理」能进
+              /structured，没有待答问题时手机端无路可走。 */}
+          <InboxEntry />
         </div>
         <div className="flex items-center gap-0.5">
           <SessionMultiSelectButton selection={selection} />

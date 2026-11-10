@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -55,16 +57,110 @@ func killProcess(cmd *exec.Cmd) {
 	}
 }
 
-// killProcessTree kills a process and its entire process group on Unix.
-// Equivalent to kill(-pgid, SIGKILL).
+// killProcessTree kills a process and its ENTIRE process tree on Unix.
+//
+// 两路覆盖，缺一不可（2026-10-22 实测根因）：
+//  1. kill(-pid)：整个进程组（setProcessAttrs 的 Setpgid 让子进程默认同组）；
+//  2. 逐个 SIGKILL 通过 /proc 的 ppid 关系收集到的**后代**。`setsid`/daemonize()
+//     这类孙进程会自建 pgid 脱离进程组，kill(-pid) 打不到它；而它继承了
+//     stdout/stderr 管道的写端 ⇒ 管道永无 EOF ⇒ 采集 goroutine 永久阻塞在
+//     Read（goroutine dump: none_sandbox.go:532 wg.Wait ← sandboxExecAsync ←
+//     ShellTool.executeForeground）。用户看到的就是"cancel 了但 shell 卡住"。
+//
+// 后代必须在**杀之前**收集：父进程一死，子孙立即被 reparent 到 1，ppid 链断了就
+// 再也找不回来。整个函数是 O(#进程) 的一次 /proc 扫描，实测 <5ms。
 func killProcessTree(proc *os.Process) {
 	if proc == nil || proc.Pid == 0 {
 		return
 	}
-	// Try process group first (-pid), fall back to single process
+	// Already reaped (the common "command finished normally" path): its children
+	// have been reparented, so there is no descendant graph left to walk. Skip the
+	// /proc scan to keep ordinary Shell calls free of that overhead.
+	if _, err := os.Stat("/proc/" + strconv.Itoa(proc.Pid)); err != nil {
+		_ = syscall.Kill(-proc.Pid, syscall.SIGKILL)
+		proc.Kill()
+		return
+	}
+	// Collect descendants BEFORE sending any signal (see doc comment).
+	victims := descendantPids(proc.Pid)
+	// Process group first: covers children that are still grouped even when the
+	// group leader (proc) has already exited.
 	if err := syscall.Kill(-proc.Pid, syscall.SIGKILL); err != nil {
+		// ESRCH here just means the group is already empty — still try the
+		// per-pid kills below, and the direct kill as a last resort.
 		proc.Kill()
 	}
+	for _, pid := range victims {
+		if pid == proc.Pid {
+			continue
+		}
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
+// descendantPids returns root plus every live descendant of root, ordered
+// breadth-first from root. Zombies are skipped (nothing left to kill).
+//
+// Reads /proc/<pid>/stat for every numeric entry — the ppid field is the only
+// reliable parent link after a process has been double-forked away from its
+// original process group.
+func descendantPids(root int) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return []int{root}
+	}
+	children := make(map[int][]int, len(entries))
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		ppid, ok := procStatPPID(pid)
+		if !ok {
+			continue
+		}
+		children[ppid] = append(children[ppid], pid)
+	}
+	out := make([]int, 0, 8)
+	seen := map[int]bool{root: true}
+	queue := []int{root}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		out = append(out, cur)
+		for _, child := range children[cur] {
+			if seen[child] {
+				continue
+			}
+			seen[child] = true
+			queue = append(queue, child)
+		}
+	}
+	return out
+}
+
+// procStatPPID parses the parent pid out of /proc/<pid>/stat.
+// The comm field can contain spaces and parentheses, so fields are split after
+// the LAST ')': state, ppid, pgrp, session, ...
+func procStatPPID(pid int) (int, bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 || i+2 > len(s) {
+		return 0, false
+	}
+	fields := strings.Fields(s[i+1:])
+	if len(fields) < 2 {
+		return 0, false
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, false
+	}
+	return ppid, true
 }
 
 // isProcessAlive checks whether a process with the given PID is still running.

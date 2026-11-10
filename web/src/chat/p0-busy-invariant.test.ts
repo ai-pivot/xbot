@@ -98,17 +98,19 @@ describe('P0 不变量：busy（composer=cancel）⟹ store 必须有 live turn'
     expect(s.turns.get(T)?.phase.kind).toBe('live')
   })
 
-  it('running=false：live turn 定格（内容保留、activeTurn 清空 —— 权威收尾）', () => {
+  it('running=false：live turn 停流（内容保留、activeTurn 保留 —— 不冻结丢帧）', () => {
     let s = initialChatState('web:chatX')
     s = reduce(s, evRunning(true))
     s = reduce(s, evTurnStarted())
     s = reduce(s, evIteration(2, 1, 'one'))
     s = reduce(s, evRunning(false))
 
-    expect(s.activeTurn).toBeNull()
+    // activeTurn 保留：同迭代后续 stream/iteration 必须仍能落到这个 turn。
+    expect(s.activeTurn).toBe(T)
     const t = s.turns.get(T)
-    expect(t?.phase.kind).toBe('frozen')
-    if (t?.phase.kind !== 'frozen') throw new Error('frozen')
+    expect(t?.phase.kind).toBe('live')
+    if (t?.phase.kind !== 'live') throw new Error('live')
+    expect(t.phase.data.streaming).toBe(false)
     expect(t.phase.data.iterations.map((i) => i.iteration)).toEqual([1]) // 内容不丢
   })
 

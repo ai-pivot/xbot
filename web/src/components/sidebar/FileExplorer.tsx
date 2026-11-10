@@ -23,6 +23,8 @@ import {
 import { TouchContextMenuTrigger } from '@/components/ui/TouchContextMenuTrigger'
 import { toast } from 'sonner'
 import { statFile, parentPath, invalidateFsCache } from '@/hooks/useFileSystem'
+// 宿主嵌入模式：打开文件这件事代理给原生（用户定向「文件面板应该代理后触发原生 ui」）。
+import { postHostNav } from '@/workspace/hostBridge'
 import type { TabManager } from '@/hooks/useTabManager'
 import type { FileNode } from '@/types/file'
 import { FileNodeIcon } from './FileNodeIcon'
@@ -66,6 +68,14 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
 
   const openFile = useCallback(
     (node: FileNode) => {
+      // 宿主嵌入模式（`?xbot_embed=1`）：chrome 与"打开文件"的落点都在原生
+      // ⇒ 把这件事**代理**给原生（用户原话「文件面板应该**代理后触发原生 ui**」），
+      //   由原生用自己的预览/编辑器打开，⛔ 不在 WebView 里再套一层 web 编辑器。
+      // ⛔ 嵌入判定收在 `postHostNav` **内部**（`hostBridge.ts`）：非嵌入态（含原生壳里的完整
+      //   web app —— 它也注入了 `xbotNative`）一律返回 false ⇒ 照旧走 web 自己的 tab。
+      if (postHostNav({ kind: 'openFile', text: node.path })) {
+        return
+      }
       tabManager.openTab({
         type: 'file',
         title: node.name,
@@ -91,6 +101,11 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
         const dir = parentPath(trimmed)
         invalidateFsCache()
         setBrowseRoot(dir)
+        // 宿主嵌入模式同样代理给原生（与 `openFile` 同一出口；嵌入判定在 `postHostNav` 内，
+        // 返回 false = 非嵌入/无宿主 ⇒ 走 web tab）。
+        if (postHostNav({ kind: 'openFile', text: trimmed })) {
+          return
+        }
         tabManager.openTab({
           type: 'file',
           title: stat.name,

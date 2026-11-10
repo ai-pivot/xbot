@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
   }
   return {
     conn,
+    currentConn: conn,
     connectionHandlers,
     listSubscriptions: vi.fn(),
     listAllModelEntries: vi.fn(),
@@ -23,7 +24,7 @@ const mocks = vi.hoisted(() => {
 })
 
 vi.mock('@/hooks/useWSConnection', () => ({
-  useWSConnection: () => mocks.conn,
+  useWSConnection: () => mocks.currentConn,
 }))
 
 vi.mock('@/components/agent/api', () => ({
@@ -52,6 +53,7 @@ import { useLLMSettings } from './useLLMSettings'
 
 describe('useLLMSettings', () => {
   beforeEach(() => {
+    mocks.currentConn = { ...mocks.conn, connected: false }
     mocks.conn.connected = false
     mocks.connectionHandlers.clear()
     vi.clearAllMocks()
@@ -78,7 +80,7 @@ describe('useLLMSettings', () => {
     expect(mocks.listSubscriptions).toHaveBeenCalledTimes(1)
   })
 
-  it('reloads once when an SSE connection is later established', async () => {
+  it('reuses recent REST settings when the initial SSE connection is established', async () => {
     renderHook(() => useLLMSettings())
     await waitFor(() => expect(mocks.listSubscriptions).toHaveBeenCalledTimes(1))
 
@@ -87,6 +89,6 @@ describe('useLLMSettings', () => {
       mocks.connectionHandlers.forEach((handler) => handler(true))
     })
 
-    await waitFor(() => expect(mocks.listSubscriptions).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mocks.listSubscriptions).toHaveBeenCalledTimes(1))
   })
 })

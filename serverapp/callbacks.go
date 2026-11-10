@@ -13,7 +13,10 @@ import (
 	"time"
 
 	"xbot/agent"
+	"xbot/llm"
 	"xbot/protocol"
+
+	"github.com/google/uuid"
 
 	"xbot/channel"
 	cli "xbot/channel/cli"
@@ -21,10 +24,15 @@ import (
 	"xbot/channel/web"
 	"xbot/config"
 	log "xbot/logger"
+	"xbot/push"
 	"xbot/session"
-	"xbot/storage/sqlite"
+	"xbot/storage"
+	"xbot/storage/common"
 	"xbot/tools"
 )
+
+// newGroupUUID 生成群组 id 的随机部分（grp_<12 hex>）。
+func newGroupUUID() string { return uuid.NewString() }
 
 // runnerCallbacks builds the shared Runner callback closures.
 // Used by both WebCallbacks and SettingsCallbacks to avoid duplication.
@@ -34,15 +42,15 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			return tools.ListAllRunners()
 		},
 		RunnerCreate: func(name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
 			// Make sure the WebSocket listener is up before the machine dials in.
 			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 				router.EnsureRemote()
 			}
-			token, err := tools.NewRunnerStore(db).Create(name, mode, dockerImage, workspace, llm)
+			token, err := store.Create(name, mode, dockerImage, workspace, llm)
 			if err != nil {
 				return "", err
 			}
@@ -64,28 +72,27 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			return buildRunnerConnectCmd(cfg, name, token, mode, dockerImage, workspace, llm), nil
 		},
 		RunnerDelete: func(name string) error {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return fmt.Errorf("runner management not configured")
 			}
 			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 				router.DisconnectRunner(name)
 			}
-			return tools.NewRunnerStore(db).Delete(name)
+			return store.Delete(name)
 		},
 		RunnerRename: func(oldName, newName string) error {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return fmt.Errorf("runner management not configured")
 			}
-			return tools.NewRunnerStore(db).Rename(oldName, newName)
+			return store.Rename(oldName, newName)
 		},
 		RunnerConnectCmd: func(name string) (string, error) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
+			store := tools.GetRunnerStore()
+			if store == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
-			store := tools.NewRunnerStore(db)
 			info, err := store.Get(name)
 			if err != nil {
 				return "", err
@@ -177,9 +184,22 @@ func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 }
 
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
-func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) web.WebCallbacks {
+func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Service) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
 	llmc := llmCallbacks(ag)
+
+	// Backend-agnostic storage handle — chat CRUD, cron and session discovery
+	// go through it, so the same callbacks serve SQLite and PG.
+	store := ag.MultiSession().Store()
+
+	// Raw SQLite connection for the complex, SQLite-only session-browsing
+	// queries (listTenantsByChannel / listCLIChatSessions / listDistinctChannels).
+	// nil on PG — those cross-channel browse callbacks then report no sessions.
+	// The web-channel primary path (its own chat list) uses store.Tenant() above.
+	var webSQL *sql.DB
+	if ms := ag.MultiSession(); ms != nil && ms.DB() != nil {
+		webSQL = ms.DB().Conn()
+	}
 
 	callbacks := web.WebCallbacks{
 		// Runner callbacks
@@ -229,11 +249,12 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 
 	// Wire shared artifacts (generic, plugin-facing share capability). The host
 	// stays content-agnostic: it stores content_type + an opaque payload and
-	// never branches on what a plugin shares.
-	if webDB := ag.MultiSession().DB(); webDB != nil {
-		shareSvc := sqlite.NewShareService(webDB)
+	// never branches on what a plugin shares. Routed through the storage layer
+	// so the same wiring serves SQLite and PG.
+	if store != nil {
+		shareStore := store.Config()
 		callbacks.ShareCreate = func(createdBy int, pluginID, contentType, payload, title, expiresAt string) (*protocol.SharedArtifact, error) {
-			a := &sqlite.SharedArtifact{
+			a := &common.SharedArtifact{
 				PluginID:    pluginID,
 				ContentType: contentType,
 				Payload:     payload,
@@ -241,23 +262,23 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				CreatedBy:   int64(createdBy),
 				ExpiresAt:   expiresAt,
 			}
-			if err := shareSvc.Create(a); err != nil {
+			if err := shareStore.CreateSharedArtifact(a); err != nil {
 				return nil, err
 			}
 			return shareToProtocol(a), nil
 		}
 		callbacks.ShareGet = func(token string) (*protocol.SharedArtifact, error) {
-			a, err := shareSvc.Get(token)
+			a, err := shareStore.GetSharedArtifact(token)
 			if err != nil {
 				return nil, err
 			}
 			return shareToProtocol(a), nil
 		}
 		callbacks.ShareRevoke = func(createdBy int, token string) error {
-			return shareSvc.Revoke(token, int64(createdBy))
+			return shareStore.RevokeSharedArtifact(token, int64(createdBy))
 		}
 		callbacks.ShareList = func(createdBy int) ([]protocol.SharedArtifact, error) {
-			items, err := shareSvc.ListByCreator(int64(createdBy))
+			items, err := shareStore.ListSharedArtifactsByCreator(int64(createdBy))
 			if err != nil {
 				return nil, err
 			}
@@ -269,10 +290,135 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		}
 	}
 
-	// Wire IsProcessing
-	callbacks.IsProcessing = func(senderID string) bool {
-		return ag.IsProcessing(senderID)
+	// ─── Agent 通信指挥室（群组可视化）────────────────────────────────────
+	// 群元数据在 groups/group_members（storage.GroupStore，SQLite/PG 同接口）；
+	// 消息仍读调用者自己的会话库（不跨库聚合）。
+	if store != nil && store.Groups() != nil {
+		groupSvc := store.Groups()
+		callbacks.GroupList = func(memberAddr string) ([]protocol.Group, error) {
+			rows, err := groupSvc.ListGroupsFor(context.Background(), memberAddr)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]protocol.Group, 0, len(rows))
+			for _, g := range rows {
+				out = append(out, protocol.Group{
+					ID: g.ID, Name: g.Name, Owner: g.Owner,
+					CreatedAt: g.CreatedAt, MemberCount: g.MemberCount,
+				})
+			}
+			return out, nil
+		}
+		callbacks.GroupMembers = func(memberAddr, groupID string) ([]protocol.GroupMember, error) {
+			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
+				return nil, err
+			} else if !ok {
+				return nil, common.ErrNotGroupMember
+			}
+			rows, err := groupSvc.ListMembers(context.Background(), groupID)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]protocol.GroupMember, 0, len(rows))
+			for _, m := range rows {
+				out = append(out, protocol.GroupMember{
+					GroupID: m.GroupID, MemberAddr: m.MemberAddr, Status: m.Status,
+					JoinedAt: m.JoinedAt, Name: m.Name, Role: m.Role, Instance: m.Instance,
+				})
+			}
+			return out, nil
+		}
+		callbacks.GroupMessages = func(memberAddr, groupID, channelName, chatID string, cursor int64, limit int) ([]protocol.GroupMessage, int64, bool, error) {
+			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
+				return nil, 0, false, err
+			} else if !ok {
+				return nil, 0, false, common.ErrNotGroupMember
+			}
+			if channelName == "" || chatID == "" {
+				return nil, 0, false, fmt.Errorf("session selector is required")
+			}
+			sess, err := ag.MultiSession().GetOrCreateSession(channelName, chatID)
+			if err != nil {
+				return nil, 0, false, err
+			}
+			gm := sess.SessionService()
+			rows, hasMore, next, err := gm.ListGroupMessages(sess.TenantID(), groupID, cursor, limit)
+			if err != nil {
+				return nil, 0, false, err
+			}
+			out := make([]protocol.GroupMessage, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, protocol.GroupMessage{
+					ID: r.ID, GroupID: r.GroupID, Kind: r.Kind, CorrelationID: r.CorrelationID,
+					SenderType: r.SenderType, SenderID: r.SenderID, SenderName: r.SenderName,
+					Role: r.Role, Content: r.Content, To: r.To, Payload: r.Payload, CreatedAt: r.CreatedAt,
+				})
+			}
+			return out, next, hasMore, nil
+		}
+		callbacks.GroupCreate = func(memberAddr, name string, members []string) (*protocol.Group, error) {
+			id := "grp_" + strings.ReplaceAll(newGroupUUID(), "-", "")[:12]
+			g, err := groupSvc.CreateGroup(context.Background(), id, name, memberAddr, members)
+			if err != nil {
+				return nil, err
+			}
+			return &protocol.Group{ID: g.ID, Name: g.Name, Owner: g.Owner, CreatedAt: g.CreatedAt, MemberCount: g.MemberCount}, nil
+		}
+		callbacks.GroupAddMember = func(memberAddr, groupID, addr string) (*protocol.GroupMember, error) {
+			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
+				return nil, err
+			} else if !ok {
+				return nil, common.ErrNotGroupMember
+			}
+			m, err := groupSvc.AddMember(context.Background(), groupID, addr)
+			if err != nil {
+				return nil, err
+			}
+			return &protocol.GroupMember{
+				GroupID: m.GroupID, MemberAddr: m.MemberAddr, Status: m.Status,
+				JoinedAt: m.JoinedAt, Name: m.Name, Role: m.Role, Instance: m.Instance,
+			}, nil
+		}
+		callbacks.GroupAppendMessage = func(memberAddr, groupID, channelName, chatID string, input protocol.GroupMessageInput) (*protocol.GroupMessage, error) {
+			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
+				return nil, err
+			} else if !ok {
+				return nil, common.ErrNotGroupMember
+			}
+			if channelName == "" || chatID == "" {
+				return nil, fmt.Errorf("session selector is required")
+			}
+			sess, err := ag.MultiSession().GetOrCreateSession(channelName, chatID)
+			if err != nil {
+				return nil, err
+			}
+			role := "assistant"
+			if input.SenderType == "user" {
+				role = "user"
+			}
+			now := time.Now()
+			env := common.GroupMessageEnvelope{
+				GroupID: groupID, Kind: input.Kind, CorrelationID: input.CorrelationID,
+				To: input.To, Payload: input.Payload,
+				SenderType: input.SenderType, SenderID: input.SenderID, SenderName: input.SenderName,
+			}
+			gm := sess.SessionService()
+			id, err := gm.AppendGroupMessage(sess.TenantID(), llm.ChatMessage{
+				Role: role, Content: input.Content, SenderType: input.SenderType,
+				SenderID: input.SenderID, SenderName: input.SenderName, Timestamp: now,
+			}, env)
+			if err != nil {
+				return nil, err
+			}
+			return &protocol.GroupMessage{
+				ID: id, GroupID: groupID, Kind: input.Kind, CorrelationID: input.CorrelationID,
+				SenderType: input.SenderType, SenderID: input.SenderID, SenderName: input.SenderName,
+				Role: role, Content: input.Content, To: input.To, Payload: input.Payload,
+				CreatedAt: now.UTC().Format(time.RFC3339),
+			}, nil
+		}
 	}
+
 	// Wire GetActiveProgress
 	// 折叠视图（2026-09-30 收尾）：本回调的**全部消费方都是 Web SSE/WS 推送**（web_sse.go:266
 	// SSE fallback 发布 / :756 心跳快照入 ring（断线重连重放）/ web.go:1477 重连 replay 补发）——
@@ -283,6 +429,20 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	// （rpc_table.go:1662 直接调 Ag.GetActiveProgress 原方法，不经此回调）。
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetActiveProgressFolded(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
+	}
+	// Blocking cancel (2026-10-22): POST /api/cancel must not answer "cancelled"
+	// while the turn is still running a tool — it waits on this channel.
+	callbacks.ActiveRunDone = ag.ActiveRunDone
+	// 状态机权威读取（STATE-MODEL §2.4/§3.5）：按对象拉权威，替代帧重放。
+	// 三个端点共用同一批只读访问器；属主校验在 web 层（resolveAPISession）。
+	callbacks.IterationBlock = func(channel, chatID string, turnID uint64, iteration int) (*protocol.IterationBlock, error) {
+		return ag.IterationBlock(channel, chatID, turnID, iteration)
+	}
+	callbacks.TurnSnapshot = func(channel, chatID string, turnID uint64) (*protocol.TurnSnapshot, error) {
+		return ag.TurnSnapshot(channel, chatID, turnID)
+	}
+	callbacks.SessionState = func(channel, chatID string) (*protocol.SessionStateSnapshot, error) {
+		return ag.SessionState(channel, chatID)
 	}
 	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetPendingAskUser(channel, chatID)
@@ -348,7 +508,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// intermediate assistant + one final). Querying by turn_id merges them
 		// into a complete list. Falls back to Detail JSON when no structured
 		// data exists (old data pre-v55).
-		var turnIterMap map[uint64][]sqlite.IterationRecord
+		var turnIterMap map[uint64][]common.IterationRecord
 		tenantID := sess.TenantID()
 		if tenantID > 0 {
 			// Collect unique turn_ids
@@ -372,7 +532,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				}
 				batch, _ := svc.GetIterationHistoryByTurns(tenantID, turnIDs)
 				if len(batch) > 0 {
-					turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(batch))
+					turnIterMap = make(map[uint64][]common.IterationRecord, len(batch))
 					for turnID, recs := range batch {
 						if len(recs) > 0 {
 							turnIterMap[turnID] = recs
@@ -415,13 +575,18 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if tenantID <= 0 {
 			return nil, 0, nil
 		}
-		recs, err := sess.SessionService().GetIterationHistoryBeforeRange(tenantID, turnID, beforeIter)
+		// 后端无关：会话数据一律经 SessionStore（SQLite 会话库 / PG 共享连接）。
+		svc, err := ag.MultiSession().SessionServiceFor(tenantID)
+		if err != nil {
+			return nil, 0, err
+		}
+		recs, err := svc.GetIterationHistoryBeforeRange(tenantID, turnID, beforeIter)
 		if err != nil {
 			return nil, 0, err
 		}
 		// 旧数据修复（2026-09-30 事故）：注入型工具对合并回段内迭代记录 —— 与
 		// 主历史快照（View 路径）同一锚定/去重实现，段边界与 pill 渲染两侧一致。
-		recs, err = legacySyntheticPairRepair(sess.SessionService(), tenantID, turnID, recs)
+		recs, err = legacySyntheticPairRepair(svc, tenantID, turnID, recs)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -443,14 +608,19 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if tenantID <= 0 {
 			return protocol.HistoryIteration{}, false, nil
 		}
-		rec, found, err := sess.SessionService().GetIterationHistoryByNumber(tenantID, turnID, iteration)
+		// 后端无关：会话数据一律经 SessionStore（SQLite 会话库 / PG 共享连接）。
+		svc, err := ag.MultiSession().SessionServiceFor(tenantID)
+		if err != nil {
+			return protocol.HistoryIteration{}, false, err
+		}
+		rec, found, err := svc.GetIterationHistoryByNumber(tenantID, turnID, iteration)
 		if err != nil || !found {
 			return protocol.HistoryIteration{}, false, err
 		}
 		// 旧数据修复（2026-09-30 事故）：锚定到该迭代的注入型工具对补进详情
 		//（新数据由 Fix A 持久化，去重短路）。foldTools=false ⇒ 完整字段（这是
 		//「完整覆盖轻字段」的唯一来源）。
-		recs, err := legacySyntheticPairRepair(sess.SessionService(), tenantID, turnID, []sqlite.IterationRecord{rec})
+		recs, err := legacySyntheticPairRepair(svc, tenantID, turnID, []common.IterationRecord{rec})
 		if err != nil {
 			return protocol.HistoryIteration{}, false, err
 		}
@@ -479,13 +649,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 	}
 	callbacks.CronRemove = func(channel, chatID, jobID string) (bool, error) {
-		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+		if ag.MultiSession() == nil || ag.MultiSession().Store() == nil {
 			return false, nil
 		}
 		if jobID == "" {
 			return false, nil
 		}
-		cronSvc := sqlite.NewCronService(ag.MultiSession().DB())
+		cronSvc := ag.MultiSession().Store().Cron()
 		// Session-scoped ownership check (same policy as the cron tool's
 		// removeJob): only jobs belonging to THIS session may be removed, so a
 		// stale panel can never delete another session's schedule. Unknown /
@@ -510,13 +680,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return true, nil
 	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
-		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+		if ag.MultiSession() == nil || ag.MultiSession().Store() == nil {
 			return []any{}, nil
 		}
 		// Session-scoped (user request 2026-08-31: "web task面板里的定时任务没做会话隔离"):
 		// filter by the requested session — same policy as BackgroundTasks above.
 		// The task panel shows only the active session's cron jobs, not a cross-session dump.
-		jobs, err := sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByChannelChatID(sel.Channel, sel.ChatID)
+		jobs, err := ag.MultiSession().Store().Cron().ListJobsByChannelChatID(sel.Channel, sel.ChatID)
 		if err != nil {
 			return nil, fmt.Errorf("list cron jobs: %w", err)
 		}
@@ -555,8 +725,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return result, nil
 	}
 	callbacks.SessionSubscription = func(senderID string, sel web.SessionSelector) (map[string]string, error) {
-		if ag.MultiSession() != nil && ag.MultiSession().DB() != nil {
-			subID, model, _ := sqlite.NewTenantService(ag.MultiSession().DB()).GetTenantSubscription(sel.Channel, sel.ChatID)
+		if ag.MultiSession() != nil && ag.MultiSession().Store() != nil {
+			subID, model, _ := ag.MultiSession().Store().Tenant().GetTenantSubscription(sel.Channel, sel.ChatID)
 			if subID != "" {
 				return map[string]string{"subscription_id": subID, "model": model}, nil
 			}
@@ -600,13 +770,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	}
 	// Wire Chat CRUD
 	callbacks.ChatList = func(senderID, currentChatID, channel string) ([]web.UserChatWithPreview, error) {
-		if webDB == nil {
-			return nil, nil
-		}
-		// For web channel: use ChatService.ListUserChats (includes user-created chatrooms).
+		// For web channel: use TenantStore.ListUserChats (includes user-created chatrooms).
 		if channel == "" || channel == "web" {
-			cs := sqlite.NewChatService(webDB)
-			chats, _, err := cs.ListUserChats("web", senderID, currentChatID, 0, -1)
+			chats, _, err := store.Tenant().ListUserChats("web", senderID, currentChatID, 0, -1)
 			if err != nil {
 				return nil, err
 			}
@@ -624,160 +790,15 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			}
 			return result, nil
 		}
-		// For non-web channels (admin only): list all tenants in that channel.
-		if channel == "cli" {
-			rows, err := listCLIChatSessions(webDB.Conn(), currentChatID)
-			applyWebRunningStatuses(ag, rows)
-			return rows, err
-		}
-		rows, err := listTenantsByChannel(webDB.Conn(), channel, currentChatID)
-		applyWebRunningStatuses(ag, rows)
-		return rows, err
-	}
-	callbacks.SubAgentList = func(senderID string, admin bool) ([]web.UserChatWithPreview, error) {
-		if webDB == nil {
-			return nil, nil
-		}
-		allowedWebParents := map[string]bool{}
-		if !admin {
-			var err error
-			allowedWebParents, err = listWebChatIDsForSender(webDB.Conn(), senderID)
+		if channel == "web" {
+			// Use store for web channel (PG-compatible)
+			sqliteChats, _, err := store.Tenant().ListUserChats("web", senderID, currentChatID, 0, 9999)
 			if err != nil {
 				return nil, err
 			}
-		}
-		var rows []web.UserChatWithPreview
-		if admin {
-			var err error
-			rows, err = listTenantsByChannel(webDB.Conn(), "agent", "")
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			agentRows, err := listTenantsByChannel(webDB.Conn(), "agent", "")
-			if err != nil {
-				return nil, err
-			}
-			for _, row := range agentRows {
-				if subAgentRowBelongsToAllowedWebParent(row, allowedWebParents) {
-					rows = append(rows, row)
-				}
-			}
-		}
-		seen := make(map[string]bool, len(rows))
-		for _, row := range rows {
-			seen[subAgentRowKey(row)] = true
-		}
-		for _, s := range ag.ListInteractiveSessions("web", "") {
-			if admin || allowedWebParents[s.ChatID] {
-				rows = upsertSubAgentRow(rows, seen, "web", s)
-			}
-		}
-		if admin {
-			for _, s := range ag.ListInteractiveSessions("cli", "") {
-				rows = upsertSubAgentRow(rows, seen, "cli", s)
-			}
-			for _, s := range ag.ListInteractiveSessions("agent", "") {
-				rows = upsertSubAgentRow(rows, seen, "agent", s)
-			}
-		} else {
-			for _, s := range ag.ListInteractiveSessions("agent", "") {
-				row := subAgentRowFromInteractiveSession("agent", s)
-				if subAgentRowBelongsToAllowedWebParent(row, allowedWebParents) {
-					rows = upsertSubAgentRow(rows, seen, "agent", s)
-				}
-			}
-		}
-		applyWebRunningStatuses(ag, rows)
-		return rows, nil
-	}
-	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool, offset, limit int) (web.SessionTreeResult, error) {
-		if webDB == nil {
-			return web.SessionTreeResult{}, nil
-		}
-		var mains []web.UserChatWithPreview
-		webCurrent := ""
-		if current.Channel == "web" {
-			webCurrent = current.ChatID
-		}
-
-		// hasMore/nextOffset are defined over the ADMIN main-session list (the
-		// cross-channel union) since that is the dominant case for admins.
-		// Non-admin users paginate web user_chats only (below).
-		var hasMore bool
-		var nextOffset int
-
-		if admin {
-			// Admin: dynamically discover ALL channels from the tenants table
-			// (no hardcoding) and collect every main session, then sort by the
-			// uniform key and paginate in-memory. This is what makes sidebar
-			// pagination actually work for admins — the previous behaviour only
-			// paginated web user_chats and loaded cli/agent/github/... in full.
-			channels, err := listDistinctChannels(webDB.Conn())
-			if err != nil {
-				return web.SessionTreeResult{}, err
-			}
-			for _, ch := range channels {
-				if ch == "agent" {
-					// Agent rows are SubAgents, loaded in full by SubAgentList
-					// and attached to their parents by buildSessionTree. They
-					// must NOT participate in main-session pagination — doing so
-					// would consume page slots and split a Sub-agent from its
-					// parent across page boundaries.
-					continue
-				}
-				if ch == "cli" {
-					cliCurrent := ""
-					if current.Channel == "cli" {
-						cliCurrent = current.ChatID
-					}
-					cliChats, err := listCLIChatSessions(webDB.Conn(), cliCurrent)
-					if err != nil {
-						return web.SessionTreeResult{}, err
-					}
-					applyWebRunningStatuses(ag, cliChats)
-					mains = appendMissingSessionRows(mains, cliChats)
-					continue
-				}
-				chCurrent := ""
-				if current.Channel == ch {
-					chCurrent = current.ChatID
-				}
-				tenants, err := listTenantsByChannel(webDB.Conn(), ch, chCurrent)
-				if err != nil {
-					log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
-					continue
-				}
-				applyWebRunningStatuses(ag, tenants)
-				mains = appendMissingSessionRows(mains, tenants)
-			}
-
-			// Uniform in-memory pagination across all channels.
-			sortSessionTreeMains(mains)
-			total := len(mains)
-			if limit < 0 {
-				limit = total
-			}
-			if offset > total {
-				offset = total
-			}
-			end := offset + limit
-			if end > total {
-				end = total
-			}
-			mains = mains[offset:end]
-			hasMore = end < total
-			nextOffset = end
-		} else {
-			// Non-admin: paginate the user's own web user_chats (dominant case);
-			// their non-web sessions are few and appended in full.
-			cs := sqlite.NewChatService(webDB)
-			webChats, more, err := cs.ListUserChats("web", senderID, webCurrent, offset, limit)
-			if err != nil {
-				return web.SessionTreeResult{}, err
-			}
-			for _, c := range webChats {
-				mains = append(mains, web.UserChatWithPreview{
+			chats := make([]web.UserChatWithPreview, len(sqliteChats))
+			for i, c := range sqliteChats {
+				chats[i] = web.UserChatWithPreview{
 					ChatID:     c.ChatID,
 					Channel:    "web",
 					Label:      c.Label,
@@ -786,29 +807,136 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 					IsCurrent:  c.IsCurrent,
 					CreatedAt:  c.CreatedAt.Format(time.RFC3339),
 					SortOrder:  c.SortOrder,
-				})
-				applyWebRunningStatus(ag, &mains[len(mains)-1])
+				}
 			}
-			hasMore = more
-
-			senderTenants, err := listTenantsForSender(webDB.Conn(), senderID, webCurrent)
-			if err != nil {
-				log.WithError(err).Warn("Failed to list tenants for sender")
-			} else {
-				applyWebRunningStatuses(ag, senderTenants)
-				mains = appendMissingSessionRows(mains, senderTenants)
-			}
-
-			// NextOffset = offset + web user_chats loaded this page.
-			// len(webChats) includes the default chat (always first, not
-			// paginated), so subtract one — the default chat never advances
-			// the offset.
-			if len(webChats) > 0 {
-				nextOffset = offset + len(webChats) - 1
-			} else {
-				nextOffset = offset
-			}
+			applyWebRunningStatuses(ag, chats)
+			return chats, err
 		}
+		if webSQL == nil {
+			// PG / backend-agnostic fallback: browse tenants through TenantStore.
+			if channel == "cli" {
+				tenants, terr := listTenantsViaStore(store.Tenant(), "cli", currentChatID)
+				if terr != nil {
+					return nil, terr
+				}
+				rows, lerr := mergeCLISessionRows(currentChatID, tenants)
+				applyWebRunningStatuses(ag, rows)
+				return rows, lerr
+			}
+			rows, lerr := listTenantsViaStore(store.Tenant(), channel, currentChatID)
+			applyWebRunningStatuses(ag, rows)
+			return rows, lerr
+		}
+		// For non-web channels (admin only): list all tenants in that channel.
+		if channel == "cli" {
+			rows, err := listCLIChatSessions(webSQL, currentChatID)
+			applyWebRunningStatuses(ag, rows)
+			return rows, err
+		}
+		rows, err := listTenantsByChannel(webSQL, channel, currentChatID)
+		applyWebRunningStatuses(ag, rows)
+		return rows, err
+	}
+	callbacks.SubAgentList = func(senderID string, admin bool) ([]web.UserChatWithPreview, error) {
+		// v63 single-operator: always use the full unfiltered view.
+		var rows []web.UserChatWithPreview
+		var err error
+		if webSQL != nil {
+			rows, err = listTenantsByChannel(webSQL, "agent", "")
+		} else {
+			rows, err = listTenantsViaStore(store.Tenant(), "agent", "")
+		}
+		if err != nil {
+			return nil, err
+		}
+		seen := make(map[string]bool, len(rows))
+		for _, row := range rows {
+			seen[subAgentRowKey(row)] = true
+		}
+		for _, s := range ag.ListInteractiveSessions("web", "") {
+			rows = upsertSubAgentRow(rows, seen, "web", s)
+		}
+		for _, s := range ag.ListInteractiveSessions("cli", "") {
+			rows = upsertSubAgentRow(rows, seen, "cli", s)
+		}
+		for _, s := range ag.ListInteractiveSessions("agent", "") {
+			rows = upsertSubAgentRow(rows, seen, "agent", s)
+		}
+		applyWebRunningStatuses(ag, rows)
+		return rows, nil
+	}
+	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool, offset, limit int) (web.SessionTreeResult, error) {
+		var mains []web.UserChatWithPreview
+
+		var hasMore bool
+		var nextOffset int
+
+		// v63 single-operator: always use the full cross-channel view.
+		// (The non-admin per-sender pagination path was removed — there is
+		// no non-admin user in single-operator mode.)
+		channels, err := store.Tenant().ListDistinctChannels()
+		if err != nil {
+			return web.SessionTreeResult{}, err
+		}
+		for _, ch := range channels {
+			if ch == "agent" {
+				continue
+			}
+			if ch == "cli" {
+				cliCurrent := ""
+				if current.Channel == "cli" {
+					cliCurrent = current.ChatID
+				}
+				var cliChats []web.UserChatWithPreview
+				if webSQL != nil {
+					cliChats, err = listCLIChatSessions(webSQL, cliCurrent)
+				} else {
+					tenants, terr := listTenantsViaStore(store.Tenant(), "cli", cliCurrent)
+					if terr != nil {
+						return web.SessionTreeResult{}, terr
+					}
+					cliChats, err = mergeCLISessionRows(cliCurrent, tenants)
+				}
+				if err != nil {
+					return web.SessionTreeResult{}, err
+				}
+				applyWebRunningStatuses(ag, cliChats)
+				mains = appendMissingSessionRows(mains, cliChats)
+				continue
+			}
+			chCurrent := ""
+			if current.Channel == ch {
+				chCurrent = current.ChatID
+			}
+			var tenants []web.UserChatWithPreview
+			if webSQL != nil {
+				tenants, err = listTenantsByChannel(webSQL, ch, chCurrent)
+			} else {
+				tenants, err = listTenantsViaStore(store.Tenant(), ch, chCurrent)
+			}
+			if err != nil {
+				log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
+				continue
+			}
+			applyWebRunningStatuses(ag, tenants)
+			mains = appendMissingSessionRows(mains, tenants)
+		}
+
+		sortSessionTreeMains(mains)
+		total := len(mains)
+		if limit < 0 {
+			limit = total
+		}
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		mains = mains[offset:end]
+		hasMore = end < total
+		nextOffset = end
 
 		subagents, err := callbacks.SubAgentList(senderID, admin)
 		if err != nil {
@@ -821,11 +949,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return result, nil
 	}
 	callbacks.ChatCreate = func(senderID, label string, subscriptionID, model string) (string, error) {
-		if webDB == nil {
-			return "", fmt.Errorf("database not available")
-		}
-		cs := sqlite.NewChatService(webDB)
-		chatID, err := cs.CreateChat("web", senderID, label)
+		tenantStore := store.Tenant()
+		chatID, err := tenantStore.CreateChat("web", senderID, label)
 		if err != nil {
 			return "", err
 		}
@@ -860,9 +985,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return chatID, nil
 	}
 	callbacks.ChatDelete = func(senderID, channel, chatID string) error {
-		if webDB == nil {
-			return fmt.Errorf("database not available")
-		}
+		tenantStore := store.Tenant()
 		removedLocal := false
 		if channel == "cli" {
 			var err error
@@ -871,9 +994,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				return fmt.Errorf("remove CLI session metadata: %w", err)
 			}
 		}
-		cs := sqlite.NewChatService(webDB)
-		if err := cs.DeleteChat(channel, senderID, chatID); err != nil {
-			if !removedLocal || !errors.Is(err, sqlite.ErrChatNotFound) {
+		if err := tenantStore.DeleteChat(channel, senderID, chatID); err != nil {
+			if !removedLocal || !errors.Is(err, common.ErrChatNotFound) {
 				return err
 			}
 		}
@@ -884,30 +1006,20 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return nil
 	}
 	callbacks.ChatRename = func(senderID, channel, chatID, label string) error {
-		if webDB == nil {
-			return fmt.Errorf("database not available")
-		}
+		tenantStore := store.Tenant()
 		if channel == "cli" {
 			if _, err := cli.RenameStoredSessionByChatID(chatID, label); err != nil {
 				return fmt.Errorf("rename CLI session metadata: %w", err)
 			}
 		}
-		cs := sqlite.NewChatService(webDB)
-		return cs.RenameChat(channel, senderID, chatID, label)
+		return tenantStore.RenameChat(channel, senderID, chatID, label)
 	}
 	callbacks.ChatReorder = func(senderID, channel string, orders map[string]int) error {
-		if webDB == nil {
-			return fmt.Errorf("database not available")
-		}
-		cs := sqlite.NewChatService(webDB)
-		return cs.UpdateChatSortOrders(channel, senderID, orders)
+		return store.Tenant().UpdateChatSortOrders(channel, senderID, orders)
 	}
 	callbacks.ChatFork = func(senderID, sourceChannel, sourceChatID, label string) (string, error) {
-		if webDB == nil {
-			return "", fmt.Errorf("database not available")
-		}
-		cs := sqlite.NewChatService(webDB)
-		newChatID, err := cs.CreateChat("web", senderID, label)
+		tenantStore := store.Tenant()
+		newChatID, err := tenantStore.CreateChat("web", senderID, label)
 		if err != nil {
 			return "", fmt.Errorf("create fork session: %w", err)
 		}
@@ -921,7 +1033,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// get a "successful fork" that's actually empty.
 		if err := ag.ForkSessionMessages(sourceChannel, sourceChatID, "web", newChatID); err != nil {
 			log.WithError(err).Error("ChatFork: message copy failed — rolling back")
-			_ = cs.DeleteChat("web", senderID, newChatID)
+			_ = tenantStore.DeleteChat("web", senderID, newChatID)
 			return "", fmt.Errorf("fork failed: %w", err)
 		}
 		return newChatID, nil
@@ -941,15 +1053,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if channel == "cli" {
 			return cli.StoredSessionExists(chatID)
 		}
-		db := ag.MultiSession().DB()
-		if db == nil {
+		if store == nil {
 			return false
 		}
-		if id, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(channel, chatID); err == nil && id != 0 {
+		if id, err := store.Tenant().GetTenantIDByChannelChatID(channel, chatID); err == nil && id != 0 {
 			return true
 		}
 		if channel == "web" {
-			if sender, err := sqlite.NewChatService(db).GetSenderForChat(channel, chatID); err == nil && sender != "" {
+			if sender, err := store.Tenant().GetSenderForChat(channel, chatID); err == nil && sender != "" {
 				return true
 			}
 		}
@@ -1003,6 +1114,95 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	}
 	callbacks.ReorderQueued = func(channel, chatID string, msgIDs []string) bool {
 		return ag.ReorderQueue(channel, chatID, msgIDs)
+	}
+
+	// ─── 结构化消息（sendmessage-structured）───
+	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList := structuredCallbacks(ag)
+	callbacks.StructuredAppend = structuredAppend
+	callbacks.StructuredAnswer = structuredAnswer
+	callbacks.StructuredInbox = structuredInbox
+	callbacks.StructuredCount = structuredCount
+	callbacks.StructuredMessages = structuredList
+
+	// ─── 跨会话活动流（通信视图性能重构）───
+	// AgentActivityList 走后端无关的 InteractiveAgents store（SQLite / PG 均可）。
+	// ActivityList 仍依赖 activity_index（结构化消息的 SQLite 派生索引）——
+	// PG 没有该表 ⇒ 回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
+	if store != nil {
+		if agentSvc := store.InteractiveAgents(); agentSvc != nil {
+			callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
+				cutoff := time.Now().Add(-common.NormalizeActivityWindow(within))
+				rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]web.AgentActivityEntry, 0, len(rows))
+				for _, r := range rows {
+					out = append(out, web.AgentActivityEntry{
+						AgentKey:    r.AgentKey,
+						RoleName:    r.RoleName,
+						Instance:    r.Instance,
+						Status:      r.Status,
+						UpdatedAt:   r.UpdatedAt,
+						LastReplyAt: r.LastReplyAt,
+					})
+				}
+				return out, nil
+			}
+		}
+	}
+	if store != nil && store.Activity() != nil {
+		activityIdx := store.Activity()
+		callbacks.ActivityList = func(limit int, within time.Duration, kinds []string) ([]web.ActivityEntry, bool, error) {
+			rows, hasMore, err := activityIdx.List(limit, within, kinds)
+			if err != nil {
+				return nil, false, err
+			}
+			out := make([]web.ActivityEntry, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, web.ActivityEntry{
+					ChatID:     r.ChatID,
+					Channel:    r.Channel,
+					MessageID:  r.MessageID,
+					Kind:       r.Kind,
+					SenderName: r.SenderName,
+					Summary:    r.Summary,
+					CreatedAt:  r.CreatedAt,
+				})
+			}
+			return out, hasMore, nil
+		}
+	}
+
+	// ─── Unified push (system notifications) ───
+	// Callbacks are wired whenever the push service exists (even if currently
+	// disabled), so the Web UI can enable providers at runtime without a
+	// restart. The service itself no-ops / returns "not enabled" while off.
+	if pushSvc != nil {
+		callbacks.PushNotify = func(ev web.PushEvent) {
+			pushSvc.Notify(push.Event{
+				Kind:         push.Kind(ev.Kind),
+				Action:       ev.Action,
+				Channel:      ev.Channel,
+				ChatID:       ev.ChatID,
+				SenderID:     ev.SenderID,
+				Title:        ev.Title,
+				Body:         ev.Body,
+				RequestID:    ev.RequestID,
+				HighPriority: ev.HighPriority,
+			})
+		}
+		callbacks.PushRegister = pushSvc.Register
+		callbacks.PushUnregister = pushSvc.Unregister
+		callbacks.PushPresence = pushSvc.Presence
+		callbacks.PushTest = pushSvc.Test
+	}
+	// The config endpoint answers even when WebPush is disabled, so the web
+	// client can hide the toggle instead of seeing an error.
+	if pushSvc != nil {
+		callbacks.PushConfig = pushSvc.PushConfig
+		callbacks.PushSettings = pushSvc.SettingsView
+		callbacks.PushSaveSettings = pushSvc.SaveSettingsJSON
 	}
 
 	return callbacks
@@ -1122,6 +1322,54 @@ func appendMissingSessionRows(base, extra []web.UserChatWithPreview) []web.UserC
 		base = append(base, row)
 	}
 	return base
+}
+
+// listTenantsViaStore is the backend-agnostic equivalent of listTenantsByChannel.
+// It uses storage.TenantStore.ListTenants (SQLite adapter or PG) instead of a raw
+// *sql.DB, so session browsing works on the PG backend too.
+func listTenantsViaStore(ts storage.TenantStore, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
+	if ts == nil {
+		return nil, fmt.Errorf("tenant store is unavailable")
+	}
+	all, err := ts.ListTenants()
+	if err != nil {
+		return nil, fmt.Errorf("list tenants: %w", err)
+	}
+	var result []web.UserChatWithPreview
+	for _, t := range all {
+		if t.Channel != channel || t.ChatID == "_shared" {
+			continue
+		}
+		preview := t.Preview
+		if runes := []rune(preview); len(runes) > 80 {
+			preview = string(runes[:80])
+		}
+		createdAt := t.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = t.LastActiveAt
+		}
+		chat := web.UserChatWithPreview{
+			ChatID:     t.ChatID,
+			Channel:    t.Channel,
+			Label:      displayLabelForTenant(t.Channel, t.ChatID, t.Label),
+			LastActive: t.LastActiveAt.Format(time.RFC3339),
+			CreatedAt:  createdAt.Format(time.RFC3339),
+			SortOrder:  t.SortOrder,
+			Preview:    preview,
+			IsCurrent:  t.ChatID == currentChatID,
+		}
+		if channel == "agent" {
+			normalized, ok := normalizeSubAgentRow(chat, preview)
+			if !ok {
+				continue
+			}
+			chat = normalized
+		} else if isInteractiveSubAgentTenant(channel, t.ChatID) {
+			continue
+		}
+		result = append(result, chat)
+	}
+	return result, nil
 }
 
 func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, error) {
@@ -1310,6 +1558,13 @@ func listCLIChatSessions(db *sql.DB, currentChatID string) ([]web.UserChatWithPr
 	if err != nil {
 		return nil, err
 	}
+	return mergeCLISessionRows(currentChatID, tenantRows)
+}
+
+// mergeCLISessionRows merges the local CLI session files into the tenant rows
+// (which may come from SQLite's raw browse query or the backend-agnostic
+// TenantStore). Extracted so the PG fallback gets the same CLI session list.
+func mergeCLISessionRows(currentChatID string, tenantRows []web.UserChatWithPreview) ([]web.UserChatWithPreview, error) {
 	tenantByChatID := make(map[string]web.UserChatWithPreview, len(tenantRows))
 	for _, row := range tenantRows {
 		tenantByChatID[row.ChatID] = row
@@ -2100,7 +2355,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		},
 		LLMAddSubscription: func(senderID string, sub *channel.Subscription) error {
 			svc := ag.LLMFactory().GetSubscriptionSvc()
-			newSub := &sqlite.LLMSubscription{
+			newSub := &common.LLMSubscription{
 				SenderID: senderID,
 				Name:     sub.Name,
 				Provider: sub.Provider,
@@ -2250,7 +2505,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 // shareToProtocol converts a storage row into the wire contract. The two types
 // stay separate on purpose: the wire contract must not drag storage concerns
 // (or a storage import) into channel/web.
-func shareToProtocol(a *sqlite.SharedArtifact) *protocol.SharedArtifact {
+func shareToProtocol(a *common.SharedArtifact) *protocol.SharedArtifact {
 	if a == nil {
 		return nil
 	}
@@ -2294,7 +2549,7 @@ const (
 //
 // 错误冒泡（绝不静默降级）：修复查询失败让端点显式失败，而不是返回与主
 // 快照不一致的未修复段。
-func legacySyntheticPairRepair(svc *sqlite.SessionService, tenantID int64, turnID uint64, recs []sqlite.IterationRecord) ([]sqlite.IterationRecord, error) {
+func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID uint64, recs []common.IterationRecord) ([]common.IterationRecord, error) {
 	rows, err := svc.GetSyntheticPairRowsByTurn(tenantID, turnID)
 	if err != nil {
 		return nil, err
@@ -2319,11 +2574,11 @@ func legacySyntheticPairRepair(svc *sqlite.SessionService, tenantID int64, turnI
 //
 // 区域原子：切分按**区域覆盖的迭代个数之和**取下标（与 channel.RegionWindow 同一
 // 手法），任何输入下都严格落在区域边界上 —— 绝不从折叠工具组中间切开。
-// 段内迭代为**轻字段形态**（MapIterationRecord(rec, true)，ToolsFolded 标记），
+// 段内迭代为**轻字段形态**（MapIterationRecord(rec, channel.FoldToolsForRecord(rec))，ToolsFolded 标记），
 // 详情由 /api/iteration_detail 按需补齐。
 //
 // regionLimit <= 0 ⇒ DefaultHistoryRegionRequest；> MaxHistoryRegionRequest ⇒ 钳到上限。
-func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]protocol.HistoryIteration, int) {
+func historyRegionSegment(recs []common.IterationRecord, regionLimit int) ([]protocol.HistoryIteration, int) {
 	limit := regionLimit
 	if limit <= 0 {
 		limit = DefaultHistoryRegionRequest
@@ -2346,10 +2601,10 @@ func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]pro
 }
 
 // foldHistoryIterations 把一段记录映射为折叠视图的迭代形态（轻字段 + ToolsFolded）。
-func foldHistoryIterations(recs []sqlite.IterationRecord) []protocol.HistoryIteration {
+func foldHistoryIterations(recs []common.IterationRecord) []protocol.HistoryIteration {
 	out := make([]protocol.HistoryIteration, 0, len(recs))
 	for _, rec := range recs {
-		out = append(out, channel.MapIterationRecord(rec, true))
+		out = append(out, channel.MapIterationRecord(rec, channel.FoldToolsForRecord(rec)))
 	}
 	return out
 }

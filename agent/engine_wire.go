@@ -128,17 +128,12 @@ func (a *Agent) buildBaseRunConfig(
 		SubID:   userCtx.SubID,
 		SessionName: func() string {
 			_, name := cli.ParseChatID(chatID)
-			// Override with DB label if available (e.g. renamed from "Agent-xxx" to a custom name).
-			// This ensures the rename reminder doesn't fire for already-renamed sessions.
-			if a.multiSession != nil {
-				if db := a.multiSession.DB(); db != nil {
-					var label string
-					if err := db.Conn().QueryRow(
-						"SELECT label FROM user_chats WHERE channel = ? AND chat_id = ? AND label != '' LIMIT 1",
-						channel, chatID,
-					).Scan(&label); err == nil && label != "" {
-						name = label
-					}
+			// Override with the stored label if available (e.g. renamed from "Agent-xxx"
+			// to a custom name), so the rename reminder doesn't fire for renamed
+			// sessions. Backend-agnostic: works on SQLite and PG alike.
+			if a.multiSession != nil && a.multiSession.Store() != nil {
+				if label, err := a.multiSession.Store().Tenant().GetChatLabel(channel, chatID); err == nil && label != "" {
+					name = label
 				}
 			}
 			return name
@@ -167,7 +162,6 @@ func (a *Agent) buildBaseRunConfig(
 		InitialCWD:       a.workDir, // absolute-resolved at buildToolContext time
 
 		// 循环控制
-		MaxIterations:   a.getMaxIterations(),
 		MaxOutputTokens: maxOutputTokens,
 
 		// Auto worktree: read via GetEffectiveSetting — the single correct
@@ -299,6 +293,18 @@ func (a *Agent) buildMainRunConfig(
 				"iteration_start": maxIter,
 			}).Info("Resume turn continues interrupted turn's iteration numbering")
 		}
+	}
+
+	// Turn-level wire identity (STATE-MODEL P2/P3′ + C-6): the tool call id is
+	// assigned BEFORE the tool first appears in any frame (so the generating
+	// entry and the executing entry share one identity), and every finished
+	// iteration reports its complete block as a `done` frame through the tracker
+	// that guarantees "exactly one per iteration".
+	cfg.ToolCallID = func(iteration, index int, providerID string) string {
+		return a.toolCallID(sessionKey, cfg.TurnID, iteration, index)
+	}
+	cfg.OnIterationDone = func(block protocol.IterationBlock) {
+		a.emitIterationDone(channel, chatID, block)
 	}
 
 	// 可观测性：把 session / user / turn 标识传给 Run，使每次 LLM HTTP 请求
@@ -503,9 +509,11 @@ func (a *Agent) buildMainRunConfig(
 	if !streamDisabled {
 		cfg.Stream = true
 		if a.channelFinder != nil {
-			var progressSeq atomic.Uint64
-			cfg.ProgressSeq = &progressSeq
-			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc, cfg.ResetStreamTiming = a.buildStreamCallbacks(chatID, channel, &progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
+			// ⛔ per-session 持久 seq（不是 per-Run 局部变量）：resume 后新 run 的
+			//    seq 必须继续高于客户端水位，否则事件会被误判"重放"丢弃。
+			progressSeq := a.progressSeqFor(cfg.SessionKey)
+			cfg.ProgressSeq = progressSeq
+			cfg.StreamContentFunc, cfg.StreamReasoningFunc, cfg.StreamToolCallFunc, cfg.StreamUsageFunc, cfg.ResetStreamTiming = a.buildStreamCallbacks(chatID, channel, progressSeq, cfg.TurnID, cfg.SessionKey, cfg.TenantID)
 		}
 	}
 
@@ -705,7 +713,14 @@ func (a *Agent) buildSubAgentRunConfig(
 	cwd, workDir, isWorktreeIsolated := resolveSubAgentCWD(parentCtx, workDir)
 	cwdPart := "\n- 当前目录：" + cwd
 
-	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）
+	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）。
+	//
+	// 兜底注入 role rules（roles frontmatter 的 `rules:`，如 roles/RULES.md）：
+	// 这是子代理 system prompt 的**唯一汇聚点**，而 spawn 入口有三类（SubAgent 工具 /
+	// CreateChat 的 agent 与 group 两种 / 重启恢复）。任何入口漏注入都只会表现为
+	// "子代理静默不带规矩"，不会编译失败也不会红测试 —— 所以在这里按 roleName 再补一次。
+	// 幂等语义见 tools.RolePromptForName（只在调用方没注入过时才补）。
+	systemPrompt = tools.RolePromptForName(roleName, systemPrompt)
 	rolePrompt := strings.TrimSpace(systemPrompt)
 	if rolePrompt == "" {
 		rolePrompt = "You are a helpful assistant. Complete the given task using the available tools."
@@ -870,7 +885,6 @@ func (a *Agent) buildSubAgentRunConfig(
 		// (Already computed above before system prompt construction.)
 		IsWorktreeIsolated: isWorktreeIsolated,
 
-		MaxIterations: a.getMaxIterations(), // 继承主 Agent 配置
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
 		// Agent-lifecycle background tasks (async Pre/Post compress memory hooks
@@ -1052,6 +1066,30 @@ func (a *Agent) buildSubAgentRunConfig(
 		},
 		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
 			return a.InspectInteractiveSession(ctx, roleName, parentCtx.Channel, parentCtx.ChatID, instance, tail)
+		},
+		ListActiveFn: func(ch, cid string) []SubAgentStatus {
+			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
+		},
+	}
+
+	// 分层 spawn（2026-10-22 用户架构要求）：让子代理也能管自己的下属。
+	// 原来这里刻意不配 InteractiveCallbacks（注释：Nil for SubAgents, they don't
+	// manage children），导致调度方 spawn 子代理组时报
+	// "interactive SubAgent not supported in this context"。
+	// 关键：闭包必须用**子代理自己的** channel/chatID，这样孙代理的 parentKey
+	// 指向子代理而非主会话，完成通知才是"只回父级"。
+	childChannel, childChatID := parentCtx.Channel, parentCtx.ChatID
+	cfg.InteractiveCallbacks = &InteractiveCallbacks{
+		SpawnFn: a.SpawnInteractiveSession,
+		SendFn:  a.SendToInteractiveSession,
+		UnloadFn: func(ctx context.Context, roleName, instance string) error {
+			return a.UnloadInteractiveSession(ctx, roleName, childChannel, childChatID, instance)
+		},
+		InterruptFn: func(ctx context.Context, roleName, instance string) error {
+			return a.InterruptInteractiveSession(ctx, roleName, childChannel, childChatID, instance)
+		},
+		InspectFn: func(ctx context.Context, roleName, instance string, tail int) (string, error) {
+			return a.InspectInteractiveSession(ctx, roleName, childChannel, childChatID, instance, tail)
 		},
 		ListActiveFn: func(ch, cid string) []SubAgentStatus {
 			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
@@ -1360,8 +1398,10 @@ func (a *Agent) buildSubAgentMemory(
 		TenantID: subTenantID,
 		UserID:   parentCtx.UserID, // canonical owner — same user across all sessions
 		BaseDir:  memDir,
-		DB:       a.multiSession.DB().Conn(),
 	}
+	// DB-backed memory reaches the provider ONLY through the storage seam (never a
+	// driver handle), so it works on every backend.
+	deps.AgentMemory = a.multiSession.MemoryService()
 
 	// Letta-specific deps
 	if a.memoryProvider == "letta" || a.memoryProvider == "" {
@@ -2005,6 +2045,11 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 			CallID: t.CallID,
 		})
 	}
+	// Normalized single tool array (STATE-MODEL P3): ONLY the current
+	// iteration's tools, each with a stable call_id + iteration + status.
+	// The legacy three arrays below stay untouched (dual-write) so existing
+	// web/mobile clients keep working.
+	payload.Tools = normalizeIterationTools(s.ActiveTools, s.CompletedTools, s.Iteration, false)
 	payload.SubAgents = resolveSubAgents(event)
 	payload.Todos = make([]protocol.TodoItem, len(s.Todos))
 	for i, td := range s.Todos {
@@ -2420,6 +2465,7 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		noteFirstChunk()
 		toolProgs := make([]protocol.ToolProgress, 0, len(toolCalls))
 		var genuiContent string
+		iter := a.getActiveIteration(progressKey)
 		for _, tc := range toolCalls {
 			if tc.Name != "" {
 				// Look up UI metadata once per tool name — populates both the
@@ -2441,7 +2487,14 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 					// the frontend cannot filter it from the current iteration's live
 					// rendering (user report: "过去的 generating 状态错误的在最新
 					// 迭代上渲染，直到最新迭代真正的 tool 出现").
-					Iteration: a.getActiveIteration(progressKey),
+					Iteration: iter,
+					// P2/P3′: identity is assigned BEFORE the tool first appears in
+					// any frame and never changes — a generating entry therefore has
+					// a real call_id even though the provider's id arrives in
+					// fragments (or not at all). The provider id travels as a FIELD
+					// (provider_call_id) and is never used as identity.
+					CallID:         a.toolCallID(progressKey, turnID, iter, tc.Index),
+					ProviderCallID: tc.ID,
 				}
 				if ui != nil {
 					tp.UIMode = ui.Mode

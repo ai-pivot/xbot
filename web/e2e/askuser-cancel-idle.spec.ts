@@ -2,33 +2,28 @@ import { test, expect, type Page } from '@playwright/test'
 
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
 const CHAT = 'chat-1'
-const QUESTION = '请选择方向'
 
 /**
  * 用户报告（2026-09-28）：「askuser 在被用户取消后，前端还是渲染为 busy」。
  *
- * 根因在**后端**（见 agent/interceptCancel 注释 + Go 回归
- * `TestAskUserCancelDuringWaitingUserPauseEmitsSessionIdle`）：WaitingUser 暂停
- * 期间 chatProcessLoop 已把 ss.busy 置 false，而取消路径把 session(idle) 的发射
- * 门控在 `ss.busy.Load()` 上 ⇒ 恒假 ⇒ 真实取消**从不发 idle** ⇒ 会话状态永不回到
- * idle、状态机的 activeTurn 永不清（busyFallback）⇒ 输入框卡 cancel。
+ * 根因在**后端**（见 agent/interceptCancel 注释）：WaitingUser 暂停期间
+ * chatProcessLoop 已把 ss.busy 置 false，而取消路径把 session(idle) 的发射门控在
+ * `ss.busy.Load()` 上 ⇒ 恒假 ⇒ 真实取消**从不发 idle** ⇒ 会话状态永不回到 idle、
+ * 状态机的 activeTurn 永不清（busyFallback）⇒ 输入框卡 cancel。
  *
- * 本 E2E 走**面板 Cancel 按钮的真实链路**并钉用户可见契约：
- * 「AskUser 取消（后端发出 ask_user_resolved(cancelled) + session(idle)）⇒
- *   会话回到 idle、输入框不再渲染 cancel/stop」。
+ * ⚠️ 2026-10-22 迁移：旧的 `AskUserPanel` 与其 `/api/ask_user/respond` 已被删除
+ * （514ec7b3），ask_user 的**交互面**搬到 `/structured` 的 `AskUserCard`
+ * （多端同步、回答/取消链路由 e2e/askuser-resolved.spec.ts 与
+ * e2e/structured-cards.spec.ts 覆盖）。本 spec 保留的是**会话状态机**那条契约，
+ * 它从没变过，也不该因为搬家而失去守卫：
  *
- * ⚠️ 提问经 **DB 权威水合**（`get_pending_ask_user`）到达（实时 ask_user 事件缺失
- * 的形态）——此时会话仍处于 running（面板由水合渲染，状态不会是 waiting_input），
- * 取消后若后端不发 idle，输入框就会卡在 busy（本用例的判别点）。
+ *   「ask_user_resolved(cancelled) 只让 prompt 失效，不得顺手清掉 busy；
+ *     会话真正回到 idle 必须由 session(idle) 决定 ⇒ 输入框的取消按钮消失」
  *
- * ⚠️ **测试诚实性**：本 spec 是**全 mock**（`api/*` 全 route + 自注入 MockEventSource，
- * 事件由测试自己 emit）⇒ 它钉的是**前端契约**（收到 resolved+idle 后必须回到 idle），
- * **不守卫后端**——后端若回退本次修复，本 spec 仍绿。后端行为由
- * `agent/askuser_cancel_idle_test.go` 守卫。本 spec 的变异自证方式：删掉它自己 emit 的
- * `session(idle)`（模拟"后端不发 idle"的输出）⇒ 必红（输入框仍是 cancel）。
+ * 判别点：把本 spec 自己 emit 的 `session(idle)` 删掉（模拟"后端不发 idle"）⇒ 必红
+ * （输入框仍是 cancel/stop）。这正是用户现场的形状。
  *
- * SSE 由 addInitScript 注入的 MockEventSource 驱动（沿用 busy-invariant.spec.ts /
- * askuser-resolved.spec.ts 的既有做法），api/* 全部 route mock ⇒ 不触真实后端。
+ * SSE 由 addInitScript 注入的 MockEventSource 驱动，api/* 全部 route mock ⇒ 不触真实后端。
  */
 
 interface SSEMockState {
@@ -76,12 +71,7 @@ const HISTORY_MESSAGES = [
   },
 ]
 
-/** 可变的服务端 pending 状态：取消后必须变 null（否则水合会把 prompt 加回来）。 */
-interface PendingState {
-  pending: Record<string, unknown> | null
-}
-
-async function newClient(browser: import('@playwright/test').Browser, state: PendingState): Promise<Page> {
+async function newClient(browser: import('@playwright/test').Browser): Promise<Page> {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const page = await ctx.newPage()
   await page.addInitScript(() => {
@@ -141,45 +131,41 @@ async function newClient(browser: import('@playwright/test').Browser, state: Pen
   await page.route('**/api/rpc', (r) => {
     const body = r.request().postDataJSON() as { method?: string } | null
     if (body?.method === 'get_active_progress') return r.fulfill({ json: { ok: true, data: ACTIVE_PROGRESS } })
-    // DB 权威水合：pending 提问 ⇒ 面板渲染（不经实时 ask_user 事件）。
-    if (body?.method === 'get_pending_ask_user') return r.fulfill({ json: { ok: true, data: state.pending } })
+    // 不再有 pending 提问（旧水合路径随 AskUserPanel 一起删除）：一律 null。
     return r.fulfill({ json: { ok: true, data: null } })
   })
-  await page.route('**/api/ask_user/respond', (r) => r.fulfill({ json: { ok: true, data: {} } }))
+  await page.route('**/api/messages**', (r) =>
+    r.fulfill({ json: { ok: true, data: { items: [], has_more: false, next_cursor: 0 } } }),
+  )
+  await page.route('**/api/inbox**', (r) =>
+    r.fulfill({ json: { ok: true, data: { items: [], has_more: false, next_cursor: 0, unanswered: 0 } } }),
+  )
 
   await page.goto(`${BASE}/login`)
   await page.locator('input').first().fill('test')
   await page.locator('input[type="password"]').fill('test')
   await page.locator('button[type="submit"]').click()
   await expect(page.locator('[data-message-list-content]')).toContainText('帮我选个方向', { timeout: 30000 })
-  await page.waitForFunction(() => {
-    const w = window as unknown as SSEMockState
-    return !!w.__sseListeners?.['ask_user']
-  }, { timeout: 10000 })
-  await page.waitForTimeout(200)
+  await page.waitForTimeout(300)
   return page
 }
 
 test('AskUser 取消后：会话回到 idle，输入框不再是 cancel 按钮（用户 2026-09-28）', async ({ browser }) => {
   seqCounter = 10
-  // 服务端权威 pending 状态：面板由 DB 水合渲染；取消后服务端不再返回它。
-  const state: PendingState = {
-    pending: { request_id: 'ask-cancel-1', questions: [{ question: QUESTION, options: ['A', 'B'] }] },
-  }
-  const page = await newClient(browser, state)
+  const page = await newClient(browser)
 
-  // 面板经 DB 水合出现（实时 ask_user 事件缺失的形态）。
-  const panel = page.getByTestId('ask-user-panel')
-  await expect(panel).toBeVisible({ timeout: 10000 })
-  await expect(page.getByText(QUESTION)).toBeVisible()
+  // 输入框里已经有字：按 2026-10-12 的 P0 修复，`busy && 有内容` 时必须另有一颗
+  // 只走 onCancel 的停止按钮（`composer-cancel`）—— 否则"有一个字时点停止"会被
+  // 当成排队发送，cancel 永远发不出去。用它作判据比"主按钮换图标"稳定得多。
+  const composer = page.locator('.tiptap[contenteditable="true"]')
+  await composer.click()
+  await composer.fill('等着回答时顺手打的字')
 
-  // 用户点面板的 Cancel ⇒ POST /api/ask_user/respond {cancelled:true}。
-  // 服务端随后不再把该 prompt 视为 pending（水合不得把它加回来）。
-  state.pending = null
-  await panel.getByRole('button', { name: /取消|Cancel/i }).first().click()
+  // 前提：会话在跑 ⇒ 输入框旁边是 cancel/stop（否则"回到 idle"是平凡通过）。
+  const cancelBtn = page.getByTestId('composer-cancel')
+  await expect(cancelBtn, '前提：running 会话的输入框必须是 cancel/stop').toBeVisible({ timeout: 10000 })
 
-  // 后端取消该 pending prompt 的第一条输出：resolved(cancelled)（prompt 级失效，
-  // 面板收起）——与真实顺序一致（resolvePendingAskUser 先广播 resolved，再发 idle）。
+  // 后端取消该 pending prompt 的第一条输出：resolved(cancelled)（prompt 级失效）。
   await emitSSE(page, 'ask_user_resolved', {
     type: 'ask_user_resolved',
     channel: 'web',
@@ -187,14 +173,12 @@ test('AskUser 取消后：会话回到 idle，输入框不再是 cancel 按钮�
     request_id: 'ask-cancel-1',
     reason: 'cancelled',
   })
-  await expect(panel).toHaveCount(0, { timeout: 10000 })
 
-  // ★ 前提断言（判别力的依托）：此刻 prompt 已收起、idle **尚未**到达 —— 会话确实
-  // 仍在 running ⇒ 输入框是 cancel/stop（这正是用户报告的 bug 现场）。
-  // 它同时证明"会话已回到 idle"不是平凡通过（一个本来就 idle 的会话当然不是 cancel）。
+  // ★ prompt 失效 ≠ 会话空闲：此刻 idle 还没到，输入框必须仍是 cancel。
+  //   这条前提同时证明"会话已回到 idle"不是平凡通过。
   await expect(
-    page.getByRole('button', { name: /停止|Stop|Cancel|取消/i }).first(),
-    '前提：prompt 收起、idle 未到时输入框仍是 cancel（会话确实在 running）',
+    cancelBtn,
+    'prompt 失效不得顺手清 busy（idle 未到时输入框仍是 cancel）',
   ).toBeVisible({ timeout: 10000 })
 
   // 后端随后发出权威 idle ⇒ 会话回到 idle。
@@ -202,7 +186,7 @@ test('AskUser 取消后：会话回到 idle，输入框不再是 cancel 按钮�
 
   // 用户可见契约：输入框不再是 cancel/stop（本修复的判据）。
   await expect(
-    page.getByRole('button', { name: /停止|Stop|Cancel|取消/i }),
+    cancelBtn,
     'AskUser 取消后输入框不得仍渲染为 busy/cancel',
   ).toHaveCount(0, { timeout: 10000 })
 

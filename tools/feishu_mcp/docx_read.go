@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"xbot/internal/textutil"
 	"xbot/llm"
 	"xbot/tools"
 
@@ -106,7 +107,7 @@ func (t *DocxGetContentTool) Execute(ctx *tools.ToolContext, input string) (*too
 	// Truncate if too long (limit to ~10k chars for LLM context)
 	const maxLen = 10000
 	if len(markdown) > maxLen {
-		markdown = markdown[:maxLen] + "\n\n... (content truncated)"
+		markdown = textutil.TruncateBytesWithSuffix(markdown, maxLen, "\n\n... (content truncated)")
 	}
 
 	return tools.NewResultWithTips(

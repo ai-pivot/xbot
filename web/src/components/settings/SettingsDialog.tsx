@@ -30,6 +30,7 @@ import { SettingsSessionShortcuts } from './SettingsSessionShortcuts'
 import { SettingsGeneral } from './SettingsGeneral'
 import { SettingsAgent } from './SettingsAgent'
 import { SettingsChannels } from './SettingsChannels'
+import { SettingsNotifications } from './SettingsNotifications'
 import { SettingsStorage } from './SettingsStorage'
 import { SettingsLLM } from './SettingsLLM'
 import { SettingsWebUsers } from './SettingsWebUsers'
@@ -39,9 +40,10 @@ import { SettingsDeveloper } from './SettingsDeveloper'
 import { SettingsLayout } from './SettingsLayout'
 import { SettingsPlugins } from './SettingsPlugins'
 import { SettingsTools } from './SettingsTools'
+import { SettingsSearch } from './SettingsSearch'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 
-type Category = 'appearance' | 'interaction' | 'shortcuts' | 'language' | 'agent' | 'tools' | 'llm' | 'channels' | 'storage' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
+type Category = 'appearance' | 'interaction' | 'shortcuts' | 'language' | 'agent' | 'tools' | 'search' | 'llm' | 'channels' | 'notifications' | 'storage' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
 
 /** 设置分类（供命令路由 `xbot://settings.open?section=llm` 使用）。 */
 export type SettingsCategory = Category
@@ -123,8 +125,10 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
     { key: 'language', labelKey: 'nav.language' },
     { key: 'agent', labelKey: 'nav.agent' },
     { key: 'tools', labelKey: 'nav.tools' },
+    { key: 'search', labelKey: 'nav.search' },
     { key: 'llm', labelKey: 'nav.llm' },
     { key: 'channels', labelKey: 'nav.channels' },
+    { key: 'notifications', labelKey: 'nav.notifications' },
     { key: 'storage', labelKey: 'nav.storage' },
     { key: 'account', labelKey: 'nav.account' },
     { key: 'webusers', labelKey: 'nav.webUsers' },
@@ -186,8 +190,10 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
             {active === 'language' ? <SettingsGeneral /> : null}
             {active === 'agent' ? <SettingsAgent /> : null}
             {active === 'tools' ? <SettingsTools /> : null}
+            {active === 'search' ? <SettingsSearch /> : null}
             {active === 'llm' ? <SettingsLLMPanel /> : null}
             {active === 'channels' ? <SettingsChannels /> : null}
+            {active === 'notifications' ? <SettingsNotifications /> : null}
             {active === 'storage' ? <SettingsStorage /> : null}
             {active === 'account' ? (
               <SettingsAccountPanel onLoggedOut={() => navigate('/login', { replace: true })} />

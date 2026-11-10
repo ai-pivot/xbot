@@ -34,3 +34,16 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082/   # 必须 200
 `scripts/install.sh` 的头部注释里有一段 `AI AGENTS — READ THIS`（下载脚本再读时可见），
 运行结束时也会打印同样的下一步提示 + 公开文档 URL（`curl | bash` 也能看到）。
 改安装流程时两处要同步更新。
+
+## ⛔ macOS：装完二进制必须代码签名（2026-10-14 事故，用户亲手恢复）
+
+`cp` 一个刚 `go build` 出来的二进制盖到 `~/.local/bin/xbot-cli`，**会把原有签名弄成无效**
+（Mach-O 在签名后被修改）⇒ `launchctl` 拒绝 exec ⇒ `launchctl kickstart` 失败、
+服务**静默起不来**、Web UI 打不开。恢复：`codesign --force --sign - ~/.local/bin/xbot-cli`。
+
+- `scripts/install.sh` 现在在装完二进制后**自动** ad-hoc 签名（`uname -s = Darwin` 时），
+  失败会 `warn`。
+- **手工重装路径也必须签名**：`go build -o /tmp/xbot-cli-new ./cmd/xbot-cli &&
+  codesign --force --sign - /tmp/xbot-cli-new && cp /tmp/xbot-cli-new ~/.local/bin/xbot-cli`
+  （或装完补一次 `codesign --force --sign -`）。
+- 验证：`codesign -v ~/.local/bin/xbot-cli`（exit 0）且 `launchctl print gui/$(id -u)/com.xbot.server | grep state` = running。

@@ -5,12 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 
 	"xbot/channel"
 	log "xbot/logger"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -140,7 +139,7 @@ func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 	// running state instead so the web sidebar shows running sub-agents reliably.
 	if ch == "agent" {
 		if value, ok := a.interactiveSubAgents.Load(chatID); ok {
-			if ia, ok := value.(*interactiveAgent); ok && ia != nil {
+			if ia, ok := value.(*interactiveAgent); ok && ia != nil && !ia.isDestroyed() {
 				ia.mu.Lock()
 				running := ia.running
 				ia.mu.Unlock()
@@ -239,7 +238,7 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	// so we look up with chatID directly. When running=true but Phase="done"
 	// (between iterations), correct Phase from iteration history.
 	if ch == "agent" {
-		if entry, loaded := a.interactiveSubAgents.Load(chatID); loaded {
+		if entry, loaded := a.interactiveSubAgents.Load(chatID); loaded && !isDestroyedEntry(entry) {
 			ia := entry.(*interactiveAgent)
 			ia.mu.Lock()
 			isRunning := ia.running
@@ -393,7 +392,7 @@ type activeProgressToolSnap struct {
 //
 // 类型适配决策（P1）：快照 iteration_history 的元素是 protocol.ProgressEvent
 // （工具在 CompletedTools），而 RegionWindow/MapIterationRecord 的输入是
-// []sqlite.IterationRecord（工具在 Tools JSON 串）——这里只做**输入方向**的最小适配：
+// []common.IterationRecord（工具在 Tools JSON 串）——这里只做**输入方向**的最小适配：
 // 用与 DB 侧同构的 JSON 形状重建 Tools，投影输出仍是 protocol.ProgressEvent
 // （见 foldProgressIteration：把窗口元素重建成 HistoryIteration 会丢元素独有字段）。
 //
@@ -425,7 +424,7 @@ func activeProgressToolsJSON(tools []protocol.ToolProgress) string {
 	return string(b)
 }
 
-// activeProgressRecord 是单条快照迭代 → sqlite.IterationRecord 的适配（只填区域判定
+// activeProgressRecord 是单条快照迭代 → common.IterationRecord 的适配（只填区域判定
 // 与轻字段化真正消费的字段：Iteration/Content/Reasoning/Tools）：
 //   - Content/Reasoning 原样搬运 ⇒ `IsPureToolIteration`（Content==""&&Reasoning==""）
 //     的判定与 DB 路径逐字同构（前端 !it.content 同构，不做 TrimSpace）；
@@ -433,8 +432,8 @@ func activeProgressToolsJSON(tools []protocol.ToolProgress) string {
 //     「busy 快照」与「提交后的历史 reload」两条链路必然一致）；
 //   - 迭代级指标（Tokens/TTFTMs/…）**不搬运**：轻字段化只省略**工具详情**，
 //     迭代级字段留在元素里原样下发，搬进来只会制造第二份真相。
-func activeProgressRecord(it protocol.ProgressEvent) sqlite.IterationRecord {
-	return sqlite.IterationRecord{
+func activeProgressRecord(it protocol.ProgressEvent) common.IterationRecord {
+	return common.IterationRecord{
 		Iteration: it.Iteration,
 		Content:   it.Content,
 		Reasoning: it.Reasoning,
@@ -442,8 +441,8 @@ func activeProgressRecord(it protocol.ProgressEvent) sqlite.IterationRecord {
 	}
 }
 
-func activeProgressRecords(iters []protocol.ProgressEvent) []sqlite.IterationRecord {
-	recs := make([]sqlite.IterationRecord, len(iters))
+func activeProgressRecords(iters []protocol.ProgressEvent) []common.IterationRecord {
+	recs := make([]common.IterationRecord, len(iters))
 	for i := range iters {
 		recs[i] = activeProgressRecord(iters[i])
 	}
@@ -474,7 +473,7 @@ func activeProgressRecords(iters []protocol.ProgressEvent) []sqlite.IterationRec
 // ⚠️ out.CompletedTools **总是新建切片**：迭代历史存在 a.iterationHistories 里，
 // 元素之间共享 CompletedTools 的 backing array —— 原地清字段会污染权威数据
 // （原方法随后返回的快照会变成缺详情，且 DB 之外的 live 路径也读到被改过的工具）。
-func foldProgressIteration(el protocol.ProgressEvent, rec sqlite.IterationRecord) protocol.ProgressEvent {
+func foldProgressIteration(el protocol.ProgressEvent, rec common.IterationRecord) protocol.ProgressEvent {
 	if len(el.CompletedTools) == 0 {
 		return el
 	}
@@ -538,8 +537,8 @@ func (a *Agent) SetTodos(ch, chatID string, items []protocol.TodoItem) {
 // even in a session with no goal.
 func (a *Agent) emitTodosProgress(chName, chatID string) {
 	progressKey := qualifyChatID(chName, chatID)
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
 		Phase:     "",
@@ -587,8 +586,8 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 	a.goalManager.Clear(ch + ":" + chatID)
 	// Push a progress event with nil goal so the frontend removes the GoalBanner.
 	progressKey := ch + ":" + chatID
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
 		Phase:     "",
@@ -615,7 +614,7 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 // content (graceful shutdown / benchmark timeout).
 func (a *Agent) GetExportIterations(ch, chatID string) []protocol.ExportedIteration {
 	// 1. Completed iterations from iteration_history (DB authoritative).
-	var records []sqlite.IterationRecord
+	var records []common.IterationRecord
 	if a.multiSession != nil {
 		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
 			if tenantID := sess.TenantID(); tenantID > 0 {
@@ -682,4 +681,14 @@ func (a *Agent) GetExportIterations(ch, chatID string) []protocol.ExportedIterat
 	}
 
 	return iterations
+}
+
+// isDestroyedEntry reports whether an interactiveSubAgents map value is a session
+// that has already entered the destroy path (tombstone set). The tombstone is
+// set BEFORE any resource teardown (and the entry is removed right after), so
+// the only observers of a destroyed entry are those racing inside that window —
+// they must treat the session as gone instead of reading its state.
+func isDestroyedEntry(v any) bool {
+	ia, ok := v.(*interactiveAgent)
+	return ok && ia != nil && ia.isDestroyed()
 }

@@ -24,6 +24,7 @@ import {
 import { postAPI } from '@/lib/api'
 import { clearPreviewConnection, previewEnabled } from '@/lib/previewConnection'
 import { clearWebCaches } from '@/lib/webCache'
+import { registerCurrentWebPush, unregisterCurrentWebPush } from '@/lib/webpush'
 
 /** Current authenticated user. `username` is empty on cold reload (no /me). */
 export interface AuthUser {
@@ -86,6 +87,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (settingsRes.status === 'fulfilled') {
           const username = localStorage.getItem(USERNAME_KEY) ?? ''
           setUser({ username })
+          // Re-bind an existing browser subscription to this session's user.
+          void registerCurrentWebPush().catch(() => {})
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -102,6 +105,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearWebCaches()
       localStorage.setItem(USERNAME_KEY, username)
       setUser({ username })
+      // Bind the existing browser subscription to the newly logged-in user.
+      void registerCurrentWebPush().catch(() => {})
       return true
     } catch {
       return false
@@ -123,7 +128,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // --- logout ---
   const logout = useCallback(async () => {
     try {
-      await postAPI(previewEnabled() ? '/api/preview/revoke' : '/api/auth/logout')
+      if (previewEnabled()) {
+        // Preview grants never register Web Push (no service worker in
+        // preview builds), so revoking the grant is the whole logout.
+        await postAPI('/api/preview/revoke')
+      } else {
+        // Must run before the auth cookie is cleared (the unregister API is authed).
+        await unregisterCurrentWebPush().catch(() => {})
+        await postAPI('/api/auth/logout')
+      }
     } finally {
       clearWebCaches()
       localStorage.removeItem(USERNAME_KEY)

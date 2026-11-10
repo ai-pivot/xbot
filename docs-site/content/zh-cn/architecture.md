@@ -357,6 +357,10 @@ Layer 4: ContextEdit → 精确删除/裁剪/替换
 
 单个 SQLite 文件，WAL 模式，`MaxOpenConns=1`（SQLite 单写者模型），`BusyTimeout=5000ms`。Schema Version 21。
 
+存储层与后端无关：所有读写都经 `storage.Storage` 接口（`Session`/`Tenant`/`Memory`/`Config`），
+因此 PostgreSQL 后端（`storage.type = "pg"`，`storage/pg_*.go`）可在不改动 agent 行为的前提下
+承载同一套数据模型。SQLite 仍是默认后端。
+
 | 表名 | 用途 |
 |------|------|
 | `tenants` | 租户（channel+chatID → tenantID） |
@@ -535,7 +539,7 @@ func XbotHome() string {
 
 - **退避**: 指数退避 + 随机抖动 + 429 额外退避（`2^(min(n,4))` s）
 - **perAttemptCtx**: 每次重试创建全新 120s 超时上下文，不继承父 ctx deadline，但传播取消信号
-- **可重试**: 429 / 5xx / 网络错误 / 超时；不可重试: context.Canceled / 4xx
+- **可重试**: 默认有限次数重试，包括普通 4xx；用户取消、输入超长（交由压缩处理）及服务商错误码 `unsupported_country_region_territory` 不在原请求上重试。
 - **输入超长**: 检测到 `InputTooLong` 后强制压缩，不走重试框架
 - **重试通知**: 通过 `RetryNotifyFunc` 推送进度消息 `⚠️ LLM 请求失败 (rate limit)，重试中 2/5 ...`
 

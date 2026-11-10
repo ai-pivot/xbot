@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"xbot/internal/textutil"
 	"xbot/llm"
 )
 
@@ -616,7 +618,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 					}
 					line := m.Line
 					if len(line) > maxGrepLineLength {
-						line = line[:maxGrepLineLength] + "..."
+						line = textutil.TruncateBytesWithSuffix(line, maxGrepLineLength, "...")
 					}
 					fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
 				}
@@ -644,7 +646,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 			}
 			line := m.Line
 			if len(line) > maxGrepLineLength {
-				line = line[:maxGrepLineLength] + "..."
+				line = textutil.TruncateBytesWithSuffix(line, maxGrepLineLength, "...")
 			}
 			fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
 		}
@@ -676,7 +678,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 						}
 						line := m.Line
 						if len(line) > maxGrepLineLength {
-							line = line[:maxGrepLineLength] + "..."
+							line = textutil.TruncateBytesWithSuffix(line, maxGrepLineLength, "...")
 						}
 						fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
 					}
@@ -699,7 +701,7 @@ func (t *GrepTool) executeLocal(ctx *ToolContext, pattern, path, include string,
 					}
 					line := m.Line
 					if len(line) > maxGrepLineLength {
-						line = line[:maxGrepLineLength] + "..."
+						line = textutil.TruncateBytesWithSuffix(line, maxGrepLineLength, "...")
 					}
 					fmt.Fprintf(&sb, "%d: %s\n", m.LineNumber, line)
 				}

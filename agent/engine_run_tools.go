@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"xbot/clipanic"
+	"xbot/internal/textutil"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 
 	"xbot/tools"
 )
@@ -51,15 +52,35 @@ func (s *runState) initToolProgress(response *llm.LLMResponse, iteration int) *t
 		// earlier in this iteration (e.g. first batch of WebSearch done, second batch started).
 		// Clearing them causes completed tools to flicker/disappear in the CLI progress panel.
 		for j, tc := range response.ToolCalls {
+			// Stable identity (P2/P3′): the id assigned while the arguments were
+			// still generating is reused here, so the pill keeps ONE identity
+			// across generating → pending → running → done. Only when nothing was
+			// published during generation (non-streaming call) do we fall back to
+			// the provider's id.
+			callID := tc.ID
+			if s.toolCallID != nil {
+				if id := s.toolCallID(iteration, j, tc.ID); id != "" {
+					callID = id
+					if tc.ID != "" && id != tc.ID {
+						// Promote-to-background looks the running shell up by the
+						// call_id the UI shows. The shell registry is keyed by the
+						// provider id, so register the alias — otherwise promotion
+						// of a tool that started without a provider id would miss.
+						tools.RegisterCallAlias(id, tc.ID)
+					}
+				}
+			}
 			s.structuredProgress.ActiveTools[j] = ToolProgress{
 				Name:      tc.Name,
 				Label:     formatToolProgress(tc.Name, tc.Arguments),
 				Status:    ToolPending,
 				Iteration: iteration,
 				Args:      tc.Arguments,
-				// CallID: stable per-call identity — the web promote-to-background
-				// RPC targets the exact running tool card by (session, call_id).
-				CallID: tc.ID,
+				// CallID: stable server-assigned identity — the web promote-to-
+				// background RPC targets the exact running tool card by
+				// (session, call_id), and clients key tool rows by it.
+				CallID:         callID,
+				ProviderCallID: tc.ID,
 			}
 		}
 	}
@@ -276,7 +297,7 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 			"tool":    tc.Name,
 			"elapsed": elapsed.Round(time.Millisecond),
 		}).WithError(execErr).Debug("Tool failed (hook also logged)")
-		batch.results[entry.index].content = fmt.Sprintf("Error: %v\n\nPlease fix the issue and try again with corrected parameters.", execErr)
+		batch.results[entry.index].content = textutil.SanitizeText(fmt.Sprintf("Error: %v\n\nPlease fix the issue and try again with corrected parameters.", execErr))
 		batch.results[entry.index].llmContent = batch.results[entry.index].content
 		if s.autoNotify {
 			// progressLines slot write: runs on concurrent tool goroutines —
@@ -293,8 +314,15 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 			s.progressMu.Unlock()
 		}
 	} else {
+		// Tool output is arbitrary bytes at the edges (Shell `cat` on an ELF, an
+		// MCP server, a hook script). Sanitise once here, at the boundary where
+		// it becomes text: the offload file, the model context and the DB row
+		// must all see valid UTF-8 without NUL. PG rejects NUL with SQLSTATE
+		// 22021 and, before textutil.SanitizeText existed here, one binary tool
+		// result killed the whole turn's persistence.
+		result.Summary = textutil.SanitizeText(result.Summary)
 		batch.results[entry.index].content = result.Summary
-		batch.results[entry.index].llmContent = buildToolMessageContent(result)
+		batch.results[entry.index].llmContent = textutil.SanitizeText(buildToolMessageContent(result))
 		if result.IsError {
 			GlobalMetrics.TotalToolErrors.Add(1)
 			batch.results[entry.index].llmContent = fmt.Sprintf("Error: %s\n\nDo NOT retry the same command. Analyze the error, fix the root cause, then try a different approach.", batch.results[entry.index].llmContent)
@@ -517,17 +545,19 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 		}
 		for j, t := range s.structuredProgress.CompletedTools {
 			snap.Tools[j] = IterationToolSnapshot{
-				Name:      t.Name,
-				Label:     t.Label,
-				Status:    string(t.Status),
-				ElapsedMS: t.Elapsed.Milliseconds(),
-				Summary:   t.Summary,
-				Args:      t.Args,
-				Detail:    t.Detail,
-				UIMode:    t.UIMode,
-				UILibs:    t.UILibs,
-				UISurface: t.UISurface,
-				ToolHints: t.ToolHints,
+				Name:           t.Name,
+				Label:          t.Label,
+				Status:         string(t.Status),
+				ElapsedMS:      t.Elapsed.Milliseconds(),
+				Summary:        t.Summary,
+				Args:           t.Args,
+				Detail:         t.Detail,
+				UIMode:         t.UIMode,
+				UILibs:         t.UILibs,
+				UISurface:      t.UISurface,
+				ToolHints:      t.ToolHints,
+				CallID:         t.CallID,
+				ProviderCallID: t.ProviderCallID,
 			}
 		}
 		s.iterationSnapshots = append(s.iterationSnapshots, snap)
@@ -541,6 +571,15 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 		// No dependency on IncrementalPersist or message_id — the record is
 		// linked by turn_id (queried by turn_id on read).
 		s.writeIterationHistory(iteration, snap)
+
+		// Publish the iteration's `done` frame (STATE-MODEL §3.3 / C-6): ONE
+		// complete block per started iteration. The agent-side tracker drops
+		// duplicates, so this path may report unconditionally even when the
+		// cancel path already filled the block in.
+		if s.cfg.OnIterationDone != nil {
+			cancelled := s.runCtx != nil && s.runCtx.Err() != nil
+			s.cfg.OnIterationDone(iterationBlockFromSnapshot(s.cfg.TurnID, snap, cancelled))
+		}
 	}
 	if s.autoNotify && s.batchProgressByIteration {
 		s.notifyProgress("")
@@ -556,7 +595,7 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	// If neither is available (early restart recovery), skip — the iteration
 	// will be written when the session is fully initialized.
 	var tenantID int64
-	var appendFn func(msgID int64, turnID uint64, rec sqlite.IterationRecord) error
+	var appendFn func(msgID int64, turnID uint64, rec common.IterationRecord) error
 
 	if s.persistence != nil && s.persistence.session != nil {
 		// Primary path: PersistenceBridge has a live TenantSession
@@ -586,7 +625,7 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	// message_id=0: we don't link to a specific message — iteration_history
 	// is queried by turn_id on read. This avoids the dependency on
 	// IncrementalPersist populating message IDs.
-	if err := appendFn(0, turnID, sqlite.IterationRecord{
+	if err := appendFn(0, turnID, common.IterationRecord{
 		MessageID:      0,
 		TurnID:         turnID,
 		Iteration:      snap.Iteration,
@@ -657,7 +696,7 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 	// Append mask controls before installing the in-memory view. Original tool
 	// results remain immutable message rows and replay applies only placeholders.
 	if s.cfg.Session != nil {
-		mutations := make([]sqlite.MaskMutation, 0, len(maskedEntries))
+		mutations := make([]common.MaskMutation, 0, len(maskedEntries))
 		for _, entry := range maskedEntries {
 			if entry.MessageIndex < 0 || entry.MessageIndex >= len(s.messages) || s.messages[entry.MessageIndex].ID == 0 {
 				log.Ctx(ctx).WithField("raw_idx", entry.MessageIndex).Warn("Mask skipped: target has no persisted history_id")
@@ -669,7 +708,7 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 					occurrence++
 				}
 			}
-			mutations = append(mutations, sqlite.MaskMutation{TargetHistoryID: s.messages[entry.MessageIndex].ID, TargetOccurrence: occurrence, Content: entry.Content})
+			mutations = append(mutations, common.MaskMutation{TargetHistoryID: s.messages[entry.MessageIndex].ID, TargetOccurrence: occurrence, Content: entry.Content})
 		}
 		if len(mutations) > 0 {
 			if err := s.cfg.Session.AppendMasks(mutations); err != nil {

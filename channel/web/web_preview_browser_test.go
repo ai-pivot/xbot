@@ -52,7 +52,7 @@ func TestPreviewBrowserFixture(t *testing.T) {
 	}
 	t.Setenv("XBOT_PREVIEW_ORIGINS", origin)
 	db := newTestDB(t)
-	result, err := db.Exec("INSERT INTO web_users (username, password) VALUES (?, ?)", "preview-browser-fixture", "disabled-fixture-password-not-a-bcrypt-hash")
+	result, err := db.Conn().Exec("INSERT INTO web_users (username, password) VALUES (?, ?)", "preview-browser-fixture", "disabled-fixture-password-not-a-bcrypt-hash")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestPreviewBrowserFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, db)}, bus.NewMessageBus())
 	t.Cleanup(wc.Stop)
 	const parent = "isolated-browser-fixture-parent"
 	wc.sessions[parent] = sessionInfo{userID: int(id), username: "preview-browser-fixture", expires: time.Now().Add(duration + time.Minute)}

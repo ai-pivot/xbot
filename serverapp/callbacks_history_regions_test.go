@@ -131,6 +131,17 @@ func TestHistoryRegionSegment_ClampsRegionLimit(t *testing.T) {
 // ⇒ tools_folded/详情省略断言必红。
 func TestHistoryRegionSegment_LightShape(t *testing.T) {
 	recs := segRegionFixture(15)
+	// 折叠阈值：**工具数 > 8** 才折叠（用户口径，对齐 web `PILL_INLINE_MAX = 8`）。
+	// 本判据要验证"折叠时的轻字段形态"，所以把 head 迭代的工具补到 9 枚。
+	many := make([]string, 9)
+	for i := range many {
+		many[i] = fmt.Sprintf(`{"name":"H%d","status":"done","elapsed_ms":3,"summary":"s","args":"{}","detail":"d"}`, i)
+	}
+	for i := range recs {
+		if recs[i].Iteration == 2 {
+			recs[i].Tools = "[" + strings.Join(many, ",") + "]"
+		}
+	}
 	seg, _ := historyRegionSegment(recs, 15) // 全量段
 	byIter := make(map[int]channel.HistoryIteration, len(seg))
 	for _, it := range seg {
@@ -141,14 +152,14 @@ func TestHistoryRegionSegment_LightShape(t *testing.T) {
 	if head.Content != "head-1" {
 		t.Errorf("段内 head 迭代文本必须完整：%+v", head)
 	}
-	if !head.ToolsFolded || len(head.Tools) != 1 {
-		t.Fatalf("段内工具迭代必须打 ToolsFolded 标记：%+v", head)
+	if !head.ToolsFolded || len(head.Tools) != 9 {
+		t.Fatalf("段内工具迭代必须打 ToolsFolded 标记（9 枚工具 > 阈值 8）：%+v", head)
 	}
 	if head.Tools[0].Summary != "" || head.Tools[0].Args != "" || head.Tools[0].Detail != "" {
 		t.Errorf("段内工具详情必须省略（轻字段形态）：%+v", head.Tools[0])
 	}
 	// pill 轻字段保留。
-	if head.Tools[0].Name != "H1" || head.Tools[0].Status != "done" || head.Tools[0].Iteration != 2 {
+	if head.Tools[0].Name != "H0" || head.Tools[0].Status != "done" || head.Tools[0].Iteration != 2 {
 		t.Errorf("pill 轻字段必须保留：%+v", head.Tools[0])
 	}
 	// 纯文本迭代：无工具、不打标。

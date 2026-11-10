@@ -9,7 +9,8 @@ import (
 	"xbot/cron"
 	"xbot/llm"
 	log "xbot/logger"
-	"xbot/storage/sqlite"
+	"xbot/storage"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -292,8 +293,9 @@ func WirePluginCommands(pm *PluginManager, registerFn CommandRegisterFn) {
 // the CronService. It also processes cancellation requests (removes jobs that
 // were cancelled via CancelCron). Re-wiring is idempotent: existing plugin jobs
 // are cleaned up before re-adding to avoid duplicates.
-func WirePluginCrons(pm *PluginManager, cronSvc *sqlite.CronService) {
+func WirePluginCrons(pm *PluginManager, cronSvc storage.CronStore) {
 	if cronSvc == nil {
+		log.Warn("plugin crons not wired: cron store unavailable (plugin schedules will not run)")
 		return
 	}
 
@@ -334,7 +336,7 @@ func WirePluginCrons(pm *PluginManager, cronSvc *sqlite.CronService) {
 
 		// Add current cron contributions
 		for i, spec := range entry.Context.GetCrons() {
-			job := &sqlite.CronJob{
+			job := &common.CronJob{
 				ID:           fmt.Sprintf("plugin:%s:%d", pluginID, i),
 				Message:      spec.Message,
 				CronExpr:     spec.CronExpr,

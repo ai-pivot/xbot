@@ -151,14 +151,15 @@ describe('T8 iterations_loaded：三态 union + 幂等 + regionsBefore 三态', 
     expect(s.lastSeq).toBe(seqBefore)
   })
 
-  it('frozen turn：定格后仍可被段 hydrate（union 走 data.iterations）', () => {
+  it('live turn：idle 停流后仍可被段 hydrate（union 走 data.iterations）', () => {
     let s = reduce(initialChatState('c1'), started())
     s = reduce(s, iterDelta(TID, win(60, 66, true)))
     s = reduce(s, { type: 'session_idle' })
-    expect(s.turns.get(T7)!.phase.kind).toBe('frozen')
-    expect(s.activeTurn).toBeNull()
+    // 新语义：idle 只停 streaming、保持 live（activeTurn 保留）。
+    expect(s.turns.get(T7)!.phase.kind).toBe('live')
+    expect(s.activeTurn).toBe(T7)
     s = reduce(s, loaded(TID, win(52, 59, true)))
-    expect(s.turns.get(T7)!.phase.kind).toBe('frozen')
+    expect(s.turns.get(T7)!.phase.kind).toBe('live')
     expect(nums(itsOf(s.turns.get(T7)!))).toEqual(Array.from({ length: 15 }, (_, i) => 52 + i))
   })
 

@@ -298,10 +298,29 @@ export interface ChatState {
    * 本字段连同本地带洞窗口一起清零。
    */
   readonly lostIterGapSig: string
+  /**
+   * 「**live 明显领先于已持有窗口**」签名（'' = 无）—— 2026-10-15 用户 P0：
+   * 「切回 iter 很多的会话，历史停在 1000，实际最新 2000；live 2000 渲染在 1000 之后；
+   * 2000 结束后又只剩 1-1000」。
+   *
+   * 与 `lostIterGapSig` 的**关键差别**（前者为何抓不到本例）：那条只在**事件**带着
+   * 跳跃的迭代号到达时才判出（`ev > maxHeld + 1`）。而本例的脱节是在**一次
+   * hydration/合并内部**形成的 —— 权威快照/本地窗口各带一段，union 之后 turn 的
+   * 迭代计数器已到 N、`iterations` 只到 M ≪ N，**没有任何事件会带出跳跃**
+   * ⇒ 旧判据恒不触发 ⇒ 界面永久停在旧迭代（渲染层用 `lastIter` 合成在飞块 ⇒
+   * "2000 显示在 1000 之后"；turn 一结束合成块消失 ⇒ "又只剩 1-1000"）。
+   *
+   * 判据：`live.iter > maxHeldIteration(live.iterations) + LIVE_AHEAD_TOLERANCE`
+   * （容差覆盖"在飞迭代尚未落进数组"的正常语义：此刻 `iter === maxHeld + 1`）。
+   * 处理 = 与「无法追赶的 gap」同一条出口（用户定向："要么 catch up gap 要么直接
+   * 清除 memo 重新拉 api 加载会话"）：`gapReloadToken` 自增 ⇒ 面板 `markHistoryStale`
+   * + reset + 权威 reload（DB 窗口 union 补洞）。同一形状只自增一次（去重锚定洞下界）。
+   */
+  readonly liveAheadGapSig: string
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], standalone: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, gapReloadToken: 0, unreachableGapSig: '', lostIterGapSig: '' }
+  return { chatID, turns: new Map(), legacy: [], standalone: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, gapReloadToken: 0, unreachableGapSig: '', lostIterGapSig: '', liveAheadGapSig: '' }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────
@@ -358,7 +377,12 @@ export type DomainEvent =
        *  时丢失导致 phase='compressing' 的压缩提示永不渲染（本次修复）。
        *  可选：未携带（旧事件/mock）= undefined，reduce 保留 prev。 */
       readonly phase?: string
-      readonly iter: IterNum
+      /**
+       * 后端 structuredProgress 的迭代号。**null = 事件未携带**（不是"迭代 1"）。
+       * 旧实现 `iterNum(p.iteration ?? 1)` 把缺失号伪造成 1 ⇒ 无号事件会覆盖/合并
+       * 第 1 迭代（迭代内容跳变/同号重复）。缺失必须保留 prev.iter 且不参与 gap 判据。
+       */
+      readonly iter: IterNum | null
       /** null = 事件未携带 seq（E2E mock 省略）—— I5 基准不推进（无重放检测）。 */
       readonly seq: EventSeq | null
       readonly content: string | undefined

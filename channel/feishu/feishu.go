@@ -2,7 +2,6 @@ package feishu
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,6 +18,7 @@ import (
 	log "xbot/logger"
 	"xbot/prompt"
 	"xbot/protocol"
+	"xbot/storage"
 	"xbot/tools"
 
 	ch "xbot/channel"
@@ -152,9 +152,9 @@ type FeishuChannel struct {
 	running     atomic.Bool
 	mu          sync.Mutex
 	botOpenID   string
-	botName     atomic.Value // 机器人名称，用于引用消息中标识自己（存储 string）
-	adminChatID string       // admin 会话 ID（用于权限控制）
-	webDB       *sql.DB      // web 用户数据库（用于 admin 创建用户命令）
+	botName     atomic.Value         // 机器人名称，用于引用消息中标识自己（存储 string）
+	adminChatID string               // admin 会话 ID（用于权限控制）
+	webDB       storage.WebAuthStore // web 用户存储（用于 admin 创建用户命令）
 
 	// 消息去重缓存
 	processedIDs   map[string]struct{}
@@ -333,9 +333,10 @@ func (f *FeishuChannel) SetAdminChatID(chatID string) {
 	f.adminChatID = chatID
 }
 
-// SetWebDB sets the web user database for admin user creation commands.
-func (f *FeishuChannel) SetWebDB(db *sql.DB) {
-	f.webDB = db
+// SetWebDB sets the web-user store for admin user creation commands.
+// Backend-agnostic (storage.WebAuthStore): SQLite or PG.
+func (f *FeishuChannel) SetWebDB(store storage.WebAuthStore) {
+	f.webDB = store
 }
 
 // Start 启动飞书 WebSocket 长连接
@@ -3701,10 +3702,6 @@ func (f *FeishuChannel) BuildMainMenuUI(ctx context.Context, senderID string) st
 	sb.WriteString("## 🏠 主菜单\n\n")
 	sb.WriteString("欢迎使用 xbot！请选择功能：\n\n")
 	sb.WriteString("- ⚙️ `/settings` — 个人设置\n")
-	sb.WriteString("- 📦 `/app` — 应用管理（打包、安装、卸载）\n")
-	sb.WriteString("- 📥 `/app install <file|url>` — 安装应用\n")
-	sb.WriteString("- 📤 `/app export <name> -s/-a/-p` — 打包导出\n")
-	sb.WriteString("- 🗑️ `/app uninstall -n/-s/-a/-p` — 卸载\n")
 	return sb.String()
 }
 

@@ -703,12 +703,16 @@ func TestRun_MultiToolCallLoop(t *testing.T) {
 	}
 }
 
-func TestRun_MaxIterations(t *testing.T) {
-	// LLM always returns tool calls, never a final response
+func TestRun_NoIterationCap(t *testing.T) {
+	// 迭代上限已彻底移除（2026-10-14，用户要求「以后不加这种限制」）。
+	// 旧行为：RunConfig.MaxIterations=3 会让 Run 在第 3 次工具迭代后以
+	// 「最大迭代次数」收尾。现在引擎循环没有次数上限 —— LLM 想跑多少次工具
+	// 迭代就跑多少次，直到它自己给出最终回答（或用户取消）。
+	const toolIters = 12
 	mock := &mockLLM{
-		responses: make([]llm.LLMResponse, 10),
+		responses: make([]llm.LLMResponse, toolIters+1),
 	}
-	for i := range mock.responses {
+	for i := 0; i < toolIters; i++ {
 		mock.responses[i] = llm.LLMResponse{
 			FinishReason: llm.FinishReasonToolCalls,
 			ToolCalls: []llm.ToolCall{
@@ -716,24 +720,27 @@ func TestRun_MaxIterations(t *testing.T) {
 			},
 		}
 	}
+	mock.responses[toolIters] = llm.LLMResponse{Content: "final answer", FinishReason: llm.FinishReasonStop}
 
 	out := Run(context.Background(), RunConfig{
-		LLMClient:     mock,
-		Model:         "test",
-		Tools:         newTestRegistry(),
-		Messages:      baseMessages(),
-		AgentID:       "main",
-		MaxIterations: 3,
+		LLMClient: mock,
+		Model:     "test",
+		Tools:     newTestRegistry(),
+		Messages:  baseMessages(),
+		AgentID:   "main",
 		ToolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 			return tools.NewResult("ok"), nil
 		},
 	})
 
-	if !strings.Contains(out.Content, "最大迭代次数") {
-		t.Errorf("expected max iterations message, got %q", out.Content)
+	if strings.Contains(out.Content, "最大迭代次数") {
+		t.Fatalf("run stopped on an iteration cap (%q) — the cap must be gone", out.Content)
 	}
-	if mock.callCount != 3 {
-		t.Errorf("LLM call count = %d, want 3", mock.callCount)
+	if out.Content != "final answer" {
+		t.Errorf("out.Content = %q, want %q", out.Content, "final answer")
+	}
+	if mock.callCount != toolIters+1 {
+		t.Errorf("LLM call count = %d, want %d (no cap ⇒ runs until the final reply)", mock.callCount, toolIters+1)
 	}
 }
 

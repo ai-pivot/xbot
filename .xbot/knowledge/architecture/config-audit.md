@@ -109,6 +109,8 @@ var CLIRuntimeSettingKeys = []string{...}
 
 ## 缺陷 #4: applyEnvOverrides 的零值检测是隐式 fallback
 
+> ⚠️ **2026-10-14 更新**：`MaxIterations` 字段与 `AGENT_MAX_ITERATIONS` 环境变量已**彻底移除**（用户要求「以后不加这种限制」）——引擎循环不再有任何迭代次数上限。本段代码片段仅作历史记录。
+
 ### 现象
 `config/config.go` 的 `applyEnvOverrides` 中，部分字段只在 config 值为零时才覆盖：
 ```go

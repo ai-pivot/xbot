@@ -81,9 +81,13 @@ func BuildSystemReminder(
 
 	var sb strings.Builder
 	sb.WriteString("<system-reminder role=\"reminder\">")
-	// note 从简（用户 2026-09-17：原文太长且可能被误读）。只保留最少必要信息：
-	// 这是自动注入的 system reminder（不是用户消息）、<user-msg> 是原始用户消息。
-	sb.WriteString("<note>Auto-injected system reminder for this iteration (not a user message). &lt;user-msg&gt; = the original user message, for context.</note>")
+	// note 只保留「这是自动注入」这一个事实标识（用户 2026-10-20：不要搞那么大一段）。
+	// 历史：2026-09-17 曾因「原文太长且可能被误读」缩短过一次；2026-10-14 又因模型把注入
+	// 误当成自己调用过的工具（`system_reminder` 这个假 tool pair 的名字就在历史里）而写成
+	// 60+ 词的自解释。2026-10-20 起 fake tool pair 改为每 10 轮才插入一次
+	// （shouldInsertSystemReminder），模型看到它的次数大幅减少，长文纠正不再必要 ——
+	// 长文案反而每轮占 prompt 并把注意力引到「我是不是调错了工具」上。
+	sb.WriteString("<note>AUTO-INJECTED</note>")
 
 	// 用户原始消息（CDATA 包裹，100% 防 XML 注入——wrapCDATA 拆分 ]]> ）
 	if userMsg != "" {

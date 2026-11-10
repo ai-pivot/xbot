@@ -40,7 +40,6 @@ func TestRun_IterationStart(t *testing.T) {
 		Messages:       baseMessages(),
 		AgentID:        "main",
 		IterationStart: iterationStart,
-		MaxIterations:  5,
 		OnIterationSnapshot: func(snap IterationSnapshot) {
 			snapshots = append(snapshots, snap)
 		},

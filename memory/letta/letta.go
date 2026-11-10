@@ -11,7 +11,7 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/prompt"
-	"xbot/storage/sqlite"
+	"xbot/storage"
 	"xbot/storage/vectordb"
 )
 
@@ -44,9 +44,8 @@ func GetUserID(ctx context.Context) string {
 // with a stale userID.
 type LettaMemory struct {
 	tenantID     int64
-	coreSvc      *sqlite.CoreMemoryService
 	archivalSvc  *vectordb.ArchivalService
-	memorySvc    *sqlite.MemoryService
+	memorySvc    storage.MemoryStore
 	toolIndexSvc *vectordb.ToolIndexService
 }
 
@@ -58,10 +57,12 @@ func (m *LettaMemory) Name() string { return "letta" }
 
 // Deps holds the dependencies for creating a LettaMemory instance.
 // Used by the provider factory to avoid importing sqlite/vectordb in the memory package.
+// CoreSvc is the backend-agnostic storage.MemoryStore — never a concrete SQLite type,
+// so letta runs unchanged on any storage backend.
 type Deps struct {
-	CoreSvc      *sqlite.CoreMemoryService
+	CoreSvc      storage.MemoryStore
 	ArchivalSvc  *vectordb.ArchivalService
-	MemorySvc    *sqlite.MemoryService
+	MemorySvc    storage.MemoryStore
 	ToolIndexSvc *vectordb.ToolIndexService
 }
 
@@ -83,7 +84,7 @@ func init() {
 // New creates a LettaMemory instance.
 // NOTE: senderID is NOT passed here. Per-user human block is handled dynamically
 // via context (WithUserID/GetUserID) passed to Recall/Memorize at call time.
-func New(tenantID int64, coreSvc *sqlite.CoreMemoryService, archivalSvc *vectordb.ArchivalService, memorySvc *sqlite.MemoryService, toolIndexSvc *vectordb.ToolIndexService) *LettaMemory {
+func New(tenantID int64, coreSvc storage.MemoryStore, archivalSvc *vectordb.ArchivalService, memorySvc storage.MemoryStore, toolIndexSvc *vectordb.ToolIndexService) *LettaMemory {
 	// Ensure default blocks exist (global, userID="")
 	// Per-user blocks are created on-demand when Recall/Memorize is called with userID in context
 	if err := coreSvc.InitBlocks(tenantID, ""); err != nil {
@@ -91,7 +92,6 @@ func New(tenantID int64, coreSvc *sqlite.CoreMemoryService, archivalSvc *vectord
 	}
 	return &LettaMemory{
 		tenantID:     tenantID,
-		coreSvc:      coreSvc,
 		archivalSvc:  archivalSvc,
 		memorySvc:    memorySvc,
 		toolIndexSvc: toolIndexSvc,
@@ -107,7 +107,7 @@ func (m *LettaMemory) Recall(ctx context.Context, _, _ string) (string, error) {
 	// Get userID from context for per-user human block (empty = global)
 	userID := GetUserID(ctx)
 
-	blocks, err := m.coreSvc.GetAllBlocks(m.tenantID, userID)
+	blocks, err := m.memorySvc.GetAllBlocks(m.tenantID, userID)
 	if err != nil {
 		return "", fmt.Errorf("recall core blocks: %w", err)
 	}
@@ -248,7 +248,7 @@ func (m *LettaMemory) Memorize(ctx context.Context, input memory.MemorizeInput) 
 	}
 
 	// Read current core memory blocks
-	blocks, err := m.coreSvc.GetAllBlocks(m.tenantID, userID)
+	blocks, err := m.memorySvc.GetAllBlocks(m.tenantID, userID)
 	if err != nil {
 		log.WithError(err).Error("Failed to read core memory for consolidation")
 		return memory.MemorizeResult{NewLastConsolidated: lastConsolidated, OK: false}, nil
@@ -340,7 +340,7 @@ Review the conversation below and call the consolidate_memory tool to update the
 				"old_len":   len(oldContent),
 				"new_len":   len(newContent),
 			}).Info("Updating core memory block")
-			if err := m.coreSvc.SetBlock(m.tenantID, blockName, newContent, userID); err != nil {
+			if err := m.memorySvc.SetBlock(m.tenantID, blockName, newContent, userID); err != nil {
 				log.WithError(err).WithField("block", blockName).Error("Failed to update core memory block")
 			}
 		}
@@ -392,9 +392,10 @@ func (m *LettaMemory) TenantID() int64 {
 	return m.tenantID
 }
 
-// CoreService returns the core memory service (exposed for tools).
-func (m *LettaMemory) CoreService() *sqlite.CoreMemoryService {
-	return m.coreSvc
+// CoreService returns the core memory store (exposed for tools). It is the
+// backend-agnostic interface, never a concrete SQLite type.
+func (m *LettaMemory) CoreService() storage.MemoryStore {
+	return m.memorySvc
 }
 
 // ArchivalService returns the archival memory service (exposed for tools).
@@ -403,7 +404,7 @@ func (m *LettaMemory) ArchivalService() *vectordb.ArchivalService {
 }
 
 // MemoryService returns the underlying memory service (exposed for recall search).
-func (m *LettaMemory) MemoryService() *sqlite.MemoryService {
+func (m *LettaMemory) MemoryService() storage.MemoryStore {
 	return m.memorySvc
 }
 

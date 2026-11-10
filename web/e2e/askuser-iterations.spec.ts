@@ -150,26 +150,22 @@ test.describe('AskUser iteration preservation', () => {
     // Verify iterations are STILL visible (fixed: no session(idle) → no reset)
     const hasIterationAfterAsk = await page.evaluate(() =>
       document.body.textContent?.includes('Read') ?? false)
-    const hasAskUser = await page.evaluate(() =>
-      document.body.textContent?.includes('Do you want to proceed?') ?? false)
-    console.log('Iterations after AskUser:', hasIterationAfterAsk, '| AskUser visible:', hasAskUser)
-    expect(hasAskUser).toBe(true)
+    console.log('Iterations after AskUser:', hasIterationAfterAsk)
     expect(hasIterationAfterAsk).toBe(true)
 
-    // ── Phase 3: Submit the answer ──
-    // Click the "yes" option button (AskUserPanel single-select renders role=radio)
-    await page.getByRole('radio', { name: 'yes' }).click()
-    await page.waitForTimeout(200)
-    // Click submit
-    const submitBtn = page.locator('button:has-text("确认"), button:has-text("Submit"), button:has-text("确定")')
-    if (await submitBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-      await submitBtn.click()
-    } else {
-      // Fallback: find the submit button by its position (last button in the panel)
-      await page.locator('[class*="rounded-lg"] button').last().click()
-    }
-    await page.waitForTimeout(300)
+    // ⚠️ 不再断言「问题文本出现在页面上」（2026-10-22 修正）。
+    // 本分支把 ask_user 的渲染从 AskUserPanel 换成 AskUserCard，后者从**结构化消息**
+    // 的 payload.questions 渲染；本 spec 只注入裸 SSE `ask_user` 事件（不产生结构化
+    // 消息），因此页面上本就不会出现问题文本 —— 这条断言的前提在新架构下不成立。
+    // 「用户能看到问题、能选择、能提交」由组件测试等价覆盖：
+    //   web/src/structured/StructuredCards.test.tsx（6 例：渲染问题与选项 / 单选 /
+    //   多选 / 取消 / answered 后锁定 / 提交失败可见）
+    // 这里只保留本 spec 的原始目的：WaitingUser 不得触发 session(idle) 清空已渲染的 iterations。
 
+    // ── Phase 3: Submit the answer ──
+    // ⚠️ 2026-10-22：旧面板 AskUserPanel 已删除，「渲染问题 → 选择 → 提交」由
+    // web/src/structured/StructuredCards.test.tsx 与 askuser-resolved.spec.ts 覆盖。
+    // Phase 4 保留（手工 emit SSE 模拟答案触发的 Run，不依赖真实提交）。
     // ── Phase 4: Simulate the answer's Run ──
     // The real backend sends turn_started with trigger="resume" (metadata
     // ask_user_answered=true → emitTurnStarted sets trigger="resume") and the

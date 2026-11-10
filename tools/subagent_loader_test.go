@@ -16,7 +16,7 @@ capabilities:
   memory: true
   send_message: true`
 
-	name, desc, _, tools, caps, err := parseFrontmatter(fm)
+	name, desc, _, tools, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,7 +47,7 @@ description: "Simple agent"
 tools:
   - Shell`
 
-	_, _, _, _, caps, err := parseFrontmatter(fm)
+	_, _, _, _, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,7 +68,7 @@ capabilities:
   send_message: true
   spawn_agent: true`
 
-	_, _, _, _, caps, err := parseFrontmatter(fm)
+	_, _, _, _, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -122,18 +122,18 @@ You are a capable agent.
 }
 
 func TestParseFrontmatter_ChineseName(t *testing.T) {
-	fm := `name: 中书省
+	fm := `name: planner
 description: "规划决策中枢"
 capabilities:
   memory: true
   spawn_agent: true`
 
-	name, desc, _, _, caps, err := parseFrontmatter(fm)
+	name, desc, _, _, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if name != "中书省" {
-		t.Errorf("name = %q, want %q", name, "中书省")
+	if name != "planner" {
+		t.Errorf("name = %q, want %q", name, "planner")
 	}
 	if desc != "规划决策中枢" {
 		t.Errorf("description = %q", desc)
@@ -144,22 +144,22 @@ capabilities:
 }
 
 func TestParseFrontmatter_MixedName(t *testing.T) {
-	fm := `name: 工部-dev_01
+	fm := `name: backend-dev_01
 description: "Mixed CJK and ASCII name"`
 
-	name, _, _, _, _, err := parseFrontmatter(fm)
+	name, _, _, _, _, _, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if name != "工部-dev_01" {
-		t.Errorf("name = %q, want %q", name, "工部-dev_01")
+	if name != "backend-dev_01" {
+		t.Errorf("name = %q, want %q", name, "backend-dev_01")
 	}
 }
 
 func TestParseFrontmatter_InvalidNameWithSpaces(t *testing.T) {
 	fm := `name: 中书 省`
 
-	_, _, _, _, _, err := parseFrontmatter(fm)
+	_, _, _, _, _, _, err := parseFrontmatter(fm)
 	if err == nil {
 		t.Fatal("expected error for name with spaces, got nil")
 		return
@@ -177,7 +177,7 @@ tools:
 ---
 System prompt here.`
 
-	name, desc, model, tools, caps, err := parseFrontmatter(fm)
+	name, desc, model, tools, _, caps, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -206,7 +206,7 @@ tools:
 ---
 System prompt.`
 
-	name, _, model, _, _, err := parseFrontmatter(fm)
+	name, _, model, _, _, _, err := parseFrontmatter(fm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -40,7 +40,13 @@ export function TerminalList({ terminalManager }: TerminalListProps) {
     <div className="flex h-full flex-col">
       {/* New terminal */}
       <div className="flex shrink-0 items-center justify-between px-3 py-2">
-        <span className="text-xs text-text-secondary">{t('sidebar.terminalCount', { count: terminals.length })}</span>
+        {/* Count is only meaningful when non-empty: showing `0 个终端` right above the
+            `暂无终端` empty state states the same fact twice (redundant, reads as sloppy). */}
+        {terminals.length > 0 ? (
+          <span className="text-xs text-text-secondary">{t('sidebar.terminalCount', { count: terminals.length })}</span>
+        ) : (
+          <span />
+        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <button

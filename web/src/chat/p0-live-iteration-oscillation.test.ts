@@ -169,7 +169,7 @@ const evHistoryNoActive = (): DomainEvent => ({
 })
 
 describe('P0 线性一致性：迟到 idle 冻结不得吞掉运行中 turn 的新迭代', () => {
-  it('session(idle) 冻结后，更大迭代号的事件必须解冻并继续 live（不得丢弃）', () => {
+  it('迟到 idle 只停流：更大迭代号的事件仍继续 live（不得丢弃）', () => {
     let s = reduce(initialChatState('web:chatX'), evTurnStarted())
     s = reduce(s, evIteration(2, 1, 'one'))
     s = reduce(s, evIteration(3, 2, 'two'))
@@ -178,7 +178,11 @@ describe('P0 线性一致性：迟到 idle 冻结不得吞掉运行中 turn 的�
 
     // 迟到/伪 idle（restoreActiveProgress 竞态 / SSE 重放）：turn 实际仍在跑。
     s = reduce(s, evIdle())
-    expect(s.activeTurn).toBeNull() // idle 语义保持（收尾兜底）
+    // 新语义：idle **只停 streaming、保持 live**（activeTurn 保留）。
+    expect(s.activeTurn).toBe(T)
+    const ti = s.turns.get(T)
+    if (ti?.phase.kind !== 'live') throw new Error('idle must keep the turn live')
+    expect(ti.phase.data.streaming).toBe(false)
 
     // ★ 新迭代到达 —— 后端不会对已结束的 turn 发迭代 ⇒ 这个事件证明 idle 是陈旧的。
     s = reduce(s, evIteration(5, 4, 'four'))
@@ -230,7 +234,7 @@ describe('P0 线性一致性：迟到 idle 冻结不得吞掉运行中 turn 的�
 // 证据标准与 `iteration` case 完全一致：`ev.iteration > maxIter`（后端绝不会对已
 // 结束的 turn 发新迭代；进行中迭代号必然大于已落库的最大迭代号）。
 describe('P0 对称性：冻结 / committed 的遮蔽解除对 stream 事件必须同样成立', () => {
-  it('冻结后：进行中迭代的 stream 事件必须解冻并继续流式更新（不得整批丢弃）', () => {
+  it('迟到 idle 只停流：进行中迭代的 stream 事件继续更新（不得整批丢弃）', () => {
     let s = reduce(initialChatState('web:chatX'), evTurnStarted())
     s = reduce(s, evIteration(2, 1, 'one'))
     s = reduce(s, evIteration(3, 2, 'two'))
@@ -238,17 +242,18 @@ describe('P0 对称性：冻结 / committed 的遮蔽解除对 stream 事件必�
     s = reduce(s, evStream(4, 3, 'stream A'))
     expect(s.activeTurn).toBe(T)
 
-    // 迟到/误传 idle（restoreActiveProgress 竞态 / SSE 重放）冻结了运行中的 turn。
+    // 迟到/误传 idle：只停 streaming，保持 live。
     s = reduce(s, evIdle())
-    expect(s.activeTurn).toBeNull()
-    expect(s.turns.get(T)?.phase.kind).toBe('frozen')
+    expect(s.activeTurn).toBe(T)
+    expect(s.turns.get(T)?.phase.kind).toBe('live')
 
-    // ★ 进行中迭代的流式内容继续到达 —— 后端只对运行中的 turn 发流式事件。
+    // ★ 进行中迭代的流式内容继续到达 —— 必须照常应用（不是解冻，而是从未冻结）。
     s = reduce(s, evStream(5, 3, 'stream B'))
-    expect(s.activeTurn, 'stream 事件必须解冻（否则 live 进度永远不再更新）').toBe(T)
+    expect(s.activeTurn).toBe(T)
     const t = s.turns.get(T)
-    if (t?.phase.kind !== 'live') throw new Error('frozen turn must be revived by an in-flight stream event')
+    if (t?.phase.kind !== 'live') throw new Error('idle must keep the turn live')
     expect(t.phase.data.content).toBe('stream B')
+    expect(t.phase.data.streaming).toBe(true)
     // 冻结前已渲染的迭代一个不少。
     expect(t.phase.data.iterations.map((i) => i.iteration)).toEqual([1, 2])
 

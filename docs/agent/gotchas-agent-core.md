@@ -117,7 +117,7 @@
 - **Recurring jobs skip missed executions on restart (by design).** `cleanupExpiredJobs` recalculates `next_run` from `now` for recurring jobs. This matches traditional cron semantics — no catch-up execution.
 
 ### Startup
-- **⛔ 停机必须先把 WAL 的已提交内容 checkpoint 进主库（2026-09-17 丢数据事故；`sqlite.(*DB).CheckpointForShutdown`）**：`[program:xbot-server]` 未配 `stopwaitsecs`（默认 10s），而停机在某些状态（插件 deactivate / 进度推送 broken pipe / agent loop 未及时退出）会挂住 ⇒ 被 SIGKILL；那一刻"已 ack 但只在 WAL 里"的写入永久丢失。实测：约 2 分钟的 turn 迭代（日志口径跑到 12:47:41 / `msg_count=2938`）与 2 条 `pending_resumes`（12:47:33 写入、日志显示成功）**同时在库里消失**，DB 最后写入停在 12:45:47，连 15 秒后的全量 `VACUUM INTO` 快照里也没有它们 ⇒ 那段 WAL 没被接手进程应用（具体 actor 未证明；当时无任何 DB 错误日志）。**契约**：`serverapp` 停机序列必须是 `collectPendingResumes`（恢复标记先落库）→ `cancel()` → **`webDB.CheckpointForShutdown()`**（`PRAGMA wal_checkpoint(TRUNCATE)`：全帧写主库 + 重置 WAL；受 `busy_timeout(10s)` 约束、重试一次、失败只 WARN、绝不阻塞停机）→ 之后才是 webhook / dispatcher / 插件收尾（**这几步才是会卡住的那部分，checkpoint 必须排在它们之前**）。配套 `stopwaitsecs=120`（`supervisord.conf`；改后 `reread`，**别随手 `update`——它会重启 server**）。**埋点（零风险、纯日志）**：`sqlite.Open/Close` 记调用方 `file:line`；`logWALState` 记 WAL 存在性/size，并把"曾被观测到 → 路径消失"判为 `missing`（**不依赖 inode** —— overlayfs 会复用 inode，`os.SameFile` 不可靠）。**判据教训**：**DB 里 `iteration_history` 无缺号 ≠ 没丢**（那只是"库里到哪儿为止"），必须用日志（`-t<turn>-<iter>` / `msg_count` / `Tool done`）对账"进程跑到哪儿"。另：schema 变更启动时同步 `VACUUM INTO` 2.8GB 备份 ≈18s 只是**风险放大器**（启动窗口变长），**不是**本次丢数的原因（丢失窗口比它早 2 分钟）。Tests: `storage/sqlite/db_shutdown_checkpoint_test.go`（checkpoint 前"主库文件单独读"0 行 → 之后 2 行；变异自证：把 checkpoint 改 no-op ⇒ 测试红）。
+- **⛔ 停机必须先把 WAL 的已提交内容 checkpoint 进主库（2026-09-17 丢数据事故；`sqlite.(*DB).CheckpointForShutdown`）**：`[program:xbot-server]` 未配 `stopwaitsecs`（默认 10s），而停机在某些状态（插件 deactivate / 进度推送 broken pipe / agent loop 未及时退出）会挂住 ⇒ 被 SIGKILL；那一刻"已 ack 但只在 WAL 里"的写入永久丢失。实测：约 2 分钟的 turn 迭代（日志口径跑到 12:47:41 / `msg_count=2938`）与 2 条 `pending_resumes`（12:47:33 写入、日志显示成功）**同时在库里消失**，DB 最后写入停在 12:45:47，连 15 秒后的全量 `VACUUM INTO` 快照里也没有它们 ⇒ 那段 WAL 没被接手进程应用（具体 actor 未证明；当时无任何 DB 错误日志）。**契约**：`serverapp` 停机序列必须是 `collectPendingResumes`（恢复标记先落库）→ `cancel()` → **`ag.MultiSession().DB().CheckpointForShutdown()`**（主库句柄来自 MultiSession；PG 后端 `DB()==nil` ⇒ 跳过）（`PRAGMA wal_checkpoint(TRUNCATE)`：全帧写主库 + 重置 WAL；受 `busy_timeout(10s)` 约束、重试一次、失败只 WARN、绝不阻塞停机）→ 之后才是 webhook / dispatcher / 插件收尾（**这几步才是会卡住的那部分，checkpoint 必须排在它们之前**）。配套 `stopwaitsecs=120`（`supervisord.conf`；改后 `reread`，**别随手 `update`——它会重启 server**）。**埋点（零风险、纯日志）**：`sqlite.Open/Close` 记调用方 `file:line`；`logWALState` 记 WAL 存在性/size，并把"曾被观测到 → 路径消失"判为 `missing`（**不依赖 inode** —— overlayfs 会复用 inode，`os.SameFile` 不可靠）。**判据教训**：**DB 里 `iteration_history` 无缺号 ≠ 没丢**（那只是"库里到哪儿为止"），必须用日志（`-t<turn>-<iter>` / `msg_count` / `Tool done`）对账"进程跑到哪儿"。另：schema 变更启动时同步 `VACUUM INTO` 2.8GB 备份 ≈18s 只是**风险放大器**（启动窗口变长），**不是**本次丢数的原因（丢失窗口比它早 2 分钟）。Tests: `storage/sqlite/db_shutdown_checkpoint_test.go`（checkpoint 前"主库文件单独读"0 行 → 之后 2 行；变异自证：把 checkpoint 改 no-op ⇒ 测试红）。
 - **⚠️ 读路径绝不能被"已删除会话"重新 materialize（2026-10-14 又复现于 CLI）**：`tenants` 里反复冒出用户没创建过的会话，删了又生。根因：任何携带已删除 chatID 的读请求若经 `GetOrCreateSession` 就会重新建 tenant；此前只给 Web `chat_...` 会话接了创建闸门，CLI 会话仍可能被 AskUser 状态对账等读探针重建。修复要点：无副作用的状态探针先用 `GetTenantIDByChannelChatID`，只有找到已有 tenant 才读取控制记录；不要用 `GetOrCreateSession` 做只读存在性检查。测试：`channel/web/web_sse_ghost_test.go` + `agent/pending_ask_user_test.go` 的删除后探针回归。**清理存量**：`tenants` 中不在 `user_chats` 且零消息的幽灵行（有消息的一律保留）。
 - `NewOpenAILLM` loads model list asynchronously. `ListModels()` returns fallback immediately.
 - Settings save is synchronous — all local I/O, no network calls.
@@ -152,3 +152,39 @@
 - **三个独立泄露源（fd 耗尽的真凶）**：① `os/exec.(*Cmd).watchCtx` **4085 个**（chan send 无 receiver）：`NoneSandbox.Exec`/`noneSandboxExecAsync` 用 `exec.CommandContext`（managedCtx=true）启动内部 watchCtx，但 **Go stdlib 契约是 watchCtx 的唯一退出途径 = `cmd.Wait()` 把 wait result 从 resultc 收走**；none_sandbox 路径为绕开 io.Copy EOF 挂死刻意用 `cmd.Process.Wait()` ⇒ `cmd.Wait()` 永不被调 ⇒ 每次 Shell 调用必泄一个 watcher + 3-4 个 pipe fd。② `llm.(*OpenAILLM/AnthropicLLM).processStream` watcher **765 个**：`go func(){ select{ case <-ctxDone: stream.Close()/resp.Body.Close() } }()` 的唯一退出条件是 ctx 取消——**正常完成的流（绝大多数）永不取消 ctx** ⇒ 每次流式请求泄一个 watcher + 钉住已完成的 stream/HTTP 连接。③ `noneSandboxExecAsync` killer **30 个**：`go func(){ <-ctx.Done(); killOnce.Do(...) }()` 单路等待——命令正常结束后 caller 的 ctx 不取消就永活。
 - **修复（4 处，全部走显式生命周期通道）**：① Exec/async 一律 `managedCtx=false`（`exec.Command`，根本不启动 watchCtx）+ 显式 killer `select { case <-ctx.Done(): killProcessGroup; case <-procDone: }`（`procDone` 在 `Process.Wait()` 返回后 close）——顺带修正语义：CommandContext 默认 Kill 只杀直接子进程，显式 killer 杀**整组**（对齐注释宣称的设计意图）。② openai/anthropic watcher 加 `watchDone` chan + `defer close(watchDone)`。③ **守护测试**（先红后绿 + mutation 自证红→绿）：`tools/none_sandbox_leak_test.go`（Exec 泄露/timeout 杀进程语义/async killer 退出/cancel 杀组语义 4 例）、`llm/stream_watcher_leak_test.go`（openai+anthropic 正常完成 watcher 必退）。⚠️ 泄露测试必须用 `context.WithCancel(context.Background())` 派生 ctx——`Background.Done()` 返回 nil，watcher 根本不启动，测试假绿。
 - **教训**：**「绕过 stdlib 管理路径」（Process.Wait 替代 cmd.Wait）时必须连带接管 stdlib 的隐式资源**（watchCtx goroutine）；**任何 watcher goroutine 必须有「主路径正常完成」的显式退出通道**（done channel），不能只依赖 ctx 取消——正常完成的路径恰恰是最常见路径。排查方法论：goroutine dump 按 `created by` 聚类（`os/exec.`/`database/sql.OpenDB`/`xbot/llm.`）+ 按栈顶函数聚类，等待者堆积（db-wait）与持有者缺席（无 driver 帧）的组合指向 fd/连接耗尽而非死锁。
+
+## ⛔ turn 域出站消息缺 `TurnID`：cancel ack 的 `turn_id` 缺省 ⇒ 原生端"被取消的回合永不收尾"（2026-10-22 事故）
+
+**症状（原生客户端）**：历史 `user1 assistant1（iter1-20，busy）` → cancel → 立刻发 `user2`
+⇒ 历史变成 `user1 user2`，而 assistant1 的 iter1-20 **被搬到列表末尾当"在飞尾项"并一直 busy**；
+几秒后（客户端 resync）才自愈。**web 端看同一份数据完全正常** —— 所以它不是数据问题，而是
+"同一条 wire 事件在两端被解读成不同语义"。
+
+**根因链**：
+1. `handleCancelledRun` 直接返回 `&channel.OutboundMsg{...}`，**绕过了 `sendMessage` 的 turn_id 盖章**
+   ⇒ SSE 载荷里 `turn_id` 缺省（`WSMessage.TurnID` 是 `omitempty`）。
+2. web 客户端（`reduce.ts`）对"无 turn_id 的 `text_final`"**回落 `activeTurn`** ⇒ 碰巧收尾正确；
+   原生端（模型链路 = 行源）没有兜底 turn ⇒ **整帧丢弃** ⇒ 该回合 `final == null`
+   ⇒ 行恒 `turn-N-live`（`finalized=false` ⇒ `isLive=true`）⇒ 页面 `syncRowDs` 把 `isLive`
+   行**抽出列表当末尾在飞尾项**渲染（顺序、busy、内容全错位）。
+
+**规则（唯一实现：`Agent.outboundTurnID`）** —— 任何 **turn 域**出站消息都必须带 TurnID：
+① `explicit`（调用方已知的那一轮，如 cancel ack 的 `cancelTurnID`，turn 结束后 `activeTurnID` 已清也正确）；
+② `metadata["turn_id"]`（`RunConfig.TurnID`，正常回复路径）；
+③ `getActiveTurnID(会话)`（工具中途自发 send 的兜底）；
+④ `command_reply="true"` ⇒ **恒 0**（命令分发不分配 turn；借用 active 会让命令输出被当成该轮最终回复而被覆盖 ⇒ "!pwd 没有输出"）。
+
+**已修的同源点**（都属于"自己构造 `OutboundMsg`、绕过 sendMessage"）：
+`handleCancelledRun`（cancel ack）、`handleRunOutput` 的最终回复兜底与"空回复清进度"回包、
+`chatProcessLoop` 的错误兜底 bus 消息、`handleCardResponse` 的兜底回包。
+
+**判据**（mutation 自证齐全）：
+- `agent/turn_id_outbound_test.go`：①cancel ack 带 `turn_id`；②缺 metadata 时回落 `activeTurnID`；
+  ③`outboundTurnID` 优先级表（显式 > metadata > active；命令回复恒 0）。
+  删掉 cancel ack 的 `TurnID:` ⇒ ① 红；把 `command_reply` 判断挪到 `turn_id` 之后 ⇒ ③ 红。
+- `channel/web/web_turn_id_wire_test.go`：真实 `WebChannel.Send` 链路上
+  `turn_id` 必须进 SSE 载荷 JSON（`omitempty` 下 0 会**缺字段**）。删 `wsMsg.TurnID = msg.TurnID` ⇒ 红。
+
+**教训**：`sendMessage` 里的"盖章"逻辑是**规则**，不是私有实现细节。任何绕过它的出站路径
+（自己 new `OutboundMsg` / 往 `bus.Outbound` 直写）都必须走同一个 `outboundTurnID` ——
+否则"agent 打了 id、某条兜底路径又漏了"，症状只在**最挑剔的那个客户端**上暴露（这里是原生）。

@@ -161,7 +161,9 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 	rows, err := conn.Query(
 		`SELECT t.id, t.channel, t.chat_id, COALESCE(c.label, '') as label,
 										COALESCE(t.subscription_id, '') as sub_id, COALESCE(t.model, '') as model,
-										t.created_at, t.last_active_at
+										COALESCE(t.runner_id, '') as runner_id,
+										t.created_at, t.last_active_at, COALESCE(t.preview, '') as preview,
+										COALESCE(c.sort_order, 0) as sort_order
 		FROM tenants t
 		LEFT JOIN user_chats c ON c.channel = t.channel AND c.chat_id = t.chat_id
 		WHERE t.channel != '_shared'
@@ -176,7 +178,7 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 	for rows.Next() {
 		var t TenantInfo
 		var createdAt, lastActiveAt string
-		if err := rows.Scan(&t.ID, &t.Channel, &t.ChatID, &t.Label, &t.SubscriptionID, &t.Model, &createdAt, &lastActiveAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Channel, &t.ChatID, &t.Label, &t.SubscriptionID, &t.Model, &t.RunnerID, &createdAt, &lastActiveAt, &t.Preview, &t.SortOrder); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}
 		t.CreatedAt = parseSQLiteTime(createdAt)
@@ -190,16 +192,6 @@ func (s *TenantService) ListTenants() ([]TenantInfo, error) {
 }
 
 // TenantInfo contains tenant information
-type TenantInfo struct {
-	ID             int64
-	Channel        string
-	ChatID         string
-	Label          string `json:"label,omitempty"`
-	SubscriptionID string `json:"subscription_id,omitempty"`
-	Model          string `json:"model,omitempty"`
-	CreatedAt      time.Time
-	LastActiveAt   time.Time
-}
 
 // SetTenantSubscription persists the session→subscription mapping to the tenants table.
 // This is the backend source of truth for which subscription a session uses.
@@ -353,10 +345,6 @@ func (s *TenantService) ClearSubscriptionFromTenants(subID string) error {
 // session_messages，预览由写入路径维护到这一列）。这些方法全部操作主库。
 
 // TenantDBInfo 是会话库注册信息（tenants 行的会话库三列）。
-type TenantDBInfo struct {
-	DBPath   string // 会话库相对路径（相对主库目录；空 = 尚未分配）
-	Migrated bool   // 会话数据是否已迁移到会话库（false = 主库 session_messages 仍是权威）
-}
 
 // GetTenantDBInfo reads the per-session-DB registry columns for a tenant.
 func (s *TenantService) GetTenantDBInfo(tenantID int64) (TenantDBInfo, error) {

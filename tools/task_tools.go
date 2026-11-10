@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"xbot/internal/textutil"
 	"xbot/llm"
 	log "xbot/logger"
 )
@@ -531,7 +532,7 @@ func truncateStr(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	return textutil.TruncateBytesWithSuffix(s, maxLen, "...")
 }
 
 // ensure TaskStatusTool implements Tool

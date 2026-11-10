@@ -74,6 +74,12 @@ type foregroundShellRegistry struct {
 	// 点"转后台"落空，报 "no running foreground shell in this session"
 	//（用户 2026-09-14：「所有会话都要支持转移到 background」）。
 	byCallID map[string]*ForegroundShellHandle
+	// aliases maps the SERVER-assigned stable call id (protocol.ToolProgress.
+	// CallID, "call-<turn>-<iter>-<index>") to the provider's tool_call id the
+	// handle is registered under. Tool identity on the wire is the stable id
+	// (STATE-MODEL P2/P3′); the registry key stays the provider id, so the
+	// promote RPC — which sends the id the UI shows — still resolves.
+	aliases map[string]string
 }
 
 var globalForegroundShells = &foregroundShellRegistry{
@@ -113,6 +119,31 @@ func registerForegroundShell(sessionKey, callID, command string) *ForegroundShel
 	return h
 }
 
+// RegisterCallAlias maps the server-assigned stable call id (the id clients see
+// in protocol.ToolProgress.CallID) onto the provider's tool_call id the shell
+// registry is keyed by. Tool identity is now assigned by the server before the
+// tool first appears on the wire (STATE-MODEL P2/P3′), so a promote request that
+// echoes the UI's call_id must still resolve to the running handle.
+//
+// Safe to call repeatedly; the map is bounded (aliases are tiny and only added
+// when the two ids actually differ).
+func RegisterCallAlias(stableID, providerID string) {
+	if stableID == "" || providerID == "" || stableID == providerID {
+		return
+	}
+	globalForegroundShells.mu.Lock()
+	defer globalForegroundShells.mu.Unlock()
+	if globalForegroundShells.aliases == nil {
+		globalForegroundShells.aliases = make(map[string]string)
+	}
+	if len(globalForegroundShells.aliases) > 8192 {
+		// Bound memory on very long-lived processes: aliases are only useful
+		// while the tool is running.
+		globalForegroundShells.aliases = make(map[string]string)
+	}
+	globalForegroundShells.aliases[stableID] = providerID
+}
+
 // foregroundShellByCallID looks a running foreground shell up by its (globally
 // unique) tool-call id, regardless of which session key it was registered under.
 // This is what makes promote-to-background work from ANY session view.
@@ -122,7 +153,14 @@ func foregroundShellByCallID(callID string) *ForegroundShellHandle {
 	}
 	globalForegroundShells.mu.Lock()
 	defer globalForegroundShells.mu.Unlock()
-	return globalForegroundShells.byCallID[callID]
+	if h, ok := globalForegroundShells.byCallID[callID]; ok {
+		return h
+	}
+	// Server-assigned identity → provider id alias (see RegisterCallAlias).
+	if provider, ok := globalForegroundShells.aliases[callID]; ok {
+		return globalForegroundShells.byCallID[provider]
+	}
+	return nil
 }
 
 // unregisterForegroundShell removes a finished/promoted handle. Always called

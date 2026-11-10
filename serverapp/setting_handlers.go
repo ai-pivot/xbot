@@ -2,6 +2,7 @@ package serverapp
 
 import (
 	"xbot/agent"
+	"xbot/channel"
 	"xbot/config"
 )
 
@@ -17,6 +18,24 @@ import (
 func applyRuntimeSetting(cfg *config.Config, ag *agent.Agent, senderID, key, value string) {
 	agent.ApplyRuntimeSetting(cfg, ag, senderID, key, value)
 	_ = saveServerConfig(cfg)
+}
+
+// maskSensitiveSettings replaces configured sensitive values with the masked
+// placeholder before a settings snapshot leaves the server. The settings panels
+// round-trip every visible value on save, so the placeholder must mean
+// "configured but unchanged" — never a credential to persist (set_setting
+// rejects masked values for sensitive keys).
+func maskSensitiveSettings(settings map[string]string, configFallbackKey, configFallbackValue string) {
+	for k, v := range settings {
+		if v != "" && channel.IsSensitiveSettingKey(k) {
+			settings[k] = channel.MaskedSettingValue
+		}
+	}
+	// Keys with a config.json fallback (tavily_api_key) must surface as
+	// "configured" too, without exposing the file value.
+	if _, ok := settings[configFallbackKey]; !ok && configFallbackValue != "" {
+		settings[configFallbackKey] = channel.MaskedSettingValue
+	}
 }
 
 // applyRuntimeSettings applies a batch of setting changes and saves server config.

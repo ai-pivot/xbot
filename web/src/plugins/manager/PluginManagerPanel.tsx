@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Trash2 } from 'lucide-react'
 import { usePluginRuntime } from '@/plugin-runtime'
 import { resolvePluginText, type PluginI18nTable } from '@/plugin-runtime/i18n'
 import { useIsTouch } from '@/hooks/useIsMobile'
@@ -33,7 +33,7 @@ interface PluginStatusResponse {
   total?: number
 }
 
-type PendingAction = 'toggle' | 'reload'
+type PendingAction = 'toggle' | 'reload' | 'uninstall'
 
 export function PluginManagerPanel() {
   const isTouch = useIsTouch()
@@ -114,6 +114,23 @@ export function PluginManagerPanel() {
       } catch (syncErr) {
         console.error(`[plugin-manager] 同步前端插件 ${id} 激活状态失败`, syncErr)
       }
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPending((p) => {
+        const next = { ...p }
+        delete next[id]
+        return next
+      })
+    }
+  }
+
+  const doUninstall = async (id: string) => {
+    if (!window.confirm(`卸载插件 ${id}？此操作会删除插件文件。`)) return
+    setPending((p) => ({ ...p, [id]: 'uninstall' }))
+    try {
+      await runtime.rpc.call('plugin_uninstall' as never, { id } as never)
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -247,6 +264,18 @@ export function PluginManagerPanel() {
                     >
                       {isPending === 'reload' && <Loader2 className="h-3 w-3 animate-spin" />}
                       {isPending === 'reload' ? t('plugins.manager.reloading') : t('plugins.manager.reload')}
+                    </button>
+                    <button
+                      onClick={() => void doUninstall(p.id)}
+                      disabled={isPending === 'uninstall'}
+                      className="flex items-center gap-1 rounded-md bg-bg-tertiary/50 px-2 py-0.5 text-text-secondary transition-spring hover:bg-red-500/15 hover:text-red-400 disabled:opacity-50"
+                    >
+                      {isPending === 'uninstall' ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3 w-3" />
+                      )}
+                      {isPending === 'uninstall' ? t('plugins.manager.processing') : t('plugins.manager.uninstall')}
                     </button>
                   </div>
                 </motion.div>

@@ -24,14 +24,11 @@ import type { WebIteration } from '@/types/shared'
 interface IterationGroupProps {
   iteration: WebIteration
   turnID?: number
-  /** 思考块展开态共享键（live 侧同一 key）—— 形态切换后不自动收起。 */
-  reasoningStateKey?: string
 }
 
 export const IterationGroup = memo(function IterationGroup({
   iteration,
   turnID,
-  reasoningStateKey,
 }: IterationGroupProps) {
   const { t } = useI18n()
 
@@ -56,7 +53,6 @@ export const IterationGroup = memo(function IterationGroup({
       {iteration.reasoning && (
         <ThinkingLine
           label={t('agent.thoughtChars', { count: iteration.reasoning.length })}
-          stateKey={reasoningStateKey}
         >
           <ReasoningBlock content={iteration.reasoning} />
         </ThinkingLine>

@@ -4,12 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { normalizeCanonicalSessionTree, normalizeSessionTree, useSessionStoreImpl } from './useSessionStore'
 import {
   lastSeqCache,
-  loadSessionTreeCache,
   progressSnapshotCache,
-  SESSION_TREE_CACHE_KEY,
   sessionCacheKey,
 } from '@/lib/webCache'
-import type { SessionInfo, WSMessage } from '@/types/shared'
+import type { WSMessage } from '@/types/shared'
 
 let sessionHandler: ((event: { channel?: string; chat_id?: string; session_key?: string; action?: string; role?: string; instance?: string; parent_id?: string; removed?: boolean }) => void) | null = null
 let messageHandler: ((event: WSMessage) => void) | null = null
@@ -1542,63 +1540,6 @@ describe('normalizeSessionTree', () => {
     expect(result.current.subAgents.map((s) => s.chatID)).toEqual(['cli:/repo:Agent-main/review:1'])
   })
 
-  it('preserves the selected active session across background refreshes', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url === '/api/chats') {
-        return {
-          ok: true,
-          json: async () => ({
-            ok: true,
-            chats: [
-              {
-                chat_id: 'first',
-                channel: 'cli',
-                label: 'first',
-                is_current: true,
-                last_active: '2026-07-08T00:00:00Z',
-              },
-              {
-                chat_id: 'second',
-                channel: 'cli',
-                label: 'second',
-                last_active: '2026-07-08T00:00:01Z',
-              },
-            ],
-          }),
-        } as Response
-      }
-      if (url === '/api/chats/second/switch?channel=cli' && init?.method === 'POST') {
-        return { ok: true, json: async () => ({ ok: true, chat_id: 'second', channel: 'cli' }) } as Response
-      }
-      throw new Error(`unexpected fetch: ${url}`)
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    const { result } = renderHook(() => useSessionStoreImpl())
-
-    await waitFor(() => {
-      expect(result.current.activeSession).toEqual({ channel: 'cli', chatID: 'first' })
-    })
-
-    await act(async () => {
-      await result.current.switchSession('second', 'cli')
-    })
-    expect(result.current.activeSession).toEqual({ channel: 'cli', chatID: 'second' })
-    const cached = JSON.parse(localStorage.getItem(SESSION_TREE_CACHE_KEY) ?? '{}') as {
-      sessions?: Array<{ chatID: string; isCurrent?: boolean }>
-    }
-    expect(cached.sessions?.find((session) => session.chatID === 'first')?.isCurrent).toBe(false)
-    expect(cached.sessions?.find((session) => session.chatID === 'second')?.isCurrent).toBe(true)
-
-    await act(async () => {
-      await result.current.refresh()
-    })
-
-    expect(result.current.activeSession).toEqual({ channel: 'cli', chatID: 'second' })
-    expect(result.current.sessions.find((s) => s.chatID === 'second')?.isCurrent).toBe(true)
-  })
-
   it('keeps the latest session switch when REST responses resolve out of order', async () => {
     let resolveA!: (response: Response) => void
     let resolveB!: (response: Response) => void
@@ -2118,119 +2059,6 @@ describe('normalizeSessionTree', () => {
     expect(result.current.sessions[0].children ?? []).toHaveLength(1)
     expect(result.current.sessions[0].children?.[0]?.running).toBe(false)
   })
-
-  it('uses session_key to stop only the matching SubAgent', async () => {
-    const child = (parentChatID: string): SessionInfo => ({
-      chatID: `cli:${parentChatID}/review:1`,
-      channel: 'agent',
-      label: 'review/1',
-      lastActive: '2026-07-08T00:00:01Z',
-      preview: '',
-      status: 'idle',
-      isCurrent: false,
-      type: 'agent',
-      role: 'review',
-      instance: '1',
-      parentChannel: 'cli',
-      parentChatID,
-      fullKey: `cli:${parentChatID}/review:1`,
-      agentChatID: `cli:${parentChatID}/review:1`,
-      running: false,
-      children: [],
-    })
-    const childA = child('/repo-a:Agent-main')
-    const childB = child('/repo-b:Agent-main')
-    const parent = (chatID: string, agent: SessionInfo): SessionInfo => ({
-      chatID,
-      channel: 'cli',
-      label: chatID,
-      lastActive: '2026-07-08T00:00:00Z',
-      preview: '',
-      status: 'idle',
-      isCurrent: false,
-      type: 'main',
-      children: [agent],
-    })
-    // The localStorage cache seeds STRUCTURE only — volatile running state is
-    // stripped on load (a cached busy must not resurrect as stale busy after a
-    // page reload). Running state comes from the SSE subagent_started events,
-    // matching production where the sidebar learns subagent state live.
-    localStorage.setItem('xbot_session_tree', JSON.stringify({
-      version: 1,
-      sessions: [parent('/repo-a:Agent-main', childA), parent('/repo-b:Agent-main', childB)],
-      subAgents: [childA, childB],
-    }))
-    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)))
-
-    const { result, unmount } = renderHook(() => useSessionStoreImpl())
-    expect(result.current.subAgents).toHaveLength(2)
-
-    // Bring both subagents to running via the canonical SSE path — this also
-    // timestamps the executing map (mergeStatus trusts SSE busy for the trust
-    // window; HTTP corrects past it).
-    await act(async () => {
-      sessionHandler?.({
-        action: 'subagent_started',
-        channel: 'cli',
-        chat_id: '/repo-a:Agent-main',
-        session_key: childA.chatID,
-        role: 'review',
-        instance: '1',
-      })
-      sessionHandler?.({
-        action: 'subagent_started',
-        channel: 'cli',
-        chat_id: '/repo-b:Agent-main',
-        session_key: childB.chatID,
-        role: 'review',
-        instance: '1',
-      })
-    })
-    expect(result.current.subAgents.find((a) => a.chatID === childA.chatID)?.running).toBe(true)
-    expect(result.current.subAgents.find((a) => a.chatID === childB.chatID)?.running).toBe(true)
-
-    await act(async () => {
-      sessionHandler?.({
-        action: 'subagent_stopped',
-        channel: 'cli',
-        chat_id: '/repo-a:Agent-main',
-        session_key: childA.chatID,
-        role: 'review',
-        instance: '1',
-      })
-    })
-
-    // childA is stopped via session_key → marked idle (not removed);
-    // childB remains running. Both stay in the list.
-    expect(result.current.subAgents.map((agent) => agent.chatID)).toEqual([childA.chatID, childB.chatID])
-    expect(result.current.subAgents.find((a) => a.chatID === childA.chatID)?.running).toBe(false)
-    expect(result.current.subAgents.find((a) => a.chatID === childB.chatID)?.running).toBe(true)
-    unmount()
-  })
-
-  it('renders the cached session tree before the background refresh resolves', () => {
-    localStorage.setItem('xbot_session_tree', JSON.stringify({
-      version: 1,
-      sessions: [{
-        chatID: 'cached-chat',
-        channel: 'web',
-        label: 'Cached chat',
-        lastActive: '2026-07-13T00:00:00Z',
-        preview: 'cached preview',
-        status: 'idle',
-        isCurrent: true,
-      }],
-      subAgents: [],
-    }))
-    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)))
-
-    const { result, unmount } = renderHook(() => useSessionStoreImpl())
-
-    expect(result.current.sessions.map((session) => session.chatID)).toEqual(['cached-chat'])
-    expect(result.current.activeSession).toEqual({ channel: 'web', chatID: 'cached-chat' })
-    unmount()
-  })
-
 
   it('REPRO: createSession 自动切换到新会话（必须让后端也知道 current 变了）', async () => {
     const switchCalls: string[] = []
@@ -2888,36 +2716,6 @@ describe('sidebar state reconciliation (trust window + lost events)', () => {
     expect(result.current.sessions[0].status).toBe('running')
   })
 
-  it('loadSessionTreeCache strips volatile running state (busy ghost after page reload)', () => {
-    // User report: "登录进入会话明明 idle 却显示 busy" — the localStorage tree
-    // cache restored running:true from the previous page's state; a slow/failed
-    // first refresh left the stale busy on screen. The cache is for first-paint
-    // STRUCTURE only; running/waiting must come from the server.
-    localStorage.setItem(SESSION_TREE_CACHE_KEY, JSON.stringify({
-      version: 1,
-      sessions: [{
-        chatID: 'web-chat-1', channel: 'web', label: 'My Chat',
-        lastActive: '2026-07-08T00:00:00Z', preview: '', status: 'running',
-        isCurrent: false, type: 'main', running: true, children: [],
-      }],
-      subAgents: [{
-        chatID: 'web:web-chat-1/explore:mem-1', channel: 'agent', label: 'explore/mem-1',
-        lastActive: '2026-07-08T00:00:01Z', preview: '', status: 'waiting_input',
-        isCurrent: false, type: 'agent', role: 'explore', instance: 'mem-1',
-        parentChannel: 'web', parentChatID: 'web-chat-1', historical: false,
-        agentChatID: 'web:web-chat-1/explore:mem-1', synthetic: false,
-        running: true, status_original: undefined as never, children: [],
-      } as unknown as SessionInfo],
-    }))
-    const tree = loadSessionTreeCache()
-    if (!tree) {
-      throw new Error('cached tree must load')
-    }
-    expect(tree.sessions[0].running).toBe(false)
-    expect(tree.sessions[0].status).toBe('idle')
-    expect(tree.subAgents[0].running).toBe(false)
-    expect(tree.subAgents[0].status).toBe('idle')
-  })
 
   it('identity-less agent-idle must NOT touch the active session (cancel of a background session must not corrupt other busy sessions)', async () => {
     // User report: "只要我在前端cancel一个session，会导致所有busy的session状态异常"

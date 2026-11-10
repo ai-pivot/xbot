@@ -817,3 +817,171 @@ test.describe('区域窗口 — busy 恢复（active_progress 折叠窗口）', 
     expect(made[0].beforeIteration, 'before_iteration 必须是 live 窗口最早迭代号').toBe(WINDOW_FROM)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. prepend 锚：段插入后**用户看到的那一行一动不动**（2026-10-12 用户硬要求）
+//    「用户就是看到的东西要一动不动」—— 判据不是"看起来还行"，而是：
+//      ① 段插入**前/后**同一行的 boundingBox 完全相同；
+//      ② **逐帧采样**（rAF）零漂移 —— 任何一帧偏移 ≠ 0 即判红（禁"先画错一帧再补回来"）；
+//      ③ 新加载的段整段位于列表视口**上方**（只增加上方历史，绝不把内容推进视野）。
+//    段响应刻意**延迟 600ms** 落地，确保 r0 在插入之前拍到（否则断言自证）。
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('区域窗口 — prepend 锚（用户视角一动不动）', () => {
+  test('★ 段插入前/后同一行 bbox 完全相同 + 逐帧零漂移 + 新段整段在视口上方', async ({ page }) => {
+    await setupMock(page, {
+      messages: historyMessages([{ id: 2, turnID: 7, iters: windowIters(), regionsBefore: 3 }]),
+      regions: (req) => {
+        if (req.beforeIteration === WINDOW_FROM) return { iterations: segment(18, 20), regions_before: 1 }
+        if (req.beforeIteration === 18) return { iterations: segment(15, 17), regions_before: 0 }
+        return { iterations: [], regions_before: 0 }
+      },
+    })
+    // 后注册 = 先执行；延迟后再 fallback 给 setupMock 的应答 ⇒ 段一定在 r0 之后落地。
+    await page.route('**/api/regions', async (route) => {
+      await new Promise((r) => setTimeout(r, 600))
+      await route.fallback()
+    })
+    await openSession(page)
+
+    // 用户手势上滚到顶：哨兵进入预取带 ⇒ 触发段请求（此刻内容由**用户自己**定位）
+    await scrollGesture(page)
+    await page.waitForTimeout(150)
+
+    const anchor = page.locator('[data-iter-id="21"]')
+    await expect(anchor).toBeAttached()
+    const before = await anchor.boundingBox()
+    expect(before, '锚行必须可见（否则判据无效）').not.toBeNull()
+
+    // 逐帧采样锚行的 top（rAF），跨越段落地那一刻。
+    await page.evaluate(() => {
+      const w = window as unknown as { __anchorTops?: number[] }
+      w.__anchorTops = []
+      const sample = (): void => {
+        const el = document.querySelector('[data-iter-id="21"]')
+        if (el && w.__anchorTops!.length < 900) w.__anchorTops!.push(el.getBoundingClientRect().top)
+        requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    })
+
+    // 段落地：迭代数 10 → 13（18..30）
+    await expect.poll(() => iterTotal(page), { timeout: 10_000 }).toBe(WINDOW_TO - 18 + 1)
+    const after = await anchor.boundingBox()
+    // 现场取证（DEV 诊断）：锚拍了谁、补了几次、每次多少 —— 输出到 CI 日志
+    const anchorDbg = await page.evaluate(
+      () => (window as unknown as { __prependAnchor?: unknown }).__prependAnchor ?? null,
+    )
+    // 先把测量值打出来（断言前），否则失败时看不到数字
+    console.log(
+      `[锚][debug] ${JSON.stringify(anchorDbg)}\n[锚] before.y=${before!.y.toFixed(2)} after.y=${after ? after.y.toFixed(2) : 'null'} before.h=${before!.height.toFixed(2)} after.h=${after ? after.height.toFixed(2) : 'null'}`,
+    )
+
+    // ① 插入前后同一行 bbox 完全相同
+    expect(after, '锚行必须仍在').not.toBeNull()
+    expect(Math.abs(after!.y - before!.y), '段插入不得移动用户看到的那一行').toBeLessThanOrEqual(0.5)
+    expect(Math.abs(after!.height - before!.height), '锚行自身高度不得变化').toBeLessThanOrEqual(0.5)
+
+    // ② 逐帧零漂移
+    const tops = await page.evaluate(() => (window as unknown as { __anchorTops?: number[] }).__anchorTops ?? [])
+    expect(tops.length, '必须采到足够多帧').toBeGreaterThan(10)
+    const drift = Math.max(...tops.map((t) => Math.abs(t - tops[0])))
+    expect(drift, '逐帧漂移必须为 0（用户一帧都不能看到位移）').toBeLessThanOrEqual(0.5)
+
+    // ③ 新段整段在**可见区**上方（参考系必须是滚动容器的可见顶边；内容包装本身可能
+    //    延伸到视口上方，拿它的 bbox 当顶边会把判定算错。）
+    const viewTop = await page.evaluate(() => {
+      const c = document.querySelector('[data-message-list-content]') as HTMLElement | null
+      let el: HTMLElement | null = c?.parentElement ?? null
+      while (el && getComputedStyle(el).overflowY !== 'auto' && getComputedStyle(el).overflowY !== 'scroll') {
+        el = el.parentElement
+      }
+      return el ? el.getBoundingClientRect().top : null
+    })
+    expect(viewTop, '必须能定位滚动容器').not.toBeNull()
+    const newSeg = await page.locator('[data-iter-id="18"]').boundingBox()
+    expect(newSeg, '新段必须已插入').not.toBeNull()
+    expect(newSeg!.y + newSeg!.height, '新段必须整段位于可见区上方').toBeLessThanOrEqual(viewTop! + 1)
+
+    console.log(
+      `[锚] before.y=${before!.y.toFixed(2)} after.y=${after!.y.toFixed(2)} frames=${tops.length} drift=${drift.toFixed(3)}`,
+    )
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. prepend 锚 · 重新分组路径（2026-10-12 用户报告：「有概率加载完毕后视角变到最上方」）
+//    关键构造：**content 为空**的 tool-only 迭代 —— 只有它们才会被 `mergeToolRuns` 合并
+//    （`absorbs` 要求 `!content`；带 content 的迭代永不合并 ⇒ 旧用例从来没走到这条路）。
+//    段插入后该 run 的 head 从 21 变成 18 ⇒ 旧块被 React **卸载**、新块挂上 ⇒ 以"某个 DOM
+//    元素"为锚的实现会因 `isConnected === false` 直接丢弃锚（一个像素都不补）⇒ 内容整体
+//    位移，用户看到的就是「视角跳到最上方」。"有概率" = 取决于视口顶部那块会不会被重分组。
+// ─────────────────────────────────────────────────────────────────────────────
+test.describe('区域窗口 — prepend 锚（锚所在块被重新分组）', () => {
+  test('★ tool-only run 的 head 变化导致旧块被卸载 ⇒ 用户看到的那一行依旧一动不动', async ({ page }) => {
+    const toolOnly = (n: number): IterSpec => ({
+      iteration: n,
+      // 关键 ①：**content 为空** ⇒ 才会被 mergeToolRuns 合并（段的插入会让 head 21→18 ⇒
+      // 旧块被卸载）。关键 ②：pill 名称足够长 ⇒ 合并块换行数随工具数变化 ⇒ 高度真的会变
+      //（否则 7 pill + 溢出上限让高度恒定，位移根本不存在 ⇒ 测试假绿）。
+      tools: [{ name: `tool-${n}-${'x'.repeat(70)}` }],
+      folded: true,
+    })
+    await setupMock(page, {
+      messages: historyMessages([
+        {
+          id: 2,
+          turnID: 7,
+          iters: Array.from({ length: WINDOW_TO - WINDOW_FROM + 1 }, (_, i) => toolOnly(WINDOW_FROM + i)),
+          regionsBefore: 3,
+        },
+      ]),
+      regions: (req) =>
+        req.beforeIteration === WINDOW_FROM
+          ? { iterations: [18, 19, 20].map((n) => iterPayload(toolOnly(n))), regions_before: 1 }
+          : { iterations: [15, 16, 17].map((n) => iterPayload(toolOnly(n))), regions_before: 0 },
+    })
+    await page.route('**/api/regions', async (route) => {
+      await new Promise((r) => setTimeout(r, 600))
+      await route.fallback()
+    })
+    await openSession(page)
+    await scrollGesture(page)
+    await page.waitForTimeout(150)
+
+    // 判据（**几何无关**，与「同一内容停在屏幕同一位置」严格等价）：
+    //   视口相对内容不动  ⟺  ΔscrollTop == ΔscrollHeight
+    // 且**逐帧**都必须成立 —— 任何一帧不成立 = 用户看到了一次位移。
+    // 这样不依赖任何"参考 DOM 元素"（重分组会让块的身份本来就变）。
+    const readScroll = (): { t: number; h: number } => {
+      const c = document.querySelector('[data-message-list-content]')
+      let el: HTMLElement | null = (c as HTMLElement | null)?.parentElement ?? null
+      while (el && !['auto', 'scroll'].includes(getComputedStyle(el).overflowY)) el = el.parentElement
+      return { t: el?.scrollTop ?? 0, h: el?.scrollHeight ?? 0 }
+    }
+    const before = await page.evaluate(readScroll)
+    await page.evaluate((src) => {
+      const w = window as unknown as { __scroll?: { t: number; h: number }[] }
+      w.__scroll = []
+      const read = new Function(`return (${src})()`) as () => { t: number; h: number }
+      const sample = (): void => {
+        if (w.__scroll!.length < 900) w.__scroll!.push(read())
+        requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    }, readScroll.toString())
+
+    await expect.poll(() => iterTotal(page), { timeout: 10_000 }).toBe(WINDOW_TO - 18 + 1)
+    const after = await page.evaluate(readScroll)
+    const samples = await page.evaluate(() => (window as unknown as { __scroll?: { t: number; h: number }[] }).__scroll ?? [])
+    const dbg = await page.evaluate(() => (window as unknown as { __prependAnchor?: unknown }).__prependAnchor ?? null)
+    const gap0 = before.t - before.h
+    const gap1 = after.t - after.h
+    const worstGap = samples.length > 0 ? Math.max(...samples.map((s) => Math.abs(s.t - s.h - gap0))) : 0
+    console.log(
+      `[锚-rekey] before(t=${before.t},h=${before.h}) after(t=${after.t},h=${after.h}) Δt=${after.t - before.t} Δh=${after.h - before.h} frames=${samples.length} worstGap=${worstGap.toFixed(2)} debug=${JSON.stringify(dbg)}`,
+    )
+
+    expect(Math.abs(gap1 - gap0), 'ΔscrollTop 必须等于 ΔscrollHeight（视口相对内容一动不动）').toBeLessThanOrEqual(1)
+    expect(worstGap, '逐帧：任何一帧的位移都不允许（= 用户一帧都不能看到移动）').toBeLessThanOrEqual(1)
+  })
+})

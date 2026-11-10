@@ -41,7 +41,12 @@ import (
 //     (turn_id, iteration) 详情单查。**该变更不需要迁移链**：initSessionSchema
 //     每次打开会话库都重放整份幂等 DDL（CREATE ... IF NOT EXISTS），新库与既有库
 //     在同一收口点收敛；版本号只记录 schema 修订，不参与分支判断。
-const sessionSchemaVersion = 3
+//   - 3: iteration 列（合成工具对归属迭代）。
+//   - 4: 群组信封列（group_id / sender_type / sender_id / sender_name）。
+//   - 5: 结构化消息列（chat_id / kind / correlation_id / reply_to /
+//     idempotency_key / structured_json / direction / answered / cancelled）
+//     与三个索引。旧库按列幂等 ALTER 补齐。
+const sessionSchemaVersion = 5
 
 // sessionSchema 是会话库的完整 DDL（主库 schema 的子集，FK 省略）。
 // 与 schema.go 的 session_messages/iteration_history 列定义保持逐列一致——
@@ -68,6 +73,28 @@ CREATE TABLE IF NOT EXISTS session_messages (
     record_type TEXT NOT NULL DEFAULT 'message',
     target_history_id INTEGER,
     record_data TEXT,
+    group_id TEXT NOT NULL DEFAULT '',
+    sender_type TEXT NOT NULL DEFAULT '',
+    sender_id TEXT NOT NULL DEFAULT '',
+    sender_name TEXT NOT NULL DEFAULT '',
+    -- v5: 结构化消息信封（sendmessage-structured 设计 §7.2 的会话库子集）。
+    --   chat_id          会话 ID（会话库本身已按 chat 隔离；列用于幂等复合索引）
+    --   kind             消息语义类型（text/ask_user/answer/report/decision/command/event）
+    --   correlation_id   请求—响应关联键
+    --   reply_to         直接回复的行 id（字符串形式，允许悬空）
+    --   idempotency_key  发送者作用域幂等键
+    --   structured_json  完整信封 JSON
+    --   direction        in | out
+    --   answered/cancelled  ask_user 终态（0/1）
+    chat_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    reply_to TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    structured_json TEXT NOT NULL DEFAULT '',
+    direction TEXT NOT NULL DEFAULT '',
+    answered INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
@@ -171,9 +198,60 @@ func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, 
 			return nil, fmt.Errorf("enable foreign keys: %w", err)
 		}
 	}
+	enablePersistWAL(conn)
 	db := &DB{conn: conn, path: path}
 	db.logWALState("open")
 	return db, nil
+}
+
+// enablePersistWAL 对本进程连接池里的**每一个物理连接**打开
+// SQLITE_FCNTL_PERSIST_WAL，让连接关闭时不再 unlink 掉 -wal 文件。
+//
+// 2026-10-21 事故（硬证据）：serve 进程持有 xbot.db-wal 的 fd 期间，另一个短命
+// 进程（python 脚本 / xbot-cli 一次性命令）打开了同一主库并正常关闭。SQLite 的
+// 语义是「最后一个连接关闭时 checkpoint + unlink -wal」——那个短命进程看不到
+// serve 的连接（它的 -shm 视角里 nRef==0），于是它删了 WAL。结果是 serve 之后
+// 一直往**已删除的 inode** 追加（实测 4.3MB 且持续增长），任何新连接（网页、
+// CLI、脚本）都读不到 serve 写的这批数据；而两边的 checkpoint 又在争抢同一批
+// 数据库页 → 复现 2026-10-21 17:17 的「database disk image is malformed」。
+//
+// PERSIST_WAL 把 unlink 这一步整个去掉：WAL 留在磁盘上，serve 与新进程始终共享
+// 同一个 -shm/-wal，不再产生孤儿 inode。
+//
+// 注：这是 per-connection 的 file control（不是 pragma，DSN 传不进去），所以必须
+// 对池里的每个物理连接各设一次；连接池随后的复用会让设置一直有效（主库
+// MaxIdleConns(4)+MaxConnLifetime(0) 常驻，不会回收重建）。
+func enablePersistWAL(conn *sql.DB) {
+	if conn == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 先并发占满池子拿到**不同的**物理连接，逐一设置，最后统一归还。
+	held := make([]*sql.Conn, 0, 4)
+	for i := 0; i < 4; i++ {
+		c, err := conn.Conn(ctx)
+		if err != nil {
+			break
+		}
+		held = append(held, c)
+	}
+	for _, c := range held {
+		_ = c.Raw(func(driverConn any) error {
+			fc, ok := driverConn.(interface {
+				FileControlPersistWAL(dbName string, mode int) (int, error)
+			})
+			if !ok {
+				return nil
+			}
+			_, err := fc.FileControlPersistWAL("main", 1)
+			return err
+		})
+	}
+	for _, c := range held {
+		_ = c.Close()
+	}
 }
 
 // initSessionSchema 创建会话库 schema（幂等：CREATE TABLE IF NOT EXISTS）。
@@ -194,6 +272,70 @@ func (db *DB) initSessionSchema() error {
 		if _, err := db.Conn().Exec("ALTER TABLE session_messages ADD COLUMN iteration INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return fmt.Errorf("add session_messages.iteration: %w", err)
 		}
+	}
+	// v4: 群组消息信封列（group_id / sender_type / sender_id / sender_name）。
+	// 与 v3 同策略：旧库逐列幂等补齐；索引随会话库 DDL 的 IF NOT EXISTS 建好。
+	for _, c := range []struct{ name, ddl string }{
+		{"group_id", "ALTER TABLE session_messages ADD COLUMN group_id TEXT NOT NULL DEFAULT ''"},
+		{"sender_type", "ALTER TABLE session_messages ADD COLUMN sender_type TEXT NOT NULL DEFAULT ''"},
+		{"sender_id", "ALTER TABLE session_messages ADD COLUMN sender_id TEXT NOT NULL DEFAULT ''"},
+		{"sender_name", "ALTER TABLE session_messages ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''"},
+	} {
+		ok, err := columnExists(db.Conn(), "session_messages", c.name)
+		if err != nil {
+			return fmt.Errorf("check session_messages.%s: %w", c.name, err)
+		}
+		if !ok {
+			if _, err := db.Conn().Exec(c.ddl); err != nil {
+				return fmt.Errorf("add session_messages.%s: %w", c.name, err)
+			}
+		}
+	}
+	if _, err := db.Conn().Exec(`CREATE INDEX IF NOT EXISTS ix_sm_group_cursor ON session_messages(group_id, id DESC)`); err != nil {
+		return fmt.Errorf("create ix_sm_group_cursor: %w", err)
+	}
+	// v5: 结构化消息列。与 v3/v4 同策略：旧库逐列幂等补齐（新库由上面的
+	// CREATE TABLE 直接建好）。列顺序与 sessionSchema 末尾一致，便于人工核对。
+	for _, c := range []struct{ name, ddl string }{
+		{"chat_id", "ALTER TABLE session_messages ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''"},
+		{"kind", "ALTER TABLE session_messages ADD COLUMN kind TEXT NOT NULL DEFAULT ''"},
+		{"correlation_id", "ALTER TABLE session_messages ADD COLUMN correlation_id TEXT NOT NULL DEFAULT ''"},
+		{"reply_to", "ALTER TABLE session_messages ADD COLUMN reply_to TEXT NOT NULL DEFAULT ''"},
+		{"idempotency_key", "ALTER TABLE session_messages ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''"},
+		{"structured_json", "ALTER TABLE session_messages ADD COLUMN structured_json TEXT NOT NULL DEFAULT ''"},
+		{"direction", "ALTER TABLE session_messages ADD COLUMN direction TEXT NOT NULL DEFAULT ''"},
+		{"answered", "ALTER TABLE session_messages ADD COLUMN answered INTEGER NOT NULL DEFAULT 0"},
+		{"cancelled", "ALTER TABLE session_messages ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0"},
+	} {
+		ok, err := columnExists(db.Conn(), "session_messages", c.name)
+		if err != nil {
+			return fmt.Errorf("check session_messages.%s: %w", c.name, err)
+		}
+		if !ok {
+			if _, err := db.Conn().Exec(c.ddl); err != nil {
+				return fmt.Errorf("add session_messages.%s: %w", c.name, err)
+			}
+		}
+	}
+	// 幂等索引：同一会话 + 同一业务键只有一行。空键不参与（否则第二条空键
+	// 消息会被误判为重复）。
+	if _, err := db.Conn().Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS ux_sm_chat_idem
+		    ON session_messages(chat_id, idempotency_key)
+		    WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''`); err != nil {
+		return fmt.Errorf("create ux_sm_chat_idem: %w", err)
+	}
+	// 收件箱：未回答的 ask_user（kind, answered 前缀直接命中）。
+	if _, err := db.Conn().Exec(`
+		CREATE INDEX IF NOT EXISTS ix_sm_kind_answered
+		    ON session_messages(kind, answered)`); err != nil {
+		return fmt.Errorf("create ix_sm_kind_answered: %w", err)
+	}
+	// 线程视图：同一 correlation_id 的完整链路。
+	if _, err := db.Conn().Exec(`
+		CREATE INDEX IF NOT EXISTS ix_sm_correlation
+		    ON session_messages(correlation_id)`); err != nil {
+		return fmt.Errorf("create ix_sm_correlation: %w", err)
 	}
 	return nil
 }

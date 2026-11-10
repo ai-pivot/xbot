@@ -961,7 +961,6 @@ func TestIntegration_SubAgent_BasicLifecycle(t *testing.T) {
 	}
 
 	cfg := env.buildRunConfig(messages)
-	cfg.MaxIterations = 10
 	cfg.SpawnAgent = func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 		atomic.AddInt32(&spawnCalled, 1)
 		return &channel.OutboundMsg{

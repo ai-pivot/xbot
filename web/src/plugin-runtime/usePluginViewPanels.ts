@@ -76,3 +76,40 @@ export function usePluginViewPanels(container: ViewContainer): PluginViewPanel[]
 
   return panels
 }
+
+/**
+ * 按 view id 取**单个**插件 view 贡献点（**跨容器**查找；未就绪 ⇒ `null`）。
+ *
+ * ── 为什么需要（真机实证，2026-10-15）────────────────────────────────────────────
+ * 宿主嵌入态只用 `?xbot_view=<viewId>` 指定要挂的视图（原生不认识 `container`）⇒ 需要一条
+ * "只要 id"的取用路径。`usePluginViewPanels(container)` 天然要求先知道容器 ⇒ 不适用。
+ *
+ * ⛔ 与上面 `usePluginViewPanels` 的差异：**不过滤 `dynamic`** —— 宿主是显式点名某个 view，
+ *   动态视图被点名时给插件自己的空态即可（这是插件自己的语义，见 `pluginViewRequest.ts`）。
+ */
+export function usePluginViewById(
+  viewId: string,
+): { pluginId: string; view: ViewContribution } | null {
+  const runtime = useOptionalPluginRuntime()
+  const [entry, setEntry] = useState<{ pluginId: string; view: ViewContribution } | null>(null)
+
+  useEffect(() => {
+    if (!runtime || !viewId) {
+      setEntry(null)
+      return
+    }
+    const recompute = () => {
+      setEntry(runtime.listAllViews().find(({ view }) => view.id === viewId) ?? null)
+    }
+    recompute()
+    const unsubscribe = runtime.subscribeViews?.(recompute) ?? (() => {})
+    // 切语言同样要重算（与同文件既有 hook 同纪律）。
+    const unsubscribeLocale = onLocaleChanged(recompute)
+    return () => {
+      unsubscribe()
+      unsubscribeLocale()
+    }
+  }, [runtime, viewId])
+
+  return entry
+}

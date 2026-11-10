@@ -1,66 +1,59 @@
 /**
- * RegionsDivider —— 「更早区域」分隔条三态 + 结构不变量（D1 线）。
+ * RegionsDivider —— 「更早区域」取回哨兵（D1 线）。
  *
- * 守护点：
- *   ① 三态渲染（idle 计数 / loading spinner / error 重试）；
- *   ② **容器高度恒定**：三态根节点 class 完全一致（不得用估算高度占位，也不得
- *      在态之间改高度 —— 「加载前后滚动总高一致性」，gotchas: content-visibility 事故）；
- *   ③ 哨兵 ref 挂在根节点（IO 观察目标 = 分隔条本身）。
+ * ⛔⛔ 不变量（用户 2026-10-11 明确要求）：**消息不连续零容忍**。渲染出的历史任何时候
+ * 都必须连续；绝不允许在可见流里出现 `iter x → 加载哨兵 → iter x+y（y≠1）` 这种「中间
+ * 跳过 y 条」的结构 —— 也**不允许**出现 `content - 折叠 - content` 的可见折叠条。
+ *
+ * 因此哨兵**不可见**：idle / loading 都不渲染任何可见物（无折线、无「更早的 N 个区域」
+ * 文字、无 spinner）；只有显式失败态才给一个小的「重试」出口。
  */
 import { fireEvent, render, screen } from '@testing-library/react'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { RegionsDivider } from '@/components/agent/RegionsDivider'
-import i18n from '@/i18n'
 
-beforeAll(async () => {
-  await i18n.changeLanguage('zh-CN')
-})
-
-describe('RegionsDivider 三态', () => {
-  it('idle：计数插值 + 上箭头；无 spinner / 无重试按钮', () => {
+describe('RegionsDivider —— 不可见哨兵（消息不连续零容忍）', () => {
+  it('idle：不渲染任何可见物（无计数文案 / 无 spinner / 无重试）', () => {
     render(<RegionsDivider count={12} status="idle" onRetry={() => {}} />)
     const root = screen.getByTestId('regions-divider')
     expect(root.getAttribute('data-state')).toBe('idle')
     expect(root.getAttribute('data-regions-before')).toBe('12')
-    // i18next 插值必须是 {{count}} 双花括号（单括号会原样渲染 `{{count}}`）
-    expect(screen.getByTestId('regions-divider-label').textContent).toBe('更早的 12 个区域')
+    // 关键：DOM 里不得出现任何可见的「更早的 N 个区域」/ spinner / 折线文案。
+    expect(root.textContent ?? '').toBe('')
+    expect(screen.queryByTestId('regions-divider-label')).toBeNull()
     expect(screen.queryByTestId('regions-divider-spinner')).toBeNull()
     expect(screen.queryByTestId('regions-divider-retry')).toBeNull()
   })
 
-  it('loading：spinner + 文案（不显示计数）', () => {
+  it('loading：同样不产生可见物（视觉零新增）', () => {
     render(<RegionsDivider count={12} status="loading" onRetry={() => {}} />)
-    expect(screen.getByTestId('regions-divider').getAttribute('data-state')).toBe('loading')
-    expect(screen.getByTestId('regions-divider-spinner')).toBeTruthy()
-    expect(screen.getByText('正在加载更早区域…')).toBeTruthy()
-    expect(screen.queryByTestId('regions-divider-label')).toBeNull()
+    const root = screen.getByTestId('regions-divider')
+    expect(root.getAttribute('data-state')).toBe('loading')
+    expect(root.textContent ?? '').toBe('')
   })
 
-  it('error：重试按钮；点击 → onRetry', () => {
+  it('error：唯一的例外 —— 给出重试按钮；点击 → onRetry', () => {
     const onRetry = vi.fn()
     render(<RegionsDivider count={12} status="error" onRetry={onRetry} />)
-    const root = screen.getByTestId('regions-divider')
-    expect(root.getAttribute('data-state')).toBe('error')
     const retry = screen.getByTestId('regions-divider-retry')
-    expect(retry.textContent).toContain('加载失败 · 重试')
     fireEvent.click(retry)
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
-  it('三态根节点 class 完全一致（容器高度恒定 ⇒ 滚动总高可预测）', () => {
+  it('idle / loading 根节点 class 完全一致且高度为 1px（不可见、布局可预测）', () => {
     const classes: string[] = []
-    for (const status of ['idle', 'loading', 'error'] as const) {
+    for (const status of ['idle', 'loading'] as const) {
       const { unmount } = render(<RegionsDivider count={5} status={status} onRetry={() => {}} />)
       classes.push(screen.getByTestId('regions-divider').className)
       unmount()
     }
     expect(classes[0]).toBe(classes[1])
-    expect(classes[1]).toBe(classes[2])
-    expect(classes[0]).toContain('h-7')
+    expect(classes[0]).toContain('h-px')
+    expect(classes[0]).toContain('bg-transparent')
   })
 
-  it('哨兵 ref 挂在根节点上（IO 观察目标就是分隔条本身）', () => {
+  it('哨兵 ref 挂在根节点上（IO 观察目标就是哨兵本身）', () => {
     const ref = { current: null as HTMLDivElement | null }
     render(<RegionsDivider count={3} status="idle" onRetry={() => {}} sentinelRef={ref} />)
     expect(ref.current).toBe(screen.getByTestId('regions-divider'))

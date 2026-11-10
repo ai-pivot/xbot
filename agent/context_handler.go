@@ -10,9 +10,10 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/internal/textutil"
 	"xbot/protocol"
 	"xbot/session"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 	"xbot/version"
 )
@@ -251,7 +252,7 @@ func (a *Agent) handleUsage(ctx context.Context, msg bus.InboundMessage) (*chann
 
 	// Today's usage by model
 	today := time.Now().Format("2006-01-02")
-	var todayEntries []sqlite.DailyTokenUsage
+	var todayEntries []common.DailyTokenUsage
 	for _, d := range daily {
 		if d.Date == today {
 			todayEntries = append(todayEntries, d)
@@ -261,7 +262,7 @@ func (a *Agent) handleUsage(ctx context.Context, msg bus.InboundMessage) (*chann
 		sb.WriteString("\n## Today's Usage by Model\n\n")
 		sb.WriteString("| Model | Input | Output | Cached | Cache% | Calls |\n")
 		sb.WriteString("|-------|-------|--------|--------|--------|-------|\n")
-		slices.SortFunc(todayEntries, func(a, b sqlite.DailyTokenUsage) int {
+		slices.SortFunc(todayEntries, func(a, b common.DailyTokenUsage) int {
 			return int((b.InputTokens + b.OutputTokens) - (a.InputTokens + a.OutputTokens))
 		})
 		for _, d := range todayEntries {
@@ -613,7 +614,7 @@ func (a *Agent) handleExportSession(ctx context.Context, msg bus.InboundMessage)
 	// Web channel has no limit (renders in browser). Truncate for IM channels.
 	exportStr := string(exported)
 	if msg.Channel != "web" && msg.Channel != "cli" && len(exportStr) > 28000 {
-		exportStr = exportStr[:28000] + "\n\n... (内容过长已截断，请使用 Web 渠道或 /export 命令获取完整导出)"
+		exportStr = textutil.TruncateBytesWithSuffix(exportStr, 28000, "\n\n... (内容过长已截断，请使用 Web 渠道或 /export 命令获取完整导出)")
 	}
 
 	return &channel.OutboundMsg{
@@ -628,7 +629,7 @@ func (a *Agent) handleExportSession(ctx context.Context, msg bus.InboundMessage)
 
 // historyRecordToExported converts a raw append-only history record
 // (session_messages row) to the portable export format.
-func historyRecordToExported(r sqlite.HistoryRecord) protocol.ExportedRecord {
+func historyRecordToExported(r common.HistoryRecord) protocol.ExportedRecord {
 	rec := protocol.ExportedRecord{
 		HistoryID:       r.HistoryID,
 		RecordType:      string(r.Type),
@@ -636,7 +637,7 @@ func historyRecordToExported(r sqlite.HistoryRecord) protocol.ExportedRecord {
 		RecordData:      r.Data,
 		CreatedAt:       r.CreatedAt,
 	}
-	if r.Type == sqlite.HistoryRecordMessage {
+	if r.Type == common.HistoryRecordMessage {
 		m := r.Message
 		rec.Role = m.Role
 		rec.Content = m.Content

@@ -536,12 +536,33 @@ func (pm *PluginManager) newEntry(m *PluginManifest, pluginDir string, p Plugin)
 }
 
 // findPluginDir locates the directory containing the plugin.
+//
+// ⛔ 数据目录遮蔽（2026-10-12 P0，用户定位）：`plugin/plog.go` 的插件日志目录建在
+// **<xbotHome>/plugins/<id>/logs/**（即扫描目录之内）⇒ 那个目录同样 `IsDir()`，于是
+// `<xbotHome>/plugins/<id>` 遮蔽了 `builtin/<id>` ⇒ 3 个 stdio/grpc 插件加载失败
+// （`state=error`）、reload 报 `read manifest .../plugin.json: no such file or directory`，
+// 正式包看起来"少插件"。
+//
+// 判据只能是**清单存在**：候选目录必须含 `plugin.json` 才算命中（与 InstallPluginFromZip
+// 的 locatePluginDir 同一判据）。只改**路径选择**、不改任何语义：若所有候选都没有清单，
+// 仍退回旧行为（第一个存在的目录 → dirs[0]/<id> → pluginID）。
 func (pm *PluginManager) findPluginDir(dirs []string, pluginID string) string {
+	firstExisting := ""
 	for _, dir := range dirs {
 		candidate := filepath.Join(dir, pluginID)
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		info, err := os.Stat(candidate)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if firstExisting == "" {
+			firstExisting = candidate
+		}
+		if _, err := os.Stat(filepath.Join(candidate, "plugin.json")); err == nil {
 			return candidate
 		}
+	}
+	if firstExisting != "" {
+		return firstExisting
 	}
 	if len(dirs) == 0 {
 		return pluginID

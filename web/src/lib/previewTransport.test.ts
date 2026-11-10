@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { backendFetch, postAPI, postRawAPI } from './api'
+import { renderHook } from '@testing-library/react'
+import { backendFetch, getPushSettings, postAPI, postRawAPI } from './api'
 import { appPath, appResourceUrl, backendStreamUrl } from './appUrl'
 import { activatePreviewConnection, clearPreviewConnection } from './previewConnection'
 import { uploadFile } from '@/components/agent/api'
 import { SSEConnectionImpl } from '@/providers/sseConnection'
 import { TerminalWS } from './terminalWS'
 import { PluginFileService } from '@/plugin-runtime/files'
+import { fetchInbox, fetchStructuredMessages } from '@/structured/api'
+import { useStructuredMessages } from '@/structured/useStructuredMessages'
 
 beforeEach(() => {
   vi.stubGlobal('__PREVIEW_ENABLED__', true)
@@ -107,5 +110,38 @@ describe('external preview transport', () => {
     await files.delete('a.png')
     expect(files.getUrl('a.png')).toBe('https://backend.example/xbot/api/plugin-files/test/a.png')
     expect(fetchMock).toHaveBeenLastCalledWith('https://backend.example/xbot/api/plugin-files/test/a.png', expect.objectContaining({ method: 'DELETE' }))
+  })
+})
+
+// master 合入后新增的 GET / SSE 调用（结构化消息、推送设置）曾直接 fetch 同源 `/api/*`：
+// 在 Vercel 预览里会打到静态站点得到 404，而不是用户选定的后端。
+describe('preview transport for GET and SSE callers added after the gate', () => {
+  it('routes structured message, inbox and push settings GETs to the backend with bearer auth', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, data: { items: [], has_more: false, next_cursor: 0 } })))
+    vi.stubGlobal('fetch', fetchMock)
+    await fetchStructuredMessages({ chat_id: 'c1' })
+    await fetchInbox({ chat_id: 'c1' })
+    await getPushSettings()
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][]
+    expect(calls.map(([url]) => new URL(url).pathname)).toEqual(['/xbot/api/messages', '/xbot/api/inbox', '/xbot/api/push/settings'])
+    for (const [url, init] of calls) {
+      expect(url.startsWith('https://backend.example/xbot/api/')).toBe(true)
+      expect(new Headers(init.headers).get('Authorization')).toBe('Bearer secret/a+b')
+      expect(init).toMatchObject({ credentials: 'omit', redirect: 'error', mode: 'cors' })
+    }
+  })
+  it('opens the structured message EventSource on the backend stream URL', () => {
+    const urls: string[] = []
+    vi.stubGlobal('EventSource', class {
+      constructor(url: string) { urls.push(url) }
+      addEventListener() {}
+      close() {}
+      onerror: unknown = null
+      onopen: unknown = null
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true, data: { items: [], has_more: false, next_cursor: 0 } }))))
+    const { unmount } = renderHook(() => useStructuredMessages({ channel: 'web', chat_id: 'c1' }))
+    expect(urls).toEqual(['https://backend.example/xbot/api/sse?channel=web&chat_id=c1&preview_token=secret%2Fa%2Bb'])
+    unmount()
   })
 })

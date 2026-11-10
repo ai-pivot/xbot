@@ -628,10 +628,6 @@ func LocaleZH() *UILocale {
 				},
 			},
 			{
-				Key: "max_iterations", Label: "最大迭代次数", Description: "单次对话最大工具调用迭代次数（默认 2000）",
-				Type: SettingTypeNumber, Category: "Agent 行为", DefaultValue: "2000",
-			},
-			{
 				Key: "max_concurrency", Label: "最大并发数", Description: "同时处理的最大请求数（默认 3）",
 				Type: SettingTypeNumber, Category: "Agent 行为", DefaultValue: "3",
 			},
@@ -1070,10 +1066,6 @@ func localeEN() *UILocale {
 				},
 			},
 			{
-				Key: "max_iterations", Label: "Max Iterations", Description: "Max tool call iterations per conversation (default 2000)",
-				Type: SettingTypeNumber, Category: "Agent behavior", DefaultValue: "2000",
-			},
-			{
 				Key: "max_concurrency", Label: "Max Concurrency", Description: "Max concurrent requests (default 3)",
 				Type: SettingTypeNumber, Category: "Agent behavior", DefaultValue: "3",
 			},
@@ -1509,10 +1501,6 @@ func localeJA() *UILocale {
 					{Label: "手動圧縮", Value: "manual"},
 					{Label: "圧縮なし", Value: "none"},
 				},
-			},
-			{
-				Key: "max_iterations", Label: "最大反復数", Description: "1回の会話の最大ツール呼び出し反復数（デフォルト 2000）",
-				Type: SettingTypeNumber, Category: "Agent 動作", DefaultValue: "2000",
 			},
 			{
 				Key: "max_concurrency", Label: "最大同時実行数", Description: "同時に処理する最大リクエスト数（デフォルト 3）",

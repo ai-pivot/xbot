@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -12,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"path/filepath"
 	"xbot/agent"
 	"xbot/bus"
 	"xbot/channel"
@@ -23,8 +23,10 @@ import (
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
+	"xbot/registry"
 	"xbot/session"
-	"xbot/storage/sqlite"
+	"xbot/storage"
+	"xbot/storage/common"
 	"xbot/tools"
 
 	"github.com/google/uuid"
@@ -48,6 +50,12 @@ type RPCContext struct {
 	// pluginWidgetsMu serializes plugin_widgets RPC calls so concurrent
 	// sessions don't race on the shared PluginContext.workingDir.
 	pluginWidgetsMu sync.Mutex
+}
+
+// webAuthStore returns the backend-agnostic web-user store (SQLite or PG),
+// sourced from the agent's storage layer (Config() embeds WebAuthStore).
+func (h *RPCContext) webAuthStore() storage.WebAuthStore {
+	return h.Ag.MultiSession().Store().Config()
 }
 
 // broadcastPluginEnablement 向所有 web 客户端广播插件启用/禁用事件，实现热加载。
@@ -177,7 +185,7 @@ func (h *RPCContext) resolveOwnedHistorySession(ctx context.Context, channel, ch
 // subOwnedByUser reports whether sub is manageable by the caller. After the
 // multi-user removal there is a single operator: every subscription belongs
 // to them (sender 'cli_user' post-v63 sender collapse).
-func (h *RPCContext) subOwnedByUser(ctx context.Context, svc *sqlite.LLMSubscriptionService, sub *sqlite.LLMSubscription) bool {
+func (h *RPCContext) subOwnedByUser(ctx context.Context, svc storage.SubscriptionBackend, sub *common.LLMSubscription) bool {
 	if isAdmin(ctx) {
 		return true
 	}
@@ -203,7 +211,7 @@ func (h *RPCContext) requireLLMFactory() error {
 	return nil
 }
 
-func (h *RPCContext) requireSubscriptionSvc() (*sqlite.LLMSubscriptionService, error) {
+func (h *RPCContext) requireSubscriptionSvc() (storage.SubscriptionBackend, error) {
 	if err := h.requireLLMFactory(); err != nil {
 		return nil, err
 	}
@@ -237,11 +245,13 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 		usage.MaxContextTokens = defaultMaxContext
 	}
 
-	if h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
+	if h.Ag == nil || h.Ag.MultiSession() == nil {
 		return usage, nil
 	}
-	db := h.Ag.MultiSession().DB()
-	tenantID, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(channelName, chatID)
+	// 后端无关：tenant 解析走 TenantStore，会话 token 走 SessionStore
+	// （SQLite 会话库 / PG 共享连接）—— 不再依赖主库 *common.DB，因此 PG 后端同样可用。
+	tenantStore := h.Ag.MultiSession().Store().Tenant()
+	tenantID, err := tenantStore.GetTenantIDByChannelChatID(channelName, chatID)
 	if err != nil {
 		return usage, err
 	}
@@ -249,8 +259,6 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 		return usage, nil
 	}
 
-	// v71（每会话一个 DB）：session_messages.context_tokens 在会话库 —— 经
-	// SessionServiceFor（tenantID → 会话库）读取，绝不再 NewSessionService(主库)。
 	sessionSvc, err := h.Ag.MultiSession().SessionServiceFor(tenantID)
 	if err != nil {
 		return usage, err
@@ -259,7 +267,7 @@ func (h *RPCContext) contextUsage(ctx context.Context, senderID, channelName, ch
 	if err != nil {
 		return usage, err
 	}
-	statePromptTokens, stateCompletionTokens, err := sqlite.NewMemoryService(db).GetTokenState(ctx, tenantID)
+	statePromptTokens, stateCompletionTokens, err := h.Ag.MultiSession().Store().Memory().GetTokenState(ctx, tenantID)
 	if err != nil {
 		return usage, err
 	}
@@ -296,7 +304,8 @@ func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher
 	registerCommandHandlers(t, h)
 	registerPluginHandlers(t, h)
 	registerRunnerHandlers(t, h)
-	registerAppHandlers(t, h)
+	registerSkillHandlers(t, h)
+	registerRegistryHandlers(t, h)
 	registerGenUIHandlers(t, h)
 	registerChannelOpsHandlers(t, h)
 	return t
@@ -461,6 +470,11 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		for _, k := range []string{"llm_provider", "llm_api_key", "llm_model", "llm_base_url"} {
 			delete(result, k)
 		}
+		// Never hand raw credentials to a client. Sensitive settings (tavily_api_key)
+		// come back as a placeholder meaning "configured"; write paths ignore it.
+		// tavily_api_key also has a config.json fallback (global default) — surface
+		// that as "configured" without exposing the file value either.
+		maskSensitiveSettings(result, "tavily_api_key", h.Cfg.TavilyAPIKey)
 		// Inject config defaults for keys not present in user_settings.
 		// This ensures remote CLI clients see the actual runtime values
 		// (e.g. max_context_tokens=200000) even when the user never
@@ -481,9 +495,6 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 			} else {
 				result["max_context_tokens"] = fmt.Sprintf("%d", h.Cfg.Agent.MaxContextTokens)
 			}
-		}
-		if _, ok := result["max_iterations"]; !ok {
-			result["max_iterations"] = fmt.Sprintf("%d", h.Cfg.Agent.MaxIterations)
 		}
 		// max_concurrency is NOT injected from config.json: its single source is
 		// the canonical user_settings row (channel.MaxConcurrencyChannel), which
@@ -512,6 +523,11 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		bizID := rpcBizID(ctx)
 		switch p.Key {
 		case "llm_provider", "llm_api_key", "llm_model", "llm_base_url":
+			return nil
+		}
+		// Masked placeholder means "unchanged" — never persist it over a real
+		// credential (the settings UI round-trips every visible value on save).
+		if channel.IsSensitiveSettingKey(p.Key) && channel.IsMaskedSettingValue(p.Value) {
 			return nil
 		}
 		// Global-scoped keys (sandbox_mode) are server-level config, not per-user.
@@ -543,17 +559,18 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		return nil
 	})
 
-	// ── Max iterations / concurrency / context tokens ──
-	t["set_max_iterations"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
-		N int `json:"n"`
-	}) error {
-		h.Ag.SetMaxIterations(p.N)
-		return nil
-	}))
+	// ── Concurrency / context tokens ──
 	t["set_max_concurrency"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		N int `json:"n"`
 	}) error {
 		h.Ag.SetMaxConcurrency(p.N)
+		return nil
+	}))
+	// 兼容旧客户端：max_iterations 已移除，不再有行为；返回成功而不是 unknown method。
+	t["set_max_iterations"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
+		N int `json:"n"`
+	}) error {
+		log.WithField("n", p.N).Warn("set_max_iterations is removed; request ignored")
 		return nil
 	}))
 	t["set_compression_threshold"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
@@ -823,9 +840,10 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if channel == "" {
 			channel = "cli"
 		}
-		// Read from tenants table (persistent backend source of truth).
-		if h.Ag.MultiSession() != nil && h.Ag.MultiSession().DB() != nil {
-			subID, model, _ := sqlite.NewTenantService(h.Ag.MultiSession().DB()).GetTenantSubscription(channel, p.ChatID)
+		// Read from tenants table (persistent backend source of truth) through the
+		// backend-agnostic TenantStore — works on SQLite and PG alike.
+		if h.Ag.MultiSession() != nil && h.Ag.MultiSession().Store() != nil {
+			subID, model, _ := h.Ag.MultiSession().Store().Tenant().GetTenantSubscription(channel, p.ChatID)
 			if subID != "" {
 				return map[string]string{"subscription_id": subID, "model": model}, nil
 			}
@@ -855,7 +873,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		dbSub := &sqlite.LLMSubscription{
+		dbSub := &common.LLMSubscription{
 			ID:              p.Sub.ID,
 			Name:            p.Sub.Name,
 			Provider:        p.Sub.Provider,
@@ -868,9 +886,9 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			IsDefault:       p.Sub.Active,
 		}
 		if len(p.Sub.PerModelConfigs) > 0 {
-			dbSub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(p.Sub.PerModelConfigs))
+			dbSub.PerModelConfigs = make(map[string]common.PerModelConfig, len(p.Sub.PerModelConfigs))
 			for model, cfg := range p.Sub.PerModelConfigs {
-				dbSub.PerModelConfigs[model] = sqlite.PerModelConfig(cfg)
+				dbSub.PerModelConfigs[model] = common.PerModelConfig(cfg)
 			}
 		}
 		// Single operator (multi-user removal): every subscription belongs to
@@ -885,7 +903,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 	t["update_per_model_config"] = rpc1void(func(ctx context.Context, p struct {
 		ID     string                `json:"id"`
 		Model  string                `json:"model"`
-		Config sqlite.PerModelConfig `json:"config"`
+		Config common.PerModelConfig `json:"config"`
 	}) error {
 		svc, err := h.requireSubscriptionSvc()
 		if err != nil {
@@ -900,7 +918,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			return fmt.Errorf("subscription not found")
 		}
 		if existing.PerModelConfigs == nil {
-			existing.PerModelConfigs = make(map[string]sqlite.PerModelConfig)
+			existing.PerModelConfigs = make(map[string]common.PerModelConfig)
 		}
 		existing.PerModelConfigs[p.Model] = p.Config
 		if err := svc.Update(existing); err != nil {
@@ -975,7 +993,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return nil, err
 		}
-		var subs []*sqlite.LLMSubscription
+		var subs []*common.LLMSubscription
 		if len(p.IDs) > 0 {
 			for _, id := range p.IDs {
 				sub, err := svc.Get(id)
@@ -1076,7 +1094,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				continue
 			}
 			newID := uuid.New().String()
-			dbSub := &sqlite.LLMSubscription{
+			dbSub := &common.LLMSubscription{
 				ID:              newID,
 				Name:            imp.Name,
 				Provider:        imp.Provider,
@@ -1088,9 +1106,9 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				SenderID:        cliSenderID,
 			}
 			if len(imp.PerModelConfigs) > 0 {
-				dbSub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(imp.PerModelConfigs))
+				dbSub.PerModelConfigs = make(map[string]common.PerModelConfig, len(imp.PerModelConfigs))
 				for model, cfg := range imp.PerModelConfigs {
-					dbSub.PerModelConfigs[model] = sqlite.PerModelConfig(cfg)
+					dbSub.PerModelConfigs[model] = common.PerModelConfig(cfg)
 				}
 			}
 			if err := svc.Add(dbSub); err != nil {
@@ -1167,7 +1185,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if stats == nil {
 			// Unknown session: return an empty aggregate instead of null so
 			// plugin/CLI consumers can render a zero-state panel.
-			return &sqlite.TenantUsageStats{RecentIterations: []sqlite.UsageIterationRow{}, ByModel: []sqlite.UsageModelRow{}}, nil
+			return &common.TenantUsageStats{RecentIterations: []common.UsageIterationRow{}, ByModel: []common.UsageModelRow{}}, nil
 		}
 		return stats, nil
 	})
@@ -1185,7 +1203,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		if err := h.requireMultiSession(); err != nil {
 			return nil, err
 		}
-		bucketSeconds, ok := sqlite.UsageBucketSecondsForGranularity(p.Granularity)
+		bucketSeconds, ok := common.UsageBucketSecondsForGranularity(p.Granularity)
 		if !ok {
 			return nil, fmt.Errorf("invalid granularity %q (want minute, hour or day)", p.Granularity)
 		}
@@ -1199,7 +1217,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		if buckets == nil {
 			// Unknown session: empty series (zero-state), never null.
-			return []sqlite.UsageBucket{}, nil
+			return []common.UsageBucket{}, nil
 		}
 		return buckets, nil
 	})
@@ -1343,7 +1361,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 				return nil, err
 			}
 			// v55: load structured iteration_history by turn_id.
-			var turnIterMap map[uint64][]sqlite.IterationRecord
+			var turnIterMap map[uint64][]common.IterationRecord
 			tenantID := sess.TenantID()
 			if tenantID > 0 {
 				turnSet := make(map[uint64]bool)
@@ -1366,7 +1384,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 					}
 					batch, _ := svc.GetIterationHistoryByTurns(tenantID, turnIDs)
 					if len(batch) > 0 {
-						turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(batch))
+						turnIterMap = make(map[uint64][]common.IterationRecord, len(batch))
 						for turnID, recs := range batch {
 							if len(recs) > 0 {
 								turnIterMap[turnID] = recs
@@ -1396,13 +1414,9 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
 		// because ChatRenameFn writes labels with cliSenderID, not the WS auth identity.
 		senderID := bizID
-		if db := h.Ag.MultiSession().DB(); db != nil {
-			cs := sqlite.NewChatService(db)
-			if err := cs.DeleteChat(p.Channel, senderID, p.ChatID); err != nil {
-				return nil, fmt.Errorf("delete chat: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("database not available")
+		tenantStore := h.Ag.MultiSession().Store().Tenant()
+		if err := tenantStore.DeleteChat(p.Channel, senderID, p.ChatID); err != nil {
+			return nil, fmt.Errorf("delete chat: %w", err)
 		}
 		// Clean up offload files for the deleted session.
 		h.Ag.CleanupSessionFiles(p.Channel, p.ChatID)
@@ -1431,13 +1445,9 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		// Use bizID (cliSenderID for admin) as sender_id for DB operations,
 		// consistent with ChatRenameFn which writes labels with cliSenderID.
 		senderID := bizID
-		if db := h.Ag.MultiSession().DB(); db != nil {
-			cs := sqlite.NewChatService(db)
-			if err := cs.RenameChat(p.Channel, senderID, p.ChatID, p.NewName); err != nil {
-				return nil, fmt.Errorf("rename chat: %w", err)
-			}
-		} else {
-			return nil, fmt.Errorf("database not available")
+		tenantStore := h.Ag.MultiSession().Store().Tenant()
+		if err := tenantStore.RenameChat(p.Channel, senderID, p.ChatID, p.NewName); err != nil {
+			return nil, fmt.Errorf("rename chat: %w", err)
 		}
 		return map[string]string{"status": "ok"}, nil
 	})
@@ -1506,8 +1516,8 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		// Get model + tenantID for the full raw history.
 		var model string
 		var tenantID int64
-		if db := ms.DB(); db != nil {
-			ts := sqlite.NewTenantService(db)
+		if ms.Store() != nil {
+			ts := ms.Store().Tenant()
 			if _, m, err := ts.GetTenantSubscription(channelName, chatID); err == nil {
 				model = m
 			}
@@ -1935,19 +1945,19 @@ func registerAdminHandlers(t RPCTable, h *RPCContext) {
 	t["create_web_user"] = h.requireAdmin(rpc1(func(ctx context.Context, p struct {
 		Username string `json:"username"`
 	}) (any, error) {
-		_, password, err := web.CreateWebUser(h.Ag.MultiSession().DB().Conn(), p.Username)
+		_, password, err := web.CreateWebUser(h.webAuthStore(), p.Username)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]string{"password": password}, nil
 	}))
 	t["list_web_users"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
-		return web.ListWebUsers(h.Ag.MultiSession().DB().Conn())
+		return web.ListWebUsers(h.webAuthStore())
 	}))
 	t["delete_web_user"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
 		Username string `json:"username"`
 	}) error {
-		return web.DeleteWebUser(h.Ag.MultiSession().DB().Conn(), p.Username)
+		return web.DeleteWebUser(h.webAuthStore(), p.Username)
 	}))
 }
 
@@ -2614,7 +2624,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 		MaxOutputTokens int                              `json:"max_output_tokens"`
 		ThinkingMode    string                           `json:"thinking_mode"`
 		APIType         string                           `json:"api_type"`
-		PerModelConfigs map[string]sqlite.PerModelConfig `json:"per_model_configs"`
+		PerModelConfigs map[string]common.PerModelConfig `json:"per_model_configs"`
 	} `json:"sub"`
 }) error {
 	bizID := rpcBizID(ctx)
@@ -2631,7 +2641,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	}
 	// Start from existing subscription — client never has unmasked credentials,
 	// so we preserve all existing fields and only accept intentional changes.
-	dbSub := &sqlite.LLMSubscription{
+	dbSub := &common.LLMSubscription{
 		ID: existing.ID, SenderID: existing.SenderID,
 		Name: existing.Name, Provider: existing.Provider, BaseURL: existing.BaseURL,
 		APIKey: existing.APIKey, Model: existing.Model,
@@ -2748,8 +2758,8 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 			if resolvedModel == "" {
 				return fmt.Errorf("subscription %s has no selectable model (empty Model column and no user default) — cannot bind session %s", sub.ID, p.ChatID)
 			}
-			if ms := h.Ag.MultiSession(); ms != nil && ms.DB() != nil {
-				if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription(channel, p.ChatID, sub.ID, resolvedModel); err != nil {
+			if ms := h.Ag.MultiSession(); ms != nil && ms.Store() != nil {
+				if err := ms.Store().Tenant().SetTenantSubscription(channel, p.ChatID, sub.ID, resolvedModel); err != nil {
 					log.WithError(err).Warn("RPC setDefaultSubscription: SetTenantSubscription failed")
 				}
 			}
@@ -2817,16 +2827,15 @@ func (h *RPCContext) listTenants(ctx context.Context) (any, error) {
 	if h.Ag.MultiSession() == nil {
 		return []struct{}{}, nil
 	}
-	db := h.Ag.MultiSession().DB()
-	if db == nil {
+	if h.Ag.MultiSession().Store() == nil {
 		return []struct{}{}, nil
 	}
-	tenants, err := sqlite.NewTenantService(db).ListTenants()
+	tenants, err := h.Ag.MultiSession().Store().Tenant().ListTenants()
 	if err != nil {
 		return nil, err
 	}
 	if !isAdmin(ctx) {
-		var userTenants []sqlite.TenantInfo
+		var userTenants []common.TenantInfo
 		for _, t := range tenants {
 			if t.ChatID == bizID {
 				userTenants = append(userTenants, t)
@@ -2834,7 +2843,7 @@ func (h *RPCContext) listTenants(ctx context.Context) (any, error) {
 		}
 		tenants = userTenants
 	}
-	tenants = slices.DeleteFunc(tenants, func(t sqlite.TenantInfo) bool {
+	tenants = slices.DeleteFunc(tenants, func(t common.TenantInfo) bool {
 		return t.Channel == "agent"
 	})
 	type tenantJSON struct {
@@ -2868,15 +2877,15 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		LLMModel    string `json:"llm_model"`
 		LLMBaseURL  string `json:"llm_base_url"`
 	}) (any, error) {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return nil, fmt.Errorf("runner management not configured")
 		}
 		if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 			router.EnsureRemote()
 		}
 		llm := tools.RunnerLLMSettings{Provider: p.LLMProvider, APIKey: p.LLMAPIKey, Model: p.LLMModel, BaseURL: p.LLMBaseURL}
-		token, err := tools.NewRunnerStore(db).Create(p.Name, p.Mode, p.DockerImage, p.Workspace, llm)
+		token, err := store.Create(p.Name, p.Mode, p.DockerImage, p.Workspace, llm)
 		if err != nil {
 			return nil, err
 		}
@@ -2908,25 +2917,29 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 	t["runner_registry"] = rpc1(func(ctx context.Context, p struct {
 		Managed []string `json:"managed"`
 	}) (any, error) {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return nil, fmt.Errorf("runner management not configured")
 		}
-		return tools.BuildRunnerRegistry(db, p.Managed)
+		var tenantStore storage.TenantStore
+		if h.Ag != nil && h.Ag.MultiSession() != nil && h.Ag.MultiSession().Store() != nil {
+			tenantStore = h.Ag.MultiSession().Store().Tenant()
+		}
+		return tools.BuildRunnerRegistryFromStore(store, tenantStore, p.Managed)
 	})
 
 	// runner_delete removes a runner and drops its live connection.
 	t["runner_delete"] = rpc1void(func(ctx context.Context, p struct {
 		Name string `json:"name"`
 	}) error {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return fmt.Errorf("runner management not configured")
 		}
 		if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 			router.DisconnectRunner(p.Name)
 		}
-		return tools.NewRunnerStore(db).Delete(p.Name)
+		return store.Delete(p.Name)
 	})
 
 	// runner_rename renames a runner (session bindings follow the new name).
@@ -2934,11 +2947,11 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		OldName string `json:"old_name"`
 		NewName string `json:"new_name"`
 	}) error {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
+		store := tools.GetRunnerStore()
+		if store == nil {
 			return fmt.Errorf("runner management not configured")
 		}
-		return tools.NewRunnerStore(db).Rename(p.OldName, p.NewName)
+		return store.Rename(p.OldName, p.NewName)
 	})
 
 	// runner_session_get reports the machine a session is bound to.
@@ -2975,9 +2988,300 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 
 }
 
+// --- Registry RPC handlers ---
+
+func registerRegistryHandlers(t RPCTable, h *RPCContext) {
+
+	t["registry_search"] = rpc1(func(ctx context.Context, p struct {
+		Query   string `json:"query"`
+		Type    string `json:"type"`    // optional filter: skill/agent/plugin/package
+		Refresh bool   `json:"refresh"` // force git pull instead of using cache
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		var idx *registry.Index
+		var err error
+		if p.Refresh {
+			idx, err = registry.Refresh(xbotHome)
+		} else {
+			idx, err = registry.Fetch(xbotHome)
+		}
+		if err != nil {
+			return nil, err
+		}
+		results := registry.Search(idx, p.Query)
+		if p.Type != "" {
+			var filtered []registry.Entry
+			for _, e := range results {
+				if e.Type == p.Type {
+					filtered = append(filtered, e)
+				}
+			}
+			results = filtered
+		}
+		return map[string]any{"items": results}, nil
+	})
+
+	t["registry_install"] = rpc1(func(ctx context.Context, p struct {
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		workDir := h.Cfg.Agent.WorkDir
+		if workDir == "" {
+			workDir = xbotHome
+		}
+		senderID := rpcAuthID(ctx)
+
+		idx, err := registry.Fetch(xbotHome)
+		if err != nil {
+			return nil, err
+		}
+		entry := registry.FindEntry(idx, p.Name)
+		if entry == nil {
+			return nil, fmt.Errorf("item %q not found in any registry", p.Name)
+		}
+
+		if p.Force {
+			registryRemove(xbotHome, workDir, senderID, entry.Type, entry.Name)
+		}
+
+		if err := registry.Install(xbotHome, workDir, senderID, entry); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"type":    entry.Type,
+			"name":    entry.Name,
+			"version": entry.Version,
+		}, nil
+	})
+
+	t["registry_list_installed"] = rpc1(func(ctx context.Context, p struct {
+		Type string `json:"type"` // optional filter
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		workDir := h.Cfg.Agent.WorkDir
+		if workDir == "" {
+			workDir = xbotHome
+		}
+		senderID := rpcAuthID(ctx)
+
+		type installedItem struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}
+		var items []installedItem
+
+		if p.Type == "" || p.Type == "skill" {
+			for _, n := range listUserInstalled(xbotHome, workDir, senderID, "skill") {
+				items = append(items, installedItem{Type: "skill", Name: n})
+			}
+		}
+		if p.Type == "" || p.Type == "agent" {
+			for _, n := range listUserInstalled(xbotHome, workDir, senderID, "agent") {
+				items = append(items, installedItem{Type: "agent", Name: n})
+			}
+		}
+		if p.Type == "" || p.Type == "plugin" {
+			for _, n := range listUserInstalled(xbotHome, workDir, senderID, "plugin") {
+				items = append(items, installedItem{Type: "plugin", Name: n})
+			}
+		}
+		return map[string]any{"items": items}, nil
+	})
+
+	t["registry_config_list"] = rpc1(func(ctx context.Context, p struct{}) (any, error) {
+		xbotHome := config.XbotHome()
+		cfg, err := registry.LoadConfig(xbotHome)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"registries": cfg.Registries}, nil
+	})
+
+	t["registry_config_add"] = rpc1(func(ctx context.Context, p struct {
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		Branch string `json:"branch"`
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		if p.Name == "" || p.URL == "" {
+			return nil, fmt.Errorf("name and url are required")
+		}
+		if err := registry.AddRegistry(xbotHome, p.Name, p.URL, p.Branch); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+	})
+
+	t["registry_config_remove"] = rpc1(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) (any, error) {
+		xbotHome := config.XbotHome()
+		if p.Name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+		if err := registry.RemoveRegistry(xbotHome, p.Name); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+	})
+
+	t["registry_uninstall"] = rpc1(func(ctx context.Context, p struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}) (any, error) {
+		if p.Name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+		xbotHome := config.XbotHome()
+		senderID := rpcAuthID(ctx)
+
+		switch p.Type {
+		case "skill":
+			rm := h.Ag.RegistryManager()
+			if rm == nil {
+				return nil, fmt.Errorf("registry manager not initialized")
+			}
+			if err := rm.UninstallSkill(p.Name, senderID); err != nil {
+				return nil, err
+			}
+		case "agent":
+			rm := h.Ag.RegistryManager()
+			if rm == nil {
+				return nil, fmt.Errorf("registry manager not initialized")
+			}
+			if err := rm.UninstallAgent(p.Name, senderID); err != nil {
+				return nil, err
+			}
+		case "plugin":
+			// Resolve the plugin ID (manifest id or directory name), then
+			// uninstall through the plugin manager for proper deactivation
+			// (hooks/widgets/runtime torn down before files are removed).
+			id := resolveInstalledPluginID(xbotHome, p.Name)
+			if id == "" {
+				return nil, fmt.Errorf("plugin %q is not installed", p.Name)
+			}
+			if pm := h.Ag.PluginManager(); pm != nil {
+				if err := pm.UninstallPlugin(ctx, id); err != nil {
+					return nil, err
+				}
+			} else {
+				_ = os.RemoveAll(filepath.Join(xbotHome, "plugins", id))
+			}
+		default:
+			return nil, fmt.Errorf("unknown type %q (expected skill, agent, or plugin)", p.Type)
+		}
+		return map[string]any{"ok": true}, nil
+	})
+}
+
+// resolveInstalledPluginID maps a user-supplied plugin name (directory name or
+// manifest id) to the plugin's install directory name (== its manifest id).
+// Returns "" when no installed plugin matches.
+func resolveInstalledPluginID(xbotHome, name string) string {
+	pluginsDir := filepath.Join(xbotHome, "plugins")
+	// Direct directory match (covers name == id, the common case).
+	if info, err := os.Stat(filepath.Join(pluginsDir, name)); err == nil && info.IsDir() {
+		return name
+	}
+	// Scan manifests for a matching id (name may be the id while the dir
+	// differs, or vice versa).
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(pluginsDir, e.Name(), "plugin.json"))
+		if err != nil {
+			continue
+		}
+		var m struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(data, &m) == nil && m.ID == name {
+			return e.Name()
+		}
+	}
+	return ""
+}
+
+// registryRemove removes an installed item by type and name.
+func registryRemove(xbotHome, workDir, senderID, itemType, name string) {
+	switch itemType {
+	case "skill":
+		_ = os.RemoveAll(filepath.Join(tools.UserSkillsRoot(workDir, senderID), name))
+	case "agent":
+		_ = os.Remove(filepath.Join(tools.UserAgentsRoot(workDir, senderID), name+".md"))
+	case "plugin":
+		_ = os.RemoveAll(filepath.Join(xbotHome, "plugins", name))
+	}
+}
+
+// listUserInstalled returns names of installed items of the given type.
+func listUserInstalled(xbotHome, workDir, senderID, itemType string) []string {
+	var dir string
+	switch itemType {
+	case "skill":
+		dir = tools.UserSkillsRoot(workDir, senderID)
+	case "agent":
+		dir = tools.UserAgentsRoot(workDir, senderID)
+	case "plugin":
+		dir = filepath.Join(xbotHome, "plugins")
+	default:
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var names []string
+	add := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, e := range entries {
+		switch itemType {
+		case "agent":
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+				add(strings.TrimSuffix(e.Name(), ".md"))
+			}
+		case "plugin":
+			// Only count real plugins (dirs containing plugin.json) and report
+			// the manifest id — registry entries use ids, so installed status
+			// matches correctly (e.g. xbot.ssh-runner, not the repo dir name).
+			if !e.IsDir() {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, e.Name(), "plugin.json"))
+			if err != nil {
+				continue
+			}
+			var m struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(data, &m) == nil && m.ID != "" {
+				add(m.ID)
+			} else {
+				add(e.Name())
+			}
+		default: // skill
+			if e.IsDir() {
+				add(e.Name())
+			}
+		}
+	}
+	return names
+}
+
 // ── Helpers ──
 
-func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
+func subToChannel(s *common.LLMSubscription) channel.Subscription {
 	return channel.Subscription{
 		ID: s.ID, Name: s.Name, Provider: s.Provider,
 		BaseURL: s.BaseURL, APIKey: maskAPIKey(s.APIKey),
@@ -2991,7 +3295,7 @@ func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
 
 // historyRecordToExported converts a raw append-only history record
 // (session_messages row) to the portable export format.
-func historyRecordToExported(r sqlite.HistoryRecord) protocol.ExportedRecord {
+func historyRecordToExported(r common.HistoryRecord) protocol.ExportedRecord {
 	rec := protocol.ExportedRecord{
 		HistoryID:       r.HistoryID,
 		RecordType:      string(r.Type),
@@ -2999,7 +3303,7 @@ func historyRecordToExported(r sqlite.HistoryRecord) protocol.ExportedRecord {
 		RecordData:      r.Data,
 		CreatedAt:       r.CreatedAt,
 	}
-	if r.Type == sqlite.HistoryRecordMessage {
+	if r.Type == common.HistoryRecordMessage {
 		m := r.Message
 		rec.Role = m.Role
 		rec.Content = m.Content
@@ -3043,107 +3347,9 @@ func marshalBgTasks(tasks []*tools.BackgroundTask) []bgTaskJSON {
 	return result
 }
 
-// --- App RPC handlers ---
+// --- Skill RPC handlers ---
 
-// appPackOutputPath builds the app_pack zip output path from a user-supplied
-// name. The name is sanitized to its base component — a traversal name
-// ("../../etc/cron.d/x") must never escape os.TempDir().
-func appPackOutputPath(name string) string {
-	return filepath.Join(os.TempDir(), filepath.Base(name)+".xbot.zip")
-}
-
-func registerAppHandlers(t RPCTable, h *RPCContext) {
-
-	t["app_pack"] = rpc1(func(ctx context.Context, p struct {
-		Name  string `json:"name"`
-		Items []struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
-		} `json:"items"`
-		Author string `json:"author"`
-	}) (any, error) {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return nil, fmt.Errorf("registry manager not initialized")
-		}
-		items := make([]agent.AppItem, len(p.Items))
-		for i, it := range p.Items {
-			items[i] = agent.AppItem{Type: it.Type, Name: it.Name}
-		}
-		outputPath := appPackOutputPath(p.Name)
-		if err := rm.PackApp(items, outputPath, p.Author); err != nil {
-			return nil, err
-		}
-		return map[string]string{"path": outputPath}, nil
-	})
-
-	t["app_install_file"] = rpc1(func(ctx context.Context, p struct {
-		ZipPath  string `json:"zip_path"`
-		SenderID string `json:"sender_id"`
-		Force    bool   `json:"force"`
-	}) (any, error) {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return nil, fmt.Errorf("registry manager not initialized")
-		}
-		result, err := rm.InstallAppFromFile(p.ZipPath, p.SenderID, p.Force)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"name":      result.Manifest.Name,
-			"version":   result.Manifest.Version,
-			"installed": result.Installed,
-			"skipped":   result.Skipped,
-		}, nil
-	})
-
-	t["app_install_url"] = rpc1(func(ctx context.Context, p struct {
-		URL      string `json:"url"`
-		SenderID string `json:"sender_id"`
-		Force    bool   `json:"force"`
-	}) (any, error) {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return nil, fmt.Errorf("registry manager not initialized")
-		}
-		result, err := rm.InstallAppFromURL(p.URL, p.SenderID, p.Force)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"name":      result.Manifest.Name,
-			"version":   result.Manifest.Version,
-			"installed": result.Installed,
-			"skipped":   result.Skipped,
-		}, nil
-	})
-
-	t["app_uninstall"] = rpc1void(func(ctx context.Context, p struct {
-		Type     string `json:"type"`
-		Name     string `json:"name"`
-		SenderID string `json:"sender_id"`
-	}) error {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return fmt.Errorf("registry manager not initialized")
-		}
-		return rm.Uninstall(p.Type, p.Name, p.SenderID)
-	})
-
-	t["app_list"] = rpc1(func(ctx context.Context, p struct {
-		SenderID string `json:"sender_id"`
-	}) (any, error) {
-		rm := h.Ag.RegistryManager()
-		if rm == nil {
-			return nil, fmt.Errorf("registry manager not initialized")
-		}
-		return map[string]any{
-			"skills":  rm.ListInstalledSkills(p.SenderID),
-			"agents":  rm.ListInstalledAgents(p.SenderID),
-			"plugins": rm.ListInstalledPlugins(p.SenderID),
-		}, nil
-	})
+func registerSkillHandlers(t RPCTable, h *RPCContext) {
 
 	t["skill_list"] = rpc1(func(ctx context.Context, p struct {
 		ProjectDir string `json:"project_dir"`
@@ -3218,6 +3424,42 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 			return nil, fmt.Errorf("skill store not initialized")
 		}
 		return map[string]bool{"valid": ss.IsKnownSkillPathFor(rpcAuthID(ctx), p.Path)}, nil
+	})
+
+	t["skill_uninstall"] = rpc1void(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) error {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return fmt.Errorf("registry manager not initialized")
+		}
+		return rm.UninstallSkill(p.Name, rpcAuthID(ctx))
+	})
+
+	t["agent_install_file"] = rpc1(func(ctx context.Context, p struct {
+		MDPath string `json:"md_path"`
+		Name   string `json:"name"`
+		Force  bool   `json:"force"`
+	}) (any, error) {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return nil, fmt.Errorf("registry manager not initialized")
+		}
+		name, err := rm.InstallAgentFromFile(p.MDPath, p.Name, rpcAuthID(ctx), p.Force)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"name": name}, nil
+	})
+
+	t["agent_uninstall"] = rpc1void(func(ctx context.Context, p struct {
+		Name string `json:"name"`
+	}) error {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return fmt.Errorf("registry manager not initialized")
+		}
+		return rm.UninstallAgent(p.Name, rpcAuthID(ctx))
 	})
 
 }

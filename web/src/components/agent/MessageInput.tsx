@@ -128,6 +128,10 @@ interface PendingAttachment {
 
 /** Image attachment detection (matches insertUploadedMedia's mime/extension
  * test — an attachment is an image when the pending chip carries it). */
+function imageAttachmentURL(uploadKey: string): string {
+  return `/api/files/download?key=${encodeURIComponent(uploadKey)}&inline=1`
+}
+
 function isImageAttachment(p: PendingAttachment): boolean {
   return p.mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i.test(p.name)
 }
@@ -397,7 +401,23 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
         },
       },
     },
-    onUpdate: ({ editor }) => {
+    onUpdate: ({ editor, transaction }) => {
+      // Reconcile only removed image references. Upload-in-progress chips and
+      // ordinary files are independent of editor content and must survive.
+      const removedImages = new Set<string>()
+      transaction.before.descendants((node) => {
+        if (node.type.name === 'image') removedImages.add(node.attrs.src)
+      })
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === 'image') removedImages.delete(node.attrs.src)
+      })
+      if (removedImages.size) {
+        setPending((current) => {
+          const next = current.filter((item) => item.uploading || !isImageAttachment(item)
+            || !removedImages.has(imageAttachmentURL(item.uploadKey)))
+          return next.length === current.length ? current : next
+        })
+      }
       contentRevisionRef.current++
       setHasContent(!editor.isEmpty)
       // Markdown snapshot — used for the draft AND for the `!` bang-mode hint.
@@ -728,6 +748,24 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     [onUpload, t, insertUploadedMedia],
   )
 
+  const removeAttachment = (attachment: PendingAttachment) => {
+    if (editor && isImageAttachment(attachment)) {
+      const src = imageAttachmentURL(attachment.uploadKey)
+      const ranges: { from: number; to: number }[] = []
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'image' && node.attrs.src === src) {
+          ranges.push({ from: pos, to: pos + node.nodeSize })
+        }
+      })
+      if (ranges.length) {
+        const transaction = editor.state.tr
+        for (const { from, to } of ranges.reverse()) transaction.delete(from, to)
+        editor.view.dispatch(transaction)
+      }
+    }
+    setPending((current) => current.filter((item) => item !== attachment))
+  }
+
   const canSend = hasContent || pending.some((p) => !p.uploading && p.uploadKey) || annotations.length > 0
   const sendDisabled = submitting || (canSend ? uploading && annotations.length > 0 : busy ? cancelling : true)
 
@@ -865,7 +903,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                   type="button"
                   aria-label="remove"
                   disabled={p.uploading || submitting}
-                  onClick={() => setPending((prev) => prev.filter((_, idx) => idx !== i))}
+                  onClick={() => removeAttachment(p)}
                   className="text-text-muted hover:text-text-primary disabled:opacity-30"
                 >
                   <X className="size-3" />
@@ -910,7 +948,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               aria-label={t('agent.attach')}
               disabled={uploading || submitting}
               onClick={() => fileRef.current?.click()}
-              className={cn('size-9 rounded-md', uploading && 'opacity-40')}
+              className={cn('size-11 rounded-md', uploading && 'opacity-40')}
             >
               {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
             </Button>
@@ -924,7 +962,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               aria-label={t('agent.goalModeAria')}
               onClick={() => setGoalMode((v) => !v)}
               className={cn(
-                'size-9 rounded-md transition-all',
+                'size-11 rounded-md transition-all',
                 goalMode
                   ? 'bg-accent/15 text-accent ring-1 ring-accent/40 shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]'
                   : 'text-text-muted hover:text-text-primary',
@@ -960,6 +998,29 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               no overflow — icon only. */}
           <div className="flex min-w-0 items-center gap-1">
             {trailingControls}
+            {/* ⛔ 运行中必须有独立、永远可点的「停止」（P0，2026-10-12 用户报告
+                「cancel 之后会话还显示 busy」）。主按钮的 `canSend || !busy` 语义会在
+                输入框有内容（文字/附件/批注）时把点击变成「发送/排队」，运行中就**没有
+                任何可点的停止**；用户点的那一下被当成排队发送 ⇒ 取消发不出去、busy 常驻。
+                这里额外渲染一颗只走 onCancel 的破坏性按钮——保留「排队发送」能力，
+                绝不用"单按钮猜意图"实现两种语义。 */}
+            {busy && canSend && (
+              <Button
+                type="button"
+                size="icon-sm"
+                data-testid="composer-cancel"
+                aria-label={t('common.cancel')}
+                title={t('common.cancel')}
+                disabled={cancelling}
+                onClick={onCancel}
+                className={cn(
+                  'size-11 shrink-0 rounded-md bg-destructive text-destructive-foreground transition-all duration-150 hover:bg-destructive/90 active:scale-95',
+                  cancelling && 'opacity-40',
+                )}
+              >
+                {cancelling ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
+              </Button>
+            )}
             <Button
               type="button"
               size="icon-sm"
@@ -967,7 +1028,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               disabled={sendDisabled}
               onClick={canSend || !busy ? submit : onCancel}
               className={cn(
-                'size-9 shrink-0 rounded-md transition-all duration-150 active:scale-95',
+                'size-11 shrink-0 rounded-md transition-all duration-150 active:scale-95',
                 canSend || !busy
                   ? goalMode
                     ? 'bg-accent text-accent-foreground shadow-[0_0_12px_rgba(var(--accent-rgb),0.4)]'

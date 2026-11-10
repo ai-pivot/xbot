@@ -6,7 +6,7 @@ import (
 	"xbot/bus"
 	"xbot/llm"
 	"xbot/memory"
-	"xbot/storage/sqlite"
+	"xbot/storage"
 	"xbot/storage/vectordb"
 )
 
@@ -35,6 +35,7 @@ type ToolContext struct {
 	Channel                 string                                                                     // 当前消息来源渠道
 	ChatID                  string                                                                     // 当前消息来源会话
 	SenderID                string                                                                     // 直接调用者 ID（SubAgent 场景下为父 Agent ID，主 Agent 场景下等于 OriginUserID）
+	CallerSessionKey        string                                                                     // 发起本 Run 的会话物理 key（interactive=interactiveKey；主会话为空）
 	OriginUserID            string                                                                     // 原始用户 ID（始终为终端用户，用于 LLM 配置、工作区路径等需要原始用户的场景）
 	SenderName              string                                                                     // 当前消息发送者姓名
 	UserID                  int64                                                                      // Canonical user ID (from IdentityResolver, 0 in standalone mode)
@@ -47,9 +48,9 @@ type ToolContext struct {
 
 	// Letta memory fields (nil when memory provider is not letta)
 	TenantID        int64                        // 当前租户 ID
-	CoreMemory      *sqlite.CoreMemoryService    // 核心记忆存储
+	CoreMemory      storage.MemoryStore          // 核心记忆存储（后端无关接口）
 	ArchivalMemory  *vectordb.ArchivalService    // 归档记忆存储（chromem-go 向量数据库）
-	MemorySvc       *sqlite.MemoryService        // 事件历史存储（用于 rethink 日志）
+	MemorySvc       storage.MemoryStore          // 事件历史存储（用于 rethink 日志）
 	RecallTimeRange vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
 	ToolIndexer     memory.ToolIndexer           // 工具索引服务（Letta 模式下可用）
 

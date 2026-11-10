@@ -36,6 +36,60 @@ const MaxConcurrencyChannel = "cli"
 // such key — `subagent_max_concurrency` was a duplicate and has been removed.
 const SettingMaxConcurrency = "max_concurrency"
 
+// TavilyKeyChannel is the canonical channel under which `tavily_api_key` is
+// stored. The web search key is ONE per-operator value shared by every channel:
+// a key saved from the Web settings tab must be visible to CLI/Feishu sessions
+// and vice versa. Storing it under the caller's channel (web/cli/feishu) made
+// the value invisible to all other channels — the exact failure mode documented
+// for max_concurrency (see MaxConcurrencyChannel).
+const TavilyKeyChannel = "cli"
+
+// CanonicalChannelForSetting returns the fixed storage channel for settings
+// whose value is shared across channels. An empty return means the setting is
+// stored under the caller's channel (the historical behaviour).
+//
+// Both read (agent.ConfigGet → WebSearchTool) and write paths must route
+// through this function: a key written to one channel and read from another is
+// a silent no-op.
+func CanonicalChannelForSetting(key string) string {
+	switch key {
+	case "tavily_api_key":
+		return TavilyKeyChannel
+	}
+	return ""
+}
+
+// IsSensitiveSettingKey reports whether the key is marked Sensitive in
+// AllSettingDefs (credentials, API keys). API responses must mask these values
+// with MaskedSettingValue instead of returning the secret to a browser.
+func IsSensitiveSettingKey(key string) bool {
+	def, ok := GetSettingDef(key)
+	if !ok {
+		return false
+	}
+	return def.Sensitive
+}
+
+// MaskedSettingValue is the placeholder returned in place of a configured
+// sensitive setting. It is intentionally NOT a valid credential: write paths
+// must treat this exact value (or any value containing "****") as "unchanged".
+const MaskedSettingValue = "***"
+
+// IsMaskedSettingValue reports whether v is the masked placeholder sent by the
+// settings API. Callers must never persist it over the real credential.
+func IsMaskedSettingValue(v string) bool {
+	return v == MaskedSettingValue || strings.Contains(v, "****")
+}
+
+// MaskConfigItemValue hides a sensitive setting's value from AI-facing config
+// listings. The model may learn that a key is configured, never its contents.
+func MaskConfigItemValue(sensitive bool, value string) string {
+	if sensitive && value != "" {
+		return MaskedSettingValue
+	}
+	return value
+}
+
 // SettingScope defines where a setting's value is stored and persisted.
 type SettingScope int
 
@@ -120,7 +174,7 @@ var AllSettingDefs = []SettingDef{
 	// ── Global-scoped settings (config.json top-level) ──
 	{Key: "sandbox_mode", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Execution sandbox type", ValidValues: "none|docker|remote", DefaultValue: "none"},
 	{Key: "compression_threshold", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Token count at which context compression triggers", ValidValues: "any positive integer", DefaultValue: "0"},
-	{Key: "memory_provider", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Memory backend for agent state persistence", ValidValues: "xbot|flat|letta", DefaultValue: "xbot"},
+	{Key: "memory_provider", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Memory backend for agent state persistence (none = no memory tools or prompts)", ValidValues: "xbot|flat|letta|none", DefaultValue: "xbot"},
 	{Key: "tavily_api_key", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermManual, Sensitive: true, AIDescription: "API key for Tavily web search (per-user, falls back to config.json)", ValidValues: "any valid Tavily API key"},
 	{Key: "default_user", Scope: ScopeGlobal, Source: SourceConfigJSON, Permission: PermPersistent, AIDescription: "Default username for new sessions", ValidValues: "any valid username"},
 	{Key: "privileged_user", Scope: ScopeGlobal, Source: SourceConfigJSON, Permission: PermManual, AIDescription: "Username with full admin access", ValidValues: "any valid username"},
@@ -150,7 +204,6 @@ var AllSettingDefs = []SettingDef{
 
 	{Key: "language", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "UI language", ValidValues: "zh|en|ja", DefaultValue: "zh"},
 	{Key: "context_mode", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Context handling: auto or manual", ValidValues: "auto|manual", DefaultValue: "auto"},
-	{Key: "max_iterations", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max tool iterations per turn", ValidValues: "1-500", DefaultValue: "30"},
 	{Key: "max_concurrency", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max parallel LLM calls", ValidValues: "1-100", DefaultValue: "5"},
 	// max_context_tokens is per-model (stored in PerModelConfigs), not per-subscription.
 	// Its read/write entry point is GetUserMaxContext/SetUserMaxContext (ResolveActiveSubModel
@@ -310,7 +363,7 @@ func AllConfigItemsForAI() []tools.ConfigListItem {
 			ValidValues: d.ValidValues,
 			DefaultVal:  d.DefaultValue,
 			Sensitive:   d.Sensitive,
-			CurrentVal:  ConfigValueBySource(d.Key, d.Source),
+			CurrentVal:  MaskConfigItemValue(d.Sensitive, ConfigValueBySource(d.Key, d.Source)),
 			Source:      sourceName(d.Source),
 		})
 	}

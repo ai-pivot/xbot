@@ -19,7 +19,7 @@ func pushSeqed(es *eventStream, typ string, content string) protocol.WSMessage {
 // fromSeq range: full replay, partial suffix, steady state (client lagging a
 // single event), and fully-caught-up.
 func TestReplayAfter_TailWindow(t *testing.T) {
-	es := newEventStream()
+	es := newEventStream(nil)
 	pushed := make([]protocol.WSMessage, 0, 8)
 	for i := 0; i < 8; i++ {
 		pushed = append(pushed, pushSeqed(es, protocol.MsgTypeText, "m"))
@@ -65,7 +65,7 @@ func TestReplayAfter_TailWindow(t *testing.T) {
 // TestReplayAfter_EvictionResync verifies capacity eviction advances the
 // resync boundary and the tail window still returns the surviving suffix.
 func TestReplayAfter_EvictionResync(t *testing.T) {
-	es := newEventStream()
+	es := newEventStream(nil)
 	for i := 0; i < eventStreamSize+10; i++ {
 		pushSeqed(es, protocol.MsgTypeText, "m")
 	}
@@ -91,7 +91,7 @@ func TestReplayAfter_EvictionResync(t *testing.T) {
 // TestReplayAfter_BarrierReplay verifies the barrier (replay reset marker)
 // is replayed when the client has not seen it, and skipped otherwise.
 func TestReplayAfter_BarrierReplay(t *testing.T) {
-	es := newEventStream()
+	es := newEventStream(nil)
 	pushSeqed(es, protocol.MsgTypeText, "old")
 	barrier := protocol.WSMessage{Type: protocol.MsgTypeSession, SessionReset: true, Content: "rewound"}
 	barrier.Seq = es.nextSeq()
@@ -121,7 +121,7 @@ func TestReplayAfter_BarrierReplay(t *testing.T) {
 // removeAt's order-preserving shift. If a future push path breaks ordering,
 // the tail scan silently drops entries — this test fails first.
 func TestReplayAfter_RingSeqAscendingInvariant(t *testing.T) {
-	es := newEventStream()
+	es := newEventStream(nil)
 	// Interleave stateless snapshots (merge + removeAt path) with stateful
 	// events — the merge must keep the ring ascending.
 	for i := 0; i < 32; i++ {
@@ -148,7 +148,7 @@ func TestReplayAfter_RingSeqAscendingInvariant(t *testing.T) {
 // minimal allocation (the old full-scan + count-sized prealloc measured
 // 26473 ns/op + 155648 B/op — one 152KB slice per SSE-echoed event).
 func BenchmarkReplayAfterSteadyState(b *testing.B) {
-	es := newEventStream()
+	es := newEventStream(nil)
 	for i := 0; i < eventStreamSize; i++ {
 		pushSeqed(es, protocol.MsgTypeProgress, "stateful")
 	}

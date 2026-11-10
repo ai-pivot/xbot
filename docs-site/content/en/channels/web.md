@@ -51,6 +51,23 @@ In Server mode, the installer automatically downloads the Web UI to
 For manual installation, download the web release archive and extract it to
 `~/.xbot/web/dist/`.
 
+### Rebuilding and deploying from source (⛔ never copy incrementally)
+
+After changing `web/` sources, the deployment must be a **whole-directory replacement**:
+
+```bash
+bash scripts/deploy-web.sh              # npm run build + atomic deploy + consistency check
+bash scripts/deploy-web.sh --no-build   # skip the build, deploy the current web/dist
+```
+
+{{< hint type=warning >}}
+**Mixed artifacts** are the easiest trap here: copying a freshly built `assets/` into an old
+directory while keeping the old `index.html` means the served page still references the **old
+bundle** — new code never runs (the symptom is a feature that "seems to open" but does nothing).
+`deploy-web.sh` closes that path with a whole-directory `mv` plus a check that the bundle
+referenced by `index.html` exists and contains a probe symbol; it exits 1 if the check fails.
+{{< /hint >}}
+
 ## Access
 
 After starting the server, open `http://your-server:8082` in a browser.
@@ -95,6 +112,8 @@ Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.)
 | Terminal commands | A message starting with `!` runs **directly in the sandbox as a shell command** and returns its output as a chat message — the AI is skipped (`!ls -la`, `!git status`, `!docker ps`). The composer shows a hint while the draft is a `!` command; `![…]` markdown images (pasted screenshots) are **not** commands |
 
 Image previews in the composer fit within **240 × 120 px**, preserve their aspect ratio, and shrink to fit narrow windows. **Click an image** to view it enlarged; press Esc, click the backdrop, or use the close button to dismiss it. Thumbnail sizing does not modify uploaded files or the image references sent with your message.
+
+Deleting an uploaded image from the composer also removes its attachment chip, so it is not sent as a hidden attachment. Clicking the image chip’s × removes the matching image previews as well. Images with the same filename are tracked independently.
 
 
 ## Response Comments

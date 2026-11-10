@@ -42,6 +42,12 @@ func (wc *WebChannel) isUnknownSession(senderID, channelName, chatID string) boo
 	if wc.callbacks.SessionExists == nil || chatID == "" {
 		return false
 	}
+	// 规范化后再探测：全键（`web:chat_X`）必须先剥成裸 id，否则会被当成
+	// "未知会话"（404）或去探测 `web:web:chat_X`。
+	chatID = canonicalChatID(channelName, chatID)
+	if chatID == "" {
+		return false
+	}
 	if chatID == senderID {
 		return false
 	}
@@ -58,6 +64,9 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 	if channelName == "" {
 		channelName = wc.inferAPISessionChannel(senderID, chatID)
 	}
+	// ⛔ 读路径同样规范化：客户端缓存的旧 chatID 可能是全键（`web:chat_X`）⇒
+	//    不剥前缀会查/建 `web:web:chat_X` 幽灵会话（DELETE/status/history 全中招）。
+	chatID = canonicalChatID(channelName, chatID)
 	if chatID == "" {
 		chatID = senderID
 	}
@@ -76,10 +85,11 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 
 func (wc *WebChannel) inferAPISessionChannel(senderID, chatID string) string {
 	current := wc.GetCurrentSession(senderID)
-	if chatID == "" || current.ChatID == chatID {
+	bare := canonicalChatID(current.Channel, chatID)
+	if chatID == "" || current.ChatID == bare {
 		return current.Channel
 	}
-	if webChatIDLooksLikeSubAgent(chatID) {
+	if webChatIDLooksLikeSubAgent(bare) {
 		return "agent"
 	}
 	return "web"
@@ -328,21 +338,14 @@ func (wc *WebChannel) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 // handleGetSettings returns all settings for the current user
 func (wc *WebChannel) handleGetSettings(w http.ResponseWriter, r *http.Request, senderID string) {
-	rows, err := wc.db.Query(
-		"SELECT key, value FROM user_settings WHERE channel = 'web' AND sender_id = ?", senderID,
-	)
+	all, err := wc.store.Config().GetUserSettings("web", senderID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, settingsResponse{OK: false, Error: "query failed"})
 		return
 	}
-	defer rows.Close()
 
-	settings := make(map[string]string)
-	for rows.Next() {
-		var k, v string
-		if err := rows.Scan(&k, &v); err != nil {
-			continue
-		}
+	settings := make(map[string]string, len(all))
+	for k, v := range all {
 		// Mask sensitive values — never expose credentials to the browser
 		if isSensitiveSettingKey(k) {
 			settings[k] = "***"
@@ -400,13 +403,8 @@ func (wc *WebChannel) handleUpdateSettings(w http.ResponseWriter, r *http.Reques
 		settings[k] = sv
 	}
 
-	now := time.Now().Unix()
 	for k, v := range settings {
-		_, err := wc.db.Exec(
-			"INSERT OR REPLACE INTO user_settings (channel, sender_id, key, value, updated_at) VALUES ('web', ?, ?, ?, ?)",
-			senderID, k, v, now,
-		)
-		if err != nil {
+		if err := wc.store.Config().SetUserSetting("web", senderID, k, v); err != nil {
 			writeJSON(w, http.StatusInternalServerError, settingsResponse{OK: false, Error: "update failed"})
 			return
 		}
@@ -436,130 +434,11 @@ type marketResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-type marketUninstallRequest struct {
-	Type string `json:"type"`
-	Name string `json:"name"`
-}
-
-type marketPackRequest struct {
-	Name  string            `json:"name"`
-	Items []packItemRequest `json:"items"`
-}
-
-type packItemRequest struct {
-	Type string `json:"type"`
-	Name string `json:"name"`
-}
-
-type marketPackResponse struct {
-	OK    bool   `json:"ok"`
-	Path  string `json:"path,omitempty"`
-	Error string `json:"error,omitempty"`
-}
-
-// handleMarketPack handles POST /api/app/pack
-func (wc *WebChannel) handleMarketPack(w http.ResponseWriter, r *http.Request) {
-	senderID := senderIDFromContext(r.Context())
-
-	if wc.callbacks.RPCHandler == nil {
-		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
-		return
-	}
-
-	var req marketPackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
-		return
-	}
-
-	if req.Name == "" || len(req.Items) == 0 {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "name and items are required"})
-		return
-	}
-
-	var resp struct {
-		Path string `json:"path"`
-	}
-	if err := wc.rpcCall("app_pack", map[string]any{
-		"name":   req.Name,
-		"items":  req.Items,
-		"author": senderID,
-	}, &resp); err != nil {
-		writeJSON(w, http.StatusInternalServerError, marketPackResponse{OK: false, Error: err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, marketPackResponse{OK: true, Path: resp.Path})
-}
-
-// handleMarketInstallFile handles POST /api/app/install-file
-// Accepts multipart/form-data with a "file" field containing the .xbot.zip
-func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Request) {
-	senderID := senderIDFromContext(r.Context())
-
-	if wc.callbacks.RPCHandler == nil {
-		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
-		return
-	}
-
-	// Parse multipart upload
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "failed to parse multipart form"})
-		return
-	}
-
-	file, _, err := r.FormFile("file")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "no file uploaded"})
-		return
-	}
-	defer file.Close()
-
-	// Save to temp file
-	tmpFile, err := os.CreateTemp("", "xbot-install-*.xbot.zip")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to create temp file"})
-		return
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-	if _, err := io.Copy(tmpFile, file); err != nil {
-		tmpFile.Close()
-		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to save uploaded file"})
-		return
-	}
-	tmpFile.Close()
-
-	var resp struct {
-		Name      string   `json:"name"`
-		Version   string   `json:"version"`
-		Installed []string `json:"installed"`
-		Skipped   []string `json:"skipped"`
-	}
-	if err := wc.rpcCall("app_install_file", map[string]any{
-		"zip_path":  tmpPath,
-		"sender_id": senderID,
-		"force":     r.URL.Query().Get("force") == "true",
-	}, &resp); err != nil {
-		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"name":    resp.Name,
-		"version": resp.Version,
-		"items":   resp.Installed,
-		"skipped": resp.Skipped,
-	})
-}
-
 // handlePluginInstallFile handles POST /api/plugin/install-file.
 // Accepts multipart/form-data with a "file" field containing a single-plugin
 // zip (plugin.json at root or wrapped in one directory). The zip is saved to a
 // temp file, passed to plugin_install_file RPC (which extracts + installs), then
-// cleaned up. This mirrors handleMarketInstallFile but for single plugins —
-// no OSS round-trip, no cloud dependency.
+// cleaned up — no OSS round-trip, no cloud dependency.
 func (wc *WebChannel) handlePluginInstallFile(w http.ResponseWriter, r *http.Request) {
 	if wc.callbacks.RPCHandler == nil {
 		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
@@ -831,33 +710,6 @@ func (wc *WebChannel) handleLLMModelSet(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, llmConfigResponse{OK: true})
 }
 
-// handleMarketUninstall handles POST /api/app/uninstall
-func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Request) {
-	senderID := senderIDFromContext(r.Context())
-
-	if wc.callbacks.RPCHandler == nil {
-		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
-		return
-	}
-
-	var req marketUninstallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
-		return
-	}
-
-	if err := wc.rpcCall("app_uninstall", map[string]any{
-		"type":      req.Type,
-		"name":      req.Name,
-		"sender_id": senderID,
-	}, nil); err != nil {
-		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, marketResponse{OK: true})
-}
-
 type skillsExportRequest struct {
 	Path string `json:"path"`
 	Name string `json:"name"`
@@ -1025,6 +877,294 @@ func (wc *WebChannel) handleSkillsInstallFile(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": result.Name})
 }
 
+// handleSkillUninstall handles POST /api/skills/uninstall — removes a
+// user-installed skill by name.
+func (wc *WebChannel) handleSkillUninstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if err := wc.rpcCallAs(r, "skill_uninstall", map[string]any{
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// handleAgentInstallFile handles POST /api/agents/install-file — installs an
+// agent from a .md file upload. The filename (without .md) becomes the agent name.
+func (wc *WebChannel) handleAgentInstallFile(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "failed to parse multipart form"})
+		return
+	}
+
+	file, handler, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "no file uploaded"})
+		return
+	}
+	defer file.Close()
+
+	// Derive agent name from uploaded filename (without .md extension).
+	agentName := strings.TrimSuffix(handler.Filename, ".md")
+	if agentName == "" || agentName == handler.Filename {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "file must have .md extension"})
+		return
+	}
+
+	tmpFile, err := os.CreateTemp("", "xbot-agent-install-*.md")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to create temp file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to save uploaded file"})
+		return
+	}
+	tmpFile.Close()
+
+	var result struct {
+		Name string `json:"name"`
+	}
+	if err := wc.rpcCallAs(r, "agent_install_file", map[string]any{
+		"md_path": tmpPath,
+		"name":    agentName,
+		"force":   r.URL.Query().Get("force") == "true",
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": result.Name})
+}
+
+// handleAgentUninstall handles POST /api/agents/uninstall — removes a
+// user-installed agent by name.
+func (wc *WebChannel) handleAgentUninstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+
+	if err := wc.rpcCallAs(r, "agent_uninstall", map[string]any{
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// --- Registry marketplace handlers ---
+
+// handleRegistrySearch handles POST /api/registry/search
+func (wc *WebChannel) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Query   string `json:"query"`
+		Type    string `json:"type"`
+		Refresh bool   `json:"refresh"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	var result struct {
+		Items []struct {
+			Type        string `json:"type"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Author      string `json:"author"`
+			Version     string `json:"version"`
+			Registry    string `json:"registry"`
+		} `json:"items"`
+	}
+	if err := wc.rpcCallAs(r, "registry_search", map[string]any{
+		"query":   req.Query,
+		"type":    req.Type,
+		"refresh": req.Refresh,
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleRegistryInstall handles POST /api/registry/install
+func (wc *WebChannel) handleRegistryInstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	var result struct {
+		Type    string `json:"type"`
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	}
+	if err := wc.rpcCallAs(r, "registry_install", map[string]any{
+		"name":  req.Name,
+		"force": req.Force,
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "type": result.Type, "name": result.Name, "version": result.Version})
+}
+
+// handleRegistryListInstalled handles POST /api/registry/list-installed
+func (wc *WebChannel) handleRegistryListInstalled(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Type string `json:"type"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	var result struct {
+		Items []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := wc.rpcCallAs(r, "registry_list_installed", map[string]any{
+		"type": req.Type,
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleRegistryConfigList handles POST /api/registry/config-list
+func (wc *WebChannel) handleRegistryConfigList(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var result struct {
+		Registries []struct {
+			Name   string `json:"name"`
+			URL    string `json:"url"`
+			Branch string `json:"branch,omitempty"`
+		} `json:"registries"`
+	}
+	if err := wc.rpcCallAs(r, "registry_config_list", map[string]any{}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleRegistryConfigAdd handles POST /api/registry/config-add
+func (wc *WebChannel) handleRegistryConfigAdd(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		Branch string `json:"branch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if err := wc.rpcCallAs(r, "registry_config_add", map[string]any{
+		"name": req.Name, "url": req.URL, "branch": req.Branch,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// handleRegistryConfigRemove handles POST /api/registry/config-remove
+func (wc *WebChannel) handleRegistryConfigRemove(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if err := wc.rpcCallAs(r, "registry_config_remove", map[string]any{
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+// handleRegistryUninstall handles POST /api/registry/uninstall — removes an
+// installed component (skill/agent/plugin) by type and name.
+func (wc *WebChannel) handleRegistryUninstall(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+	var req struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if err := wc.rpcCallAs(r, "registry_uninstall", map[string]any{
+		"type": req.Type,
+		"name": req.Name,
+	}, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
 // sanitizeExportName keeps only alphanumerics, '-', '_', '.' — everything else becomes '_'.
 // A result of "." or ".." (or anything that would traverse out of the zip root) is
 // replaced with "skill" — such a name would otherwise produce a path-traversal zip
@@ -1124,56 +1264,46 @@ func (wc *WebChannel) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var tenantID int64
-	err := wc.db.QueryRow(
-		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?", sel.Channel, sel.ChatID,
-	).Scan(&tenantID)
-	if err != nil {
+	tenantID, err := wc.store.Tenant().GetTenantIDByChannelChatID(sel.Channel, sel.ChatID)
+	if err != nil || tenantID == 0 {
 		writeJSON(w, http.StatusOK, searchResponse{OK: true, Results: nil})
 		return
 	}
 
-	// Case-insensitive LIKE search (escape wildcards in user input)
-	like := "%" + escapeLike(q) + "%"
-	rows, err := wc.db.Query(`
-		SELECT id, role, content, created_at
-		FROM session_messages
-		WHERE tenant_id = ? AND role IN ('user', 'assistant') AND content LIKE ? COLLATE NOCASE ESCAPE '\'
-		ORDER BY id DESC
-		LIMIT ?
-	`, tenantID, like, limit)
+	// The store surface has no search method — load the session's messages
+	// (via its per-session DB, v71) and match in Go. Newest first, capped at
+	// limit, mirroring the previous SQL (role IN ('user','assistant'),
+	// case-insensitive, ORDER BY id DESC LIMIT ?).
+	sess, err := wc.store.Session(tenantID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, searchResponse{OK: false, Error: "search failed"})
 		return
 	}
-	defer rows.Close()
+	msgs, err := sess.GetAllMessages(tenantID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, searchResponse{OK: false, Error: "search failed"})
+		return
+	}
 
-	var results []searchHit
 	qLower := strings.ToLower(q)
-	for rows.Next() {
-		var hit searchHit
-		var content string
-		if err := rows.Scan(&hit.ID, &hit.Role, &content, &hit.CreatedAt); err != nil {
+	results := make([]searchHit, 0, limit)
+	for i := len(msgs) - 1; i >= 0 && len(results) < limit; i-- {
+		m := msgs[i]
+		if m.Role != "user" && m.Role != "assistant" {
 			continue
 		}
-		hit.Snippet = snippetAround(content, qLower)
-		results = append(results, hit)
+		if !strings.Contains(strings.ToLower(m.Content), qLower) {
+			continue
+		}
+		results = append(results, searchHit{
+			ID:        m.ID,
+			Role:      m.Role,
+			Snippet:   snippetAround(m.Content, qLower),
+			CreatedAt: m.Timestamp.Format(time.RFC3339),
+		})
 	}
 
 	writeJSON(w, http.StatusOK, searchResponse{OK: true, Results: results})
-}
-
-// escapeLike escapes SQL LIKE wildcard characters in user input.
-func escapeLike(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '%' || c == '_' || c == '\\' {
-			b.WriteByte('\\')
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
 }
 
 // snippetAround returns a snippet of text around the first occurrence of the
@@ -1641,15 +1771,11 @@ func (wc *WebChannel) canAccessSessionAs(identity sessionAccessIdentity, channel
 }
 
 func (wc *WebChannel) tenantExists(channelName, chatID string) bool {
-	if wc.db == nil {
+	if wc.store == nil {
 		return false
 	}
-	var count int
-	err := wc.db.QueryRow(
-		"SELECT COUNT(*) FROM tenants WHERE channel = ? AND chat_id = ?",
-		channelName, chatID,
-	).Scan(&count)
-	return err == nil && count > 0
+	id, err := wc.store.Tenant().GetTenantIDByChannelChatID(channelName, chatID)
+	return err == nil && id != 0
 }
 
 // IsAdminIdentity reports whether a Web senderID belongs to an admin web user.

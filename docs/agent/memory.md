@@ -7,6 +7,7 @@
 | **Project Knowledge** | Project-level, shared | `docs/agent/` (md files, git-trackable) | `Read`, `FileReplace`, `FileCreate` |
 | **Flat Memory** | Per-user, non-project | `~/.xbot/memory/{tenantID}/` (md files) | `memory_write`, `memory_list`, `Read` |
 | **Letta Memory** | Per-user, full-featured | SQLite + vector DB | `core_memory_*`, `archival_memory_*`, `recall_memory_search` |
+| **None** | — | — | none (no memory tools or prompts) |
 
 **Project knowledge** uses the same tools as regular code editing (Read/FileReplace/FileCreate).
 The `knowledge_write`/`knowledge_list` tools have been removed — AGENTS.md references `docs/agent/` files directly.
@@ -131,6 +132,24 @@ Zero-dependency memory provider (no embedding API) built on SQLite FTS5 BM25.
 - **has_core**: true when `~/.xbot/memory/{tenant}/MEMORY.md` exists AND is non-empty
   (produced by `updateCoreSummary`). Independent of memory count.
 
+## None Mode (`none`)
+
+`memory_provider: "none"` is an explicit, first-class mode: **no memory tools and
+no memory prompts are injected at all**.
+
+- `tools.GetMemoryTools("none")` returns nil → the agent's tool registry gets no
+  `memory_*` / `core_memory_*` / `archival_memory_*` / `recall_memory_search`.
+- `session/multitenant.go` stores `memProvider = nil` → no `Recall()` injection
+  (`MemoryMiddleware` no-ops), no auto-consolidation (`ConsolidateTurn`/`Memorize`
+  are skipped), and no `CompressionAware` hooks.
+- `agent/context.go` explicitly injects no `## Memory` section (it keeps only the
+  provider-neutral `ToolsFlat` guide, which contains no memory instructions).
+- SubAgents get no memory provider either (`buildSubAgentMemory` returns nil for
+  `none`) and `subagentMemorySection()` returns "".
+- This is NOT a fallback for an unknown provider: setting any unregistered name
+  still gets the flat prompt guide by default. `none` is the only value that
+  deliberately disables memory.
+
 ## Tool Visibility (Unified)
 
 Both flat and letta memory providers use the **same tool visibility model**: all registered tools
@@ -141,6 +160,7 @@ The memory provider only affects which **memory-specific tools** are registered:
 - Flat: `memory_read`, `memory_write`, `memory_list`
 - Letta: `core_memory_*`, `archival_memory_*`, `recall_memory_search`
 - Xbot: `memory_search`, `memory_add`, `memory_manage`
+- None: none (memory is fully disabled — no tools, no prompt injection)
 
 ## Metrics
 

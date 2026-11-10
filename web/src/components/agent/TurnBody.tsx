@@ -58,7 +58,6 @@ import { IterationGroup } from './IterationHistory'
 import { CompactionDivider } from './CompactionDivider'
 import { LiveIteration } from './LiveIteration'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
-import { reasoningKey } from './reasoningOpenState'
 import { continuousIterations } from './progressStore'
 import {
   ITERATION_HEIGHT_SETTLE_MS,
@@ -217,7 +216,6 @@ const IterationBlock = memo(function IterationBlock({
           <IterationGroup
             iteration={iter}
             turnID={turnID}
-            reasoningStateKey={reasoningKey(turnID, iter.iteration ?? 0)}
           />
           {iter.subAgents && iter.subAgents.length > 0 && (
             <SubAgentProgressTree nodes={iter.subAgents} />

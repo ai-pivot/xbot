@@ -1,7 +1,6 @@
 package web
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/protocol"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 
 	"github.com/gorilla/websocket"
@@ -25,7 +25,7 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-func newTestDB(t *testing.T) *sql.DB {
+func newTestDB(t *testing.T) *sqlite.DB {
 	t.Helper()
 	f, err := os.CreateTemp("", "xbot_web_test_*.db")
 	if err != nil {
@@ -35,24 +35,46 @@ func newTestDB(t *testing.T) *sql.DB {
 	// On Windows, an open file handle locks the file, preventing os.Remove
 	// cleanup and causing accumulation that can deadlock the SQLite driver.
 	f.Close()
-	t.Cleanup(func() { os.Remove(f.Name()) })
+	// 清理必须覆盖 SQLite 的附属文件：只删主库会把 -wal / -shm / .lock 留给 /tmp。
+	// 实测 2026-10-23：/tmp 里积了 21,456 个 xbot_web_test_* 文件（7.1 GB），
+	// 每个测试实际留 3 个附属文件，根因就是这里只 os.Remove 了主库。
+	// 清理顺序靠 t.Cleanup 的 LIFO 保证：先 db.Close()，再删文件。
+	t.Cleanup(func() {
+		for _, suf := range []string{"", "-wal", "-shm", ".lock"} {
+			os.Remove(f.Name() + suf)
+		}
+	})
 
 	db, err := sqlite.Open(f.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return db.Conn()
+	return db
 }
 
-func newTestWebChannel(t *testing.T, db *sql.DB) (*WebChannel, *bus.MessageBus) {
+// newTestStorage wraps a test SQLite handle as the backend-agnostic storage
+// layer the WebChannel takes (web-user auth + tenant/config queries). The
+// per-session store is not exercised by these tests (history flows through
+// mocked callbacks), so the factory returns an explicit error.
+func newTestStorage(t *testing.T, db *sqlite.DB) storage.Storage {
+	t.Helper()
+	return storage.NewSQLiteStorage(db, func(int64) (storage.SessionStore, error) {
+		return nil, fmt.Errorf("session store not available in web tests")
+	}, func() error { return nil })
+}
+
+func newTestWebChannel(t *testing.T, db *sqlite.DB) (*WebChannel, *bus.MessageBus) {
 	t.Helper()
 	msgBus := bus.NewMessageBus()
-	wc := NewWebChannel(WebChannelConfig{
+	cfg := WebChannelConfig{
 		Host: "127.0.0.1",
 		Port: 0, // random port
-		DB:   db,
-	}, msgBus)
+	}
+	if db != nil {
+		cfg.Store = newTestStorage(t, db)
+	}
+	wc := NewWebChannel(cfg, msgBus)
 	// Register cleanup so SSE client goroutines and hub connections are
 	// stopped after each test. Without this, SSE connections accumulate
 	// across tests — on Windows this deadlocks the SQLite driver.
@@ -69,7 +91,6 @@ func startTestServer(t *testing.T, wc *WebChannel) *httptest.Server {
 	mux.HandleFunc("/api/rpc", wc.authMiddleware(limitBodySize(wc.handleRPC)))
 	mux.HandleFunc("/api/message", wc.authMiddleware(limitBodySize(wc.handleMessage)))
 	mux.HandleFunc("/api/cancel", wc.authMiddleware(limitBodySize(wc.handleCancel)))
-	mux.HandleFunc("/api/ask_user/respond", wc.authMiddleware(limitBodySize(wc.handleAskUserRespond)))
 	mux.HandleFunc("/api/session/status", wc.authMiddleware(limitBodySize(wc.handleSessionStatus)))
 	mux.HandleFunc("/api/auth/register", wc.handleRegister)
 	mux.HandleFunc("/api/auth/login", wc.handleLogin)
@@ -383,7 +404,7 @@ func TestWebSocketChat(t *testing.T) {
 			t.Fatalf("WS transport marked user message as eagerly saved: %#v", msg.Metadata)
 		}
 		var persisted int
-		if err := db.QueryRow(`
+		if err := db.Conn().QueryRow(`
 			SELECT COUNT(*) FROM session_messages sm
 			JOIN tenants t ON t.id = sm.tenant_id
 			WHERE t.channel = ? AND t.chat_id = ?
@@ -696,7 +717,7 @@ func TestIsAdminIdentityRecognizesOperator(t *testing.T) {
 
 func TestWebSocketBrowserMessageCanTargetCLISessionForAdmin(t *testing.T) {
 	db := newTestDB(t)
-	if _, err := db.Exec(`INSERT INTO tenants (channel, chat_id) VALUES ('cli', '/repo')`); err != nil {
+	if _, err := db.Conn().Exec(`INSERT INTO tenants (channel, chat_id) VALUES ('cli', '/repo')`); err != nil {
 		t.Fatal(err)
 	}
 	wc, msgBus := newTestWebChannel(t, db)
@@ -875,7 +896,7 @@ func TestSendGenUIForwardsAsGenuiType(t *testing.T) {
 func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	db := newTestDB(t)
-	wc := NewWebChannel(WebChannelConfig{Host: "127.0.0.1", Port: 0, DB: db, AdminToken: "test-token"}, msgBus)
+	wc := NewWebChannel(WebChannelConfig{Host: "127.0.0.1", Port: 0, Store: newTestStorage(t, db), AdminToken: "test-token"}, msgBus)
 	wc.SetCallbacks(WebCallbacks{})
 	wc.SetOSSProvider(fixedOSSProvider{})
 	t.Cleanup(wc.Stop) // stop hub + background goroutines to avoid connection leaks on Windows

@@ -50,3 +50,21 @@
   删掉跳过必红）/ `IdenticalLegacyPairsBothRender`（完全相同的工具 ×2 必须都在；加回任何内容去重必红）/
   `SameSecondTieStaysOnIteration`（同秒并列锚 N 不锚 N-1）/ `BeforeAllSnapshotsAnchorsFirst`
   （早于全部 ⇒ 首迭代）/ `AfterAllSnapshotsAnchorsLast`（pre_turn_end 语义不回归）。
+
+## 2026-10-23 追加：`_test.go` 的延迟上界断言必须按 CI 分档
+
+- **⛔ 任何 `_test.go` 里对 `elapsed` / `p50` / `p99` / `durations[...]` 的【上界】断言，必须按环境分档**（2026-10-23 两连挂实证）。CI runner 与本机差 **59 倍**：同一个 `TestActivityIndexScaleQuery`，本机 `P50=517µs P99=1.36ms`，CI `P50=47.9ms P99=80.3ms`（共享 CPU + 无预热 + cgo sqlite 差异）。写死 50ms ⇒ `P99 latency 80.278018ms exceeds the 50ms budget`。
+- **⛔ 修的时候【不许】只改报错的那一个测试**：第一次只改了 `channel/web/web_activity_test.go`，第二次 `storage/sqlite/activity_index_test.go` 原样再挂一次。必须全仓扫同类：
+  ```bash
+  grep -rnE "time\.Since\([^)]*\).{0,40}(>|>=)\s*[0-9]+\s*\*\s*time\.(Millisecond|Second)" --include="*_test.go" .
+  ```
+  逐个判断是**上界**（CI 慢会误挂，要分档）还是**下界**（CI 慢只会更满足，不用动）。
+- **分档模板**（本机保留严格值，CI 放到仍能抓住真实退化的量级，**不是无脑 ×10**）：
+  ```go
+  budget := 50 * time.Millisecond
+  if os.Getenv("CI") != "" { budget = 300 * time.Millisecond }
+  if p99 > budget { t.Fatalf("P99 %v exceeds %v", p99, budget) }
+  ```
+  放宽的依据必须写进注释：这些断言要抓的是**算法退化**（按会话数线性扫描 → 秒级；cancel 阻塞到 turn 结束 → 30 秒级），放宽 3–5 倍不弱化语义。
+- **`--- FAIL: TestHelperChild...` 可能是假信号**：`TestDoubleCloseKeepsLockForOtherHandles` 故意 fork 子进程让它打印 `expected failure: database ... already in use`，子进程 `--- FAIL` 是**预期输出**，父测试 `--- PASS`。看 CI 日志先确认父测试结论，别被 helper 的 FAIL 带偏。
+- **守护**：`storage/sqlite/activity_index_test.go`（`budget` 变量 + `(budget=%v)` 进 log）、`channel/web/web_cancel_blocking_test.go`（`cancelBudget`）、`channel/web/web_activity_test.go`（`budget`）。三处都断言本地值不变。

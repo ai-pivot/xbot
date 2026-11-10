@@ -6,7 +6,8 @@ import (
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
+	"xbot/storage"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -79,7 +80,7 @@ type UserContext struct {
 	// alternative implementations (e.g. file-based).
 
 	// SubSvc provides LLM subscription CRUD operations.
-	SubSvc *sqlite.LLMSubscriptionService
+	SubSvc storage.SubscriptionBackend
 
 	// SettingsSvc provides user settings read/write (for config tool callbacks
 	// and /settings command — these need live DB access, not the snapshot).
@@ -90,7 +91,7 @@ type UserContext struct {
 	InvalidateLLM    func()
 	InvalidateSender func()
 	ResolveLLM       func(chatID string) (llm.LLM, string, int, string, int)
-	ResolveActiveSub func(chatID string) (*sqlite.LLMSubscription, string, error)
+	ResolveActiveSub func(chatID string) (*common.LLMSubscription, string, error)
 	SelectModel      func(chatID, subID, model string) error
 	RefreshModels    func() ([]protocol.ModelEntry, []RefreshResult)
 	ListModels       func() []protocol.ModelEntry

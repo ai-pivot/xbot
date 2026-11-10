@@ -20,87 +20,69 @@ export function sessionCacheKey(channel: string | null | undefined, chatID: stri
  */
 export const MAX_CACHED_SESSIONS = 8
 /**
- * Max `iteration_history` entries retained inside a cached reconnect snapshot.
- * Recovery only reads the LAST entry's iteration (watermark for re-fetch), so
- * a handful is ample; the point is to stop "sessions × heavy history" from
- * multiplying (a long turn can carry hundreds of iterations per snapshot).
- */
-export const MAX_CACHED_ITERATION_HISTORY = 4
-
-/**
  * A `Map<string, V>` whose size never exceeds {@link MAX_CACHED_SESSIONS},
  * ordered by recency. The ceiling and the recency bookkeeping live in the
  * container itself (not in each call site), so no access path — including a
  * direct `.set()` — can grow it unbounded.
  */
+/**
+ * 已停用：web 前端 session 缓存全部改为 no-op（用户 2026-10-21「彻底去掉」）。
+ *
+ * 这个基类原本为 lastSeq / lastIteration / lastTurnID / progressGeneration 提供
+ * 按 session 的 LRU 缓存。保留它会带来两类问题：
+ *   1. 缓存跨会话 / 跨 turn 残留 → 界面状态与真实状态不一致；
+ *   2. 刷新即清空 → 同一个操作在「不刷新」与「刷新后」表现不同。
+ * 现在所有子类都不存任何东西，读取一律返回空，调用方自然回退到服务端数据。
+ */
 class BoundedSessionCache<V> extends Map<string, V> {
-  /** Move an existing key to the most-recently-used end (Map = insertion order). */
-  private touch(key: string): void {
-    if (!super.has(key)) return
-    const value = super.get(key) as V
-    super.delete(key)
-    super.set(key, value)
+  override get(_key: string): V | undefined {
+    return undefined
   }
 
-  override get(key: string): V | undefined {
-    const value = super.get(key)
-    if (value !== undefined) this.touch(key)
-    return value
+  override has(_key: string): boolean {
+    return false
   }
 
-  override has(key: string): boolean {
-    const present = super.has(key)
-    if (present) this.touch(key)
-    return present
-  }
-
-  override set(key: string, value: V): this {
-    if (super.has(key)) super.delete(key)
-    super.set(key, value)
-    while (super.size > MAX_CACHED_SESSIONS) {
-      const oldest = super.keys().next().value
-      if (oldest === undefined) break
-      super.delete(oldest)
-    }
+  override set(_key: string, _value: V): this {
     return this
   }
 }
 
-/**
- * Reduce a structured progress snapshot to the fields SSE reconnect recovery
- * actually reads — `turn_id`, `iteration`, and the iteration-history entries'
- * `iteration` (the last one is the re-fetch watermark in
- * `restoreActiveProgress`). Streaming payload (`content` / `reasoning` /
- * `stream_content` / tools / todos / …) is never read back from this cache, so
- * caching it only bloats memory. `phase` is kept because it is a cheap,
- * commonly-inspected marker.
- */
-function trimProgressSnapshot(progress: ProgressEvent): ProgressEvent {
-  const trimmed: ProgressEvent = {}
-  if (typeof progress.iteration === 'number') trimmed.iteration = progress.iteration
-  if (typeof progress.turn_id === 'number') trimmed.turn_id = progress.turn_id
-  if (typeof progress.phase === 'string') trimmed.phase = progress.phase
-  const history = progress.iteration_history
-  if (Array.isArray(history) && history.length > 0) {
-    trimmed.iteration_history = history.slice(-MAX_CACHED_ITERATION_HISTORY).map((entry) => {
-      const raw = entry && typeof entry === 'object' ? (entry as { iteration?: unknown }).iteration : undefined
-      // Keep a placeholder for a non-conforming entry so the LAST element stays
-      // the last element — the watermark derivation must not shift.
-      return typeof raw === 'number' ? { iteration: raw } : {}
-    })
-  }
-  return trimmed
-}
 
 /** Bounded snapshot cache; every insert is trimmed to the recovery-critical fields. */
 class ProgressSnapshotCache extends BoundedSessionCache<ProgressEvent> {
-  override set(cacheKey: string, value: ProgressEvent): this {
-    return super.set(cacheKey, trimProgressSnapshot(value))
+  // 已停用（用户 2026-10-20：「web 缓存现在全是错的，导致前端状态异常」）。
+  //
+  // 这个缓存把 progress 快照（含 iteration/turn/iteration_history）留在内存里，
+  // SSE 重连后由 restoreActiveProgress 读回来恢复「正在运行」的视图。问题是
+  // 快照是**某个过去时刻**的：turn 已结束、iteration 已推进、或用户在别的
+  // 会话里操作过之后，恢复出来就是过期状态 —— 前端显示「还在跑」「迭代号
+  // 回退」，而没有任何机制能保证它和服务端当前状态一致。
+  //
+  // 停用后重连完全依赖服务端：SSE 重放（ring buffer）+ /api/history 重新拉取，
+  // 慢一点，但不会出现脏状态。
+  override set(_cacheKey: string, _value: ProgressEvent): this {
+    return this
+  }
+
+  override get(_cacheKey: string): ProgressEvent | undefined {
+    return undefined
+  }
+
+  override has(_cacheKey: string): boolean {
+    return false
   }
 }
 
 /** Last SSE sequence processed for each channel-qualified session. */
-export const lastSeqCache = new BoundedSessionCache<number>()
+/**
+ * SSE 协议游标（**不是** UI 缓存，必须保留）：重连时靠它跳过已经处理过的事件。
+ *
+ * 与其它缓存不同，它不参与「界面状态」——删掉会导致每个重连周期重复处理
+ * ring buffer 里的事件。仍然是按会话 keyed 的普通 Map，但由 `resetLastSeq`
+ * 在会话切换 / 序号回滚时清空。
+ */
+export const lastSeqCache = new Map<string, number>()
 /** Last progress_structured iteration seen for each channel-qualified session.
  *  Used to detect "gap crosses an iteration boundary" — if a seq gap spans a
  *  change in iteration id, an iteration's completion delta may have been lost
@@ -134,43 +116,18 @@ interface StoredSessionTree {
 }
 
 export function loadSessionTreeCache(): StoredSessionTree | null {
+  // 已停用（用户 2026-10-21「彻底去掉」）：不再从 localStorage 恢复会话树。
+  // 顺手清掉历史版本写下的残留，避免旧数据继续影响首屏。
   try {
-    const raw = localStorage.getItem(SESSION_TREE_CACHE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<StoredSessionTree>
-    if (parsed.version !== 1 || !Array.isArray(parsed.sessions) || !Array.isArray(parsed.subAgents)) {
-      return null
-    }
-    // Strip volatile live state: the cache exists for first-paint structure
-    // (labels, ordering, unread), NOT for running/busy state. Restoring a cached
-    // `running: true` makes idle sessions show busy after a page reload until
-    // the first session-tree refresh completes — and if that refresh fails
-    // (network error), the stale busy persists with nothing to correct it
-    // (user report: "明明 idle 却显示 busy"). The refresh restores live state
-    // from the server (running / waiting_input).
-    const stripVolatile = (nodes: SessionInfo[]): SessionInfo[] =>
-      nodes.map((n) => {
-        const children = n.children?.length ? stripVolatile(n.children) : n.children
-        const volatile = n.running === true || n.status === 'running' || n.status === 'pending' || n.status === 'waiting_input'
-        return volatile ? { ...n, running: false, status: 'idle', children } : { ...n, children }
-      })
-    return {
-      version: 1,
-      sessions: stripVolatile(parsed.sessions),
-      subAgents: stripVolatile(parsed.subAgents),
-    }
+    localStorage.removeItem(SESSION_TREE_CACHE_KEY)
   } catch {
-    return null
+    /* storage 不可用时忽略 */
   }
+  return null
 }
 
-export function saveSessionTreeCache(sessions: SessionInfo[], subAgents: SessionInfo[]): void {
-  const value: StoredSessionTree = { version: 1, sessions, subAgents }
-  try {
-    localStorage.setItem(SESSION_TREE_CACHE_KEY, JSON.stringify(value))
-  } catch {
-    // Storage may be unavailable or full; the in-memory state remains authoritative.
-  }
+export function saveSessionTreeCache(_sessions: SessionInfo[], _subAgents: SessionInfo[]): void {
+  // 已停用：不再写入 localStorage（会话树每次从服务端拉取）。
 }
 
 export function getLastSeq(cacheKey: string): number {

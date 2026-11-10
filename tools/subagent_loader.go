@@ -6,11 +6,41 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"unicode"
+
+	log "xbot/logger"
 )
 
-// LoadAgentRoles 从目录加载所有 agent 定义文件（*.md）
-// 每个文件包含 YAML frontmatter（name, description, tools）和 SystemPrompt 正文
+// LoadAgentRoles 从目录加载所有 agent 定义文件（*.md）。
+//
+// 目录结构决定 role 的可见范围与名字空间（2026-10-22 用户要求：
+// "role 不应该全局可用"）：
+//
+//	agents/tester.md            → role "tester"        （顶层，保持向后兼容）
+//	agents/team/backend.md      → role "team.backend"
+//	agents/proj/xbot/dev.md     → role "proj.xbot.dev"
+//
+// 子目录用 "." 连接成名字空间。**刻意不用 "/"**：interactiveKey 形如
+// `<channel>:<chatID>/<role>:<instance>`，role 里若含 "/" 会让
+// parseInteractiveKeyTail 的 LastIndex("/") 解析错误。
+// skippedRoleDefs 统计"被跳过的 role 定义文件/子目录"数（解析失败、目录不可读）。
+//
+// 只做**计数**不做二次扫描：加载热路径（GetSubAgentRole 每次调用都重新加载，
+// 支持热更新）上多扫一遍代价不可接受。InitAgentRoles 在启动时清零后读一次，
+// 打一条汇总 warn —— 否则"少了一个 role"只表现为调用方的 unknown role。
+var skippedRoleDefs atomic.Int64
+
+// isHiddenAgentDir 判断目录项是否应被当成"隐藏/内部目录"跳过。
+//
+// agents 目录本身通常就是个 git 仓库（$XBOT_HOME/agents/.git 真实存在）：
+// 递归进去虽然今天没有 *.md 所以不产生假 role，但只要有人在里面放一个带
+// frontmatter 的 .md（docs/README.md、.git/xxx.md），就会凭空多出一个 role。
+// 与其靠"里面碰巧没有 md"这种运气，不如显式跳过 . 开头的目录。
+func isHiddenAgentDir(name string) bool {
+	return strings.HasPrefix(name, ".")
+}
+
 func LoadAgentRoles(dir string) ([]SubAgentRole, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -19,10 +49,25 @@ func LoadAgentRoles(dir string) ([]SubAgentRole, error) {
 
 	var roles []SubAgentRole
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+		path := filepath.Join(dir, entry.Name())
+		if entry.IsDir() {
+			if isHiddenAgentDir(entry.Name()) {
+				continue // .git 等内部目录不参与命名空间（见 isHiddenAgentDir）
+			}
+			// 子目录 = 命名空间。单个子目录解析失败不影响其它目录（告警跳过）。
+			sub, err := loadAgentRolesNamespaced(path, entry.Name())
+			if err != nil {
+				skippedRoleDefs.Add(1)
+				log.WithFields(log.Fields{"dir": path, "error": err.Error()}).
+					Warn("Failed to load namespaced agent roles, skipping directory")
+				continue
+			}
+			roles = append(roles, sub...)
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
+		if !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
 		role, err := ParseAgentFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("parse agent file %s: %w", path, err)
@@ -32,18 +77,83 @@ func LoadAgentRoles(dir string) ([]SubAgentRole, error) {
 	return roles, nil
 }
 
+// loadAgentRolesNamespaced 递归加载一个命名空间目录，role 名 = prefix[.sub...].name。
+func loadAgentRolesNamespaced(dir, prefix string) ([]SubAgentRole, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var roles []SubAgentRole
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if entry.IsDir() {
+			if isHiddenAgentDir(entry.Name()) {
+				continue // 同顶层：隐藏目录不是命名空间
+			}
+			sub, err := loadAgentRolesNamespaced(path, prefix+"."+entry.Name())
+			if err != nil {
+				skippedRoleDefs.Add(1)
+				log.WithFields(log.Fields{"dir": path, "error": err.Error()}).
+					Warn("Failed to load namespaced agent roles, skipping directory")
+				continue
+			}
+			roles = append(roles, sub...)
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		role, err := ParseAgentFile(path)
+		if err != nil {
+			skippedRoleDefs.Add(1)
+			log.WithFields(log.Fields{"file": path, "error": err.Error()}).
+				Warn("Failed to parse agent file, skipping")
+			continue
+		}
+		role.Name = prefix + "." + role.Name
+		roles = append(roles, role)
+	}
+	return roles, nil
+}
+
 // LoadAgentRolesSandbox loads agent roles from a directory using Sandbox for file access.
+//
+// 与 LoadAgentRoles 保持**同一套**命名空间语义（子目录 = role 名前缀，用 "." 拼接）。
+// 此前这里 `entry.IsDir` 直接 continue：本地用户能看到 agents/team/*.md 解析出的
+// team.backend，而远程/容器 sandbox 用户一个都看不到 —— 两类用户的 role 可见集不同，
+// 既影响 agent/agents.go 的 catalog（system prompt 里的 <available_agents>），
+// 也影响 spawn 时的 role 解析（同一份 agents 目录，行为却随 sandbox 变化）。
 func LoadAgentRolesSandbox(ctx context.Context, dir string, sb Sandbox, userID string) ([]SubAgentRole, error) {
+	return loadAgentRolesSandboxDir(ctx, dir, "", sb, userID)
+}
+
+// loadAgentRolesSandboxDir 递归加载一个命名空间目录（sandbox 版）。
+// prefix 形如 "" / "team." / "proj.xbot."（含结尾点），叶子角色名 = prefix + name。
+func loadAgentRolesSandboxDir(ctx context.Context, dir, prefix string, sb Sandbox, userID string) ([]SubAgentRole, error) {
 	entries, err := sb.ReadDir(ctx, dir, userID)
 	if err != nil {
 		return nil, fmt.Errorf("read agents dir %s: %w", dir, err)
 	}
 	var roles []SubAgentRole
 	for _, entry := range entries {
-		if entry.IsDir || !strings.HasSuffix(entry.Name, ".md") {
+		path := filepath.Join(dir, entry.Name)
+		if entry.IsDir {
+			if isHiddenAgentDir(entry.Name) {
+				continue // 与本地版一致：隐藏目录不是命名空间
+			}
+			// 单个子目录失败不拖垮其它目录（与本地版 LoadAgentRoles 一致）。
+			sub, err := loadAgentRolesSandboxDir(ctx, path, prefix+entry.Name+".", sb, userID)
+			if err != nil {
+				log.WithFields(log.Fields{"dir": path, "error": err.Error()}).
+					Warn("Failed to load namespaced agent roles from sandbox, skipping directory")
+				continue
+			}
+			roles = append(roles, sub...)
 			continue
 		}
-		path := filepath.Join(dir, entry.Name)
+		if !strings.HasSuffix(entry.Name, ".md") {
+			continue
+		}
 		data, err := sb.ReadFile(ctx, path, userID)
 		if err != nil {
 			return nil, fmt.Errorf("read agent file %s: %w", path, err)
@@ -53,6 +163,7 @@ func LoadAgentRolesSandbox(ctx context.Context, dir string, sb Sandbox, userID s
 		if err != nil {
 			return nil, fmt.Errorf("parse agent file %s: %w", path, err)
 		}
+		role.Name = prefix + role.Name
 		roles = append(roles, role)
 	}
 	return roles, nil
@@ -75,7 +186,7 @@ func ParseAgentFile(path string) (SubAgentRole, error) {
 	}
 
 	// 解析 frontmatter 字段
-	name, description, model, allowedTools, caps, err := parseFrontmatter(frontmatter)
+	name, description, model, allowedTools, rules, caps, err := parseFrontmatter(frontmatter)
 	if err != nil {
 		return SubAgentRole{}, fmt.Errorf("parse frontmatter: %w", err)
 	}
@@ -93,6 +204,7 @@ func ParseAgentFile(path string) (SubAgentRole, error) {
 		Model:        model,
 		SystemPrompt: strings.TrimSpace(body),
 		AllowedTools: allowedTools,
+		Rules:        rules,
 		Capabilities: caps,
 	}, nil
 }
@@ -105,7 +217,7 @@ func ParseAgentFileContent(data []byte, fallbackName string) (SubAgentRole, erro
 	if err != nil {
 		return SubAgentRole{}, fmt.Errorf("invalid frontmatter: %w", err)
 	}
-	name, description, model, allowedTools, caps, err := parseFrontmatter(frontmatter)
+	name, description, model, allowedTools, rules, caps, err := parseFrontmatter(frontmatter)
 	if err != nil {
 		return SubAgentRole{}, fmt.Errorf("parse frontmatter: %w", err)
 	}
@@ -118,6 +230,7 @@ func ParseAgentFileContent(data []byte, fallbackName string) (SubAgentRole, erro
 		Model:        model,
 		SystemPrompt: strings.TrimSpace(body),
 		AllowedTools: allowedTools,
+		Rules:        rules,
 		Capabilities: caps,
 	}, nil
 }
@@ -152,9 +265,9 @@ func splitFrontmatter(content string) (frontmatter, body string, err error) {
 }
 
 // parseFrontmatter 手动解析简单 YAML frontmatter
-// 支持 name, description（字符串）、tools（列表）、model（字符串）和 capabilities（子字段）
+// 支持 name, description（字符串）、tools/rules（列表）、model（字符串）和 capabilities（子字段）
 // 默认 spawn_agent=true，除非显式设置 spawn_agent: false
-func parseFrontmatter(fm string) (name, description, model string, tools []string, caps SubAgentCapabilities, err error) {
+func parseFrontmatter(fm string) (name, description, model string, tools, rules []string, caps SubAgentCapabilities, err error) {
 	caps = SubAgentCapabilities{
 		SpawnAgent: true, // 默认允许 spawn 子 agent
 	}
@@ -173,11 +286,15 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 
 		// 列表项：以 "  - " 或 "- " 开头（属于当前字段）
 		if strings.HasPrefix(trimmed, "- ") {
-			if currentField == "tools" {
-				item := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
-				if item != "" {
-					tools = append(tools, item)
-				}
+			item := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+			if item == "" {
+				continue
+			}
+			switch currentField {
+			case "tools":
+				tools = append(tools, item)
+			case "rules":
+				rules = append(rules, item)
 			}
 			continue
 		}
@@ -226,6 +343,8 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 			currentField = "model"
 		case "tools":
 			currentField = "tools"
+		case "rules":
+			currentField = "rules"
 			// tools 的值可能在同一行（如 tools: [a, b]）或后续行（列表格式）
 			// 我们只支持列表格式，忽略同行值
 		case "capabilities":
@@ -239,7 +358,7 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 	if name != "" {
 		for _, c := range name {
 			if !unicode.IsLetter(c) && !unicode.IsDigit(c) && c != '-' && c != '_' {
-				return "", "", "", nil, SubAgentCapabilities{}, fmt.Errorf("invalid agent name %q: only letters (including CJK), digits, hyphens and underscores are allowed", name)
+				return "", "", "", nil, nil, SubAgentCapabilities{}, fmt.Errorf("invalid agent name %q: only letters (including CJK), digits, hyphens and underscores are allowed", name)
 			}
 		}
 	}
@@ -247,16 +366,16 @@ func parseFrontmatter(fm string) (name, description, model string, tools []strin
 	// 校验 tools 列表格式
 	for _, t := range tools {
 		if t == "" {
-			return "", "", "", nil, SubAgentCapabilities{}, fmt.Errorf("empty tool name in tools list")
+			return "", "", "", nil, nil, SubAgentCapabilities{}, fmt.Errorf("empty tool name in tools list")
 		}
 		for _, c := range t {
 			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '.' {
-				return "", "", "", nil, SubAgentCapabilities{}, fmt.Errorf("invalid tool name %q: only letters, digits, hyphens, underscores and dots are allowed", t)
+				return "", "", "", nil, nil, SubAgentCapabilities{}, fmt.Errorf("invalid tool name %q: only letters, digits, hyphens, underscores and dots are allowed", t)
 			}
 		}
 	}
 
-	return name, description, model, tools, caps, nil
+	return name, description, model, tools, rules, caps, nil
 }
 
 // isTruthy 判断字符串是否表示 true

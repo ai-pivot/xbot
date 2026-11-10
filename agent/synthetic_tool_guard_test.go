@@ -53,7 +53,13 @@ func TestSyntheticToolResultIsFriendly(t *testing.T) {
 	if res.Summary == "" {
 		t.Error("syntheticToolResult should return non-empty summary")
 	}
-	if !strings.Contains(res.Summary, "not a callable tool") || !strings.Contains(res.Summary, "Do NOT call") {
-		t.Errorf("syntheticToolResult should explain the situation and instruct continuation, got: %s", res.Summary)
+	if !strings.Contains(res.Summary, "not a callable tool") || !strings.Contains(res.Summary, "AUTO-INJECTS") {
+		t.Errorf("syntheticToolResult should explain the situation factually (incl. that the runtime auto-injects it), got: %s", res.Summary)
+	}
+	// 用户定向（2026-10-14）：「去掉多余的关于不要调用的提示」—— 命令式指令必须**不在**：
+	// 说清"这是系统自动注入的通知通道、不是可调用工具"之后，命令是多余的（挤占指令位，
+	// 还强化"我是不是调错工具了"这个错误关注点）。本条是该要求的回归哨兵。
+	if strings.Contains(res.Summary, "Do NOT call") {
+		t.Errorf("syntheticToolResult must not carry a command-style 'do not call' instruction, got: %s", res.Summary)
 	}
 }

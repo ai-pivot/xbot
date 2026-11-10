@@ -5,13 +5,14 @@ import (
 
 	"xbot/config"
 	"xbot/llm"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
 // newBindingTestFactory builds a DB-backed factory with subscription +
 // tenant + settings services, plus helper shortcuts for the session-binding
 // tests (drift / empty-model / balance-tier binding).
-func newBindingTestFactory(t *testing.T) (*LLMFactory, *sqlite.LLMSubscriptionService, *sqlite.TenantService, *SettingsService) {
+func newBindingTestFactory(t *testing.T) (*LLMFactory, storage.SubscriptionBackend, storage.TenantStore, *SettingsService) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XBOT_HOME", dir)
@@ -20,9 +21,9 @@ func newBindingTestFactory(t *testing.T) (*LLMFactory, *sqlite.LLMSubscriptionSe
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	subSvc := sqlite.NewLLMSubscriptionService(db)
-	tenantSvc := sqlite.NewTenantService(db)
-	settingsSvc := NewSettingsService(sqlite.NewUserSettingsService(db))
+	subSvc := storage.NewSQLiteConfigStore(db)
+	tenantSvc := storage.NewSQLiteTenantStore(db)
+	settingsSvc := NewSettingsService(storage.NewSQLiteConfigStore(db))
 	f := NewLLMFactory(&llm.MockLLM{}, "fallback-default-model")
 	f.SetSubscriptionSvc(subSvc)
 	f.SetTenantSvc(tenantSvc)
@@ -32,7 +33,7 @@ func newBindingTestFactory(t *testing.T) (*LLMFactory, *sqlite.LLMSubscriptionSe
 
 // addBindingSub registers a subscription with a per-model max_context and
 // returns it.
-func addBindingSub(t *testing.T, subSvc *sqlite.LLMSubscriptionService, id, model string, maxContext int) *sqlite.LLMSubscription {
+func addBindingSub(t *testing.T, subSvc storage.SubscriptionBackend, id, model string, maxContext int) *sqlite.LLMSubscription {
 	t.Helper()
 	sub := &sqlite.LLMSubscription{
 		ID: id, SenderID: "cli_user", Name: id, Provider: "openai",

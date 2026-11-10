@@ -9,6 +9,7 @@ import (
 	"xbot/channel"
 	"xbot/config"
 	"xbot/llm"
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
@@ -54,7 +55,7 @@ func TestLLMSemAcquireForUser_ReadsMaxConcurrencyFromDB(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := sqlite.NewUserSettingsService(db)
+	store := storage.NewSQLiteConfigStore(db)
 	settingsSvc := NewSettingsService(store)
 	// Write max_concurrency=100 into the DB under channel "cli".
 	if err := settingsSvc.SetSetting("cli", "test_user", settingMaxConcurrency, "100"); err != nil {
@@ -101,7 +102,7 @@ func TestSubAgentSemAcquireForUser_ReadsMaxConcurrencyFromDB(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := sqlite.NewUserSettingsService(db)
+	store := storage.NewSQLiteConfigStore(db)
 	settingsSvc := NewSettingsService(store)
 	if err := settingsSvc.SetSetting("cli", "test_user", settingMaxConcurrency, "50"); err != nil {
 		t.Fatalf("set setting: %v", err)
@@ -164,7 +165,7 @@ func TestLLMSemAcquireForUser_IgnoresCallerChannel(t *testing.T) {
 	}
 	defer db.Close()
 
-	settingsSvc := NewSettingsService(sqlite.NewUserSettingsService(db))
+	settingsSvc := NewSettingsService(storage.NewSQLiteConfigStore(db))
 	// Written by the Web/CLI panel — the canonical location.
 	if err := settingsSvc.SetSetting(channel.MaxConcurrencyChannel, "cli_user", settingMaxConcurrency, "100"); err != nil {
 		t.Fatalf("set setting: %v", err)
@@ -208,7 +209,7 @@ func TestSetSetting_CanonicalizesMaxConcurrencyChannel(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := sqlite.NewUserSettingsService(db)
+	store := storage.NewSQLiteConfigStore(db)
 	settingsSvc := NewSettingsService(store)
 	if err := settingsSvc.SetSetting("web", "cli_user", settingMaxConcurrency, "120"); err != nil {
 		t.Fatalf("set setting: %v", err)
@@ -308,7 +309,7 @@ func TestHasCustomLLMChecksSubscriptionSvc(t *testing.T) {
 	defer db.Close()
 
 	factory := NewLLMFactory(&llm.MockLLM{}, "default-model")
-	subSvc := sqlite.NewLLMSubscriptionService(db)
+	subSvc := storage.NewSQLiteConfigStore(db)
 	factory.SetSubscriptionSvc(subSvc)
 	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-1", SenderID: "cli_user", Name: "s1", Provider: "openai", BaseURL: "https://example.com/v1", APIKey: "sk-test", Model: "m1", IsDefault: true}); err != nil {
 		t.Fatalf("add sub: %v", err)
@@ -408,7 +409,7 @@ func TestParseOrDefault(t *testing.T) {
 // by the v63 migration.
 
 // newSettingsTestFactory 构造带真实 sqlite settings 的 LLMFactory。
-func newSettingsTestFactory(t *testing.T) (*LLMFactory, *SettingsService, *sqlite.UserSettingsService) {
+func newSettingsTestFactory(t *testing.T) (*LLMFactory, *SettingsService, storage.ConfigStore) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XBOT_HOME", dir)
@@ -417,7 +418,7 @@ func newSettingsTestFactory(t *testing.T) (*LLMFactory, *SettingsService, *sqlit
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	store := sqlite.NewUserSettingsService(db)
+	store := storage.NewSQLiteConfigStore(db)
 	svc := NewSettingsService(store)
 	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
 	f.SetSettingsService(svc)
@@ -430,7 +431,7 @@ func newSettingsTestFactory(t *testing.T) (*LLMFactory, *SettingsService, *sqlit
 func TestGetGlobalSetting_SenderFallbackChain(t *testing.T) {
 	f, _, store := newSettingsTestFactory(t)
 	// operator 行（唯一写入路径：SetSetting(cli_user)）。
-	if err := store.Set(thinkingModeChannel, "cli_user", "tier_swift", "sub-cli|model-cli"); err != nil {
+	if err := store.SetUserSetting(thinkingModeChannel, "cli_user", "tier_swift", "sub-cli|model-cli"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	// 任意 sender → cli_user 兜底命中（operator 继承语义）。

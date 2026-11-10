@@ -1,0 +1,23 @@
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata git docker-cli nodejs npm
+
+ENV TZ=Asia/Shanghai
+WORKDIR /app
+
+# Copy binary
+COPY xbot-pg-test /app/xbot
+RUN chmod +x /app/xbot
+
+# Copy web dist
+COPY web/dist /app/web/dist
+
+# Copy default skills and agents
+COPY .xbot.example/skills/ /app/.xbot/skills/
+COPY .xbot.example/agents/ /app/.xbot/agents/
+
+# Config will be created at runtime via env vars or entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]

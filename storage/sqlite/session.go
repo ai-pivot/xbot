@@ -341,6 +341,34 @@ ORDER BY id DESC LIMIT 1
 	return content, nil
 }
 
+// GetLastAssistantPreview returns the truncated text of the most recent FINAL
+// assistant reply. The reply text lives in iteration_history: the assistant
+// rows in session_messages are frequently empty placeholders (tool-only
+// iterations), which made a session_messages-based query return "" and the
+// push body fall back to "本轮回复已完成".
+func (s *SessionService) GetLastAssistantPreview(tenantID int64, maxRunes int) (string, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return "", err
+	}
+	var content string
+	err = conn.QueryRow(`
+	SELECT content FROM iteration_history
+	WHERE tenant_id = ? AND content <> ''
+  AND turn_id = (SELECT COALESCE(MAX(turn_id), 0) FROM iteration_history WHERE tenant_id = ?)
+	ORDER BY iteration DESC LIMIT 1`, tenantID, tenantID).Scan(&content)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get last assistant preview: %w", err)
+	}
+	return truncate(content, maxRunes), nil
+}
+
 // HasAssistantReplyAfterLastUser checks whether the last user message in
 // this tenant's session already has a subsequent final assistant reply (no
 // tool calls). Used by resume flows to detect turns that completed naturally
@@ -541,37 +569,6 @@ func (s *SessionService) LatestPreview(tenantID int64) (string, error) {
 // IterationRecord is a structured iteration history entry (v54+).
 // Replaces the Detail JSON blob — every intermediate assistant message now
 // has its iteration data in a dedicated table row, not just the final message.
-type IterationRecord struct {
-	MessageID int64  `json:"message_id"`
-	TurnID    uint64 `json:"turn_id"`
-	Iteration int    `json:"iteration"`
-	Content   string `json:"content"`
-	Reasoning string `json:"reasoning"`
-	Tools     string `json:"tools"` // JSON array of tool snapshots
-	// Tokens is the per-iteration completion-token count (not cumulative).
-	Tokens int64 `json:"tokens"`
-	// TTFTMs is the time-to-first-token for this iteration's LLM stream.
-	TTFTMs int64 `json:"ttft_ms"`
-	// TokensPerSec is the average generation speed for this iteration.
-	TokensPerSec int64 `json:"tokens_per_sec"`
-	// TotalMs is the total stream duration for this iteration.
-	TotalMs int64 `json:"total_ms"`
-	// TPOTMs is the time-per-output-token (ms) for this iteration's LLM stream.
-	TPOTMs int64 `json:"tpot_ms"`
-	// InputTokens is the prompt tokens of this iteration's LLM call(s) (v59).
-	InputTokens int64 `json:"input_tokens"`
-	// CachedTokens is the prompt-cache hit tokens of this iteration's LLM call(s) (v59).
-	CachedTokens int64 `json:"cached_tokens"`
-	// Model is the LLM model used for this iteration (v59).
-	Model string `json:"model"`
-	// SubscriptionID is the owning subscription of the model (v62,
-	// model-subscription integration: the model never travels alone).
-	SubscriptionID string `json:"subscription_id"`
-	// CreatedAt = 该迭代记录落库时间（DB created_at，解析为 time.Time）。
-	// 用于把「turn 中间发生的压缩」（compress 记录的 created_at）定位到
-	// **它之后的迭代号** —— 压缩在迭代边界触发，渲染在迭代之间。
-	CreatedAt time.Time `json:"created_at,omitempty"`
-}
 
 // AppendIterationHistory inserts a single iteration record linked to a message.
 func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, turnID uint64, rec IterationRecord) error {
@@ -579,12 +576,31 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 	if err != nil {
 		return err
 	}
-	_, err = conn.Exec(`
-		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs, rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)
-	if err != nil {
+	// ⚠️ 时间表示铁律（2026-10-14「压缩分隔条堆一摞」事故）：created_at 必须
+	// 显式写带时区偏移的 canonical 形态（与 session_messages 的 Go 写侧同款），
+	// ⛔ 绝不依赖 DDL 默认 —— `CURRENT_TIMESTAMP` 产出的是 **UTC 裸串**，与本仓
+	// 其它表「RFC3339 带本地偏移」混存；读侧一旦按 local 猜裸串 = 8 小时级错位，
+	// 压缩标记整体"晚于"迭代时间线 ⇒ compactionAnchor 退化（全部分隔条堆到
+	// 最后一个 turn 末尾）。判据见 iteration_created_at_tz_test.go。
+	if _, err := conn.Exec(`
+		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs, rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID, canonicalTimestamp(time.Now())); err != nil {
 		return fmt.Errorf("append iteration_history: %w", err)
+	}
+	return nil
+}
+
+// AppendIterationHistories writes many iteration records, in order.
+//
+// SQLite is local, so a plain loop is already fast; the method exists so callers
+// that copy a whole session's history (fork) have one code path, and so a
+// remote backend can pipeline instead (see pgSessionStore).
+func (s *SessionService) AppendIterationHistories(tenantID int64, recs []IterationRecord) error {
+	for i, rec := range recs {
+		if err := s.AppendIterationHistory(tenantID, rec.MessageID, rec.TurnID, rec); err != nil {
+			return fmt.Errorf("append iteration_history item %d: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -740,7 +756,7 @@ func (s *SessionService) GetIterationHistoryByNumber(tenantID int64, turnID uint
 	if err != nil {
 		return IterationRecord{}, false, fmt.Errorf("get iteration_history by number: %w", err)
 	}
-	rec.CreatedAt = parseSQLiteTime(createdAt)
+	rec.CreatedAt = parseIterationTime(createdAt)
 	return rec, true, nil
 }
 
@@ -780,7 +796,7 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID, &createdAt); err != nil {
 			continue
 		}
-		rec.CreatedAt = parseSQLiteTime(createdAt)
+		rec.CreatedAt = parseIterationTime(createdAt)
 		result[rec.TurnID] = append(result[rec.TurnID], rec)
 	}
 	return result, nil
@@ -875,7 +891,7 @@ func (s *SessionService) GetIterationAnchorsByTurn(tenantID int64, turnID uint64
 		if err := rows.Scan(&rec.Iteration, &createdAt); err != nil {
 			continue
 		}
-		rec.CreatedAt = parseSQLiteTime(createdAt)
+		rec.CreatedAt = parseIterationTime(createdAt)
 		anchors = append(anchors, rec)
 	}
 	if err := rows.Err(); err != nil {
@@ -892,7 +908,7 @@ func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {
 		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID, &createdAt); err != nil {
 			continue
 		}
-		rec.CreatedAt = parseSQLiteTime(createdAt)
+		rec.CreatedAt = parseIterationTime(createdAt)
 		records = append(records, rec)
 	}
 	return records, nil
@@ -928,62 +944,11 @@ func (s *SessionService) GetAllIterationHistory(tenantID int64) ([]IterationReco
 
 // UsageModelRow is a per-(subscription, model) usage breakdown
 // (GROUP BY subscription_id, model — v62 model-subscription integration).
-type UsageModelRow struct {
-	SubscriptionID string  `json:"subscription_id"`
-	Model          string  `json:"model"`
-	Iterations     int64   `json:"iterations"`
-	Turns          int64   `json:"turns"`
-	InputTokens    int64   `json:"input_tokens"`
-	OutputTokens   int64   `json:"output_tokens"`
-	CachedTokens   int64   `json:"cached_tokens"`
-	AvgTTFTMs      float64 `json:"avg_ttft_ms"`
-	AvgTPOTMs      float64 `json:"avg_tpot_ms"`
-}
 
 // UsageIterationRow is a single recent iteration's usage/perf record.
-type UsageIterationRow struct {
-	TurnID         uint64 `json:"turn_id"`
-	Iteration      int    `json:"iteration"`
-	InputTokens    int64  `json:"input_tokens"`
-	OutputTokens   int64  `json:"output_tokens"`
-	CachedTokens   int64  `json:"cached_tokens"`
-	TTFTMs         int64  `json:"ttft_ms"`
-	TPOTMs         int64  `json:"tpot_ms"`
-	TokensPerSec   int64  `json:"tokens_per_sec"`
-	TotalMs        int64  `json:"total_ms"`
-	Model          string `json:"model"`
-	SubscriptionID string `json:"subscription_id"`
-	CreatedAt      string `json:"created_at"`
-}
 
 // TenantUsageStats aggregates a session's usage & performance from
 // iteration_history (plus tenant watermark / metadata).
-type TenantUsageStats struct {
-	// iteration_history aggregates (pre-v59 rows have input_tokens=0 /
-	// cached_tokens=0 / model='' — they still count toward iterations/turns).
-	IterationCount  int64   `json:"iteration_count"`
-	TurnCount       int64   `json:"turn_count"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CachedTokens    int64   `json:"cached_tokens"`
-	LLMTotalMs      int64   `json:"llm_total_ms"`
-	AvgTTFTMs       float64 `json:"avg_ttft_ms"`
-	AvgTPOTMs       float64 `json:"avg_tpot_ms"`
-	AvgTokensPerSec float64 `json:"avg_tokens_per_sec"`
-	// iteration_time_range
-	FirstIterationAt string `json:"first_iteration_at"`
-	LastIterationAt  string `json:"last_iteration_at"`
-	// tenant_state watermark (current context level)
-	LastPromptTokens     int64 `json:"last_prompt_tokens"`
-	LastCompletionTokens int64 `json:"last_completion_tokens"`
-	// tenants metadata
-	CurrentModel      string `json:"current_model"`
-	SessionCreatedAt  string `json:"session_created_at"`
-	SessionLastActive string `json:"session_last_active"`
-	// Breakdowns
-	ByModel          []UsageModelRow     `json:"by_model"`
-	RecentIterations []UsageIterationRow `json:"recent_iterations"`
-}
 
 // GetTenantUsageStats aggregates usage & perf stats for a tenant from
 // iteration_history, tenant_state and tenants. recentLimit caps the
@@ -1083,23 +1048,6 @@ func (s *SessionService) GetTenantUsageStats(tenantID int64, recentLimit int) (*
 // UsageBucket is one fixed-width time bucket of a session's usage, aggregated
 // ENTIRELY inside SQL over the full iteration_history table (no LIMIT — the
 // trend chart must cover the whole history, not just the newest N detail rows).
-type UsageBucket struct {
-	// BucketStart is the bucket's inclusive start as epoch SECONDS, already
-	// shifted into the caller's timezone (tzOffsetMinutes): a day bucket starts
-	// at local midnight, an hour bucket at the local top of the hour.
-	BucketStart int64 `json:"bucket_start"`
-	// InputTokens is the sum of prompt tokens (cache hits included).
-	InputTokens int64 `json:"input_tokens"`
-	// CachedTokens is the sum of prompt-cache hit tokens.
-	CachedTokens int64 `json:"cached_tokens"`
-	// OutputTokens is the sum of generated tokens (iteration_history.tokens).
-	OutputTokens int64 `json:"output_tokens"`
-	// Calls is the number of LLM calls (iteration rows) in the bucket.
-	Calls int64 `json:"calls"`
-	// TTFTMsSum / TotalMsSum are reserved sums (unused by the chart today).
-	TTFTMsSum  int64 `json:"ttft_ms_sum"`
-	TotalMsSum int64 `json:"total_ms_sum"`
-}
 
 // Supported bucket widths (seconds). A closed set on purpose: the width is a
 // SQL divisor, so arbitrary client values must be rejected rather than silently
@@ -1183,7 +1131,7 @@ func (s *SessionService) GetTenantUsageBuckets(tenantID int64, bucketSeconds int
 	}
 
 	shift := int64(tzOffsetMinutes) * 60 // seconds east of UTC
-	windowStart := floorEpochBucket(time.Now().Unix(), bucketSeconds, shift) -
+	windowStart := FloorEpochBucket(time.Now().Unix(), bucketSeconds, shift) -
 		(int64(count)-1)*bucketSeconds
 
 	rows, err := conn.Query(`
@@ -1218,9 +1166,9 @@ func (s *SessionService) GetTenantUsageBuckets(tenantID int64, bucketSeconds int
 	return buckets, nil
 }
 
-// floorEpochBucket floors an epoch-second instant to a bucket boundary in the
+// FloorEpochBucket floors an epoch-second instant to a bucket boundary in the
 // shifted (wall-clock) space and returns the boundary as epoch seconds.
-func floorEpochBucket(epoch, bucketSeconds, shiftSeconds int64) int64 {
+func FloorEpochBucket(epoch, bucketSeconds, shiftSeconds int64) int64 {
 	shifted := epoch + shiftSeconds
 	if shifted >= 0 {
 		return (shifted/bucketSeconds)*bucketSeconds - shiftSeconds

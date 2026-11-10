@@ -867,3 +867,59 @@ func TestReadArgsHasOffsetOrLimit(t *testing.T) {
 		})
 	}
 }
+
+// TestTruncateOffloadArgsKeepsUTF8Valid pins the fix for the production failure
+//
+//	append message batch item 1: ERROR: invalid byte sequence for encoding
+//	"UTF8": 0xe6 0x2e 0x2e (SQLSTATE 22021)
+//
+// The old implementation was `args[:80] + "..."`, i.e. a BYTE cut. Tool
+// arguments in this product are routinely Chinese, so the cut landed inside a
+// 3-byte rune and left 1-2 orphan bytes. SQLite stored that happily (TEXT is
+// unvalidated), but PostgreSQL rejects the entire INSERT, so every turn that
+// offloaded a CJK Shell command failed to persist its history.
+func TestTruncateOffloadArgsKeepsUTF8Valid(t *testing.T) {
+	// 80 bytes of budget cut a 3-byte rune at every offset 1 and 2; sweep the
+	// prefix length so any boundary position is exercised.
+	for pad := 0; pad < 3; pad++ {
+		args := strings.Repeat("a", pad) + `{"command": "cd /home/cjw/xbot && echo \"=== 1. 全仓 CREATE TABLE（非 test）\"}`
+		got := truncateOffloadArgs(args)
+		if !utf8.ValidString(got) {
+			t.Fatalf("pad=%d: truncateOffloadArgs returned invalid UTF-8: %q", pad, got)
+		}
+		if len(got) > 80 {
+			t.Fatalf("pad=%d: exceeded 80-byte budget: %d", pad, len(got))
+		}
+		if len(args) > 80 && !strings.HasSuffix(got, "...") {
+			t.Fatalf("pad=%d: truncated output lost its marker: %q", pad, got)
+		}
+	}
+
+	// Under budget → returned unchanged, no marker.
+	short := `{"path":"a.go"}`
+	if got := truncateOffloadArgs(short); got != short {
+		t.Fatalf("short args changed: %q", got)
+	}
+}
+
+// TestGenerateRuleSummaryKeepsUTF8Valid covers the other summaries that embed
+// free text into the message content (the offload marker is persisted as the
+// tool result, so anything invalid in it breaks the whole turn on PG).
+func TestGenerateRuleSummaryKeepsUTF8Valid(t *testing.T) {
+	content := strings.Repeat("中文输出行\n", 400)
+	cases := []struct{ tool, args string }{
+		{"Read", `{"path":"/home/cjw/xbot/中文文件名.go"}`},
+		{"Shell", `{"command":"cd /home/cjw/xbot && echo \"═══ 中文 ═══\" && ls"}`},
+		{"Grep", `{"pattern":"中文模式"}`},
+		{"Glob", `{"pattern":"**/中文*"}`},
+		{"Unknown", `{"whatever":"中文"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.tool, func(t *testing.T) {
+			got := generateRuleSummary(c.tool, c.args, content)
+			if !utf8.ValidString(got) {
+				t.Fatalf("summary for %s is invalid UTF-8", c.tool)
+			}
+		})
+	}
+}

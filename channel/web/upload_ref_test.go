@@ -117,21 +117,25 @@ func TestExpandUploadKeys_LocalProviderAbsoluteRefFromPublicURL(t *testing.T) {
 	}
 }
 
-// Without an explicit PublicURL the base URL comes from the address the HTTP
-// server is actually listening on. Wildcard binds (0.0.0.0 / ::) are not
-// dialable hosts and map to loopback.
-func TestExpandUploadKeys_LocalProviderAbsoluteRefFromListener(t *testing.T) {
-	for _, tc := range []struct {
-		bind string
-		want string
-	}{
-		{"127.0.0.1:39217", "http://127.0.0.1:39217"},
-		{"0.0.0.0:39217", "http://127.0.0.1:39217"},
-		{"[::]:39217", "http://127.0.0.1:39217"},
+// ⛔ Regression (2026-10-12 user P0「文件和图片那里写的链接全是错的，根本下载不了」):
+// without an operator-declared PublicURL an attachment reference must NEVER be
+// built from this server's bind address. The old behaviour baked
+// "http://127.0.0.1:<port>/api/files/download?key=…" into the persisted,
+// user-visible message content — a loopback URL (or a private address) that no
+// browser and no other machine can reach, while the endpoint needs a session
+// cookie. Wildcard binds, explicit loopback and private hosts must all degrade
+// to the same-origin relative reference instead.
+func TestExpandUploadKeys_UndeclaredBindNeverLeaksIntoRef(t *testing.T) {
+	for _, bind := range []string{
+		"127.0.0.1:39217",
+		"0.0.0.0:39217",
+		"[::]:39217",
+		"10.0.0.67:30100",
+		"[::1]:39217",
 	} {
 		wc := &WebChannel{
 			ossProvider: NewLocalProvider(t.TempDir()),
-			listener:    fakeListener{addr: tcpAddr(t, tc.bind)},
+			listener:    fakeListener{addr: tcpAddr(t, bind)},
 		}
 		out := wc.expandUploadKeys(protocol.WSClientMessage{
 			Content:    "x",
@@ -140,8 +144,13 @@ func TestExpandUploadKeys_LocalProviderAbsoluteRefFromListener(t *testing.T) {
 			FileSizes:  []int64{1},
 		})
 		ref := assertParsableUploadRef(t, out, "uploads/3/a.gz")
-		if want := tc.want + "/api/files/download?key=uploads%2F3%2Fa.gz"; ref != want {
-			t.Fatalf("bind %s: want %q, got %q", tc.bind, want, ref)
+		if want := "/api/files/download?key=uploads%2F3%2Fa.gz"; ref != want {
+			t.Fatalf("bind %s: want the same-origin relative reference %q, got %q", bind, want, ref)
+		}
+		for _, banned := range []string{"127.0.0.1", "0.0.0.0", "10.0.0.67", "[::1]"} {
+			if strings.Contains(ref, banned) {
+				t.Fatalf("bind %s: reference leaked the bind address (%s): %q", bind, banned, ref)
+			}
 		}
 	}
 }
@@ -162,9 +171,9 @@ func TestExpandUploadKeys_CloudSignerFailureDegradesWithoutErrorText(t *testing.
 	assertParsableUploadRef(t, out, "uploads/3/b.gz")
 }
 
-// Before Start() binds the listener the configured Host/Port is the base-URL
-// source (same wildcard mapping).
-func TestExpandUploadKeys_LocalProviderAbsoluteRefFromConfiguredPort(t *testing.T) {
+// The configured Host/Port is a BIND target, not a public address — before
+// Start() it must not leak into the reference either.
+func TestExpandUploadKeys_ConfiguredBindHostAndPortNeverLeakIntoRef(t *testing.T) {
 	wc := &WebChannel{
 		ossProvider: NewLocalProvider(t.TempDir()),
 		config:      WebChannelConfig{Host: "0.0.0.0", Port: 8082},
@@ -176,14 +185,18 @@ func TestExpandUploadKeys_LocalProviderAbsoluteRefFromConfiguredPort(t *testing.
 		FileSizes:  []int64{4},
 	})
 	ref := assertParsableUploadRef(t, out, "uploads/3/d.gz")
-	if want := "http://127.0.0.1:8082/api/files/download?key=uploads%2F3%2Fd.gz"; ref != want {
-		t.Fatalf("want %q, got %q", want, ref)
+	if want := "/api/files/download?key=uploads%2F3%2Fd.gz"; ref != want {
+		t.Fatalf("want the same-origin relative reference %q, got %q", want, ref)
+	}
+	if strings.Contains(ref, "127.0.0.1:8082") {
+		t.Fatalf("reference leaked the configured bind target: %q", ref)
 	}
 }
 
 // The configured PublicURL also feeds runner connect commands and may carry a
 // ws:// scheme — that is NOT an HTTP base, so it must be skipped rather than
-// guessed into http(s); the listener address wins instead.
+// guessed into http(s). With no other declared base the reference stays
+// relative (the listener/bind address is never a substitute).
 func TestExpandUploadKeys_NonHTTPSPublicURLSkipped(t *testing.T) {
 	wc := &WebChannel{
 		ossProvider: NewLocalProvider(t.TempDir()),
@@ -197,8 +210,8 @@ func TestExpandUploadKeys_NonHTTPSPublicURLSkipped(t *testing.T) {
 		FileSizes:  []int64{3},
 	})
 	ref := assertParsableUploadRef(t, out, "uploads/3/c.gz")
-	if !strings.HasPrefix(ref, "http://127.0.0.1:39218/") {
-		t.Fatalf("ws:// PublicURL must be skipped; want the listener base, got %q", ref)
+	if want := "/api/files/download?key=uploads%2F3%2Fc.gz"; ref != want {
+		t.Fatalf("ws:// PublicURL must be skipped (and the bind address never used); want %q, got %q", want, ref)
 	}
 }
 

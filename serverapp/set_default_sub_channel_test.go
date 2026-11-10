@@ -10,7 +10,7 @@ import (
 	"xbot/channel"
 	"xbot/config"
 	"xbot/llm"
-	"xbot/storage/sqlite"
+	"xbot/storage"
 )
 
 // identityCtx builds an RPC context with a resolved identity (shared test helper).
@@ -76,9 +76,9 @@ func TestSetDefaultSubscriptionPersistsCallerChannel(t *testing.T) {
 		t.Fatal("multi-session DB is nil")
 	}
 	factory := agent.NewLLMFactory(&llm.MockLLM{}, "default-model")
-	subSvc := sqlite.NewLLMSubscriptionService(db)
+	subSvc := storage.NewSQLiteConfigStore(db)
 	factory.SetSubscriptionSvc(subSvc)
-	factory.SetTenantSvc(sqlite.NewTenantService(db))
+	factory.SetTenantSvc(storage.NewSQLiteTenantStore(db))
 	ag.SetLLMFactory(factory)
 	table := BuildRPCTable(&config.Config{}, ag, nil, nil, nil)
 

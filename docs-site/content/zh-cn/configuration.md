@@ -17,7 +17,7 @@ weight: 15
 | 启用 Web | `web.enable: true` |
 | Docker 沙箱 | `sandbox.mode: "docker"` |
 | 限制用户 | `*.allow_from: [...]` |
-| 最大并发调用 | `agent.max_concurrency` |
+| 最大并发调用 | 设置面板（per-user，不在 config.json） |
 | 上下文压缩 | `agent.compression_threshold` |
 
 ## 配置文件位置
@@ -183,16 +183,13 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 ```json
 {
   "agent": {
-    "max_iterations": 2000,
-    "max_concurrency": 100,
-    "memory_provider": "flat",
+    "memory_provider": "xbot",
     "work_dir": ".",
     "prompt_file": "prompt.md",
     "max_context_tokens": 200000,
     "enable_auto_compress": true,
     "compression_threshold": 0.9,
     "context_mode": "",
-    "purge_old_messages": false,
     "max_sub_agent_depth": 5,
     "llm_retry_attempts": 5,
     "llm_retry_delay": "1s",
@@ -200,31 +197,34 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
     "llm_retry_timeout": "120s",
     "mcp_inactivity_timeout": "30m",
     "mcp_cleanup_interval": "5m",
-    "session_cache_timeout": "24h"
+    "session_cache_timeout": "24h",
+    "interactive_session_ttl": "30m"
   }
 }
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `max_iterations` | int | `2000` | 单次对话最大工具调用次数 |
-| `max_concurrency` | int | `100` | 最大并发 LLM 调用数 |
-| `memory_provider` | string | `"flat"` | 记忆系统：`flat` 或 `letta` |
+| `max_concurrency` | int | `5` | 并发上限。⚠️ **不在 config.json** —— per-user 设置，存于 `user_settings` 表，通过设置面板（`/settings`，范围 1–100）或 Web LLM 控制台修改 |
+| `memory_provider` | string | `"xbot"` | 记忆系统：`xbot`、`flat`、`letta` 或 `none`（无记忆工具与提示词） |
 | `work_dir` | string | `"."` | 工作目录 |
 | `prompt_file` | string | `"prompt.md"` | 自定义系统 prompt 文件 |
 | `max_context_tokens` | int | `200000` | 最大上下文窗口 token |
 | `enable_auto_compress` | bool | `true` | 自动压缩上下文 |
 | `compression_threshold` | float | `0.9` | 触发压缩的 token 比例 |
 | `context_mode` | string | `""` | 上下文管理模式 |
-| `purge_old_messages` | bool | `false` | 压缩后清除旧消息 |
 | `max_sub_agent_depth` | int | `5` | SubAgent 最大嵌套层数（只校验深度；同角色嵌套是合法用法，不视为循环调用） |
-| `llm_retry_attempts` | int | `5` | LLM 调用失败重试次数 |
+| `llm_retry_attempts` | int | `5` | 总尝试次数（含首次）；0 使用默认 5 次 |
 | `llm_retry_delay` | duration | `"1s"` | 重试初始延迟 |
 | `llm_retry_max_delay` | duration | `"30s"` | 重试最大延迟 |
 | `llm_retry_timeout` | duration | `"120s"` | 单次 LLM 调用超时 |
 | `mcp_inactivity_timeout` | duration | `"30m"` | MCP Server 非活动超时 |
 | `mcp_cleanup_interval` | duration | `"5m"` | MCP 清理间隔 |
 | `session_cache_timeout` | duration | `"24h"` | Session 缓存超时 |
+| `interactive_session_ttl` | duration | `"30m"` | 子代理（interactive SubAgent）会话空闲存活时间；超时即销毁会话及其会话库。环境变量 `INTERACTIVE_SESSION_TTL`。设为 `0`/省略 = 默认 30m |
+
+重试次数省略或为 `0` 时使用默认 5 次总尝试（含首次调用），不表示无限重试。初始/最大延迟为零时使用 1s/30s。服务端显式 `--config` 文件与默认配置使用相同的默认值和环境变量覆盖规则。服务商错误码 `unsupported_country_region_territory` 立即返回，其他错误仍按有限次数进行指数退避。
+
 
 ### 沙箱配置
 
@@ -268,6 +268,28 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
   }
 }
 ```
+
+### 存储配置
+
+所有持久化状态（会话、消息、记忆、用户设置、LLM 订阅）默认存放在 SQLite。
+亦支持 PostgreSQL 后端：
+
+```json
+{
+  "storage": {
+    "type": "pg",
+    "dsn": "postgres://user:password@host:5432/xbot?sslmode=disable"
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `type` | `"sqlite"`（默认）或 `"pg"` |
+| `dsn` | PostgreSQL 连接串 —— 仅当 `type` 为 `"pg"` 时使用 |
+
+两个后端实现同一套存储接口，切换后端不改变 agent 行为。PostgreSQL 后端为纯 Go
+实现（无需 `libpq`/cgo）。整段省略 `storage` 即保持 SQLite 默认。
 
 ### CLI 配置（Remote 模式）
 
@@ -344,7 +366,7 @@ Server 模式安装时自动配置，一般不需要手动修改。
 
 | 字段 | 说明 |
 |------|------|
-| `tavily_api_key` | Tavily 网页搜索 API Key（配置后 Agent 可搜索网页） |
+| `tavily_api_key` | Tavily 网页搜索 API Key（全局默认值；也可在 Web 设置 → **联网搜索** 中运行时设置，立即生效且所有渠道共享） |
 | `oauth` | OAuth 2.0 服务配置（Web 渠道认证用） |
 | `pprof` | 性能分析端点（开发调试用） |
 

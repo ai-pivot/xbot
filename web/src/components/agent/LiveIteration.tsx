@@ -12,7 +12,6 @@
 import { memo, useEffect, useMemo } from 'react'
 
 import { ThinkingLine } from './ThinkingLine'
-import { reasoningKey } from './reasoningOpenState'
 import { FoldedToolGroup } from './FoldedToolGroup'
 import { GenUICollapsiblePanel } from './GenUIPanel'
 
@@ -236,7 +235,6 @@ export const LiveIteration = memo(function LiveIteration({
       {/* Streaming T — typewriter reveal + character count */}
       {hasReasoning && (
         <ThinkingLine
-          stateKey={reasoningKey(progress.turnID, progress.iteration)}
           label={reasoningInProgress
             ? <SweepText
                 text={t('agent.thinkingLive', { count: reasoningCount })}

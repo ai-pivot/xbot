@@ -44,7 +44,11 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// 1b. Migrate data to SQLite if needed (one-time migration from old formats).
 	// Must run BEFORE agent.New (which opens the DB via session.NewMultiTenant).
 	// Skip for in-memory DB (ephemeral mode) — nothing to migrate from.
-	if dbPath != ":memory:" {
+	// PG 后端：跳过 SQLite 数据迁移（v1→v72 迁移链是 SQLite 专属）。
+	// dbPath 保持 SQLite 文件路径（web 认证 / runner token 等辅助功能仍用 SQLite）；
+	// agent 的 initSession 通过 StorageType=="pg" 走 PG 数据路径。
+	pgBackend := cfg.Storage.Type == "pg"
+	if !pgBackend && dbPath != ":memory:" {
 		if err := storage.MigrateIfNeeded(context.Background(), workDir, dbPath); err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("migrate data: %w", err)
 		}
@@ -63,12 +67,19 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	offloadDir := filepath.Join(xbotHome, "offload_store")
 	maskDir := filepath.Join(xbotHome, "mask")
 
+	// PG 后端：agent 的 DBPath 传 DSN（供 NewMultiTenantPG 识别），
+	// 但 dbPath 变量保持 SQLite 路径（setupOAuth / tokenDB 用）。
+	agentDBPath := dbPath
+	if pgBackend {
+		agentDBPath = cfg.Storage.DSN
+	}
+
 	ag, err = agent.New(agent.Config{
 		Bus:                    msgBus,
 		LLM:                    llmClient,
 		Model:                  cfg.LLM.Model,
-		MaxIterations:          cfg.Agent.MaxIterations,
-		DBPath:                 dbPath,
+		DBPath:                 agentDBPath,
+		StorageType:            cfg.Storage.Type,
 		SkillsDir:              filepath.Join(xbotHome, "skills"),
 		AgentsDir:              filepath.Join(xbotHome, "agents"),
 		DisabledSkills:         cfg.DisabledSkills,
@@ -87,6 +98,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		MCPInactivityTimeout:   time.Duration(cfg.Agent.MCPInactivityTimeout),
 		MCPCleanupInterval:     time.Duration(cfg.Agent.MCPCleanupInterval),
 		SessionCacheTimeout:    time.Duration(cfg.Agent.SessionCacheTimeout),
+		InteractiveSessionTTL:  time.Duration(cfg.Agent.InteractiveSessionTTL),
 		EnableAutoCompress:     cfg.Agent.EffectiveEnableAutoCompress(),
 		MaxContextTokens:       cfg.Agent.MaxContextTokens,
 		CompressionThreshold:   cfg.Agent.CompressionThreshold,
@@ -121,7 +133,8 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// This is a one-time migration; must run after agent opens the DB (via
 	// session.NewMultiTenant) but before any session access.
 	// Skip for in-memory DB (ephemeral mode) — no legacy data to migrate.
-	if dbPath != ":memory:" {
+	// PG 后端无 SQLite 表 —— 跳过。
+	if !pgBackend && dbPath != ":memory:" {
 		storage.MigrateMemoryToFiles(dbPath)
 	}
 
@@ -130,7 +143,12 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// we retrieve the *sql.DB from MultiSession to avoid a second sqlite.Open.
 	if db := ag.MultiSession().DB(); db != nil {
 		tools.SetRunnerTokenDB(db.Conn())
-		wireRunnerBindingStore(db)
+	}
+	// Session→runner bindings persist in tenants.runner_id on every backend
+	// (SQLite and PG) — this must not be gated on the SQLite handle.
+	if ms := ag.MultiSession(); ms != nil && ms.Store() != nil {
+		wireRunnerBindingStore(ms.Store().Tenant())
+		tools.SetRunnerStore(ms.Store().Runners())
 	}
 
 	// 3. Create RPCTable.

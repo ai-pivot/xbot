@@ -19,7 +19,7 @@ const testPreviewOrigin = "https://preview-one.vercel.app"
 func previewTestChannel(t *testing.T) *WebChannel {
 	t.Helper()
 	t.Setenv("XBOT_PREVIEW_ORIGINS", testPreviewOrigin)
-	wc := NewWebChannel(WebChannelConfig{DB: newTestDB(t)}, bus.NewMessageBus())
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, newTestDB(t))}, bus.NewMessageBus())
 	t.Cleanup(wc.Stop)
 	wc.sessions["parent"] = sessionInfo{userID: 1, username: "operator", expires: time.Now().Add(time.Hour)}
 	return wc

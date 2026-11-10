@@ -18,7 +18,7 @@ preferred over environment variables.**
 | Enable Web | `web.enable: true` |
 | Docker sandbox | `sandbox.mode: "docker"` |
 | Restrict users | `*.allow_from: [...]` |
-| Max concurrent calls | `agent.max_concurrency` |
+| Max concurrent calls | Settings panel (per-user; not in config.json) |
 | Context compression | `agent.compression_threshold` |
 
 ## Config file location
@@ -200,16 +200,13 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 ```json
 {
   "agent": {
-    "max_iterations": 2000,
-    "max_concurrency": 100,
-    "memory_provider": "flat",
+    "memory_provider": "xbot",
     "work_dir": ".",
     "prompt_file": "prompt.md",
     "max_context_tokens": 200000,
     "enable_auto_compress": true,
     "compression_threshold": 0.9,
     "context_mode": "",
-    "purge_old_messages": false,
     "max_sub_agent_depth": 5,
     "llm_retry_attempts": 5,
     "llm_retry_delay": "1s",
@@ -217,16 +214,16 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
     "llm_retry_timeout": "120s",
     "mcp_inactivity_timeout": "30m",
     "mcp_cleanup_interval": "5m",
-    "session_cache_timeout": "24h"
+    "session_cache_timeout": "24h",
+    "interactive_session_ttl": "30m"
   }
 }
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_iterations` | int | `2000` | Max tool calls per conversation turn |
-| `max_concurrency` | int | `100` | Max concurrent LLM calls |
-| `memory_provider` | string | `"flat"` | Memory system: `flat` or `letta` |
+| `max_concurrency` | int | `5` | Concurrency cap. ⚠️ **Not a config.json key** — a per-user setting stored in the `user_settings` table; change it from the settings panel (`/settings`, range 1–100) or the Web LLM console |
+| `memory_provider` | string | `"xbot"` | Memory system: `xbot`, `flat`, `letta`, or `none` (no memory tools or prompts) |
 | `work_dir` | string | `"."` | Working directory |
 | `prompt_file` | string | `"prompt.md"` | Custom system prompt file |
 | `max_context_tokens` | int | `200000` | Max context window (tokens) |
@@ -234,15 +231,18 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 | `enable_auto_compress` | bool | `true` | Auto-compress context when full |
 | `compression_threshold` | float | `0.9` | Token ratio that triggers compression |
 | `context_mode` | string | `""` | Context management mode |
-| `purge_old_messages` | bool | `false` | Purge old messages after compression |
 | `max_sub_agent_depth` | int | `5` | Max SubAgent nesting levels (depth only — nesting the same role is legal, not a cycle) |
-| `llm_retry_attempts` | int | `5` | LLM call retry count |
+| `llm_retry_attempts` | int | `5` | Total attempts including the initial call; 0 uses 5 |
 | `llm_retry_delay` | duration | `"1s"` | Initial retry delay |
 | `llm_retry_max_delay` | duration | `"30s"` | Max retry delay |
 | `llm_retry_timeout` | duration | `"120s"` | Per-call LLM timeout |
 | `mcp_inactivity_timeout` | duration | `"30m"` | MCP server inactivity timeout |
 | `mcp_cleanup_interval` | duration | `"5m"` | MCP cleanup interval |
 | `session_cache_timeout` | duration | `"24h"` | Session cache timeout |
+| `interactive_session_ttl` | duration | `"30m"` | Idle TTL for interactive SubAgent sessions; on expiry the session and its session DB are destroyed. Env: `INTERACTIVE_SESSION_TTL`. `0`/omitted = 30m default |
+
+`0` or an omitted retry count uses 5 total attempts (including the first call), never unlimited retries. Zero initial/max delay uses 1s/30s. An explicit server `--config` file uses the same defaults and environment overrides as the default config. Provider error code `unsupported_country_region_territory` stops immediately; other errors retain bounded exponential backoff.
+
 
 {{< hint type=note >}}
 Duration values are human-readable strings: `"30m"`, `"1h30m"`, `"5s"`.
@@ -290,6 +290,23 @@ For backward compatibility, legacy nanosecond numbers are also accepted.
 
 See the [Sandbox guide](/guides/sandbox/) for Docker setup details.
 
+## Web search configuration (Tavily)
+
+The `WebSearch` tool queries the Tavily API. You can set the key at runtime in
+the Web UI under **Settings → Web Search**: it takes effect on the next search
+(no restart) and is shared by every channel (Web / CLI / Feishu). The top-level
+`tavily_api_key` in `config.json` remains the global default used when no
+runtime value is configured:
+
+```json
+{
+  "tavily_api_key": "tvly-your-key"
+}
+```
+
+Runtime values are stored in the settings database and are never returned in
+plaintext to clients (the settings API returns `***`).
+
 ## Channel configuration
 
 See the per-channel docs:
@@ -310,6 +327,29 @@ See the per-channel docs:
   }
 }
 ```
+
+## Storage configuration
+
+All persistent state (sessions, messages, memory, user settings, LLM
+subscriptions) lives in SQLite by default. A PostgreSQL backend is available:
+
+```json
+{
+  "storage": {
+    "type": "pg",
+    "dsn": "postgres://user:password@host:5432/xbot?sslmode=disable"
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `type` | `"sqlite"` (default) or `"pg"` |
+| `dsn` | PostgreSQL connection string — only used when `type` is `"pg"` |
+
+Both backends implement the same storage interfaces, so switching backends does
+not change agent behaviour. The PostgreSQL backend is pure Go (no `libpq`/cgo).
+Omit the whole `storage` block to keep the SQLite default.
 
 ## CLI configuration (Remote mode)
 

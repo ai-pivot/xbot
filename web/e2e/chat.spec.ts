@@ -37,15 +37,13 @@ test.describe('Chat interaction', () => {
     // unroutable and the user message never renders.
     await expect(page.locator('text=Loading...')).toHaveCount(0, { timeout: 15_000 }).catch(() => {})
 
-    const editor = page.locator('.tiptap, [contenteditable]')
-    if (await editor.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await editor.click()
-      await page.keyboard.type('hello test')
-    } else {
-      const textarea = page.locator('textarea')
-      await textarea.click()
-      await textarea.fill('hello test')
-    }
+    // The composer is a contenteditable (`.tiptap`), not a textarea. Under CI
+    // load it can take longer than the old 3s probe; wait for it explicitly
+    // instead of falling back to a textarea that never exists.
+    const editor = page.locator('.tiptap, [contenteditable], textarea').first()
+    await editor.waitFor({ state: 'visible', timeout: 15_000 })
+    await editor.click()
+    await page.keyboard.type('hello test')
 
     // Click send
     const sendBtn = page.locator('button[aria-label="发送"], button[aria-label="Send"], button.send-btn, button:has-text("发送")')

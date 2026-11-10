@@ -4,14 +4,15 @@
 
 | File | Purpose |
 |------|---------|
-| `agent.go` | Agent struct, lifecycle, HandleMessage, Run loop (~2366 lines) |
-| `engine.go` | Engine interface, SubAgent progress, nested context |
-| `engine_run.go` | runState struct, Run() loop, LLM/tool execution, compress/persist orchestration (~1561 lines) |
-| `engine_wire.go` | Dependency injection: buildSubAgentRunConfig, HookChain/LLMFactory inheritance (~1282 lines) |
+| `agent.go` | Agent struct, lifecycle, HandleMessage, per-chat queue (chatWorker/admitToMsgCh/chatProcessLoop), Run loop (~5268 lines) |
+| `engine.go` | Engine interface, SubAgent progress, nested context; `Run(ctx, cfg)` entry at line 605 |
+| `engine_run.go` | runState struct, the iteration loop body, LLM/tool execution, postToolProcessing (drain + persist), compress/persist orchestration (~2912 lines) |
+| `engine_wire.go` | Dependency injection: buildSubAgentRunConfig, one-shot SubAgent Run wiring (incl. `DrainBgNotifications`), HookChain/LLMFactory inheritance (~2612 lines) |
 | `context.go` | MessageContext, PromptData, initPipelines() |
 | `middleware.go` | MessagePipeline, MessageMiddleware interface |
 | `middleware_builtin.go` | Built-in middleware implementations |
-| `interactive.go` | Interactive SubAgent: multi-turn sessions, inspect/tail (~870 lines) |
+| `interactive.go` | Interactive SubAgent: multi-turn sessions, pendingMessages queue (drained at iteration boundaries), inspect/tail (~3197 lines) |
+| `session_queue.go` | Per-session shadow queue (queuedEntry/queueAppend/queueDequeue), `InjectUserInterrupt` (⚡ interject) |
 | `compress.go` | Context compression via LLM (~600 lines) |
 | `compress_pipeline.go` | CompressPipeline: unified compress→persist→cleanup flow |
 | `token_tracker.go` | TokenTracker: token accounting per Run |

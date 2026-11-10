@@ -5,6 +5,47 @@ import type { DiffHandle, EditorHandle, OpenDiffTabOptions, OpenFileTabOptions, 
 import type { ReactNode } from 'react'
 
 import { openEditorDiffTab, openEditorFileTab, openEditorViewTab } from './editorTabs'
+import { parseEmbedQuery } from '@/workspace/panelRequest'
+
+/**
+ * 把 diff 请求交给**原生宿主**（嵌入模式唯一出口）。
+ *
+ * 桥信封与原生 `core/webbridge.ets` 逐字对齐：`{v:1, id, type:'diff', payload: JSON}`；
+ * `id` 必须匹配原生 `BRIDGE_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/`。
+ * 返回 `false` = 没有原生桥（浏览器环境）⇒ 调用方回落 web 自己的 diff tab。
+ */
+function postDiffToNative(options: OpenDiffTabOptions): boolean {
+  const w = window as unknown as { xbotNative?: { postMessage?: (json: string) => string } }
+  const bridge = w.xbotNative
+  if (!bridge || typeof bridge.postMessage !== 'function') {
+    return false
+  }
+  try {
+    bridge.postMessage(JSON.stringify({
+      v: 1,
+      id: `diff:${Date.now()}`,
+      type: 'diff',
+      payload: JSON.stringify({ path: options.path ?? '', commit: options.commit ?? '' }),
+    }))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 原生已接管渲染 ⇒ 返回空句柄（插件只可能拿它做 next/prev/close，全是无操作）。 */
+function noopDiffHandle(options: OpenDiffTabOptions): DiffHandle {
+  return {
+    editorId: options.key ?? 'native-diff',
+    nextDiff: () => false,
+    prevDiff: () => false,
+    setRenderSideBySide: () => false,
+    setTitle: () => false,
+    isVisible: () => true,
+    close: () => true,
+    onClose: () => undefined,
+  }
+}
 
 export interface UIServices {
   showToast(text: ReactNode, kind?: 'info' | 'success' | 'error'): void
@@ -53,6 +94,13 @@ export class PluginUI implements UIAPI {
   }
 
   openDiffTab(options: OpenDiffTabOptions): DiffHandle {
+    // ⛔ **通用嵌入分流**（用户 2026-10-17 要求：点 diff 直接弹**原生**文件 diff；
+    //    且"不能有特殊逻辑"—— 这里按**宿主能力**分流，与插件 id 无关，所有 web 插件同一出口）。
+    //    判定：`?xbot_embed=1` 且页面里有原生同步桥 `window.xbotNative.postMessage`。
+    //    ⛔ 浏览器直开（非嵌入）⇒ 走原路径（web 自己的 Monaco diff tab），行为逐字节不变。
+    if (parseEmbedQuery(window.location.search) && postDiffToNative(options)) {
+      return noopDiffHandle(options)
+    }
     if (this.svc.openDiffTab) {
       return this.svc.openDiffTab(options)
     }

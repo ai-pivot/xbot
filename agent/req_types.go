@@ -83,7 +83,6 @@ const (
 	MethodExportSession                = "export_session"
 	MethodImportSession                = "import_session"
 	MethodListTenants                  = "list_tenants"
-	MethodSetMaxIterations             = "set_max_iterations"
 	MethodSetMaxConcurrency            = "set_max_concurrency"
 	MethodSetCompressionThreshold      = "set_compression_threshold"
 	MethodApplyRuntimeSettings         = "apply_runtime_settings"
@@ -96,13 +95,12 @@ const (
 	MethodGenerateLinkCode             = "generate_link_code"
 	MethodConsumeLinkCode              = "consume_link_code"
 	MethodListIdentities               = "list_identities"
-	MethodAppPack                      = "app_pack"
-	MethodAppInstallFile               = "app_install_file"
-	MethodAppInstallURL                = "app_install_url"
-	MethodAppUninstall                 = "app_uninstall"
-	MethodAppList                      = "app_list"
-	MethodListCommands                 = "list_commands"
-	MethodListCommandNames             = "list_command_names"
+
+	MethodListCommands     = "list_commands"
+	MethodListCommandNames = "list_command_names"
+	MethodSkillUninstall   = "skill_uninstall"
+	MethodAgentInstallFile = "agent_install_file"
+	MethodAgentUninstall   = "agent_uninstall"
 )
 
 // --- Settings ---
@@ -131,10 +129,6 @@ type setCWDReq struct {
 
 type setContextModeReq struct {
 	Mode string `json:"mode"`
-}
-
-type setMaxIterationsReq struct {
-	N int `json:"n"`
 }
 
 type setMaxConcurrencyReq struct {
@@ -420,58 +414,6 @@ type getAgentSessionDumpByFullKeyReq struct {
 
 type applyRuntimeSettingsReq struct {
 	Values map[string]string `json:"values"`
-}
-
-// --- App ---
-
-type appPackReq struct {
-	Name   string        `json:"name"`
-	Items  []appItemSpec `json:"items"`
-	Author string        `json:"author"`
-}
-
-type appItemSpec struct {
-	Type string `json:"type"`
-	Name string `json:"name"`
-}
-
-type appPackResp struct {
-	Path string `json:"path"`
-}
-
-type appInstallFileReq struct {
-	ZipPath  string `json:"zip_path"`
-	SenderID string `json:"sender_id"`
-	Force    bool   `json:"force"`
-}
-
-type appInstallURLReq struct {
-	URL      string `json:"url"`
-	SenderID string `json:"sender_id"`
-	Force    bool   `json:"force"`
-}
-
-type appInstallResp struct {
-	Name      string   `json:"name"`
-	Version   string   `json:"version"`
-	Installed []string `json:"installed"`
-	Skipped   []string `json:"skipped"`
-}
-
-type appUninstallReq struct {
-	Type     string `json:"type"`
-	Name     string `json:"name"`
-	SenderID string `json:"sender_id"`
-}
-
-type appListReq struct {
-	SenderID string `json:"sender_id"`
-}
-
-type appListResp struct {
-	Skills  []string `json:"skills"`
-	Agents  []string `json:"agents"`
-	Plugins []string `json:"plugins"`
 }
 
 // --- DirectSend / Channel ---

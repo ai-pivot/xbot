@@ -7,6 +7,7 @@ import (
 
 	"xbot/llm"
 	"xbot/memory"
+	"xbot/storage"
 )
 
 // openRawTestDB opens an in-memory SQLite DB WITHOUT running the provider's
@@ -174,7 +175,7 @@ func TestScopeMigrationAddsColumns(t *testing.T) {
 
 	// New() runs initSchema + migrateLegacyTenantData — the ALTER must add
 	// the columns idempotently.
-	m := New(42, 7, t.TempDir(), db)
+	m := New(42, 7, t.TempDir(), storage.NewSQLiteMemoryStoreFromConn(db))
 	t.Cleanup(func() { _ = m.Close() })
 
 	// Existing row keeps DEFAULT 'global'.

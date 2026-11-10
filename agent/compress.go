@@ -8,11 +8,12 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/internal/textutil"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/session"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -226,9 +227,7 @@ func summarizeToolCall(name, args string) string {
 			return fmt.Sprintf("- **%s**: ...", name)
 		}
 		// Strip common prefixes for brevity
-		if len(cmd) > 80 {
-			cmd = cmd[:80] + "..."
-		}
+		cmd = textutil.TruncateBytesWithSuffix(cmd, 80, "...")
 		return fmt.Sprintf("- **%s**: `%s`", name, cmd)
 	case "Read":
 		path := ExtractJSONString(args, "path")
@@ -375,7 +374,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		}
 	}
 
-	if _, err := tenantSession.AppendContextSnapshot(sqlite.HistoryRecordCompress, result.LLMView); err != nil {
+	if _, err := tenantSession.AppendContextSnapshot(common.HistoryRecordCompress, result.LLMView); err != nil {
 		return nil, fmt.Errorf("append compression history: %w", err)
 	}
 
@@ -757,11 +756,16 @@ Output the structured working state directly.`
 	}
 
 	compressCfg := RunConfig{
-		LLMClient:     client,
-		Model:         model,
-		Messages:      compactionMsgs,
-		Tools:         tools.NewRegistry(), // empty — no tools for compression
-		MaxIterations: 1,                   // single LLM call, no tool execution needed
+		LLMClient: client,
+		Model:     model,
+		Messages:  compactionMsgs,
+		Tools:     tools.NewRegistry(), // empty — no tools for compression
+		// ⛔ 一次性上限（RunConfig.MaxIterations 是**内部 Run 专用**字段，主对话永不设）：
+		// 压缩是一次摘要调用、且工具注册表为空 —— 模型若幻觉出 tool_calls，引擎会把
+		// "unknown tool" 当工具结果回喂并继续下一轮，没有上限就永不返回（压缩把整个
+		// turn 拖到 ctx deadline，用户看到"卡在压缩"）。触顶 ⇒ output.Error ⇒ 压缩失败
+		// 走既有**非致命**降级（compress_failure_nonfatal_test.go）。
+		MaxIterations: 1,
 		// Stream MUST be true — the same timeout semantics as normal chat.
 		// The non-stream path carries perAttemptCtx's HARD 120s deadline
 		// (llm/retry.go); a large compaction summary (e.g. a 52,884-token

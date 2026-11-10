@@ -13,89 +13,7 @@ import (
 	"xbot/storage/internal"
 )
 
-type HistoryRecordType string
-
-const (
-	HistoryRecordMessage HistoryRecordType = "message"
-	// HistoryRecordCommand = 命令行（`!cmd` / slash）的输入/输出行：**只给 UI 展示**
-	//（刷新后仍在），绝不进 LLM 上下文 —— 展示回放（replayDisplayRecords）显式包含它，
-	// LLM 回放（replayWith）只处理 HistoryRecordMessage ⇒ 天然跳过；再叠 display_only=1
-	// 作第二道保险（见 llm.ChatMessage.CommandRow）。
-	HistoryRecordCommand     HistoryRecordType = "command"
-	HistoryRecordCompress    HistoryRecordType = "compress"
-	HistoryRecordPrune       HistoryRecordType = "prune"
-	HistoryRecordContextEdit HistoryRecordType = "context_edit"
-	HistoryRecordAskQuestion HistoryRecordType = "ask_question"
-	HistoryRecordAskAnswer   HistoryRecordType = "ask_answer"
-	HistoryRecordMask        HistoryRecordType = "mask"
-)
-
-type HistoryRecord struct {
-	HistoryID       int64
-	Type            HistoryRecordType
-	TargetHistoryID int64
-	Message         llm.ChatMessage
-	Data            json.RawMessage
-	CreatedAt       time.Time
-	CompactedBy     int64
-	Compression     *CompressionRange
-}
-
-type CompressionRange struct {
-	StartHistoryID   int64
-	EndHistoryID     int64
-	SourceHistoryIDs []int64
-}
-
-type ContextSnapshot struct {
-	Version        int               `json:"version,omitempty"`
-	Messages       []llm.ChatMessage `json:"messages"`
-	HistoryIDs     []int64           `json:"history_ids"`
-	PendingAskUser *PendingAskUser   `json:"pending_ask_user,omitempty"`
-}
-
 const contextSnapshotVersion = 1
-
-type MessageMutation struct {
-	TargetHistoryID  int64           `json:"target_history_id"`
-	TargetOccurrence int             `json:"target_occurrence,omitempty"`
-	Message          llm.ChatMessage `json:"message"`
-}
-
-type MessageMutations struct {
-	Mutations []MessageMutation `json:"mutations"`
-}
-
-type MaskMutation struct {
-	TargetHistoryID  int64  `json:"target_history_id"`
-	TargetOccurrence int    `json:"target_occurrence,omitempty"`
-	Content          string `json:"content"`
-}
-
-type MaskMutations struct {
-	Mutations []MaskMutation `json:"mutations"`
-}
-
-type AskQuestionRecord struct {
-	Metadata      map[string]string `json:"metadata"`
-	ToolHistoryID int64             `json:"tool_history_id"`
-}
-
-type AskAnswerRecord struct {
-	Answer        string `json:"answer"`
-	ToolHistoryID int64  `json:"tool_history_id"`
-}
-
-type PendingAskUser struct {
-	HistoryID     int64             `json:"history_id"`
-	ToolHistoryID int64             `json:"tool_history_id"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-}
-
-type ReplayResult struct {
-	Messages       []llm.ChatMessage
-	PendingAskUser *PendingAskUser
-}
 
 func isControlRecordType(recordType HistoryRecordType) bool {
 	switch recordType {
@@ -320,11 +238,13 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 	result, err := execer.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-		 detail, display_only, internal_only, reasoning_content, reasoning_items, record_type, created_at, turn_id, iteration)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?, ?)
+		 detail, display_only, internal_only, reasoning_content, reasoning_items, record_type, record_data,
+		 group_id, sender_type, sender_id, sender_name, created_at, turn_id, iteration)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?, ?, ?, ?, ?, ?, ?)
 	`, tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName, msg.ToolArguments,
 		toolCallsJSON, msg.Detail, displayOnly, internalOnly, msg.ReasoningContent, reasoningItemsJSON,
-		ts.Format(time.RFC3339), msg.TurnID, msg.Iteration)
+		msg.RecordData, msg.GroupID, msg.SenderType, msg.SenderID, msg.SenderName,
+		canonicalTimestamp(ts), msg.TurnID, msg.Iteration)
 	if err != nil {
 		return 0, fmt.Errorf("insert session message: %w", err)
 	}
@@ -364,7 +284,7 @@ func (s *SessionService) AppendCommandMessage(tenantID int64, role, content stri
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, created_at, turn_id)
 		VALUES (?, ?, ?, 1, 'command', ?, 0)
-	`, tenantID, role, content, time.Now().Format(time.RFC3339))
+	`, tenantID, role, content, canonicalTimestamp(time.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("insert command history row: %w", err)
 	}
@@ -513,7 +433,7 @@ func appendControlWith(store historyQueryExecer, tenantID int64, recordType Hist
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, target_history_id, record_data, created_at)
 		VALUES (?, 'control', '', 1, ?, NULLIF(?, 0), ?, ?)
-	`, tenantID, recordType, targetHistoryID, string(raw), time.Now().Format(time.RFC3339Nano))
+	`, tenantID, recordType, targetHistoryID, string(raw), canonicalTimestamp(time.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("append %s history record: %w", recordType, err)
 	}
@@ -588,7 +508,7 @@ func appendSnapshotWith(execer historyExecer, tenantID int64, recordType History
 		INSERT INTO session_messages
 		(tenant_id, role, content, display_only, record_type, record_data, created_at)
 		VALUES (?, 'control', '', 1, ?, ?, ?)
-	`, tenantID, recordType, string(raw), time.Now().Format(time.RFC3339Nano))
+	`, tenantID, recordType, string(raw), canonicalTimestamp(time.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("append %s history record: %w", recordType, err)
 	}
@@ -655,7 +575,7 @@ func appendAskQuestionWith(execer historyExecer, tenantID, toolHistoryID int64, 
 				WHERE a.tenant_id = q.tenant_id AND a.record_type = 'ask_answer' AND a.target_history_id = q.id
 			)
 		)
-	`, tenantID, toolHistoryID, string(payload), time.Now().Format(time.RFC3339Nano), tenantID, toolHistoryID, tenantID)
+	`, tenantID, toolHistoryID, string(payload), canonicalTimestamp(time.Now()), tenantID, toolHistoryID, tenantID)
 	if err != nil {
 		return 0, fmt.Errorf("append AskUser question: %w", err)
 	}
@@ -710,7 +630,7 @@ func (s *SessionService) AppendMasks(tenantID int64, mutations []MaskMutation) e
 						WHERE sm.tenant_id = ? AND sm.id = json_extract(m.value, '$.target_history_id')
 					)
 				)
-			`, tenantID, string(raw), time.Now().Format(time.RFC3339Nano), string(raw), tenantID)
+			`, tenantID, string(raw), canonicalTimestamp(time.Now()), string(raw), tenantID)
 		if err != nil {
 			return fmt.Errorf("append mask history record: %w", err)
 		}
@@ -814,7 +734,7 @@ func validateAndAppendAskAnswerWith(store historyQueryExecer, tenantID int64, an
 			SELECT 1 FROM session_messages tool
 			WHERE tool.tenant_id = ? AND tool.id = ?
 		)
-	`, tenantID, replay.PendingAskUser.HistoryID, string(payload), time.Now().Format(time.RFC3339Nano),
+	`, tenantID, replay.PendingAskUser.HistoryID, string(payload), canonicalTimestamp(time.Now()),
 		tenantID, replay.PendingAskUser.HistoryID, tenantID, replay.PendingAskUser.HistoryID, tenantID, toolHistoryID)
 	if err != nil {
 		return 0, fmt.Errorf("append AskUser answer: %w", err)
@@ -859,7 +779,10 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 		SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
 		       role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail,
 		       reasoning_content, reasoning_items, display_only, internal_only, created_at, turn_id,
-		       COALESCE(iteration, 0)
+		       COALESCE(iteration, 0),
+		       COALESCE(kind, ''), COALESCE(correlation_id, ''), COALESCE(reply_to, ''),
+		       COALESCE(structured_json, ''), COALESCE(direction, ''),
+		       COALESCE(answered, 0), COALESCE(cancelled, 0)
 		FROM session_messages WHERE tenant_id = ?`
 	args := []any{tenantID}
 	if fromHistoryID > 0 {
@@ -885,9 +808,12 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 		var internalOnly int
 		var turnID sql.NullInt64
 		var iterCol int
+		var kind, correlationID, replyTo, structuredJSON, direction string
+		var answered, cancelled int
 		if err := rows.Scan(&record.HistoryID, &record.Type, &record.TargetHistoryID, &rawData,
 			&role, &content, &toolCallID, &toolName, &toolArguments, &toolCallsJSON, &detail,
-			&reasoning, &reasoningItems, &displayOnly, &internalOnly, &createdAt, &turnID, &iterCol); err != nil {
+			&reasoning, &reasoningItems, &displayOnly, &internalOnly, &createdAt, &turnID, &iterCol,
+			&kind, &correlationID, &replyTo, &structuredJSON, &direction, &answered, &cancelled); err != nil {
 			return nil, fmt.Errorf("scan history record: %w", err)
 		}
 		record.CreatedAt = internal.ParseTimestamp(createdAt)
@@ -896,7 +822,9 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 			record.Message = llm.ChatMessage{ID: record.HistoryID, Role: role, Content: content,
 				DisplayOnly: displayOnly != 0, Internal: internalOnly != 0,
 				CommandRow: record.Type == HistoryRecordCommand, Timestamp: record.CreatedAt,
-				Iteration: iterCol}
+				Iteration: iterCol, Kind: kind, CorrelationID: correlationID, ReplyTo: replyTo,
+				StructuredJSON: structuredJSON, Direction: direction,
+				Answered: answered != 0, Cancelled: cancelled != 0}
 			if turnID.Valid {
 				record.Message.TurnID = uint64(turnID.Int64)
 			}
@@ -1383,6 +1311,23 @@ func (s *SessionService) replayLocked(tenantID int64) (*ReplayResult, error) {
 	return replayWith(conn, tenantID)
 }
 
+// structuredKindHiddenFromLLM 判断某个结构化 kind 是否**只用于展示/控制**、永不进入
+// LLM 上下文（唯一过滤点：本文件 replayWith）。
+//
+//   - event：状态事件（UI 时间线/监控），语义上不是对话输入。若进上下文，一次
+//     1000 条的批量事件会直接把 prompt 撑爆并烧 token（实测事故：e2e 批量事件
+//     随后作为 user 消息进入下一次请求）。
+//   - command：控制平面指令（spawn/kill/pause/cancel…），已通过插队队列投递给
+//     agent 执行，不属于对话历史，重复回放只会让模型误以为用户在说话。
+//
+// 其余 kind（text/ask_user/answer/report/decision）都是真实对话回合，必须进上下文。
+//
+// 注意：这里只影响 **LLM 回放**。UI 的 replayForDisplay / replayForDisplayRecords
+// 与 /api/messages 不做过滤 —— 事件必须仍然可见（「可见但不进上下文」）。
+func structuredKindHiddenFromLLM(kind string) bool {
+	return kind == StructuredKindEvent || kind == StructuredKindCommand
+}
+
 func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 	checkpoint, hasCheckpoint, err := latestCheckpointWith(queryer, tenantID)
 	if err != nil {
@@ -1396,6 +1341,20 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ApplyHistoryRecords(records, hasCheckpoint)
+}
+
+// ApplyHistoryRecords folds an ordered slice of append-only history records into
+// the LLM-visible replay result: compression snapshots, masks, context edits and
+// AskUser control records are applied in order, keyed off each record's own
+// history id. This is the ONE implementation of the replay semantics — replayWith
+// (SQLite) and the PostgreSQL backend both drive it, so the two backends cannot
+// drift.
+//
+// hasCheckpoint must be true when records[0] is the checkpoint snapshot itself:
+// its history references predate the slice and therefore cannot be validated
+// against it.
+func ApplyHistoryRecords(records []HistoryRecord, hasCheckpoint bool) (*ReplayResult, error) {
 	result := &ReplayResult{}
 	known := make(map[int64]struct{}, len(records))
 	msgIdx := newMessageIndex(nil)
@@ -1407,7 +1366,7 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 			//（default 分支对未知类型直接报错，不能靠 default 兜底）。这里什么都不做，
 			// 仍走循环尾部的 known 记账，供后续控制记录的 target 校验。
 		case HistoryRecordMessage:
-			if !record.Message.DisplayOnly {
+			if !record.Message.DisplayOnly && !structuredKindHiddenFromLLM(record.Message.Kind) {
 				result.Messages = append(result.Messages, record.Message)
 				msgIdx.add(record.Message.ID, len(result.Messages)-1)
 			}
@@ -1558,7 +1517,7 @@ func latestCheckpointWith(queryer historyQueryer, tenantID int64) (HistoryRecord
 		record.Data = json.RawMessage(rawData)
 		record.CreatedAt = internal.ParseTimestamp(createdAt)
 		var snapshot ContextSnapshot
-		if json.Unmarshal(record.Data, &snapshot) != nil || !validCheckpointSnapshot(record.HistoryID, snapshot) {
+		if json.Unmarshal(record.Data, &snapshot) != nil || !ValidCheckpointSnapshot(record.HistoryID, snapshot) {
 			continue
 		}
 		return record, true, nil
@@ -1602,7 +1561,11 @@ func (s *SessionService) LatestAskControlRecord(tenantID int64) (int64, HistoryR
 	return id, HistoryRecordType(recordType), nil
 }
 
-func validCheckpointSnapshot(historyID int64, snapshot ContextSnapshot) bool {
+// ValidCheckpointSnapshot reports whether a compress/prune payload is a
+// self-contained snapshot this binary can fold in without replaying everything
+// before it. Exported so the PostgreSQL backend selects checkpoints with the
+// exact same rule as SQLite.
+func ValidCheckpointSnapshot(historyID int64, snapshot ContextSnapshot) bool {
 	if snapshot.Version != contextSnapshotVersion || snapshot.Messages == nil || snapshot.HistoryIDs == nil || len(snapshot.Messages) != len(snapshot.HistoryIDs) {
 		return false
 	}

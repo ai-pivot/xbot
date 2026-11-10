@@ -127,6 +127,10 @@ type ToolProgress struct {
 	// protocol.ToolProgress (wire) so the frontend can correlate a running
 	// tool card with server-side execution state (promote-to-background RPC).
 	CallID string
+	// ProviderCallID is the model provider's own tool_call id. It is a FIELD,
+	// never an identity: the server-assigned CallID exists before the tool first
+	// appears in any frame and never changes (STATE-MODEL P2/P3′).
+	ProviderCallID string
 }
 
 // ToolStatus 工具执行状态。
@@ -157,7 +161,7 @@ type TokenUsageSnapshot struct {
 // SubAgentProgressDetail 携带层级信息的 SubAgent 进度回调参数。
 // 用于递归 SubAgent 场景，让深层子 Agent 的进度能穿透到最顶层。
 type SubAgentProgressDetail struct {
-	Path       []string // 调用链: ["工部", "ministry-works/audit"]
+	Path       []string // 调用链: ["backend", "ministry-works/audit"]
 	Lines      []string // 进度内容（所有行，已清理换行）
 	Depth      int      // 嵌套深度（0 = 直接子 Agent）
 	Instance   string   // 子 Agent 实例 ID（用于区分同 role 的不同实例）
@@ -410,7 +414,7 @@ func isStatusEmojiLine(line string) bool {
 // isPlausibleAgentRole 检查名称是否像 SubAgent 角色名而非工具名。
 // SubAgent 角色名特征：
 //   - 全小写英文 + 连字符/下划线，如 "crown-prince", "ministry-works", "explore"
-//   - 中文角色名，如 "刑部", "工部", "中书省"
+//   - 中文角色名，如 "qa", "backend", "planner"
 //
 // 工具名特征：首字母大写英文，如 "Shell", "Read", "FileCreate", "SubAgent"。
 // 也排除路径（含 /）和其他非角色名模式。
@@ -434,7 +438,7 @@ func isPlausibleAgentRole(name string) bool {
 	}
 	// 首字母是非 ASCII（中文等）→ 可能是角色名
 	if firstRune > 127 {
-		// 限制中文角色名长度：真实角色名通常 2-6 个字（如"刑部"、"工部"、"中书省"）
+		// 限制中文角色名长度：真实角色名通常 2-6 个字（如"qa"、"backend"、"planner"）
 		// 超过 6 个字的中文几乎一定是工具输出文本而非角色名
 		if len(runes) > 6 {
 			return false
@@ -554,8 +558,8 @@ func parseSubAgentLine(line string) (childAgentStatus, bool) {
 //
 // 输出示例：
 //
-//	"🔄 工部(⏳ go version) · ✅ 刑部 · 🔄 礼部(💭)"
-//	"✅ 工部 · ✅ 刑部 · ✅ 礼部"
+//	"🔄 backend(⏳ go version) · ✅ qa · 🔄 docs(💭)"
+//	"✅ backend · ✅ qa · ✅ docs"
 //	"🔄×3 ⏳×2"  （超过 6 个时只显示状态统计）
 func formatChildAgentsSummary(children []childAgentStatus, maxTotalRunes int) string {
 	if len(children) == 0 {
@@ -772,9 +776,9 @@ const (
 // 输出示例（baseIndent=""，currentDepth=0）：
 //
 //	> 　🔄 中书: 💭 思考中
-//	> 　🔄 尚书: 分派两部
-//	> 　　🔄 工部: ⚡ Shell(ls)
-//	> 　　✅ 刑部:
+//	> 　🔄 coordinator: 分派两部
+//	> 　　🔄 backend: ⚡ Shell(ls)
+//	> 　　✅ qa:
 func renderChildrenTree(children []childAgentStatus, baseIndent string, currentDepth int) []string {
 	if len(children) == 0 {
 		return nil
@@ -932,8 +936,8 @@ func mergeSubAgentNodeList(existing, incoming []SubAgentNode) []SubAgentNode {
 //	> 🔄 crown-prince: ⏳ Shell(go test) ...           （工具执行）
 //	> ✅ crown-prince                                   （完成）
 //	> 🔄 crown-prince: 调度中                           （有子Agent，多行）
-//	> 　🔄 尚书: 分派两部                                ├── 子Agent（depth=3）
-//	> 　　🔄 工部: ⚡ Shell(ls)                          │   └── 孙Agent（depth=4）
+//	> 　🔄 coordinator: 分派两部                                ├── 子Agent（depth=3）
+//	> 　　🔄 backend: ⚡ Shell(ls)                          │   └── 孙Agent（depth=4）
 func formatSubAgentProgress(detail SubAgentProgressDetail) string {
 	const maxContentRunes = 50
 

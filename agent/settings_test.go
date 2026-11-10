@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"xbot/storage"
 	"xbot/storage/sqlite"
 )
 
@@ -16,7 +17,7 @@ func TestSettingsServiceGetSettings(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := sqlite.NewUserSettingsService(db)
+	store := storage.NewSQLiteConfigStore(db)
 	svc := NewSettingsService(store)
 
 	// Set some values
@@ -43,7 +44,7 @@ func TestSettingsServiceGetSettingsUI(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := sqlite.NewUserSettingsService(db)
+	store := storage.NewSQLiteConfigStore(db)
 	svc := NewSettingsService(store)
 
 	// No channelFinder set — should return "no settings" fallback
@@ -65,7 +66,7 @@ func TestSettingsServiceSubmitSettingsTextMode(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := sqlite.NewUserSettingsService(db)
+	store := storage.NewSQLiteConfigStore(db)
 	svc := NewSettingsService(store)
 
 	// No channelFinder set — text mode fallback
@@ -98,7 +99,7 @@ func TestGetEffectiveSetting(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := sqlite.NewUserSettingsService(db)
+	store := storage.NewSQLiteConfigStore(db)
 	svc := NewSettingsService(store)
 
 	// Case 1: No value in DB → returns schema default
@@ -140,7 +141,7 @@ func TestGetEffectiveSettingBool(t *testing.T) {
 	}
 	defer db.Close()
 
-	store := sqlite.NewUserSettingsService(db)
+	store := storage.NewSQLiteConfigStore(db)
 	svc := NewSettingsService(store)
 
 	// Default: "false" → bool false

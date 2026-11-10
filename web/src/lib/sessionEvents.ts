@@ -68,3 +68,30 @@ export function subscribeAgentIdle(handler: (d: AgentIdleDetail) => void): () =>
   window.addEventListener('agent-idle', listener)
   return () => window.removeEventListener('agent-idle', listener)
 }
+
+/* ── ask_user 答题完成（会话内有界信号）──────────────────────────────────── */
+
+export interface AskAnsweredDetail {
+  /** `channel:chatID` —— 必填，跨会话广播靠它过滤（无身份事件一律丢弃）。 */
+  sessionKey: string
+}
+
+/** 某个会话里的一条 ask_user 已被回答：同一会话的全部 AskUser 入口实例都该重拉收件箱。 */
+export function dispatchAskAnswered(sessionKey: string): void {
+  if (!sessionKey) {
+    console.error('[sessionEvents] dispatchAskAnswered called without sessionKey — dropping')
+    return
+  }
+  window.dispatchEvent(new CustomEvent('ask-answered', { detail: { sessionKey } }))
+}
+
+/** 订阅 ask-answered；`sessionKey` 为空的事件直接丢弃（不做"落到当前会话"的兜底）。 */
+export function subscribeAskAnswered(handler: (d: AskAnsweredDetail) => void): () => void {
+  const listener = (e: Event): void => {
+    const d = (e as CustomEvent<AskAnsweredDetail>).detail
+    if (!d || !d.sessionKey) return
+    handler(d)
+  }
+  window.addEventListener('ask-answered', listener)
+  return () => window.removeEventListener('ask-answered', listener)
+}

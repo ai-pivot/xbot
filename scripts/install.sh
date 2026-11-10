@@ -778,6 +778,26 @@ main() {
     fi
     info "Binary installed to ${INSTALL_PATH}/${BINARY}"
 
+    # macOS: the binary MUST be validly code-signed, otherwise launchd refuses
+    # to exec it and the service silently never starts. A plain
+    # `go build` + copy over an existing binary leaves the old signature
+    # INVALID (the Mach-O was modified after signing) — `launchctl kickstart`
+    # then fails and the Web UI is unreachable. 2026-10-14: this bit a local
+    # reinstall (`cp` of a freshly built binary over ~/.local/bin/xbot-cli);
+    # the user had to run `codesign --force --sign -` by hand to recover.
+    # Ad-hoc signing (`-s -`) is sufficient for local/self-hosted installs.
+    if [ "$(uname -s)" = "Darwin" ]; then
+        if command -v codesign >/dev/null 2>&1; then
+            if codesign --force --sign - "${INSTALL_PATH}/${BINARY}" >/dev/null 2>&1; then
+                info "Code-signed (adhoc): ${INSTALL_PATH}/${BINARY}"
+            else
+                warn "codesign failed for ${INSTALL_PATH}/${BINARY} — launchd may refuse to start the service"
+            fi
+        else
+            warn "codesign not found — launchd may refuse to start the service"
+        fi
+    fi
+
     add_to_path
 
     backup_config

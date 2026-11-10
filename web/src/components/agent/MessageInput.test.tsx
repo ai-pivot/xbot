@@ -533,6 +533,79 @@ describe('MessageInput links & file paste', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
+  it.each(['body', 'chip'])('removes only the matching same-name image attachment via %s', async (via) => {
+    const onUpload = vi.fn()
+      .mockResolvedValueOnce({ upload_key: 'uploads/one.png', name: 'image.png', mime: 'image/png' })
+      .mockResolvedValueOnce({ upload_key: 'uploads/two.png', name: 'image.png', mime: 'image/png' })
+    const { editor, onSend } = await renderInput({ onUpload })
+    const files = [1, 2].map(() => new File(['img'], 'image.png', { type: 'image/png' }))
+    fireEvent.paste(editor.view.dom, { clipboardData: { files, getData: () => '', types: [] } })
+    await waitFor(() => expect(screen.getAllByLabelText('remove')).toHaveLength(2))
+    await waitFor(() => expect(editor.view.dom.querySelectorAll('img[src]')).toHaveLength(2))
+    if (via === 'body') {
+      act(() => { editor.commands.deleteRange({ from: 1, to: 2 }) })
+    } else {
+      fireEvent.click(screen.getAllByLabelText('remove')[0])
+    }
+    await waitFor(() => expect(screen.getAllByLabelText('remove')).toHaveLength(1))
+    expect(editor.view.dom.querySelectorAll('img[src]')).toHaveLength(1)
+    expect(editor.getHTML()).not.toContain('uploads%2Fone.png')
+    expect(editor.getHTML()).toContain('uploads%2Ftwo.png')
+    fireEvent.keyDown(editor.view.dom, { key: 'Enter', ctrlKey: true })
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    expect(onSend.mock.calls[0][1].uploadKeys).toEqual(['uploads/two.png'])
+    expect(onSend.mock.calls[0][0]).not.toContain('uploads%2Fone.png')
+  })
+
+  it('keeps a chip until its last repeated image reference is deleted', async () => {
+    const onUpload = vi.fn().mockResolvedValue({ upload_key: 'uploads/repeated.png', name: 'image.png', mime: 'image/png' })
+    const { editor } = await renderInput({ onUpload })
+    fireEvent.paste(editor.view.dom, { clipboardData: { files: [new File(['img'], 'image.png', { type: 'image/png' })], getData: () => '', types: [] } })
+    await waitFor(() => expect(editor.view.dom.querySelector('img[src]')).not.toBeNull())
+    act(() => {
+      editor.commands.insertContent({ type: 'image', attrs: { src: '/api/files/download?key=uploads%2Frepeated.png&inline=1' } })
+      editor.commands.deleteRange({ from: 1, to: 2 })
+    })
+    expect(screen.getAllByLabelText('remove')).toHaveLength(1)
+    act(() => { editor.commands.clearContent() })
+    await waitFor(() => expect(screen.queryByLabelText('remove')).not.toBeInTheDocument())
+  })
+
+  it('keeps an in-flight upload when another image is deleted', async () => {
+    let finish!: (value: { upload_key: string; name: string; mime: string }) => void
+    const onUpload = vi.fn()
+      .mockResolvedValueOnce({ upload_key: 'uploads/first.png', name: 'first.png', mime: 'image/png' })
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const { editor } = await renderInput({ onUpload })
+    fireEvent.paste(editor.view.dom, { clipboardData: { files: [new File(['img'], 'first.png', { type: 'image/png' }), new File(['img'], 'second.png', { type: 'image/png' })], getData: () => '', types: [] } })
+    await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(2))
+    act(() => { editor.commands.clearContent() })
+    await waitFor(() => expect(screen.queryByText('first.png')).not.toBeInTheDocument())
+    expect(screen.getByText('second.png')).toBeInTheDocument()
+    await act(async () => { finish({ upload_key: 'uploads/second.png', name: 'second.png', mime: 'image/png' }) })
+    await waitFor(() => expect(editor.getHTML()).toContain('uploads%2Fsecond.png'))
+    expect(screen.getAllByLabelText('remove')).toHaveLength(1)
+  })
+
+  it('clearing image content removes its chip but preserves ordinary file attachments', async () => {
+    const onUpload = vi.fn()
+      .mockResolvedValueOnce({ upload_key: 'uploads/img.png', name: 'image.png', mime: 'image/png' })
+      .mockResolvedValueOnce({ upload_key: 'uploads/data.bin', name: 'data.bin', mime: 'application/octet-stream' })
+    const { editor, onSend } = await renderInput({ onUpload })
+    fireEvent.paste(editor.view.dom, { clipboardData: {
+      files: [new File(['img'], 'image.png', { type: 'image/png' }), new File(['bin'], 'data.bin')],
+      getData: () => '', types: [],
+    } })
+    await waitFor(() => expect(screen.getAllByLabelText('remove')).toHaveLength(2))
+    await waitFor(() => expect(editor.getHTML()).toContain('uploads%2Fdata.bin'))
+    act(() => { editor.commands.clearContent() })
+    await waitFor(() => expect(screen.getAllByLabelText('remove')).toHaveLength(1))
+    expect(screen.queryByText('image.png')).not.toBeInTheDocument()
+    fireEvent.keyDown(editor.view.dom, { key: 'Enter', ctrlKey: true })
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    expect(onSend.mock.calls[0][1].uploadKeys).toEqual(['uploads/data.bin'])
+  })
+
   it('upload success inserts media into the editor: image → inline ![name](view-url), file → [name](download-url)', async () => {
     const onUpload = vi.fn().mockImplementation((file: File) =>
       file.name.endsWith('.png')
@@ -765,5 +838,60 @@ describe('composer protected preview images', () => {
     await insertImage('https://images.example/photo.png')
     await waitFor(() => expect(view.container.querySelector('[data-composer-image] img')).toHaveAttribute('src', 'https://images.example/photo.png'))
     expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('https://images.example/'))).toBe(false)
+  })
+})
+
+describe('运行中的停止可达性（busy + 有内容 ⇒ 独立停止按钮）', () => {
+  // ⛔ 契约（P0，2026-10-12）：主按钮在 `canSend` 时是「发送/排队」，**不是**停止 ——
+  // 所以只要 canSend 且 busy，就必须额外有一颗只走 onCancel 的独立停止按钮。
+  // 修复前必红：找不到 `composer-cancel`，点击主按钮会走 onSend（= 用户报告的原 bug）。
+
+  it('★ busy 且输入框有文字时：存在独立停止按钮，点它只触发 onCancel、绝不 onSend', async () => {
+    const onSend = vi.fn()
+    const onCancel = vi.fn()
+    renderWithProviders(
+      <MessageInput busy onSend={onSend} onCancel={onCancel} onUpload={vi.fn()} />,
+    )
+    await setEditorContent('你查一下最新信息')
+
+    const stop = await screen.findByTestId('composer-cancel')
+    fireEvent.click(stop)
+    expect(onCancel, '运行中点击独立停止按钮必须触发取消').toHaveBeenCalledTimes(1)
+    expect(onSend, '绝不能被当成「发送/排队」（那正是原 bug）').not.toHaveBeenCalled()
+  })
+
+  it('busy 且只有「完成态附件」（无文字）时：同样必须有独立停止按钮', async () => {
+    const onSend = vi.fn()
+    const onCancel = vi.fn()
+    renderWithProviders(
+      <MessageInput
+        busy
+        onSend={onSend}
+        onCancel={onCancel}
+        onUpload={async () => ({ upload_key: 'uploads/notes.txt', name: 'notes.txt', size: 4, mime: 'text/plain' })}
+      />,
+    )
+    await waitFor(() => expect(__getTestEditor()).not.toBeNull())
+    fireEvent.paste(__getTestEditor()!.view.dom, {
+      clipboardData: { files: [new File(['test'], 'notes.txt', { type: 'text/plain' })], getData: () => '', types: [] },
+    })
+    const stop = await screen.findByTestId('composer-cancel')
+    fireEvent.click(stop)
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('busy 但没有内容：不额外渲染 —— 主按钮本身就是停止（原有行为不变）', async () => {
+    const onSend = vi.fn()
+    const onCancel = vi.fn()
+    renderWithProviders(
+      <MessageInput busy onSend={onSend} onCancel={onCancel} onUpload={vi.fn()} />,
+    )
+    await waitFor(() => expect(__getTestEditor()).not.toBeNull())
+    expect(screen.queryByTestId('composer-cancel')).toBeNull()
+    // 空输入 + busy：那颗唯一的按钮仍是停止
+    fireEvent.click(screen.getByLabelText('common.cancel'))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(onSend).not.toHaveBeenCalled()
   })
 })

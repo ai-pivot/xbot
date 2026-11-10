@@ -31,7 +31,8 @@ import (
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/session"
-	"xbot/storage/sqlite"
+	"xbot/storage"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -72,6 +73,7 @@ func formatErrorForUser(err error) string {
 //
 // 用户决策（2026-09-17 再次确认）：**缺省必须是内置 xbot**（此前缺省为 "flat"）。
 // 空值一律落到 xbot —— 不猜别的 provider（用户铁律：严禁推断/自动 fallback）。
+// "none" 是显式关闭记忆的一等模式，原样透传（绝不回落到 xbot）。
 func resolveMemoryProvider(cfg string) string {
 	if cfg == "" {
 		return "xbot"
@@ -428,10 +430,9 @@ func (ss *bgSessionState) setActiveTurn(id uint64) {
 
 // Agent 核心 Agent 引擎
 type Agent struct {
-	bus           *bus.MessageBus
-	multiSession  *session.MultiTenantSession // Multi-tenant session manager
-	tools         *tools.Registry
-	maxIterations int
+	bus          *bus.MessageBus
+	multiSession *session.MultiTenantSession // Multi-tenant session manager
+	tools        *tools.Registry
 
 	skills             *SkillStore
 	agents             *AgentStore
@@ -472,8 +473,13 @@ type Agent struct {
 	// SubAgent 深度控制
 	maxSubAgentDepth int
 
+	// interactiveSessionTTLValue 是 interactive SubAgent 会话的空闲 TTL
+	// （agent.interactive_session_ttl）。0 = 用 defaultInteractiveSessionTTL。
+	// 读路径统一走 (*Agent).interactiveSessionTTL()。
+	interactiveSessionTTLValue time.Duration
+
 	// Cron service and scheduler
-	cronSvc *sqlite.CronService
+	cronSvc storage.CronStore
 	cronSch *cron.Scheduler
 
 	// Event trigger router
@@ -498,6 +504,26 @@ type Agent struct {
 	// key: "channel:chatID" -> chan struct{} (buffered, cap=1)
 	cancelStateMu sync.Mutex
 	chatCancelCh  sync.Map
+
+	// runDoneChs: key: "channel:chatID" -> chan struct{}，在该会话**当前轮**的收尾
+	// （processMessage 已返回、cancel 注册已摘除）时 close。
+	//
+	// ⛔ 存在的唯一理由（用户 2026-10-22：「cancel 只要 api 返回了一定必须已经取消
+	// 成功，它是阻塞的」）：旧实现里 interceptCancel 只把信号塞进 chatCancelCh 就
+	// 立刻 return，HTTP 已经回了 "已取消"，而 turn 还在跑当前工具 —— 客户端看到的是
+	// "取消了但没停"。⇒ 需要一个"这一轮真的结束了"的**权威信号**，让取消方阻塞到
+	// 它关闭（见 ActiveRunDone）。
+	// 与 chatCancelCh 同生共死：registerActiveCancelState 建，finishActiveCancelState
+	// / cleanupStaleCancelState 摘除并 close。
+	runDoneChs sync.Map
+
+	// runGen：每个 chat 最近一次 Run 的**轮次代号**（单调递增）。
+	// ⛔ 存在的唯一理由（用户 2026-10-17 P0「后端乱发 session_idle」）：回合收尾的 defer 会在
+	//   processMessage 返回后**无条件**发 session(idle)。若用户在前一轮收尾前就发来下一条消息
+	//   （新一轮已 active），这条**迟到的旧轮 idle** 会落在新轮的 busy 之后 ⇒ 前端（web 与原生一致）
+	//   把正在跑的新轮误标 idle ⇒ 卡 busy / 界面冻结。⇒ 只有"仍是当前轮"的收尾才允许发 idle。
+	runGenMu sync.Mutex
+	runGen   map[string]uint64
 
 	// sessionOperationGates serializes Run/command turns with history rewind.
 	// Leases are reference counted under the map mutex so idle entries can be
@@ -540,10 +566,27 @@ type Agent struct {
 	// On turn end, the entry is deleted.
 	iterationHistories sync.Map
 
-	// builtinProgressSeq stores per-chat atomic seq counters for builtin commands
-	// (/compress, /new) that bypass engine.Run but still need progress events.
+	// progressSeq stores **per-session** structured-progress seq counters.
+	//
+	// ⛔ 2026-10-17：此前每个 Run 在 buildMainRunConfig 里新建 `var progressSeq
+	// atomic.Uint64` ⇒ **每次 resume 都从 1 重计**。客户端的重放水位（lastSeq）
+	// 是 per-turn 的 ⇒ 新 run 的 seq ≤ 旧水位，事件被误判"重放"丢弃
+	// （用户症状：迭代不再更新 / 内容回退）。改为 per-session 持久计数器，
+	// 首次以 UnixMilli 播种（跨进程重启也单调），此后只增不减。
 	// key: "channel:chatID" -> *atomic.Uint64
-	builtinProgressSeq sync.Map
+	// progressSeq sync.Map
+	progressSeq sync.Map
+
+	// toolIDs assigns the STABLE server-side call id of every tool call before
+	// it first appears in any frame (STATE-MODEL P2 / P3′ / C-8). Tool identity
+	// is never the provider's id (which arrives late / in fragments) — that one
+	// travels as protocol.ToolProgress.ProviderCallID.
+	toolIDs *toolIdentity
+
+	// turnFrames enforces "exactly one done per iteration, exactly one final per
+	// turn" (STATE-MODEL C-6 / C-7). Every exit path reports through it; duplicate
+	// reports are dropped instead of double-sent.
+	turnFrames *turnFrameTracker
 
 	// interactiveSubAgents stores interactive SubAgent sessions
 	// key: "channel:chatID/roleName" -> *interactiveAgent
@@ -651,6 +694,11 @@ type Agent struct {
 	// bgNotifyLoop always buffers notifications, then signals the session's state channel.
 	// chatWorker registers on entry and deregisters on exit.
 	bgSessionStates sync.Map
+
+	// structuredQueues maps chatKey → *StructuredQueue：插队优先队列（结构化消息）。
+	// 运行中的 turn 在 iteration 边界消费；空闲时 DeliverStructuredMessage 直接
+	// 开启新 turn。见 structured_queue.go。
+	structuredQueues sync.Map
 
 	// agentCtx is the Agent-level context, set when Run() starts and cancelled when Run() exits.
 	// Background interactive subagents derive their context from this (not from per-request ctx)
@@ -806,7 +854,7 @@ func (a *Agent) updateActiveSubFn(uc *UserContext, channel string) func(key, val
 }
 
 // subFieldValue reads a single field from an LLMSubscription by config key.
-func subFieldValue(sub *sqlite.LLMSubscription, key string) string {
+func subFieldValue(sub *common.LLMSubscription, key string) string {
 	switch key {
 	case "llm_provider":
 		return sub.Provider
@@ -828,7 +876,7 @@ func subFieldValue(sub *sqlite.LLMSubscription, key string) string {
 }
 
 // setSubFieldValue sets a single field on an LLMSubscription by config key.
-func setSubFieldValue(sub *sqlite.LLMSubscription, key, value string) error {
+func setSubFieldValue(sub *common.LLMSubscription, key, value string) error {
 	switch key {
 	case "llm_provider":
 		sub.Provider = strings.TrimSpace(value)
@@ -1088,60 +1136,48 @@ func (a *Agent) emitSessionState(ev protocol.SessionEvent) {
 }
 
 // renameSession renames a chat session in DB and pushes the state change.
-// Uses multiSession.DB() for DB access and emitSessionState for notification.
+// renameSession renames a chat session and pushes the state change.
+// 后端无关：一律经 TenantStore（SQLite 的 user_chats / PG 的同一张表），
+// 不再依赖主库 *common.DB —— PG 后端同样可用。
 func (a *Agent) renameSession(chatID, newName string) (oldName string, err error) {
-	if a.multiSession == nil {
-		return "", fmt.Errorf("renameSession: no multiSession DB")
+	if a.multiSession == nil || a.multiSession.Store() == nil {
+		return "", fmt.Errorf("renameSession: no storage backend")
 	}
-	db := a.multiSession.DB()
-	if db == nil {
-		return "", fmt.Errorf("renameSession: no DB connection")
-	}
-	conn := db.Conn()
+	tenantStore := a.multiSession.Store().Tenant()
 
-	// Look up channel & sender from DB (works for both CLI and web chats)
-	var ch, senderID string
-	row := conn.QueryRow(`SELECT channel, sender_id FROM user_chats WHERE chat_id = ? LIMIT 1`, chatID)
-	if err := row.Scan(&ch, &senderID); err != nil {
-		// Fallback for CLI sessions not yet in user_chats
-		ch = "cli"
-		senderID = a.cliSenderID
+	// Look up channel & sender (works for both CLI and web chats)
+	ch := "cli"
+	senderID := a.cliSenderID
+	if ownerChannel, ownerSender, err := tenantStore.GetChatOwner(chatID); err == nil && ownerSender != "" {
+		if ownerChannel != "" {
+			ch = ownerChannel
+		}
+		senderID = ownerSender
 	}
-
-	// Get old name
-	row = conn.QueryRow(`SELECT label FROM user_chats WHERE channel = ? AND sender_id = ? AND chat_id = ?`, ch, senderID, chatID)
-	if err := row.Scan(&oldName); err != nil {
-		log.Warn("Failed to scan old name: ", err)
+	if label, err := tenantStore.GetChatLabel(ch, chatID); err == nil {
+		oldName = label
 	}
 	if oldName == "" {
 		_, oldName = cli.ParseChatID(chatID)
 	}
 
-	// Deduplicate
+	// Deduplicate against this sender's existing labels.
 	finalName := channel.DeduplicateSessionName(newName, chatID, func() []channel.NameEntry {
-		rows, err := conn.Query(`SELECT chat_id, label FROM user_chats WHERE channel = ? AND sender_id = ? AND label != ''`, ch, senderID)
+		chats, _, err := tenantStore.ListUserChats(ch, senderID, "", 0, 500)
 		if err != nil {
 			return nil
 		}
-		defer rows.Close()
 		var entries []channel.NameEntry
-		for rows.Next() {
-			var cid, lbl string
-			if err := rows.Scan(&cid, &lbl); err == nil {
-				entries = append(entries, channel.NameEntry{Name: lbl, ChatID: cid})
+		for _, c := range chats {
+			if c.Label != "" {
+				entries = append(entries, channel.NameEntry{Name: c.Label, ChatID: c.ChatID})
 			}
 		}
 		return entries
 	})
 
-	// Update DB
-	_, err = conn.Exec(`
-		INSERT INTO user_chats (channel, sender_id, chat_id, label)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
-		ch, senderID, chatID, finalName, finalName,
-	)
-	if err != nil {
+	// Persist the label.
+	if err := tenantStore.RenameChat(ch, senderID, chatID, finalName); err != nil {
 		return "", fmt.Errorf("rename chat in DB: %w", err)
 	}
 
@@ -1246,7 +1282,7 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	// the DB says a question is genuinely pending. HasPendingAskUserFast runs
 	// this path per session-tree row, so the probe keeps that cheap.
 	id, recordType, available := a.latestAskControlRecordForSession(ch, chatID)
-	if available && recordType != sqlite.HistoryRecordAskQuestion {
+	if available && recordType != common.HistoryRecordAskQuestion {
 		return key, nil
 	}
 	if a.multiSession == nil {
@@ -1254,7 +1290,10 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	}
 	// Resolve again before replay: deletion may have happened after the probe.
 	// Never use GetOrCreateSession on this read-only recovery path.
-	tenantID, err := sqlite.NewTenantService(a.multiSession.DB()).GetTenantIDByChannelChatID(ch, chatID)
+	// 后端无关：tenant 解析走 TenantStore、replay 走 SessionStore —— 因此 PG
+	// 后端也能恢复待答问题（此前这里依赖主库 *common.DB，PG 上直接跳过）。
+	tenantStore := a.multiSession.Store().Tenant()
+	tenantID, err := tenantStore.GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil || tenantID == 0 {
 		return key, nil
 	}
@@ -1345,23 +1384,20 @@ func (a *Agent) clearPendingAskUserKey(key string) bool {
 // control record (ask_question / ask_answer) for the session's tenant.
 // available=false when there is no DB/session or the probe fails — callers
 // then fall back to trusting the in-memory copy (best effort).
-func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqlite.HistoryRecordType, bool) {
+func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, common.HistoryRecordType, bool) {
 	if a.multiSession == nil {
 		return 0, "", false
 	}
-	db := a.multiSession.DB()
-	if db == nil {
-		return 0, "", false
-	}
+	// 后端无关：tenant 解析走 TenantStore，控制记录查询走 SessionStore —— PG 后端
+	// 同样可用（此前这里依赖主库 *common.DB，PG 上直接返回 available=false）。
 	// Session-tree probes must not recreate a tenant from a stale deleted row.
-	tenantID, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(ch, chatID)
+	tenantID, err := a.multiSession.Store().Tenant().GetTenantIDByChannelChatID(ch, chatID)
 	if err != nil {
 		return 0, "", false
 	}
 	if tenantID == 0 {
 		return 0, "", true
 	}
-	// AskUser records live in the per-session DB, not the main registry.
 	svc, err := a.multiSession.SessionServiceFor(tenantID)
 	if err != nil {
 		return 0, "", false
@@ -1388,13 +1424,13 @@ func (a *Agent) pendingAskUserEntryIsAuthoritative(ch, chatID, key string, entry
 	if !available {
 		return true
 	}
-	if recordType == sqlite.HistoryRecordAskAnswer {
+	if recordType == common.HistoryRecordAskAnswer {
 		a.dropPendingAskUserEntry(key, entry)
 		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID, "answer_record_id": id}).
 			Info("Dropped stale in-memory pending AskUser: persisted ask_answer is newer")
 		return false
 	}
-	if recordType != sqlite.HistoryRecordAskQuestion {
+	if recordType != common.HistoryRecordAskQuestion {
 		// No ask control record at all — no contradiction, trust memory.
 		return true
 	}
@@ -1599,14 +1635,12 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		//
 		// ss.busy 仍显式复位（幂等）以覆盖旧版残留 busy=true 的窗口；worktree 的
 		// busy 标记同理。SenderID: session owner —— 漏填时对 web 渠道走无过滤
-		// fan-out 分支（广播给所有用户，多用户部署下暴露会话元数据）。取消者 = 会话 owner。
+		// fan-out 分支（广播给所有用户，多用data署下暴露会话元数据）。取消者 = 会话 owner。
 		if state, ok := a.bgSessionStates.Load(cancelKey); ok {
 			state.(*bgSessionState).busy.Store(false)
 		}
 		tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
-		a.emitSessionState(protocol.SessionEvent{
-			Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
-		})
+		a.emitSessionIdleIfNoActiveRun(cancelKey, msg.Channel, msg.ChatID, msg.SenderID)
 		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
 		return
@@ -1634,9 +1668,73 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	log.WithField("cancel_key", cancelKey).Info("Cancel pending: request not yet active, will cancel when it starts")
 }
 
+// progressSeqFor returns the **per-session** structured-progress seq counter.
+//
+// ⛔ 2026-10-17（resume 丢事件的真根因）：此前 buildMainRunConfig 每个 Run 新建
+// `var progressSeq atomic.Uint64` ⇒ resume/新 run 从 1 重计，而客户端重放水位
+// （lastSeq）是 per-turn 的 ⇒ 新 run 的 seq ≤ 旧水位，被误判"重放"丢弃
+// （用户症状：迭代不再更新 / 内容回退）。
+// 现在按 `channel:chatID` 持久化，首次以 UnixMilli 播种（跨进程重启也单调；
+// 1.7e12 远小于 JS 安全整数 9e15），此后只增不减。
+// 注意：这与 SSE 帧自己的 `eventStream.nextSeq()`（重放缓存的游标）是**两套**
+// 计数器 —— 改这里不会影响 SSE Last-Event-ID 的连续性。
+func (a *Agent) progressSeqFor(sessionKey string) *atomic.Uint64 {
+	if sessionKey == "" {
+		sessionKey = "default"
+	}
+	if v, ok := a.progressSeq.Load(sessionKey); ok {
+		return v.(*atomic.Uint64)
+	}
+	fresh := &atomic.Uint64{}
+	fresh.Store(uint64(time.Now().UnixMilli()))
+	actual, _ := a.progressSeq.LoadOrStore(sessionKey, fresh)
+	return actual.(*atomic.Uint64)
+}
+
+// bumpRunGen 标记该会话开始新一轮，返回本轮代号（单调递增）。
+func (a *Agent) bumpRunGen(chatKey string) uint64 {
+	a.runGenMu.Lock()
+	defer a.runGenMu.Unlock()
+	if a.runGen == nil {
+		a.runGen = make(map[string]uint64)
+	}
+	a.runGen[chatKey]++
+	return a.runGen[chatKey]
+}
+
+// isCurrentRunGen 该代号是否仍是该会话的当前轮（false ⇒ 这是一次**迟到**的旧轮收尾）。
+func (a *Agent) isCurrentRunGen(chatKey string, gen uint64) bool {
+	a.runGenMu.Lock()
+	defer a.runGenMu.Unlock()
+	if a.runGen == nil {
+		return false
+	}
+	return a.runGen[chatKey] == gen
+}
+
+// emitSessionIdleIfCurrent **唯一合法的 session(idle) 出口**：只有"仍是当前轮"才发。
+//
+// ⛔ 为什么必须在服务端修（而不是客户端打补丁 —— 用户 2026-10-17：「严禁做 hack，
+//
+//	后端乱发 session_idle 就必须修后端」）：会话的 busy/idle 是**服务端权威信号**，
+//	它一旦说谎，所有客户端只能猜（卡 busy / 界面冻结 / 历史闪烁）。
+func (a *Agent) emitSessionIdleIfCurrent(chatKey, channel, chatID, senderID string, gen uint64) {
+	if !a.isCurrentRunGen(chatKey, gen) {
+		log.WithFields(log.Fields{"chat": chatKey, "gen": gen, "reason": "stale-run-teardown"}).
+			Debug("Suppressed stale session(idle) — a newer run owns this chat")
+		return
+	}
+	a.emitSessionState(protocol.SessionEvent{
+		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
+	})
+}
+
 func (a *Agent) registerActiveCancelState(cancelKey string, cancelCh chan struct{}, reqCancel context.CancelFunc) bool {
 	a.cancelStateMu.Lock()
 	defer a.cancelStateMu.Unlock()
+	// 新一轮 = 新的 run-done 通道。绝不复用上一轮的（那条已经 close，等待方会
+	// 立刻返回并谎报"已取消"）。
+	a.runDoneChs.Store(cancelKey, make(chan struct{}))
 	a.chatCancelCh.Store(cancelKey, cancelCh)
 	_, pending := a.pendingCancel.LoadAndDelete(cancelKey)
 	if pending {
@@ -1654,7 +1752,43 @@ func (a *Agent) finishActiveCancelState(cancelKey string, reqCtx context.Context
 	wasCancelled := reqCtx.Err() == context.Canceled
 	a.chatCancelCh.Delete(cancelKey)
 	reqCancel()
+	a.closeRunDone(cancelKey)
 	return wasCancelled
+}
+
+// closeRunDone 关闭该会话当前轮的 run-done 通道（幂等：重复 close 会 panic，
+// 所以必须先 LoadAndDelete 拿到"这一次"的独占所有权）。
+// 调用方必须持有 cancelStateMu（与 chatCancelCh 的摘除保持同一临界区）。
+func (a *Agent) closeRunDone(cancelKey string) {
+	if v, ok := a.runDoneChs.LoadAndDelete(cancelKey); ok {
+		if done, ok := v.(chan struct{}); ok {
+			close(done)
+		}
+	}
+}
+
+// ActiveRunDone 返回该会话**当前轮**的完成信号：通道关闭 ⇒ 这一轮真的跑完了
+// （processMessage 返回、cancel 注册已摘除）。ok=false ⇒ 当前没有活跃轮次，
+// 此时 /cancel 是无操作，调用方必须立即返回成功（不等待）。
+//
+// 这是唯一被授权回答"取消是否已经生效"的接口：chatCancelCh 的存在只说明
+// "有活跃轮次"，不代表取消已经生效 —— 生效点在这里关闭的那一刻。
+func (a *Agent) ActiveRunDone(ch, chatID string) (<-chan struct{}, bool) {
+	if ch == "" || chatID == "" {
+		return nil, false
+	}
+	cancelKey := ch + ":" + chatID
+	a.cancelStateMu.Lock()
+	defer a.cancelStateMu.Unlock()
+	if _, active := a.chatCancelCh.Load(cancelKey); !active {
+		return nil, false
+	}
+	if v, ok := a.runDoneChs.Load(cancelKey); ok {
+		if done, ok := v.(chan struct{}); ok {
+			return done, true
+		}
+	}
+	return nil, false
 }
 
 // cleanupStaleCancelState —— chatProcessLoop 的「最后防线」兜底（2026-10-01 cancel 无效事故）。
@@ -1675,10 +1809,13 @@ func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, last
 	a.cancelStateMu.Lock()
 	chVal, stillRegistered := a.chatCancelCh.LoadAndDelete(chatKey)
 	a.pendingCancel.Delete(chatKey)
-	a.cancelStateMu.Unlock()
 	if !stillRegistered {
+		a.cancelStateMu.Unlock()
 		return // 正常路径：keepRunning 收尾已清 —— 零副作用
 	}
+	// Run 无声消失也要释放 run-done 等待方，否则 /api/cancel 只能等满超时。
+	a.closeRunDone(chatKey)
+	a.cancelStateMu.Unlock()
 	log.WithField("cancel_key", chatKey).Warn(
 		"Stale cancel state after chatProcessLoop exit — self-healing (Run vanished without teardown)")
 	if ch, ok := chVal.(chan struct{}); ok {
@@ -1688,10 +1825,21 @@ func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, last
 		ss.busy.Store(false)
 	}
 	if i := strings.Index(chatKey, ":"); i > 0 {
-		a.emitSessionState(protocol.SessionEvent{
-			Channel: chatKey[:i], ChatID: chatKey[i+1:], Action: "idle", SenderID: lastSenderID,
-		})
+		a.emitSessionIdleIfNoActiveRun(chatKey, chatKey[:i], chatKey[i+1:], lastSenderID)
 	}
+}
+
+// emitSessionIdleIfNoActiveRun 是 idle 的受控出口：有活跃 cancel/Run 时不得发 idle。
+// P2 2026-10-18：interceptCancel / cleanupStaleCancelState 里的两处无条件 idle 会在
+// 「pending prompt 存在但该会话已有新一轮」时冻结新轮。
+func (a *Agent) emitSessionIdleIfNoActiveRun(chatKey, channel, chatID, senderID string) {
+	if _, active := a.chatCancelCh.Load(chatKey); active {
+		log.WithField("chat", chatKey).Debug("Suppressed session(idle): active run owns this chat")
+		return
+	}
+	a.emitSessionState(protocol.SessionEvent{
+		Channel: channel, ChatID: chatID, Action: "idle", SenderID: senderID,
+	})
 }
 
 // dispatchWaitingUser 把 WaitingUser 出站消息投递到 bus，返回是否真的送达。
@@ -1774,11 +1922,13 @@ type Config struct {
 	Bus            *bus.MessageBus
 	LLM            llm.LLM
 	Model          string
-	MaxIterations  int    // 单次对话最大工具调用迭代次数
 	MaxConcurrency int    // 最大并发会话处理数（默认 3）
-	DBPath         string // SQLite 数据库路径（空则使用默认路径）
-	SkillsDir      string // Skills 目录
-	AgentsDir      string // Agents 目录（空则使用 WorkDir/.xbot/agents）
+	DBPath         string // SQLite 数据库路径（空则使用默认路径）；PG 后端时为 DSN
+	// StorageType 选择存储后端："sqlite"（默认，按 DBPath 文件打开）或 "pg"。
+	// 也可省略 —— DBPath 为 "postgres://..." DSN 时自动走 PG。
+	StorageType string
+	SkillsDir   string // Skills 目录
+	AgentsDir   string // Agents 目录（空则使用 WorkDir/.xbot/agents）
 	// DisabledSkills 全局 skill 黑名单：这些 skill 不会出现在 available_skills
 	// catalog 中（LLM 不可见、不可激活）。
 	DisabledSkills []string
@@ -1816,6 +1966,11 @@ type Config struct {
 	MCPInactivityTimeout time.Duration // MCP 不活跃超时时间
 	MCPCleanupInterval   time.Duration // MCP 清理扫描间隔
 	SessionCacheTimeout  time.Duration // 会话缓存超时
+
+	// InteractiveSessionTTL 是 interactive SubAgent 会话的空闲 TTL
+	// （config: agent.interactive_session_ttl，默认 defaultInteractiveSessionTTL=30m）。
+	// 0 = 用默认值 —— 保持与硬编码时代完全一致的行为。
+	InteractiveSessionTTL time.Duration
 
 	// 上下文管理模式
 	// 优先级：ContextMode > EnableAutoCompress 旧字段
@@ -1923,8 +2078,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 
 // initSession 初始化多租户会话管理器。
 func initSession(cfg Config) (*session.MultiTenantSession, error) {
-	multiSession, err := session.NewMultiTenant(
-		cfg.DBPath,
+	opts := []session.MultiTenantOption{
 		session.WithMCPTimeout(cfg.MCPInactivityTimeout),
 		session.WithCleanupInterval(cfg.MCPCleanupInterval),
 		session.WithSessionCacheTimeout(cfg.SessionCacheTimeout),
@@ -1940,7 +2094,19 @@ func initSession(cfg Config) (*session.MultiTenantSession, error) {
 			LLMModel:   cfg.Model,
 			TokenModel: cfg.Model,
 		}),
-	)
+	}
+
+	// 存储后端选择：StorageType=="pg" 或 DBPath 是 postgres:// DSN → PG。
+	// （PG 路径内部强制 flat 记忆 provider，见 session.NewMultiTenantPG。）
+	if cfg.StorageType == "pg" || strings.HasPrefix(cfg.DBPath, "postgres://") {
+		multiSession, err := session.NewMultiTenantPG(cfg.DBPath, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("initialize multi-tenant session (pg): %w", err)
+		}
+		return multiSession, nil
+	}
+
+	multiSession, err := session.NewMultiTenant(cfg.DBPath, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("initialize multi-tenant session: %w", err)
 	}
@@ -1980,7 +2146,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 			"provider": memoryProvider,
 			"tools":    memToolNames,
 		}).Info("Memory tools registered (core)")
-	} else {
+	} else if memoryProvider != "none" {
 		log.WithField("provider", memoryProvider).Warn("No memory tools declared by provider")
 	}
 
@@ -1990,28 +2156,37 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.commands = NewCommandRegistry()
 	registerBuiltinCommands(a.commands)
 
-	// 初始化 Cron 服务和调度器
-	cronSvc := sqlite.NewCronService(multiSession.DB())
-	cronSch := cron.NewScheduler(cronSvc)
+	// 初始化 Cron 服务和调度器。
+	// 后端无关：cronSvc 来自 storage.CronStore（SQLite 的 cron_jobs 表 / PG 的同一张表），
+	// 因此 PG 后端同样可用（此前这里依赖主库 *common.DB，PG 上整段被跳过 ⇒ cron 静默消失）。
+	if multiSession.Store() != nil {
+		cronSvc := multiSession.Store().Cron()
+		cronSch := cron.NewScheduler(cronSvc)
 
-	// 从旧的 JSON 文件迁移数据（如果需要）
-	if err := cronSvc.MigrateFromJSON(cfg.WorkDir); err != nil {
-		log.WithError(err).Warn("Failed to migrate cron jobs from JSON")
+		// 从旧的 JSON 文件迁移数据（如果需要）
+		if err := cronSvc.MigrateFromJSON(cfg.WorkDir); err != nil {
+			log.WithError(err).Warn("Failed to migrate cron jobs from JSON")
+		}
+
+		// 注册 CronTool（核心工具，始终可用）
+		registry.RegisterCore(tools.NewCronTool(cronSvc))
+
+		a.cronSvc = cronSvc
+		a.cronSch = cronSch
 	}
-
-	// 注册 CronTool（核心工具，始终可用）
-	registry.RegisterCore(tools.NewCronTool(cronSvc))
-
-	a.cronSvc = cronSvc
-	a.cronSch = cronSch
 
 	// LLM factory: per-user subscriptions are the single source for custom LLM.
 	if a.userSys == nil {
 		a.userSys = &userSystem{}
 	}
 	a.userSys.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
-	a.userSys.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
-	a.userSys.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
+	// ⚠️ 不按 db != nil 分支：订阅/租户访问统一经 storage 接口。SQLite 的
+	// sqliteStorage.config/tenant 与 PG 的实现都满足同一契约，PG 上也就不再
+	// 需要「跳过接线」这种会静默丢失功能的路径。
+	if multiSession.Store() != nil {
+		a.userSys.llmFactory.SetSubscriptionSvc(multiSession.Store().Config())
+		a.userSys.llmFactory.SetTenantSvc(multiSession.Store().Tenant())
+	}
 	// v71（每会话一个 DB）：模型切换时清零会话库的 token 基线（session_messages
 	// .context_tokens —— 不同模型上下文大小不同）。tenant_state 半边（主库）由
 	// SetTenantSubscription 清；session_messages 半边（会话库）经本钩子路由。
@@ -2107,25 +2282,26 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	// Initialize RegistryManager
 	a.registryManager = NewRegistryManager(a.skills, a.agents, cfg.WorkDir, cfg.XbotHome, cfg.Sandbox)
 
-	// Initialize UserSettingsService and SettingsService
-	userSettingsSvc := sqlite.NewUserSettingsService(multiSession.DB())
-	a.userSys.settingsSvc = NewSettingsService(userSettingsSvc)
+	// Initialize UserSettingsService and SettingsService.
+	// SettingsService 走后端无关的 storage.ConfigStore（SQLite 用适配层包主库，
+	// PG 用 Store().Config()）—— 同一套接口，不再按是否有 SQLite 句柄分支。
+	if multiSession.Store() != nil {
+		a.userSys.settingsSvc = NewSettingsService(multiSession.Store().Config())
+	}
 
 	// Initialize LLMSemaphoreManager and inject dependencies
 	llmSemMgr := llm.NewLLMSemaphoreManager()
 	a.userSys.llmFactory.SetLLMSemaphoreManager(llmSemMgr)
 	a.userSys.llmFactory.SetSettingsService(a.userSys.settingsSvc)
 
-	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它）
+	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它 ——
+	// nil 时 LanguageMiddleware 自行短路，见其 Process 的 nil 守卫）
 	a.initPipelines(memoryProvider)
 }
 
 // New 创建 Agent
 func New(cfg Config) (*Agent, error) {
 	// 1. 设置配置默认值
-	if cfg.MaxIterations == 0 {
-		cfg.MaxIterations = 2000
-	}
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 3
 	}
@@ -2148,6 +2324,9 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.SessionCacheTimeout == 0 {
 		cfg.SessionCacheTimeout = 24 * time.Hour
+	}
+	if cfg.InteractiveSessionTTL <= 0 {
+		cfg.InteractiveSessionTTL = defaultInteractiveSessionTTL
 	}
 	if cfg.MaxContextTokens == 0 {
 		cfg.MaxContextTokens = 100000 // 默认 100k token
@@ -2178,10 +2357,11 @@ func New(cfg Config) (*Agent, error) {
 		bus:                    cfg.Bus,
 		multiSession:           multiSession,
 		tools:                  registry,
-		maxIterations:          cfg.MaxIterations,
 		maxConcurrency:         cfg.MaxConcurrency,
 		deltaPush:              cfg.DeltaPush,
 		iterationLoopDetection: cfg.IterationLoopDetection,
+		toolIDs:                newToolIdentity(),
+		turnFrames:             newTurnFrameTracker(),
 
 		skills:             skillStore,
 		agents:             agentStore,
@@ -2198,6 +2378,8 @@ func New(cfg Config) (*Agent, error) {
 		directWorkspace:  cfg.DirectWorkspace,
 		globalSkillDirs:  resolveGlobalSkillsDirs(cfg.SkillsDir),
 		maxSubAgentDepth: cfg.MaxSubAgentDepth,
+		// interactive SubAgent 空闲 TTL（agent.interactive_session_ttl）。
+		interactiveSessionTTLValue: cfg.InteractiveSessionTTL,
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 		agentsDir: filepath.Join(cfg.WorkDir, ".xbot", "agents"),
 		xbotHome:  cfg.XbotHome,
@@ -2260,24 +2442,7 @@ func New(cfg Config) (*Agent, error) {
 		if err := agent.pluginMgr.ActivateAll(context.Background()); err != nil {
 			log.WithError(err).Warn("Plugin activation failed")
 		}
-		// Wire plugin activator into RegistryManager so newly installed plugins
-		// (via /app install) are activated immediately without manual reload.
-		// ReloadAll triggers OnReload callbacks which re-wire hooks/tools/widgets/commands.
-		//
-		// Note: ReloadAll reloads ALL plugins, not just the installed one.
-		// This is intentional — OnReload callbacks (which re-wire hooks/tools/widgets)
-		// only fire on full reload, not on single-plugin Activate. The O(n) overhead
-		// is acceptable since /app install is a rare manual operation.
-		agent.registryManager.SetPluginActivator(func(pluginID string) error {
-			return agent.pluginMgr.ReloadAll(context.Background())
-		})
-		// Wire plugin deactivator so /app uninstall stops the plugin (hooks,
-		// widgets, runtime) after removing files.
-		// uninstallPlugin deletes files FIRST, then calls this — so ReloadAll
-		// won't re-discover the deleted plugin. Same O(n) note as above.
-		agent.registryManager.SetPluginDeactivator(func(pluginID string) error {
-			return agent.pluginMgr.ReloadAll(context.Background())
-		})
+
 		// Wire plugin capabilities to xbot subsystems
 		hookBridge := plugin.NewPluginHookBridge()
 		enricherReg := plugin.NewEnricherRegistry()
@@ -2425,11 +2590,6 @@ func (a *Agent) SetContextMode(mode string) error {
 	return nil
 }
 
-func (a *Agent) SetMaxIterations(n int) {
-	a.contextManagerMu.Lock()
-	a.maxIterations = n
-	a.contextManagerMu.Unlock()
-}
 func (a *Agent) SetMaxConcurrency(n int) {
 	a.contextManagerMu.Lock()
 	a.maxConcurrency = n
@@ -2449,12 +2609,6 @@ func (a *Agent) SetCompressionThreshold(f float64) {
 	a.contextManagerMu.Lock()
 	a.contextManagerConfig.CompressionThreshold = f
 	a.contextManagerMu.Unlock()
-}
-
-func (a *Agent) getMaxIterations() int {
-	a.contextManagerMu.RLock()
-	defer a.contextManagerMu.RUnlock()
-	return a.maxIterations
 }
 
 func (a *Agent) getMaxConcurrency() int {
@@ -2808,20 +2962,23 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.multiSession.StartCleanupRoutine()
 
-	a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
-		sessionKey := channel + ":" + chatID
-		// nil-guard: bare &Agent{} construction (no New() Store) must not
-		// panic on a cron trigger — same contract as the interactive.go read
-		// sites. Normal chain stores the manager before cron starts.
-		if mgr := a.bgTaskMgr.Load(); mgr != nil {
-			mgr.SendCronFired(&tools.CronFired{
-				Key:     sessionKey,
-				Sid:     senderID,
-				Message: message,
-			})
-		}
-	})
-	a.cronSch.StartDelayed(3 * time.Second)
+	// nil 守卫：PG 后端不初始化 cron（见 initServices）—— 无调度器可启动。
+	if a.cronSch != nil {
+		a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
+			sessionKey := channel + ":" + chatID
+			// nil-guard: bare &Agent{} construction (no New() Store) must not
+			// panic on a cron trigger — same contract as the interactive.go read
+			// sites. Normal chain stores the manager before cron starts.
+			if mgr := a.bgTaskMgr.Load(); mgr != nil {
+				mgr.SendCronFired(&tools.CronFired{
+					Key:     sessionKey,
+					Sid:     senderID,
+					Message: message,
+				})
+			}
+		})
+		a.cronSch.StartDelayed(3 * time.Second)
+	}
 
 	// SetInjectFunc is now called in SetEventRouter (before Run starts),
 	// so a.eventRouter is guaranteed to have the inject function wired.
@@ -2831,7 +2988,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.agentCtx, a.agentCancel = context.WithCancel(ctx)
 	defer func() {
 		a.agentCancel() // cancel all bg subagents when Agent exits
-		a.cronSch.Stop()
+		if a.cronSch != nil {
+			a.cronSch.Stop()
+		}
 		a.multiSession.StopCleanupRoutine()
 	}()
 
@@ -3072,6 +3231,13 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 	ss.msgCh = msgCh // reorder path re-projects the queue order onto this channel
 	a.bgSessionStates.Store(chatKey, ss)
 	defer a.bgSessionStates.Delete(chatKey)
+	// P2 2026-10-18：runGen 只在 worker 生命周期内有效；worker 退出必须清理，避免长驻
+	// server 上每会话残留一条。
+	defer func() {
+		a.runGenMu.Lock()
+		delete(a.runGen, chatKey)
+		a.runGenMu.Unlock()
+	}()
 
 	// Restore the per-session turn ID counter from DB SYNCHRONOUSLY, BEFORE
 	// the processLoop goroutine starts and BEFORE the main loop can admit any
@@ -3518,6 +3684,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// Execute the request, then atomically snapshot cancellation and unregister
 			// the active cancel state before another /cancel can target this chat.
 			wasCancelled := false
+			// 本轮代号：收尾时的 idle 只有"仍是当前轮"才允许发（见 emitSessionIdleIfCurrent）
+			runGen := a.bumpRunGen(chatKey)
 			func() {
 				defer func() {
 					// Panic 兜底：processMessage panic 时 goroutine 会被 clipanic.Go
@@ -3545,9 +3713,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					// reconnect can recover the in-flight turn.
 					isWaitingUser := response != nil && response.WaitingUser
 					if !isWaitingUser {
-						a.emitSessionState(protocol.SessionEvent{
-							Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
-						})
+						// ⛔ 只有"仍是当前轮"才发 idle：迟到的旧轮收尾不得把新一轮误标 idle
+						a.emitSessionIdleIfCurrent(cancelKey, msg.Channel, msg.ChatID, msg.SenderID, runGen)
 						key := qualifyChatID(msg.Channel, msg.ChatID)
 						a.lastProgressSnapshot.Delete(key)
 						a.iterationHistories.Delete(key)
@@ -3612,6 +3779,8 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 						Channel: msg.Channel,
 						ChatID:  msg.ChatID,
 						Content: content,
+						// 兜底也要带回合身份（否则客户端无法把这条错误收尾到本轮）
+						TurnID: a.outboundTurnID(msg.Channel, msg.ChatID, msg.Metadata, 0),
 					}
 				}
 				// Synthetic notification pairs are acknowledged only after their DB
@@ -3726,6 +3895,11 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	userCtx := a.ResolveUserContext(msg.Channel, msg.ChatID, msg.SenderID, msg.Metadata)
 	ctx = WithUserContext(ctx, userCtx)
 
+	// 重启恢复（2026-10-21）：把本会话在重启前存在的整棵子代理树重建回内存，
+	// 让 SendMessage/SubAgent send 重新可寻址。幂等（已在内存的跳过）、深度受限、
+	// 单个失败不影响本次消息处理。
+	a.restoreInteractiveTree(ctx, msg.Channel, msg.ChatID, 0)
+
 	preview := msg.Content
 	if r := []rune(preview); len(r) > 80 {
 		preview = string(r[:80]) + "..."
@@ -3834,6 +4008,13 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			if out != nil {
 				out.Metadata = markCommandReply(out.Metadata)
 			}
+			// 命令是 turn-less 的（这里直接 return，从不进入 Run 循环），而 goal 的
+			// 「干到完为止」续跑只存在于 Run 内部（PreTurnEnd 钩子 → maybeContinueTurn）。
+			// 有 active goal 时执行任何命令（/compress、/settings…）都会把会话留在
+			// idle，用户看到「活儿干到一半就停了」——2026-10-21 用户亲报「压缩后会话
+			// 没自动继续」。把控制权交还给 Run：注入一个 resume turn（与 /continue
+			// 同一机制，空 user 消息，DB 已有锚点）。
+			a.resumeRunAfterCommand(msg.Channel, msg.ChatID, msg.SenderID)
 			return out, nil
 		}
 	}
@@ -3918,7 +4099,12 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// the original Run() started). InjectInboundResume sends an empty message
 	// with resume_turn metadata — Assemble skips appending a user message
 	// entirely (UserMessage is empty), so no duplicate to remove.
-	resumeTurn := msg.Metadata != nil && msg.Metadata["resume_turn"] == "true"
+	//
+	// structured_delivery: an answer/decision/text was already persisted as a
+	// structured row by the API before delivery. The turn must not persist a
+	// second user row for it — same skip semantics as resume_turn (empty content).
+	resumeTurn := msg.Metadata != nil &&
+		(msg.Metadata["resume_turn"] == "true" || msg.Metadata["structured_delivery"] == "true")
 
 	// 运行 Agent 循环（统一 Run）
 	// Eager-save user message BEFORE Run() so incrementally persisted assistant/tool
@@ -3960,11 +4146,9 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		// every session it displayed. After a laptop slept overnight, all of
 		// yesterday's sessions showed up as "active today" (the sidebar groups
 		// sessions into TODAY/YESTERDAY from this column).
-		if ms := a.MultiSession(); ms != nil {
-			if db := ms.DB(); db != nil {
-				if terr := sqlite.NewTenantService(db).TouchTenantID(msg.Channel, msg.ChatID); terr != nil {
-					log.WithError(terr).Warn("failed to update tenant last_active_at on user message")
-				}
+		if ms := a.MultiSession(); ms != nil && ms.Store() != nil {
+			if terr := ms.Store().Tenant().TouchTenantID(msg.Channel, msg.ChatID); terr != nil {
+				log.WithError(terr).Warn("failed to update tenant last_active_at on user message")
 			}
 		}
 	}
@@ -4314,7 +4498,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	)
 
 	// Resume turn: skip user message synthesis (already in DB history)
-	if msg.Metadata != nil && msg.Metadata["resume_turn"] == "true" {
+	if msg.Metadata != nil && (msg.Metadata["resume_turn"] == "true" || msg.Metadata["structured_delivery"] == "true") {
 		mc.ResumeTurn = true
 	}
 
@@ -4348,15 +4532,9 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 
 	// Session name for rename hint (only injected on first user message)
 	_, sessionName := cli.ParseChatID(msg.ChatID)
-	if a.multiSession != nil {
-		if db := a.multiSession.DB(); db != nil {
-			var label string
-			if err := db.Conn().QueryRow(
-				"SELECT label FROM user_chats WHERE channel = ? AND chat_id = ? AND label != '' LIMIT 1",
-				msg.Channel, msg.ChatID,
-			).Scan(&label); err == nil && label != "" {
-				sessionName = label
-			}
+	if a.multiSession != nil && a.multiSession.Store() != nil {
+		if label, err := a.multiSession.Store().Tenant().GetChatLabel(msg.Channel, msg.ChatID); err == nil && label != "" {
+			sessionName = label
 		}
 	}
 	mc.SetExtra(ExtraKeySessionName, sessionName)
@@ -4566,7 +4744,7 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	// are atomic). The turn_started SSE event is emitted AFTER this Delete,
 	// so the frontend's reload (triggered by turn_started) sees the clean
 	// state.
-	if msg.Metadata == nil || msg.Metadata["resume_turn"] != "true" {
+	if msg.Metadata == nil || (msg.Metadata["resume_turn"] != "true" && msg.Metadata["structured_delivery"] != "true") {
 		a.iterationHistories.Delete(progressKey)
 	}
 
@@ -4595,8 +4773,8 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 		}
 	}
 
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 
 	payload := &protocol.ProgressEvent{
 		ChatID: progressKey,
@@ -4632,8 +4810,8 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 
 	// Get or create per-chat seq counter. Start at 1 so the first event
 	// is not discarded by the CLI's seq monotonic check (initial lastProgressSeq=0).
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
@@ -4672,8 +4850,8 @@ func (a *Agent) emitGoalProgress(chName, chatID string) {
 	if goal == nil {
 		return
 	}
-	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 	payload := &protocol.ProgressEvent{
 		ChatID:    progressKey,
 		Phase:     "",
@@ -4703,11 +4881,8 @@ func (a *Agent) emitGoalProgress(chName, chatID string) {
 func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *protocol.TokenUsage, historyCompacted bool) {
 	progressKey := qualifyChatID(chName, chatID)
 
-	seqPtr, ok := a.builtinProgressSeq.Load(progressKey)
-	if !ok {
-		return
-	}
-	seq := seqPtr.(*atomic.Uint64).Add(1)
+	seqPtr := a.progressSeqFor(progressKey)
+	seq := seqPtr.Add(1)
 
 	payload := &protocol.ProgressEvent{
 		ChatID:           progressKey,
@@ -4728,7 +4903,6 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 	}
 
 	a.lastProgressSnapshot.Delete(progressKey)
-	a.builtinProgressSeq.Delete(progressKey)
 }
 
 // 首次发送创建新消息（如有入站 message_id 则回复该消息），后续发送 Patch 更新同一条消息。
@@ -4785,6 +4959,38 @@ func (a *Agent) persistCommandRow(channel, chatID, role, content string) {
 	}
 }
 
+// outboundTurnID resolves the TurnID of a **turn-scoped** outbound message.
+// ONE implementation for every path that puts a turn-scoped message on the
+// wire — `sendMessage` and the callers that build `channel.OutboundMsg`
+// themselves (cancel ack, final-reply/error fallbacks). Precedence:
+//
+//	① explicit > 0   — the caller already knows the turn (cancel ack's
+//	                   cancelTurnID, card response's turn): authoritative even
+//	                   after the turn ended and activeTurnID was cleared.
+//	② meta["turn_id"] — RunConfig.TurnID, stamped by the normal reply path.
+//	③ getActiveTurnID — callers without either (tool-initiated send mid-turn).
+//	④ command_reply=true ⇒ **always 0**: commands are dispatched without a turn
+//	   (no turn_started / turn_id), so falling back to getActiveTurnID would
+//	   stamp the command output with whatever turn happens to be running — the
+//	   frontend then commits it as that turn's final reply, which the real reply
+//	   overwrites ⇒ command output silently vanishes ("!pwd 没有输出").
+func (a *Agent) outboundTurnID(chName, chatID string, meta map[string]string, explicit uint64) uint64 {
+	if explicit > 0 {
+		return explicit
+	}
+	if meta != nil {
+		if meta["command_reply"] == "true" {
+			return 0
+		}
+		if tidStr := meta["turn_id"]; tidStr != "" {
+			if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
+				return tid
+			}
+		}
+	}
+	return a.getActiveTurnID(qualifyChatID(chName, chatID))
+}
+
 // 通过 directSend 直连或 bus.Outbound 广播。
 func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[string]string) error {
 	key := qualifyChatID(chName, chatID)
@@ -4807,26 +5013,10 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 	}
 
 	// Stamp the TurnID so the frontend can associate this reply with the correct
-	// user message. Prefer the caller-supplied turn_id (authoritative, parsed
-	// from RunConfig.TurnID in handleRunOutput); fall back to getActiveTurnID
-	// for callers that don't pass one (e.g. tool-initiated sends mid-turn).
-	if tidStr := msg.Metadata["turn_id"]; tidStr != "" {
-		if tid, err := strconv.ParseUint(tidStr, 10, 64); err == nil && tid > 0 {
-			msg.TurnID = tid
-		}
-	}
-	if msg.TurnID == 0 {
-		// ⚠️ 命令回复（`!cmd` bang / slash 命令）**没有 turn** —— 后端命令分发按设计
-		// 不分配 turn（无 turn_started/turn_id），绝不能回落到 getActiveTurnID：
-		// 否则当该会话里正有 turn 在跑时（例如用户等 agent 输出时插了条 `!pwd`），
-		// 命令输出会被打上那个 turn 的 id，前端 M4 状态机把它当作该 turn 的最终
-		// 回复提交 → 随后被该 turn 的真回复覆盖 → **命令输出静默消失**
-		// （用户报告："!pwd 没有输出"；探针实证：turn 进行中发 !echo 的 text 事件
-		// 带上了 "turn_id":1）。命令回复由 sendCommandReply 打上 command_reply 标记。
-		if msg.Metadata["command_reply"] != "true" {
-			msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
-		}
-	}
+	// user message. The rule lives in ONE place (`outboundTurnID`) so every
+	// turn-scoped outbound path — sendMessage **and** the paths that build a
+	// `channel.OutboundMsg` themselves (cancel ack / fallbacks) — cannot drift.
+	msg.TurnID = a.outboundTurnID(chName, chatID, msg.Metadata, 0)
 
 	isFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
 
@@ -5054,18 +5244,12 @@ func (a *Agent) injectAsyncMessage(channel, chatID, senderID, content, source st
 // resolveSenderForSession looks up the real user ID (senderID) that owns a session.
 // This is needed by injectPeerMessage to use the correct LLM subscription when
 // injecting a user message into an idle target session.
-// Returns "admin" as fallback for CLI sessions when DB lookup fails.
+// Returns "admin" as fallback for CLI sessions when the lookup fails.
 func (a *Agent) resolveSenderForSession(channel, chatID string) string {
-	if a.multiSession != nil {
-		if db := a.multiSession.DB(); db != nil {
-			var senderID string
-			err := db.Conn().QueryRow(
-				"SELECT sender_id FROM user_chats WHERE channel = ? AND chat_id = ? LIMIT 1",
-				channel, chatID,
-			).Scan(&senderID)
-			if err == nil && senderID != "" {
-				return senderID
-			}
+	// 后端无关：TenantStore.GetSenderForChat 在 SQLite（user_chats）与 PG 上语义一致。
+	if a.multiSession != nil && a.multiSession.Store() != nil {
+		if senderID, err := a.multiSession.Store().Tenant().GetSenderForChat(channel, chatID); err == nil && senderID != "" {
+			return senderID
 		}
 	}
 	// Fallback: for CLI channels, the default senderID is "admin"

@@ -143,6 +143,8 @@ export interface PluginUIApi {
     path?: string
     key?: string
     scope?: string
+    /** commit 哈希（空 = 工作区）；嵌入原生宿主时原生据此重取 diff。 */
+    commit?: string
   }): void
 }
 
@@ -251,6 +253,8 @@ export async function openDiffTab(path: string, commit?: string): Promise<void> 
     original: res.original ?? '',
     modified: res.modified ?? '',
     path,
+    // 嵌入原生宿主时，原生按 (path, commit) 自己取 diff（见 plugin-api `OpenDiffTabOptions.commit`）
+    commit: commit ?? '',
     key: commit ? `git-diff:${commit}:${path}` : `git-diff:worktree:${path}`,
     scope: commit ? `commit ${commit.slice(0, 7)}` : t('scopeWorktree', '工作区'),
   })

@@ -201,6 +201,9 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 func (wc *WebChannel) resolveSSESession(w http.ResponseWriter, r *http.Request, senderID, chatID string) (SessionSelector, bool) {
 	channelName := strings.TrimSpace(r.URL.Query().Get("channel"))
+	// ⛔ 订阅也必须用裸会话键：全键（`web:chat_X`）会让 SSE 挂到
+	//    `web:web:chat_X` 幽灵路由 ⇒ 本会话的事件一条都收不到（有网但"发消息无效"）。
+	chatID = canonicalChatID(channelName, chatID)
 	var sel SessionSelector
 	if channelName != "" {
 		sel = SessionSelector{Channel: channelName, ChatID: chatID}

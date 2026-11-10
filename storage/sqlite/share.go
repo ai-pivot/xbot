@@ -23,21 +23,6 @@ var ErrSharedArtifactNotFound = errors.New("shared artifact not found")
 // share renderer can interpret it. Token is the credential (a high-entropy
 // random string) that grants read access to this one artifact without any
 // session.
-type SharedArtifact struct {
-	Token string `json:"token"`
-	// PluginID is the plugin that produced this artifact — the public share page
-	// loads exactly that plugin to obtain the renderer for it.
-	PluginID    string `json:"plugin_id"`
-	ContentType string `json:"content_type"`
-	Payload     string `json:"payload"`
-	Title       string `json:"title"`
-	CreatedAt   string `json:"created_at"`
-	CreatedBy   int64  `json:"created_by"`
-	// ExpiresAt is RFC3339, or "" for no expiry.
-	ExpiresAt string `json:"expires_at"`
-	// RevokedAt is RFC3339 once revoked, otherwise "".
-	RevokedAt string `json:"revoked_at"`
-}
 
 // newSharedArtifactToken returns a 256-bit URL-safe random credential.
 func newSharedArtifactToken() (string, error) {

@@ -6,17 +6,17 @@ import (
 	"strings"
 
 	"xbot/channel"
-	"xbot/storage/sqlite"
+	"xbot/storage"
 )
 
 // SettingsService provides user settings management.
 type SettingsService struct {
-	store         *sqlite.UserSettingsService
+	store         storage.ConfigStore
 	channelFinder func(string) (channel.Channel, bool)
 }
 
 // NewSettingsService creates a new SettingsService.
-func NewSettingsService(store *sqlite.UserSettingsService) *SettingsService {
+func NewSettingsService(store storage.ConfigStore) *SettingsService {
 	return &SettingsService{store: store}
 }
 
@@ -30,7 +30,7 @@ func (s *SettingsService) GetSettings(channelName, senderID string) (map[string]
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("settings service not initialized")
 	}
-	return s.store.Get(channelName, senderID)
+	return s.store.GetUserSettings(channelName, senderID)
 }
 
 // DeleteSetting removes a single setting key for a user on a specific channel.
@@ -38,7 +38,7 @@ func (s *SettingsService) DeleteSetting(channelName, senderID, key string) error
 	if s == nil || s.store == nil {
 		return fmt.Errorf("settings service not initialized")
 	}
-	return s.store.Delete(channelName, senderID, key)
+	return s.store.DeleteUserSetting(channelName, senderID, key)
 }
 
 // GetPermUsers retrieves the permission control user configuration for a user.
@@ -47,7 +47,7 @@ func (s *SettingsService) GetPermUsers(channelName, senderID string) *PermUsersC
 	if s == nil || s.store == nil {
 		return nil
 	}
-	settings, err := s.store.Get(channelName, senderID)
+	settings, err := s.store.GetUserSettings(channelName, senderID)
 	if err != nil {
 		return nil
 	}
@@ -72,7 +72,7 @@ func (s *SettingsService) GetPermUsers(channelName, senderID string) *PermUsersC
 // This ensures the read path matches the write path (/settings panel → DB).
 func (s *SettingsService) GetEffectiveSetting(channelName, senderID, key string) string {
 	if s != nil && s.store != nil {
-		if vals, err := s.store.Get(channelName, senderID); err == nil {
+		if vals, err := s.store.GetUserSettings(channelName, senderID); err == nil {
 			if v, ok := vals[key]; ok {
 				return v
 			}
@@ -113,7 +113,7 @@ func (s *SettingsService) SetSetting(channelName, senderID, key, value string) e
 	if key == channel.SettingMaxConcurrency {
 		channelName = channel.MaxConcurrencyChannel
 	}
-	return s.store.Set(channelName, senderID, key, value)
+	return s.store.SetUserSetting(channelName, senderID, key, value)
 }
 
 // GetSettingsSchema retrieves the settings schema for a channel.
@@ -137,7 +137,7 @@ func (s *SettingsService) GetSettingsSchema(channelName string) []channel.Settin
 // It uses channelFinder internally to look up the channel instance.
 // If the channel is not found or has no schema, falls back to text UI.
 func (s *SettingsService) GetSettingsUI(channelName, senderID string) (string, error) {
-	settings, err := s.store.Get(channelName, senderID)
+	settings, err := s.store.GetUserSettings(channelName, senderID)
 	if err != nil {
 		return "", err
 	}
@@ -181,7 +181,7 @@ func (s *SettingsService) SubmitSettings(channelName, senderID, rawInput string)
 					return err
 				}
 				for key, value := range values {
-					if err := s.store.Set(channelName, senderID, key, value); err != nil {
+					if err := s.store.SetUserSetting(channelName, senderID, key, value); err != nil {
 						return fmt.Errorf("save setting %s: %w", key, err)
 					}
 				}
@@ -209,7 +209,7 @@ func (s *SettingsService) SubmitSettings(channelName, senderID, rawInput string)
 			continue
 		}
 
-		if err := s.store.Set(channelName, senderID, key, value); err != nil {
+		if err := s.store.SetUserSetting(channelName, senderID, key, value); err != nil {
 			return fmt.Errorf("save setting %s: %w", key, err)
 		}
 	}

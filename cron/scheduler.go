@@ -7,7 +7,8 @@ import (
 	"time"
 
 	log "xbot/logger"
-	"xbot/storage/sqlite"
+	"xbot/storage"
+	"xbot/storage/common"
 )
 
 // InjectFunc is the function type for injecting messages into the agent.
@@ -23,7 +24,7 @@ type NotifyCronFunc func(channel, chatID, senderID, message string)
 // Cron jobs are fired via NotifyCronFunc through the bg notification pipeline,
 // reusing the same routing as bg task completions (busy → tool message, idle → user message).
 type Scheduler struct {
-	cronSvc      *sqlite.CronService
+	cronSvc      storage.CronStore
 	injectFunc   InjectFunc     // deprecated, kept for tests
 	notifyCronFn NotifyCronFunc // preferred: unified bg notification pipeline
 	stopCh       chan struct{}
@@ -33,7 +34,7 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a new Scheduler
-func NewScheduler(cronSvc *sqlite.CronService) *Scheduler {
+func NewScheduler(cronSvc storage.CronStore) *Scheduler {
 	return &Scheduler{
 		cronSvc: cronSvc,
 		stopCh:  make(chan struct{}),
@@ -288,7 +289,7 @@ func (s *Scheduler) checkAndFire(now time.Time) {
 }
 
 // CalculateNextRun calculates the next run time for a job
-func CalculateNextRun(job *sqlite.CronJob, now time.Time) (time.Time, error) {
+func CalculateNextRun(job *common.CronJob, now time.Time) (time.Time, error) {
 	if job.At != "" {
 		t, err := time.ParseInLocation("2006-01-02T15:04:05", job.At, time.Local)
 		if err != nil {

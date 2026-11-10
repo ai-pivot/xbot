@@ -235,6 +235,33 @@ func (gm *GoalManager) Complete(sessionKey, summary string) {
 	_ = gm.SaveToFile(sessionKey)
 }
 
+// hasActiveGoal reports whether the session has an unfinished goal.
+//
+// Used by the turn-less command path (agent.go processMessage command dispatch):
+// a command reply returns straight to the channel without ever entering the Run
+// loop, and the goal's "work until done" continuation lives ONLY inside the Run
+// loop (PreTurnEnd hook → maybeContinueTurn). So without this check any command
+// executed while a goal is active (/compress, /settings, …) parks the session in
+// idle with work still pending — 2026-10-21 user report "压缩后会话没自动继续".
+func (a *Agent) hasActiveGoal(channel, chatID string) bool {
+	if a.goalManager == nil {
+		return false
+	}
+	g := a.goalManager.Get(qualifyChatID(channel, chatID))
+	return g != nil && g.Status == GoalActive
+}
+
+// resumeRunAfterCommand hands control back to the Run loop after a turn-less
+// command reply, when the session still has an active goal. Returns true when a
+// resume turn was injected.
+func (a *Agent) resumeRunAfterCommand(channel, chatID, senderID string) bool {
+	if !a.hasActiveGoal(channel, chatID) {
+		return false
+	}
+	a.InjectInboundResume(channel, chatID, senderID)
+	return true
+}
+
 // PreTurnEndHook returns a CallbackHook that injects a goal-continuation
 // prompt when the session has an active goal. When the goal is completed
 // or cleared, the hook does nothing, allowing the turn to end naturally.

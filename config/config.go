@@ -166,8 +166,70 @@ func (w WebConfig) IsInviteOnly() bool {
 	return *w.InviteOnly
 }
 
+// PushConfig 统一推送层配置。事件语义（ask_user / turn_done）与投递通道解耦，
+// 每个通道一个 Provider；新增通道 = 新增一个 *XConfig + 一个 Provider 实现。
+type PushConfig struct {
+	Enable         bool `json:"enable"`
+	IncludePreview bool `json:"include_preview"`
+	// Providers are enabled individually; a nil pointer means "configured but
+	// disabled" (the zero value of the nested Enable field also disables it).
+	FCM     *FCMConfig        `json:"fcm,omitempty"`
+	APNs    *APNsConfig       `json:"apns,omitempty"`
+	WebPush *WebPushConfig    `json:"webpush,omitempty"`
+	Feishu  *FeishuPushConfig `json:"feishu,omitempty"`
+}
+
+// FCMConfig is the Android provider (FCM HTTP v1).
+type FCMConfig struct {
+	Enable    bool   `json:"enable"`
+	ProjectID string `json:"project_id"`
+	// CredentialsFile points at the Firebase service-account JSON. It is a
+	// SECRET: read it at startup, never log it, never persist it in the DB.
+	CredentialsFile string `json:"credentials_file"`
+	// Mode selects the FCM message shape: "data" (default; the app renders the
+	// notification itself) or "notification" (the OS renders it; more reliable
+	// on aggressive OEMs, but the app cannot customise/suppress it).
+	Mode string `json:"mode"`
+}
+
+// APNsConfig is the iOS provider (APNs HTTP/2). Reserved for future use.
+type APNsConfig struct {
+	Enable  bool   `json:"enable"`
+	KeyFile string `json:"key_file"` // .p8 (secret)
+	KeyID   string `json:"key_id"`
+	TeamID  string `json:"team_id"`
+	Topic   string `json:"topic"` // bundle id
+	Env     string `json:"env"`   // production | sandbox
+}
+
+// WebPushConfig is the browser provider (VAPID + aes128gcm).
+type WebPushConfig struct {
+	Enable       bool   `json:"enable"`
+	VAPIDPublic  string `json:"vapid_public"`
+	VAPIDPrivate string `json:"vapid_private"` // secret
+	Subject      string `json:"subject"`       // mailto:...
+	// EndpointAllowlist limits which push-service hosts the server will POST
+	// to (SSRF guard: the endpoint comes from the browser).
+	EndpointAllowlist []string `json:"endpoint_allowlist"`
+}
+
+// FeishuPushConfig is the IM provider. It reuses feishu.app_id/app_secret and
+// the existing Feishu client; reserved for a later phase.
+type FeishuPushConfig struct {
+	Enable bool `json:"enable"`
+}
+
 // Config 应用配置
 // CLIConfig CLI 客户端配置（存储在 config.json，供 xbot-cli 读取）。
+// StorageConfig configures the storage backend.
+type StorageConfig struct {
+	// Type selects the backend: "sqlite" (default) or "pg".
+	Type string `json:"type,omitempty"`
+	// DSN is the PostgreSQL connection string (only used when Type="pg").
+	// Example: "postgres://user:pass@host:5432/xbot?sslmode=disable"
+	DSN string `json:"dsn,omitempty"`
+}
+
 type CLIConfig struct {
 	// ServerURL 指定远端 agent server 的 WebSocket 地址（如 ws://localhost:8080）。
 	// 若非空，xbot-cli 默认以 RemoteBackend 连接该 server，而非本地运行 agent。
@@ -190,6 +252,7 @@ type Config struct {
 	StartupNotify StartupNotifyConfig `json:"startup_notify"`
 	Admin         AdminConfig         `json:"admin"`
 	Web           WebConfig           `json:"web"`
+	Push          PushConfig          `json:"push"`
 	EventWebhook  EventWebhookConfig  `json:"event_webhook"`
 	OSS           OSSConfig           `json:"oss"`
 	TavilyAPIKey  string              `json:"tavily_api_key"`
@@ -208,6 +271,7 @@ type Config struct {
 	DisabledSkills []string             `json:"disabled_skills,omitempty"`
 	Subscriptions  []SubscriptionConfig `json:"subscriptions,omitempty"`
 	CLI            CLIConfig            `json:"cli,omitempty"`
+	Storage        StorageConfig        `json:"storage,omitempty"`
 	Plugins        PluginConfig         `json:"plugins,omitempty"`
 
 	// Channels 存储插件 channel 的配置。key 是 channel name（如 "telegram"）。
@@ -286,7 +350,6 @@ type FeishuConfig struct {
 // （AGENT_MAX_CONCURRENCY），导致"面板显示 100+、实际生效 5/7"
 // （2026-09-17 用户报告）。重复定义已删除。
 type AgentConfig struct {
-	MaxIterations  int    `json:"max_iterations"`
 	MemoryProvider string `json:"memory_provider"`
 	WorkDir        string `json:"work_dir"`
 	PromptFile     string `json:"prompt_file"`
@@ -294,6 +357,15 @@ type AgentConfig struct {
 	MCPInactivityTimeout Duration `json:"mcp_inactivity_timeout"`
 	MCPCleanupInterval   Duration `json:"mcp_cleanup_interval"`
 	SessionCacheTimeout  Duration `json:"session_cache_timeout"`
+
+	// InteractiveSessionTTL 是 interactive SubAgent（SubAgent 工具 spawn 的
+	// 子代理）会话的空闲存活时间：超过它没有收到 send 就被 TTL 清理，连带
+	// 销毁其会话库。默认 30m（与历史硬编码一致）。
+	//
+	// 之所以要可配：硬编码 30m 让"长时间挂着的子代理"（team 子代理代理、需要
+	// 人工隔很久回话的会话）每次都要重建上下文；也让复现/压测无法把 TTL
+	// 压到秒级（>0，0 = 用默认值；环境变量 INTERACTIVE_SESSION_TTL）。
+	InteractiveSessionTTL Duration `json:"interactive_session_ttl,omitempty"`
 
 	ContextMode string `json:"context_mode"`
 	// EnableAutoCompress 为 nil 表示 JSON 未写该字段，Load 后与未设置 AGENT_ENABLE_AUTO_COMPRESS 一致，默认启用压缩。
@@ -445,7 +517,7 @@ func DBFilePath() string {
 type fieldType int
 
 const (
-	ftInt   fieldType = iota // int fields: port, max_iterations, etc.
+	ftInt   fieldType = iota // int fields: port, max_concurrency, etc.
 	ftInt64                  // int64 fields: max_body_size
 	ftFloat                  // float64 fields: compression_threshold
 	ftBool                   // bool fields: enabled, enable, active
@@ -465,6 +537,10 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"persona_isolation": ftBool,
 		"invite_only":       ftBool,
 	},
+	"push": {
+		"enable":          ftBool,
+		"include_preview": ftBool,
+	},
 	"oauth": {
 		"enable": ftBool,
 		"port":   ftInt,
@@ -477,12 +553,9 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"enabled": ftBool,
 	},
 	"agent": {
-		"max_iterations":        ftInt,
-		"max_concurrency":       ftInt,
 		"max_context_tokens":    ftInt,
 		"enable_auto_compress":  ftBool,
 		"compression_threshold": ftFloat,
-		"purge_old_messages":    ftBool,
 		"max_sub_agent_depth":   ftInt,
 		"llm_retry_attempts":    ftInt,
 	},
@@ -1015,12 +1088,12 @@ func applyEnvOverrides(cfg *Config) {
 	setStringEnv("PROMPT_FILE", &cfg.Agent.PromptFile)
 	// SINGLE_USER env var removed — singleUser normalization is no longer used
 	setStringEnv("MEMORY_PROVIDER", &cfg.Agent.MemoryProvider)
-	setIntEnv("AGENT_MAX_ITERATIONS", &cfg.Agent.MaxIterations)
 	// AGENT_MAX_CONCURRENCY removed — max_concurrency lives ONLY in the
 	// canonical user_settings row (channel.MaxConcurrencyChannel).
 	setDurationEnv("MCP_INACTIVITY_TIMEOUT", &cfg.Agent.MCPInactivityTimeout)
 	setDurationEnv("MCP_CLEANUP_INTERVAL", &cfg.Agent.MCPCleanupInterval)
 	setDurationEnv("SESSION_CACHE_TIMEOUT", &cfg.Agent.SessionCacheTimeout)
+	setDurationEnv("INTERACTIVE_SESSION_TTL", &cfg.Agent.InteractiveSessionTTL)
 	setStringEnv("AGENT_CONTEXT_MODE", &cfg.Agent.ContextMode)
 	// AGENT_ENABLE_AUTO_COMPRESS: *bool — keep inline
 	if v := os.Getenv("AGENT_ENABLE_AUTO_COMPRESS"); v != "" {
@@ -1101,6 +1174,49 @@ func applyEnvOverrides(cfg *Config) {
 	setStringEnv("ADMIN_CHAT_ID", &cfg.Admin.ChatID)
 	setStringEnv("ADMIN_TOKEN", &cfg.Admin.Token)
 
+	// Push (统一推送层)
+	setBoolEnv("PUSH_ENABLE", &cfg.Push.Enable)
+	setBoolEnv("PUSH_INCLUDE_PREVIEW", &cfg.Push.IncludePreview)
+	if os.Getenv("PUSH_FCM_ENABLE") != "" || os.Getenv("PUSH_FCM_PROJECT_ID") != "" ||
+		os.Getenv("PUSH_FCM_CREDENTIALS_FILE") != "" || os.Getenv("PUSH_FCM_MODE") != "" {
+		if cfg.Push.FCM == nil {
+			cfg.Push.FCM = &FCMConfig{}
+		}
+	}
+	if cfg.Push.FCM != nil {
+		setBoolEnv("PUSH_FCM_ENABLE", &cfg.Push.FCM.Enable)
+		setStringEnv("PUSH_FCM_PROJECT_ID", &cfg.Push.FCM.ProjectID)
+		setStringEnv("PUSH_FCM_CREDENTIALS_FILE", &cfg.Push.FCM.CredentialsFile)
+		setStringEnv("PUSH_FCM_MODE", &cfg.Push.FCM.Mode)
+	}
+	if os.Getenv("PUSH_WEBPUSH_ENABLE") != "" || os.Getenv("PUSH_WEBPUSH_VAPID_PUBLIC") != "" ||
+		os.Getenv("PUSH_WEBPUSH_VAPID_PRIVATE") != "" || os.Getenv("PUSH_WEBPUSH_SUBJECT") != "" {
+		if cfg.Push.WebPush == nil {
+			cfg.Push.WebPush = &WebPushConfig{}
+		}
+	}
+	if cfg.Push.WebPush != nil {
+		setBoolEnv("PUSH_WEBPUSH_ENABLE", &cfg.Push.WebPush.Enable)
+		setStringEnv("PUSH_WEBPUSH_VAPID_PUBLIC", &cfg.Push.WebPush.VAPIDPublic)
+		setStringEnv("PUSH_WEBPUSH_VAPID_PRIVATE", &cfg.Push.WebPush.VAPIDPrivate)
+		setStringEnv("PUSH_WEBPUSH_SUBJECT", &cfg.Push.WebPush.Subject)
+	}
+	if os.Getenv("PUSH_APNS_ENABLE") != "" || os.Getenv("PUSH_APNS_KEY_FILE") != "" ||
+		os.Getenv("PUSH_APNS_KEY_ID") != "" || os.Getenv("PUSH_APNS_TEAM_ID") != "" ||
+		os.Getenv("PUSH_APNS_TOPIC") != "" || os.Getenv("PUSH_APNS_ENV") != "" {
+		if cfg.Push.APNs == nil {
+			cfg.Push.APNs = &APNsConfig{}
+		}
+	}
+	if cfg.Push.APNs != nil {
+		setBoolEnv("PUSH_APNS_ENABLE", &cfg.Push.APNs.Enable)
+		setStringEnv("PUSH_APNS_KEY_FILE", &cfg.Push.APNs.KeyFile)
+		setStringEnv("PUSH_APNS_KEY_ID", &cfg.Push.APNs.KeyID)
+		setStringEnv("PUSH_APNS_TEAM_ID", &cfg.Push.APNs.TeamID)
+		setStringEnv("PUSH_APNS_TOPIC", &cfg.Push.APNs.Topic)
+		setStringEnv("PUSH_APNS_ENV", &cfg.Push.APNs.Env)
+	}
+
 	// Misc
 	setStringEnv("TAVILY_API_KEY", &cfg.TavilyAPIKey)
 }
@@ -1120,6 +1236,21 @@ func Load() *Config {
 	if cfg == nil {
 		cfg = &Config{}
 	}
+	return loadEffectiveConfig(cfg)
+}
+
+// LoadWithPath loads an explicitly selected config file with the same environment
+// overrides and defaults as Load. A missing or invalid selected file is an error.
+// LoadFromFile remains the raw reader used when editing persisted configuration.
+func LoadWithPath(path string) (*Config, error) {
+	cfg := LoadFromFile(path)
+	if cfg == nil {
+		return nil, fmt.Errorf("load config from %s", path)
+	}
+	return loadEffectiveConfig(cfg), nil
+}
+
+func loadEffectiveConfig(cfg *Config) *Config {
 	applyEnvOverrides(cfg)
 
 	// 填充 CLI 常用的默认值（仅在配置和环境变量都未设置时生效）
@@ -1149,9 +1280,6 @@ func Load() *Config {
 	if cfg.Agent.PromptFile == "" {
 		cfg.Agent.PromptFile = "prompt.md"
 	}
-	if cfg.Agent.MaxIterations == 0 {
-		cfg.Agent.MaxIterations = 2000
-	}
 	// max_concurrency default is NOT applied here: the knob has a single
 	// persisted source (canonical user_settings row) and its fallback lives in
 	// the agent/llm layers (llm.DefaultLLMConcurrency).
@@ -1163,6 +1291,11 @@ func Load() *Config {
 	}
 	if cfg.Agent.SessionCacheTimeout == 0 {
 		cfg.Agent.SessionCacheTimeout = 24 * Hour
+	}
+	if cfg.Agent.InteractiveSessionTTL == 0 {
+		// 与 agent.defaultInteractiveSessionTTL 保持一致（30m）：配置缺省时
+		// 行为必须与硬编码时代逐字节相同。
+		cfg.Agent.InteractiveSessionTTL = 30 * Minute
 	}
 	if cfg.Agent.LLMRetryAttempts == 0 {
 		cfg.Agent.LLMRetryAttempts = 5
@@ -1202,6 +1335,19 @@ func Load() *Config {
 	}
 	if cfg.Web.Port == 0 {
 		cfg.Web.Port = 8082
+	}
+	// Push defaults: only fill fields for providers that are explicitly
+	// configured (a nil pointer means "not configured", never auto-enable).
+	if cfg.Push.FCM != nil {
+		if cfg.Push.FCM.Mode == "" {
+			cfg.Push.FCM.Mode = "data"
+		}
+		if cfg.Push.FCM.CredentialsFile == "" {
+			cfg.Push.FCM.CredentialsFile = filepath.Join(XbotHome(), "fcm-service-account.json")
+		}
+	}
+	if cfg.Push.APNs != nil && cfg.Push.APNs.Env == "" {
+		cfg.Push.APNs.Env = "production"
 	}
 	if cfg.EventWebhook.Host == "" {
 		cfg.EventWebhook.Host = "0.0.0.0"
