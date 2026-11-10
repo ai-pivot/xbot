@@ -3761,7 +3761,12 @@ func (a *Agent) ListAllInteractiveSessions() map[string][]InteractiveSessionInfo
 		ia.mu.Lock()
 		parentChannel, parentChatID := parseInteractiveKeyParent(keyStr)
 		if ia.parentKey != "" {
-			parentChannel, parentChatID = "agent", ia.parentKey
+			// 与 ListInteractiveSessions 保持一致：父地址由 interactiveParentAddress
+			// 解析（父可能是 web/cli/agent 任一 channel）。绝不能硬编码 "agent" ——
+			// 那会把 web:chat-x 下的子代理标成 agent:chat-x，父节点找不到变孤儿。
+			if ch, cid := a.interactiveParentAddress(ia.parentKey); ch != "" {
+				parentChannel, parentChatID = ch, cid
+			}
 		}
 		info := InteractiveSessionInfo{
 			Role:          ia.roleName,
