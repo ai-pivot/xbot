@@ -24,7 +24,6 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/prompt"
-	"xbot/redact"
 	"xbot/storage"
 	"xbot/storage/agentmem"
 )
@@ -825,8 +824,7 @@ func (m *XbotMemory) searchShortTerm(query string, topK int) ([]ShortTermMemory,
 
 func (m *XbotMemory) addShortTermMemory(summary, topics, sessionID string) error {
 	// 写入侧脱敏（W2 短时记忆）：LLM 生成的摘要会把工具输出里的凭据原样带进来。
-	summary = redact.Secrets(summary)
-	topics = redact.Secrets(topics)
+	// 存储原版（2026-11-10 用户裁定）：脱敏只在出站层。
 	_, err := m.store.AddAgentShortTermMemory(context.Background(), agentmem.ShortTermMemory{
 		UserID:    m.scopeArg(),
 		TenantID:  m.tenantID,
@@ -846,14 +844,24 @@ func (m *XbotMemory) addShortTermMemory(summary, topics, sessionID string) error
 // user-level one). The dedup scope is global rows + this session's own rows —
 // otherwise session A's extraction would suppress session B's identical one.
 func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
+	// 2026-11-10 CR 修复（第 3 轮 P1）：**自动提取路径也必须过写入闸门**。
+	//
+	// 此前只有手动 memory_add（twophase.go 的 ProposeMemory/ConfirmProposal）调
+	// validateMemoryContent，而本函数（Memorize / ConsolidateTurn / PreCompress
+	// 三处自动提取的公共入口）完全绕过 —— 意味着：LLM 从对话正文复述出来的注入
+	// 串、超长内容、未完稿草稿都能直接入库。stripInjectedBlocks 只剥注入元数据块，
+	// 对「被复述进正文的攻击串」无效。
+	if err := validateMemoryContent(entry.Content); err != nil {
+		log.WithError(err).WithField("source", "auto-extract").
+			Warn("自动提取的记忆未通过写入闸门，已丢弃（manual 路径同样受此约束）")
+		return err
+	}
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
 
 	// 写入侧脱敏（W1/W2 自动抽取路径）：入库前与写镜像前都必须是脱敏后的 entry，
 	// 因为 writeMemoryFile 落的是 entry 正文逐字（兵部 W1 镜像就是靠这里覆盖）。
-	entry.Content = redact.Secrets(entry.Content)
-	entry.Keywords = redact.Secrets(entry.Keywords)
-	entry.Tags = redact.Secrets(entry.Tags)
+	// 存储原版（2026-11-10 用户裁定）：记忆落库不脱敏，脱敏只在出站层。
 	searchText := buildSearchText(entry.Content, entry.Keywords, entry.Tags)
 	dupQuery := agentmem.Query{
 		UserID:        entry.UserID,
@@ -931,21 +939,8 @@ func (m *XbotMemory) readCoreSummary() string {
 	return text
 }
 
-// writeCoreSummary writes the core summary (MEMORY.md).
-//
-// 写入侧脱敏（W3）：core summary 是 LLM 生成物，它会把上下文里的凭据原样带到
-// MEMORY.md；这里落盘的永远是脱敏后的文本。**签名不许改**——兵部探针直接调它。
-func (m *XbotMemory) writeCoreSummary(content string) {
-	content = redact.Secrets(content)
-	path := filepath.Join(m.baseDir, coreSummaryFileName)
-	// Atomic write: tmp + rename
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
-		log.WithError(err).Error("xbot-memory: failed to write core summary")
-		return
-	}
-	os.Rename(tmpPath, path)
-}
+// writeCoreSummary 已于 2026-11-10 删除（core summary 彻底移除 + 存储原版裁定，
+// 该函数已无任何调用点）。
 
 // updateCoreSummary 已于 2026-11-09 删除（用户裁定 core summary 彻底移除）。
 // 历史上它每轮用 LLM 重写 MEMORY.md，产生 27 轮 prompt 回显 + 注入探针串的腐烂
@@ -1339,14 +1334,10 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 	if entry.Importance == 0 {
 		entry.Importance = 0.5
 	}
-	// 写入侧脱敏（W1/W2 显式写入路径）：**先脱敏正文再抽关键词**，否则关键词会从
-	// 未脱敏正文里切出凭据碎片；SearchText 与写镜像（writeMemoryFile）用的都是脱敏后的值。
-	entry.Content = redact.Secrets(entry.Content)
+	// 2026-11-10 用户裁定：存储原版（记忆落库不脱敏，脱敏只在出站层）。
 	if entry.Keywords == "" {
 		entry.Keywords = extractKeywords(entry.Content)
 	}
-	entry.Keywords = redact.Secrets(entry.Keywords)
-	entry.Tags = redact.Secrets(entry.Tags)
 	if entry.Scope == "" {
 		entry.Scope = "global"
 	}
@@ -1414,12 +1405,8 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 
 // UpdateMemory updates a memory's content.
 //
-// 写入侧脱敏（W2 更新路径）：content/keywords/tags 与 **SearchText** 都必须用脱敏后的值
-// —— 旧实现里 SearchText 是用原始 content 建的，只脱敏列会留下一份索引副本。
+// 2026-11-10 用户裁定：存储原版（更新路径也不脱敏）。
 func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywords, tags string, importance float64) error {
-	content = redact.Secrets(content)
-	keywords = redact.Secrets(keywords)
-	tags = redact.Secrets(tags)
 	return m.store.UpdateAgentLongTermMemory(ctx, agentmem.LongTermMemory{
 		ID:         id,
 		UserID:     m.scopeArg(),

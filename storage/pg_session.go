@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"xbot/llm"
-	"xbot/redact"
 	"xbot/storage/sqlite"
 )
 
@@ -355,7 +354,7 @@ const iterationInsertSQL = `INSERT INTO iteration_history
 func queueIterationInsert(b *pgx.Batch, tenantID, msgID int64, turnID uint64, rec sqlite.IterationRecord) {
 	b.Queue(iterationInsertSQL,
 		msgID, tenantID, turnID, rec.Iteration,
-		pgText(redact.Secrets(rec.Content)), pgText(redact.Secrets(rec.Reasoning)),
+		pgText(rec.Content), pgText(rec.Reasoning), // 存储原版（2026-11-10 用户裁定）
 		pgText(sqlite.RedactIterationTools(rec.Tools)),
 		rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs,
 		rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)

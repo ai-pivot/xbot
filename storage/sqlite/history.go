@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"xbot/llm"
-	"xbot/redact"
 	"xbot/storage/internal"
 )
 
@@ -305,20 +304,25 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 	// ⛔ 明确**不动**的列及理由（防后人"顺手也洗了"）：
 	//   - reasoning_items：Responses API 的 encrypted_content 必须原样回传，洗了直接破 API 语义；
 	//   - tool_call_id / tool_name / role / 时间戳：结构性字段，不是内容，动了会断关联与回放。
-	content := redact.Secrets(msg.Content)
-	toolArguments := redact.Secrets(msg.ToolArguments)
-	detail := redact.Secrets(msg.Detail)
-	reasoningContent := redact.Secrets(msg.ReasoningContent)
+	// 2026-11-10 用户裁定：**存储原版**。脱敏只在「出站到前端/飞书」时做，
+	// 落库必须保持原文 —— 模型回放需要真值（原 §5.1 口径 (a)「回放时模型看到 ***」
+	// 已作废）。此前这里是写入侧脱敏的 4 处调用点。
+	content := msg.Content
+	toolArguments := msg.ToolArguments
+	detail := msg.Detail
+	reasoningContent := msg.ReasoningContent
 	var toolCallsJSON sql.NullString
 	if len(msg.ToolCalls) > 0 {
 		// tool_calls 是同一批参数的又一份副本（每个 ToolCall.Arguments 是一段 JSON）。
 		// **深拷贝后再洗**：绝不原地改 msg.ToolCalls —— 调用方持有该切片，内存侧与
 		// 下一轮 LLM 请求都读它。llm.ToolCall 全是值类型字段，copy 即深拷贝；
 		// 只洗 Arguments，name/id 不动。
+		// 存储原版：直接序列化调用方传入的 ToolCalls（不再逐 Arguments 洗）。
 		redactedCalls := make([]llm.ToolCall, len(msg.ToolCalls))
 		copy(redactedCalls, msg.ToolCalls)
 		for i := range redactedCalls {
-			redactedCalls[i].Arguments = redact.Secrets(redactedCalls[i].Arguments)
+			_ = i
+			// 存储原版：不再洗 Arguments（2026-11-10 用户裁定）
 		}
 		data, err := json.Marshal(redactedCalls)
 		if err != nil {

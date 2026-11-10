@@ -179,6 +179,20 @@ func openPinnedConn(path string) *sql.DB {
 	return pdb
 }
 
+// openBrokenSentinel 返回一个**已关闭**的 *sql.DB。用途：自愈换池失败后，
+// 把 holder 的 db 从 nil 换成一个"永远返回 sql.ErrConnDone"的哨兵池 ——
+// 让所有后续操作快速失败，而不是在 nil 上 deref panic（2026-11-10 CR 第 1 轮 P1）。
+// 这同时兑现了 db.go activeConn 注释里「late caller gets sql.ErrDBClosed instead of
+// dereferencing nil」的承诺。
+func openBrokenSentinel() *sql.DB {
+	sentinel, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil
+	}
+	_ = sentinel.Close()
+	return sentinel
+}
+
 // captureWALIdentity 记录当前路径上 -wal/-shm 的身份（可能为 nil：文件尚未创建）。
 func captureWALIdentity(path string) (walID, shmID os.FileInfo) {
 	if path == "" || path == ":memory:" {
@@ -444,12 +458,21 @@ func healForeignWALDeletion(path string, h *connHolder, anomaly string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err != nil {
-		return fmt.Errorf("reopen after foreign WAL loss: %w", err)
+		// ⛔ 绝不把 h.db 留成 nil：那会让后续每一个 db.Conn() 调用方在 nil 上
+		// deref panic。换成一个已关闭的哨兵池 —— 所有操作返回 sql.ErrConnDone，
+		// 且下个 tick 仍会重试自愈（h.db != nil 时 get() 正常返回哨兵）。
+		h.mu.Lock()
+		h.db = openBrokenSentinel()
+		h.mu.Unlock()
+		return fmt.Errorf("reopen after foreign WAL loss: %w (holder left with a closed sentinel pool; all queries now fail fast instead of nil-deref, retrying next tick)", err)
 	}
 	walID, shmID := captureWALIdentity(path)
 	if walID == nil {
 		_ = newConn.Close()
-		return fmt.Errorf("reopened pool did not recreate %s-wal", path)
+		h.mu.Lock()
+		h.db = openBrokenSentinel()
+		h.mu.Unlock()
+		return fmt.Errorf("reopened pool did not recreate %s-wal (holder left with a closed sentinel pool)", path)
 	}
 	h.db, h.walID, h.shmID = newConn, walID, shmID
 	// 重建 pinned（换池后必须重新建立，否则外部进程的下一次 open+close 又会被

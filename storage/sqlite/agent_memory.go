@@ -21,12 +21,30 @@ import (
 // only ownerless rows). tenant_id is informational and never used for filtering —
 // falling back to it scattered one user's memories across sessions.
 type AgentMemoryService struct {
+	// db 是**首选**来源：每次方法调用都现取 db.Conn()，跟随 walguard 的换池
+	// （2026-11-10 CR 第 1 轮 P1 —— 此前构造时快照 conn，heal 换池后本服务
+	// 抱死已关闭的旧池，agent 记忆域会持续 sql.ErrDBClosed 直到进程重启）。
+	db *DB
+	// conn 仅在 NewAgentMemoryServiceFromConn（测试/只持 *sql.DB 的调用方）时使用。
 	conn *sql.DB
+}
+
+// connOrPool 返回当前应使用的连接池：优先跟随 *DB 的活池（可被 walguard 换池），
+// 退化到构造时传入的裸连接（测试路径）。
+func (s *AgentMemoryService) connOrPool() *sql.DB {
+	if s.db != nil {
+		if c := s.db.Conn(); c != nil {
+			return c
+		}
+	}
+	return s.conn
 }
 
 // NewAgentMemoryService creates the agent-memory service from the shared DB.
 func NewAgentMemoryService(db *DB) *AgentMemoryService {
-	return &AgentMemoryService{conn: db.Conn()}
+	// db 用于跟随 walguard 换池；conn 是构造时的快照，仅在 db.Conn() 暂时返回
+	// nil（启动早期 holder 未就绪）时兜底，避免把 nil 传给 database/sql。
+	return &AgentMemoryService{db: db, conn: db.Conn()}
 }
 
 // NewAgentMemoryServiceFromConn creates the agent-memory service from a raw
@@ -132,7 +150,7 @@ const dedupBM25Threshold = -6.0
 // EnsureAgentMemorySchema creates the tables/indexes and adds columns that
 // older databases lack. Idempotent; safe on every start.
 func (s *AgentMemoryService) EnsureAgentMemorySchema(ctx context.Context) error {
-	conn := s.conn
+	conn := s.connOrPool()
 	if _, err := conn.ExecContext(ctx, agentMemorySchema); err != nil {
 		return fmt.Errorf("create agent memory schema: %w", err)
 	}
@@ -191,7 +209,7 @@ func (s *AgentMemoryService) columnExists(ctx context.Context, conn *sql.DB, tab
 // ── Short-term memories ──
 
 func (s *AgentMemoryService) AddAgentShortTermMemory(ctx context.Context, mem agentmem.ShortTermMemory) (int64, error) {
-	res, err := s.conn.ExecContext(ctx, `
+	res, err := s.connOrPool().ExecContext(ctx, `
 		INSERT INTO xbot_short_term_memories (user_id, tenant_id, session_id, summary, key_topics)
 		VALUES (?, ?, ?, ?, ?)
 	`, mem.UserID, mem.TenantID, mem.SessionID, mem.Summary, mem.KeyTopics)
@@ -223,7 +241,7 @@ func (s *AgentMemoryService) SearchAgentShortTermMemories(ctx context.Context, q
 		         ORDER BY bm25(xbot_short_term_memories_fts) ASC LIMIT ?`
 		args = []any{q.UserID, ftsQuery(q.Terms, q.Join), limit}
 	}
-	rows, err := s.conn.QueryContext(ctx, query, args...)
+	rows, err := s.connOrPool().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search agent short-term memories: %w", err)
 	}
@@ -244,7 +262,7 @@ func (s *AgentMemoryService) EvictAgentShortTermMemories(ctx context.Context, us
 	if keep <= 0 {
 		keep = 5
 	}
-	_, err := s.conn.ExecContext(ctx, `
+	_, err := s.connOrPool().ExecContext(ctx, `
 		DELETE FROM xbot_short_term_memories
 		WHERE id NOT IN (
 			SELECT id FROM xbot_short_term_memories WHERE user_id = ?
@@ -272,7 +290,7 @@ func (s *AgentMemoryService) AddAgentLongTermMemory(ctx context.Context, mem age
 	if scope == "" {
 		scope = "global"
 	}
-	res, err := s.conn.ExecContext(ctx, `
+	res, err := s.connOrPool().ExecContext(ctx, `
 		INSERT INTO xbot_long_term_memories
 			(user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text, scope)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -341,7 +359,7 @@ func (s *AgentMemoryService) SearchAgentLongTermMemories(ctx context.Context, q 
 	}
 	args = append(args, limit)
 
-	rows, err := s.conn.QueryContext(ctx, query, args...)
+	rows, err := s.connOrPool().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search agent long-term memories: %w", err)
 	}
@@ -390,7 +408,7 @@ func (s *AgentMemoryService) FindAgentDuplicateLongTerm(ctx context.Context, q a
 		"(ltm.scope = 'global' OR (ltm.scope = 'session' AND ltm.source_session = ?))",
 		"xbot_long_term_memories_fts MATCH ?", "bm25(xbot_long_term_memories_fts) < ?"}
 	var id int64
-	err := s.conn.QueryRowContext(ctx, `
+	err := s.connOrPool().QueryRowContext(ctx, `
 		SELECT ltm.id FROM xbot_long_term_memories_fts fts
 		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
 		WHERE `+strings.Join(where, " AND ")+`
@@ -409,7 +427,7 @@ func (s *AgentMemoryService) SupersedeAgentLongTerm(ctx context.Context, q agent
 	if len(q.Terms) == 0 {
 		return nil, nil
 	}
-	conn := s.conn
+	conn := s.connOrPool()
 	rows, err := conn.QueryContext(ctx, `
 		SELECT ltm.id FROM xbot_long_term_memories_fts fts
 		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
@@ -466,7 +484,7 @@ func (s *AgentMemoryService) ListAgentLongTermMemories(ctx context.Context, q ag
 	          WHERE ` + strings.Join(where, " AND ") + `
 	          ORDER BY ` + agentOrderSQL(string(q.Order), false) + ` LIMIT ?`
 	args = append(args, limit)
-	rows, err := s.conn.QueryContext(ctx, query, args...)
+	rows, err := s.connOrPool().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list agent long-term memories: %w", err)
 	}
@@ -476,7 +494,7 @@ func (s *AgentMemoryService) ListAgentLongTermMemories(ctx context.Context, q ag
 
 func (s *AgentMemoryService) GetAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) (agentmem.LongTermMemory, error) {
 	var m agentmem.LongTermMemory
-	err := s.conn.QueryRowContext(ctx, `
+	err := s.connOrPool().QueryRowContext(ctx, `
 		SELECT `+agentLongTermColumns+`, 0 AS relevance FROM xbot_long_term_memories
 		WHERE id = ? AND user_id = ?
 	`, id, userID).Scan(&m.ID, &m.UserID, &m.TenantID, &m.Type, &m.Content, &m.Keywords, &m.Tags,
@@ -489,7 +507,7 @@ func (s *AgentMemoryService) GetAgentLongTermMemory(ctx context.Context, userID,
 }
 
 func (s *AgentMemoryService) UpdateAgentLongTermMemory(ctx context.Context, mem agentmem.LongTermMemory) error {
-	_, err := s.conn.ExecContext(ctx, `
+	_, err := s.connOrPool().ExecContext(ctx, `
 		UPDATE xbot_long_term_memories
 		SET content = ?, keywords = ?, tags = ?, importance = ?, search_text = ?,
 		    updated_at = CURRENT_TIMESTAMP
@@ -502,7 +520,7 @@ func (s *AgentMemoryService) UpdateAgentLongTermMemory(ctx context.Context, mem 
 }
 
 func (s *AgentMemoryService) DeleteAgentLongTermMemory(ctx context.Context, userID, tenantID, id int64) error {
-	_, err := s.conn.ExecContext(ctx,
+	_, err := s.connOrPool().ExecContext(ctx,
 		`DELETE FROM xbot_long_term_memories WHERE id = ? AND user_id = ?`, id, userID)
 	if err != nil {
 		return fmt.Errorf("delete agent long-term memory %d: %w", id, err)
@@ -511,7 +529,7 @@ func (s *AgentMemoryService) DeleteAgentLongTermMemory(ctx context.Context, user
 }
 
 func (s *AgentMemoryService) TouchAgentLongTermMemory(ctx context.Context, id int64) error {
-	_, err := s.conn.ExecContext(ctx, `
+	_, err := s.connOrPool().ExecContext(ctx, `
 		UPDATE xbot_long_term_memories
 		SET access_count = access_count + 1, last_accessed_at = CURRENT_TIMESTAMP
 		WHERE id = ?
@@ -520,7 +538,7 @@ func (s *AgentMemoryService) TouchAgentLongTermMemory(ctx context.Context, id in
 }
 
 func (s *AgentMemoryService) DecayAgentLongTerm(ctx context.Context, userID, tenantID int64, halfLifeDays, forgetThreshold float64) error {
-	conn := s.conn
+	conn := s.connOrPool()
 	if _, err := conn.ExecContext(ctx, `
 		UPDATE xbot_long_term_memories
 		SET heat_score = importance *
@@ -543,7 +561,7 @@ func (s *AgentMemoryService) PruneAgentLongTerm(ctx context.Context, userID, ten
 	if maxEntries <= 0 {
 		return nil
 	}
-	_, err := s.conn.ExecContext(ctx, `
+	_, err := s.connOrPool().ExecContext(ctx, `
 		DELETE FROM xbot_long_term_memories
 		WHERE user_id = ? AND id NOT IN (
 			SELECT id FROM xbot_long_term_memories WHERE user_id = ?
@@ -560,7 +578,7 @@ func (s *AgentMemoryService) ListAgentLongTermMissingSearchText(ctx context.Cont
 	if limit <= 0 {
 		limit = 500
 	}
-	rows, err := s.conn.QueryContext(ctx, `
+	rows, err := s.connOrPool().QueryContext(ctx, `
 		SELECT `+agentLongTermColumns+`, 0 AS relevance FROM xbot_long_term_memories
 		WHERE user_id = ? AND (search_text = '' OR search_text IS NULL) LIMIT ?
 	`, userID, limit)
@@ -572,7 +590,7 @@ func (s *AgentMemoryService) ListAgentLongTermMissingSearchText(ctx context.Cont
 }
 
 func (s *AgentMemoryService) SetAgentLongTermSearchText(ctx context.Context, id int64, searchText string) error {
-	_, err := s.conn.ExecContext(ctx,
+	_, err := s.connOrPool().ExecContext(ctx,
 		`UPDATE xbot_long_term_memories SET search_text = ? WHERE id = ?`, searchText, id)
 	return err
 }
@@ -602,7 +620,7 @@ func (s *AgentMemoryService) AddAgentLongTermMemoryWithSupersede(ctx context.Con
 	if scope == "" {
 		scope = "global"
 	}
-	tx, err := s.conn.BeginTx(ctx, nil)
+	tx, err := s.connOrPool().BeginTx(ctx, nil)
 	if err != nil {
 		return 0, nil, fmt.Errorf("begin agent memory tx: %w", err)
 	}
@@ -666,7 +684,7 @@ func (s *AgentMemoryService) AddAgentLongTermMemoryWithSupersede(ctx context.Con
 
 // SetAgentLongTermFilePath records the Markdown mirror path.
 func (s *AgentMemoryService) SetAgentLongTermFilePath(ctx context.Context, id int64, filePath string) error {
-	_, err := s.conn.ExecContext(ctx,
+	_, err := s.connOrPool().ExecContext(ctx,
 		`UPDATE xbot_long_term_memories SET file_path = ? WHERE id = ?`, filePath, id)
 	return err
 }

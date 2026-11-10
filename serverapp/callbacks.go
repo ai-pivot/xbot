@@ -851,11 +851,16 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		return rows, err
 	}
 	callbacks.SubAgentList = func(senderID string, admin bool) ([]web.UserChatWithPreview, error) {
-		if webSQL == nil {
-			return nil, nil
-		}
 		// v63 single-operator: always use the full unfiltered view.
-		rows, err := listTenantsByChannel(webSQL, "agent", "")
+		// PG 部署（webSQL==nil）必须走 TenantStore fallback —— 否则 PG 下
+		// session-tree 零子代理节点（2026-11-10 CR 第 1 轮 P1 修复）。
+		var rows []web.UserChatWithPreview
+		var err error
+		if webSQL != nil {
+			rows, err = listTenantsByChannel(webSQL, "agent", "")
+		} else {
+			rows, err = listTenantsViaStore(store.Tenant(), "agent", "")
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -907,12 +912,20 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		}
 
 		tCLI := time.Duration(0)
-		if hasCLI && webSQL != nil {
+		if hasCLI {
 			cliStart := time.Now()
-			cliChats, err := listCLIChatSessions(webSQL, "")
+			var cliChats []web.UserChatWithPreview
+			var cliErr error
+			if webSQL != nil {
+				cliChats, cliErr = listCLIChatSessions(webSQL, "")
+			} else {
+				// PG 部署没有本地 cli session 文件，直接取 tenant 行（2026-11-10 CR 第 1 轮 P1 修复：
+				// 此前 `webSQL != nil` 条件会让 PG 下的 CLI 主会话整类消失）。
+				cliChats, cliErr = listTenantsViaStore(store.Tenant(), "cli", "")
+			}
 			tCLI = time.Since(cliStart)
-			if err != nil {
-				return web.SessionTreeResult{}, err
+			if cliErr != nil {
+				return web.SessionTreeResult{}, cliErr
 			}
 			mains = appendMissingSessionRows(mains, cliChats)
 		}
@@ -2437,6 +2450,53 @@ func upsertSubAgentRow(rows []web.UserChatWithPreview, index map[string]int, par
 	}
 	index[key] = len(rows)
 	return append(rows, row)
+}
+
+// listTenantsViaStore 是 webSQL 不可用（PG 后端）时的 tenant 行来源。
+// 2026-11-10 CR（第 1 轮 P1）恢复：master→HEAD 的重构把它删掉了，导致 PG 部署下
+// SubAgentList 恒空、CLI 主会话行消失（PG session-tree 双回归）。
+func listTenantsViaStore(ts storage.TenantStore, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
+	if ts == nil {
+		return nil, fmt.Errorf("tenant store is unavailable")
+	}
+	all, err := ts.ListTenants()
+	if err != nil {
+		return nil, fmt.Errorf("list tenants: %w", err)
+	}
+	var result []web.UserChatWithPreview
+	for _, t := range all {
+		if t.Channel != channel || t.ChatID == "_shared" {
+			continue
+		}
+		// HEAD 的 sqlite.TenantInfo 没有 Preview/SortOrder（master 后加），
+		// PG fallback 里这两项留空：preview 由 PG schema 的 preview 列经
+		// 其它路径补齐，sort_order 仅影响置顶排序（PG 部署暂不支持置顶）。
+		preview := ""
+		createdAt := t.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = t.LastActiveAt
+		}
+		chat := web.UserChatWithPreview{
+			ChatID:     t.ChatID,
+			Channel:    t.Channel,
+			Label:      displayLabelForTenant(t.Channel, t.ChatID, t.Label),
+			LastActive: t.LastActiveAt.Format(time.RFC3339),
+			CreatedAt:  createdAt.Format(time.RFC3339),
+			Preview:    preview,
+			IsCurrent:  t.ChatID == currentChatID,
+		}
+		if channel == "agent" {
+			normalized, ok := normalizeSubAgentRow(chat, preview)
+			if !ok {
+				continue
+			}
+			chat = normalized
+		} else if isInteractiveSubAgentTenant(channel, t.ChatID) {
+			continue
+		}
+		result = append(result, chat)
+	}
+	return result, nil
 }
 
 func subAgentRowFromInteractiveSession(parentChannel string, s agent.InteractiveSessionInfo) web.UserChatWithPreview {

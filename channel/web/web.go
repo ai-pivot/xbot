@@ -1381,12 +1381,6 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 		return
 	}
 
-	// SSE 出站掩码（2026-11-09 迁移）：只对 tool 输出物（Summary/Detail）做固定
-	// 格式凭据过滤（ghp_/github_pat_/gh[ousr]_/sk-/AKIA/xox/AIza/glpat/JWT，带词
-	// 边界），返回深拷贝 —— 绝不污染引擎侧对象（它会落库进历史并参与 LLM 上下文）。
-	// 模型自己的文本（Content/Reasoning/Stream*）与工具参数（Args）原样通过。
-	payload = filterProgressSecrets(payload)
-
 	// Derive the originating channel from payload.ChatID (qualified, e.g.
 	// "cli:/path:Agent-xxx"). This ensures progress events are pushed to the
 	// correct SSE routeKey — the SSE client subscribes to the session's

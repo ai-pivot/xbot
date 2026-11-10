@@ -9,7 +9,6 @@ import (
 
 	"xbot/llm"
 	log "xbot/logger"
-	"xbot/redact"
 )
 
 // SessionService handles session message operations
@@ -612,16 +611,9 @@ type IterationRecord struct {
 //
 // 导出给 PG 后端复用（storage/pg_session.go），保证两个后端同一语义。
 func RedactIterationTools(raw string) string {
-	if raw == "" {
-		return raw
-	}
-	out := redact.Secrets(raw)
-	if !json.Valid([]byte(raw)) || json.Valid([]byte(out)) {
-		return out
-	}
-	log.WithField("raw_tools_bytes", len(raw)).
-		Warn("sqlite: iteration tools redaction produced invalid JSON; tool snapshot dropped")
-	return "null"
+	// 2026-11-10 用户裁定：存储原版。此函数保留为 identity（PG 后端仍调用它，
+	// 但不再做任何替换）；脱敏只在出站到前端/飞书的路径上做。
+	return raw
 }
 
 // AppendIterationHistory inserts a single iteration record linked to a message.
@@ -632,8 +624,9 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 	}
 	// 写入侧脱敏：iteration_history **不走 appendMessageWith**（独立 INSERT，见本函数），
 	// 所以 content / reasoning / tools 必须在这里各脱一次（W5 的 sqlite 侧写入点）。
-	content := redact.Secrets(rec.Content)
-	reasoning := redact.Secrets(rec.Reasoning)
+	// 2026-11-10 用户裁定：存储原版（脱敏只在出站层）。
+	content := rec.Content
+	reasoning := rec.Reasoning
 	tools := RedactIterationTools(rec.Tools)
 	// ⚠️ 时间表示铁律（2026-10-14「压缩分隔条堆一摞」事故）：created_at 必须
 	// 显式写带时区偏移的 canonical 形态（与 session_messages 的 Go 写侧同款），
@@ -688,7 +681,7 @@ func (s *SessionService) AppendIterationTool(tenantID int64, turnID uint64, iter
 	}
 	// 写入侧脱敏：tools 数组里的工具快照同样是凭据明文来源。**前置 json.Valid 不被绕过**：
 	// 先验入参（上一行），脱敏后再验一次出参 —— 保证落库的仍是合法 JSON。
-	toolJSON = redact.Secrets(toolJSON)
+	// 存储原版：tool JSON 不做写入侧脱敏（2026-11-10 用户裁定）。
 	if !json.Valid([]byte(toolJSON)) {
 		return false, fmt.Errorf("append iteration tool: redaction produced invalid JSON")
 	}

@@ -16,18 +16,23 @@ import "regexp"
 
 var fixedFormSecretRes = []*regexp.Regexp{
 	// GitHub PAT (classic): ghp_ + 36 位
-	regexp.MustCompile(`\bghp_[A-Za-z0-9]{36}`),
+	regexp.MustCompile(`(^|[^A-Za-z0-9_])(ghp_[A-Za-z0-9]{36,})`),
 	// GitHub fine-grained PAT: github_pat_ + 82 位（官方规格）
 	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{60,}`),
 	// GitHub oauth / user-to-server / server-to-server / refresh: gh[ousr]_ + 36 位
-	regexp.MustCompile(`\bgh[ousr]_[A-Za-z0-9]{36}`),
+	regexp.MustCompile(`(^|[^A-Za-z0-9_])(gh[ousr]_[A-Za-z0-9]{36,})`),
 	// OpenAI / Anthropic: sk- + 至少 32 位（含 sk-proj- / sk-ant-api03-）
-	// ⚠️ 左边界必须保留：没有 \b 时 `task-<32charId>` / `disk-<uuid>` / `mask-...`
-	// 里的 `sk-` 子串会把普通文件名/变量名当 OpenAI key 打码（2026-11-07 实锤：
-	// `$(cat /tmp/task-...)` 被替换成 ***）。
-	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{32,}`),
+	//
+	// ⚠️ 左边界不能只用 \b：\b 只挡字母数字前缀，挡不住**连字符 / 斜杠**后面紧跟
+	// 的 `sk-`（2026-11-10 CR 第 2 轮 P1 实测误杀：
+	//   `task-sk-550e8400e29b41d4a716446655440000abcd` → `task-***`
+	//   `/opt/models/sk-abcdefghijklmnopqrstuvwxyz012345/weights.bin` → `/opt/models/***/...`
+	// 用户裁定「误杀一次都不能有」。改为索引式左边界：前一个字符必须**不属于**
+	// `[A-Za-z0-9_/-]`（字母数字、下划线、连字符、斜杠都算"在标识符/路径内部"）。
+	// 用捕获组保留前导字符，替换时回落 $1。
+	regexp.MustCompile(`(^|[^A-Za-z0-9_/-])(sk-[A-Za-z0-9_-]{32,})`),
 	// AWS access key id（长期 AKIA / 临时 ASIA）+ 16 位
-	regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}`),
+	regexp.MustCompile(`(^|[^0-9A-Z])((?:AKIA|ASIA)[0-9A-Z]{16,})`),
 	// Slack: xox[baprs]- + 至少 10 位
 	regexp.MustCompile(`\bxox[baprs]-[0-9A-Za-z-]{10,}`),
 	// Google API key: AIza + 35 位
@@ -44,7 +49,9 @@ func RedactFixedFormats(s string) string {
 		return s
 	}
 	for _, re := range fixedFormSecretRes {
-		s = re.ReplaceAllString(s, "***")
+		// 带捕获组的模式（索引式左边界）：保留 $1（前导字符），只打码凭据本身。
+		// 无捕获组的模式 $1 为空串，等价于整体替换。
+		s = re.ReplaceAllString(s, "${1}***")
 	}
 	return s
 }
