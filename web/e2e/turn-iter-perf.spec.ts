@@ -436,16 +436,21 @@ test.describe('windowing never freezes a transient (collapsed) height', () => {
     // WINDOW N=60 {"nodes":2525,"mountedContents":60}）；CI 慢 runner 上该瞬态
     // 可持续数秒，2.5s 的固定等待不够 ⇒ 报成 muted=0。poll 只是等条件成立，
     // 真回归（窗口化彻底失效）仍会 30s 超时失败，不掩盖问题。
+    // 等的是**同一个判据本身**：muted 块存在且最小高度已过 100px。
+    // 只等"muted 数 > 0"不够 —— 那时块可能还停在压扁/未定形高度，随后一次性
+    // 采样的 mutedMin 会 < 100 而被判成"冻结在瞬态高度"（2026-11-10 反复抖的点）。
     await expect
       .poll(
         async () =>
           await page.evaluate(() => {
-            const bs = Array.from(document.querySelectorAll('.iter-block'))
-            return bs.filter((b) => (b as HTMLElement).dataset.windowMuted === 'true').length
+            const bs = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
+            const muted = bs.filter((b) => b.dataset.windowMuted === 'true')
+            if (muted.length === 0) return 0
+            return Math.min(...muted.map((b) => Math.round(b.getBoundingClientRect().height)))
           }),
         { timeout: 30000, intervals: [200, 500, 1000] },
       )
-      .toBeGreaterThan(0)
+      .toBeGreaterThan(100)
 
     const stats = await page.evaluate(() => {
       const blocks = Array.from(document.querySelectorAll('.iter-block'))
@@ -1120,7 +1125,22 @@ test.describe('switching to a streaming session must not freeze a transient heig
       undefined,
       { timeout: 20000 },
     )
-    await page.waitForTimeout(2500)
+    // 复核 / 重新结算需要时间。这里**不能**用固定 2500ms 当作"块已从压扁态恢复
+    // 高度"的证明：本用例开着 CPU 4× 节流，慢 runner 上 2500ms 明显不够，采到的
+    // mutedUnder100 > 0 会被判成「冻结块停在瞬态高度」（2026-11-10 CI 的 flaky）。
+    // poll 等的是同一个判据本身；真回归（块永远停在压扁高度）仍会 30s 超时失败。
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const bs = Array.from(
+              document.querySelectorAll('.iter-block[data-window-muted="true"]'),
+            ) as HTMLElement[]
+            return bs.filter((b) => Math.round(b.getBoundingClientRect().height) < 100).length
+          }),
+        { timeout: 30000, intervals: [200, 500, 1000] },
+      )
+      .toBe(0)
 
     const stats = await page.evaluate(() => {
       const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
