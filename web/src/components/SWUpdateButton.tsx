@@ -17,6 +17,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { RefreshCw, Download, RotateCcw } from 'lucide-react'
+import { pwaEnabled } from '@/lib/appUrl'
 
 export type SWUpdateStatus = 'idle' | 'downloading' | 'ready'
 
@@ -33,6 +34,7 @@ export function useSWUpdate(): SWUpdateAPI {
   const regRef = useRef<ServiceWorkerRegistration | null>(null)
 
   useEffect(() => {
+    if (!pwaEnabled()) return
     if (!('serviceWorker' in navigator)) return
     const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
     // localhost / dev 无 SW（registerSW 也跳过），保持 idle 无副作用。
@@ -74,6 +76,10 @@ export function useSWUpdate(): SWUpdateAPI {
   }, [])
 
   const check = useCallback(() => {
+    if (!pwaEnabled()) {
+      window.location.reload()
+      return
+    }
     regRef.current?.update().catch(() => {})
   }, [])
 

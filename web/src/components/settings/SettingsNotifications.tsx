@@ -3,6 +3,7 @@ import { Bell, BellOff, Loader2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/providers/i18n'
+import { pwaEnabled } from '@/lib/appUrl'
 import {
   getPushConfig,
   registerWebPush,
@@ -41,7 +42,10 @@ export function SettingsNotifications() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    // PWA-disabled builds (Vercel preview, subpath previews) ship no sw2.js and
+    // must never register a service worker, so Web Push is unavailable there.
     const ok =
+      pwaEnabled() &&
       typeof window !== 'undefined' &&
       'serviceWorker' in navigator &&
       'PushManager' in window &&

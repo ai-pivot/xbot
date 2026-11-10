@@ -319,7 +319,13 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				AdminToken: cfg.Admin.Token,
 				InviteOnly: cfg.Web.IsInviteOnly(),
 				PublicURL:  cfg.Sandbox.PublicURL,
+				// Explicit: config.json web.preview_origins, already replaced by
+				// XBOT_PREVIEW_ORIGINS in applyEnvOverrides when that is set.
+				PreviewOrigins: cfg.Web.PreviewOrigins,
 			}, msgBus)
+			if len(cfg.Web.PreviewOrigins) > 0 {
+				log.WithField("preview_origins", cfg.Web.PreviewOrigins).Info("Web preview authorization enabled for configured origins")
+			}
 			// Auto-detect frontend static files if not explicitly configured.
 			staticDir := resolveStaticDir(cfg)
 			if staticDir != "" {

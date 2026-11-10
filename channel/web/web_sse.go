@@ -103,7 +103,7 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		sseEncFlush = func() error { return enc.Flush() }
 		sseEncClose = func() { enc.Close(); sseZstdPool.Put(enc) }
 		w.Header().Set("Content-Encoding", "zstd")
-		w.Header().Set("Vary", "Accept-Encoding")
+		w.Header().Add("Vary", "Accept-Encoding")
 	} else if strings.Contains(acceptEnc, "gzip") {
 		enc := sseGzipPool.Get().(*gzip.Writer)
 		enc.Reset(w)
@@ -111,7 +111,7 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 		sseEncFlush = func() error { return enc.Flush() }
 		sseEncClose = func() { enc.Close(); sseGzipPool.Put(enc) }
 		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Vary", "Accept-Encoding")
+		w.Header().Add("Vary", "Accept-Encoding")
 	}
 
 	client := &Client{

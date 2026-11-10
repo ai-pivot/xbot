@@ -1,3 +1,4 @@
+import { backendFetch } from '@/lib/api'
 /**
  * PluginFileService — 通用文件存储实现（所有插件共用）。
  *
@@ -5,6 +6,7 @@
  * 插件声明 'files' permission 后通过 ctx.files 使用。
  */
 import type { FileUploadOptions, UploadedFile } from '@/plugin-api/files'
+import { appResourceUrl } from '@/lib/appUrl'
 
 export class PluginFileService {
   private pluginId: string
@@ -18,7 +20,7 @@ export class PluginFileService {
     form.append('plugin_id', this.pluginId)
     form.append('file', file, opts?.filename || (file instanceof File ? file.name : 'upload.bin'))
 
-    const res = await fetch('/api/plugin-files/upload', { method: 'POST', body: form })
+    const res = await backendFetch('/api/plugin-files/upload', { method: 'POST', body: form })
     if (!res.ok) {
       const err = await res.text().catch(() => res.statusText)
       throw new Error(`upload failed: ${err}`)
@@ -29,18 +31,18 @@ export class PluginFileService {
   }
 
   async list(): Promise<UploadedFile[]> {
-    const res = await fetch(`/api/plugin-files/${this.pluginId}`)
+    const res = await backendFetch(`/api/plugin-files/${this.pluginId}`)
     if (!res.ok) return []
     const json = (await res.json()) as { ok: boolean; data?: UploadedFile[] }
     return json.data ?? []
   }
 
   async delete(filename: string): Promise<void> {
-    const res = await fetch(`/api/plugin-files/${this.pluginId}/${filename}`, { method: 'DELETE' })
+    const res = await backendFetch(`/api/plugin-files/${this.pluginId}/${filename}`, { method: 'DELETE' })
     if (!res.ok) throw new Error(`delete failed: ${res.statusText}`)
   }
 
   getUrl(filename: string): string {
-    return `/api/plugin-files/${this.pluginId}/${filename}`
+    return appResourceUrl(`/api/plugin-files/${this.pluginId}/${filename}`)
   }
 }

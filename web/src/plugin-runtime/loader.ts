@@ -5,6 +5,7 @@
  * 绕过 import map / 浏览器模块缓存。
  */
 import type { PluginManifest } from '@/plugin-api'
+import { appResourceUrl } from '@/lib/appUrl'
 
 /** 插件模块导出形状（与类型包的插件契约一致）。 */
 export interface PluginModule {
@@ -26,6 +27,6 @@ export function versionedUrl(baseUrl: string, version: string, hash?: string): s
  * 加载插件模块（动态 import）。失败抛错（含模块语法错误、网络错误）。
  */
 export async function loadPluginModule(entryUrl: string): Promise<PluginModule> {
-  const mod = await import(/* @vite-ignore */ entryUrl)
+  const mod = await import(/* @vite-ignore */ appResourceUrl(entryUrl))
   return mod as PluginModule
 }

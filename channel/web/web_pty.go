@@ -611,7 +611,12 @@ var terminalWSUpgrader = websocket.Upgrader{
 
 func (wc *WebChannel) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// Cookie auth (same as handleWS for browser clients).
-	si := wc.validateSession(r)
+	var si *sessionInfo
+	if g := previewFromRequest(r); g != nil {
+		si = &g.session
+	} else {
+		si = wc.validateSession(r)
+	}
 	if si == nil {
 		log.Warn("terminal/ws: no valid session")
 		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
@@ -631,12 +636,22 @@ func (wc *WebChannel) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := terminalWSUpgrader.Upgrade(w, r, nil)
+	upgrader := &terminalWSUpgrader
+	if previewFromRequest(r) != nil {
+		upgrader = wc.wsUpgrader()
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.WithError(err).Warn("Terminal WS upgrade failed")
 		return
 	}
 
+	// The HTTP handler returns while the pumps remain alive. Only preview
+	// sockets follow the grant lifetime, not the shorter request lifetime.
+	stopPreviewClose := func() bool { return false }
+	if g := previewFromRequest(r); g != nil {
+		stopPreviewClose = context.AfterFunc(g.ctx, func() { _ = conn.Close() })
+	}
 	client := &ptyWSClient{
 		conn: conn,
 		send: make(chan []byte, 64),
@@ -658,6 +673,7 @@ func (wc *WebChannel) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// Read pump: client → backend.
 	go func() {
 		defer func() {
+			stopPreviewClose()
 			conn.Close()
 			sess.removeClient(client)
 		}()

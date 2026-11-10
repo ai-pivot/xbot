@@ -154,6 +154,13 @@ type WebConfig struct {
 	// absent in config.json) = invite-only; an explicit `false` opts back into
 	// open registration.
 	InviteOnly *bool `json:"invite_only,omitempty"`
+	// PreviewOrigins allowlists Vercel/other external frontends that may ask
+	// this backend for a short-lived preview grant (see docs/vercel-preview.md).
+	// Empty (default) = preview authorization disabled. Each entry is an exact
+	// origin, or one single-label HTTPS pattern such as
+	// https://xbot-preview-*-<team>.vercel.app. XBOT_PREVIEW_ORIGINS
+	// (comma-separated) replaces this list when set; set it empty to disable.
+	PreviewOrigins []string `json:"preview_origins,omitempty"`
 }
 
 // IsInviteOnly reports whether web self-registration is disabled. nil (unset)
@@ -1142,6 +1149,9 @@ func applyEnvOverrides(cfg *Config) {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.Web.InviteOnly = &b
 		}
+	}
+	if v, ok := os.LookupEnv("XBOT_PREVIEW_ORIGINS"); ok {
+		cfg.Web.PreviewOrigins = splitCommaTrim(v)
 	}
 
 	// Event Webhook

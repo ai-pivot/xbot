@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
+import { deriveVercelOriginPattern } from './src/lib/previewOriginPattern'
 
 // __BUILD_INFO__ — 前端构建身份（About 面板展示「前端版本」）。
 // release CI 传 VITE_APP_VERSION / VITE_APP_CHANNEL（与后端二进制同源）；
@@ -31,6 +32,11 @@ function buildInfo() {
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
+  const previewEnabled = process.env.VERCEL_ENV === 'preview' || process.env.XBOT_WEB_PREVIEW === '1'
+  const base = process.env.XBOT_WEB_BASE_PATH || '/'
+  if (!/^\/(?:[a-zA-Z0-9_-]+\/)*$/.test(base)) {
+    throw new Error('XBOT_WEB_BASE_PATH must be an absolute path ending in /')
+  }
   // dev 构建（--mode development）禁用 PWA：SW 会缓存 debug 产物导致
   // 拿旧代码，且未压缩的 ts.worker 超 workbox 大小限制。debug 场景下
   // 前端应走网络，SW 反而干扰。
@@ -38,7 +44,7 @@ export default defineConfig(({ mode }) => {
   // `XBOT_NO_PWA=1` 是**只关 PWA、不改 React 语义**的开关：用于
   // `vite build --minify false` 产出「函数名可读」的性能剖析构建 —— 必须保持
   // production 的 React（dev 模式的双重渲染/警告会污染 profile 数据）。
-  const isDev = mode === 'development' || process.env.XBOT_NO_PWA === '1'
+  const isDev = mode === 'development' || process.env.XBOT_NO_PWA === '1' || base !== '/' || previewEnabled
   const plugins = [
     react(),
     tailwindcss(),
@@ -156,6 +162,7 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
+    base,
     plugins,
     resolve: {
       alias: {
@@ -236,6 +243,14 @@ export default defineConfig(({ mode }) => {
   // git commit + 构建时刻，保证 DEV 构建也能展示具体版本。
   define: {
     __BUILD_INFO__: buildInfo(),
+    __PWA_ENABLED__: !isDev,
+    __PREVIEW_ENABLED__: previewEnabled,
+    // Project-wide `web.preview_origins` wildcard the preview gate suggests,
+    // derived from Vercel's system env (deployment host + branch alias); '' when
+    // unavailable, and the gate then suggests the exact page origin.
+    __PREVIEW_ORIGIN_PATTERN__: JSON.stringify(previewEnabled
+      ? deriveVercelOriginPattern(process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL)
+      : ''),
   },
   }
 })

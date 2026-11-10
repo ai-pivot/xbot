@@ -22,6 +22,7 @@ import {
   type ReactNode,
 } from 'react'
 import { postAPI } from '@/lib/api'
+import { clearPreviewConnection, previewEnabled } from '@/lib/previewConnection'
 import { clearWebCaches } from '@/lib/webCache'
 import { registerCurrentWebPush, unregisterCurrentWebPush } from '@/lib/webpush'
 
@@ -58,6 +59,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     void (async () => {
       try {
+        if (previewEnabled()) {
+          try {
+            const session = await postAPI<{ user_id: number; username?: string }>('/api/preview/session')
+            if (!session.user_id) throw new Error('invalid-preview-session')
+            if (!cancelled) setUser({ username: session.username || String(session.user_id) })
+          } catch {
+            if (!cancelled) setUser(null)
+          }
+          return
+        }
         // Fetch auth config (public, no cookie needed) + settings (checks auth) in parallel.
         const [configRes, settingsRes] = await Promise.allSettled([
           postAPI<{ invite_only?: boolean; bootstrap?: boolean }>('/api/auth/config'),
@@ -88,6 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // --- login ---
   const login = useCallback(async (username: string, password: string): Promise<boolean> => {
+    if (previewEnabled()) return false
     try {
       await postAPI('/api/auth/login', { username, password })
       clearWebCaches()
@@ -103,6 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // --- register ---
   const register = useCallback(async (username: string, password: string): Promise<boolean> => {
+    if (previewEnabled()) return false
     try {
       await postAPI('/api/auth/register', { username, password })
       // Auto-login after successful registration.
@@ -115,13 +128,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // --- logout ---
   const logout = useCallback(async () => {
     try {
-      // Must run before the auth cookie is cleared (the unregister API is authed).
-      await unregisterCurrentWebPush().catch(() => {})
-      await postAPI('/api/auth/logout')
+      if (previewEnabled()) {
+        // Preview grants never register Web Push (no service worker in
+        // preview builds), so revoking the grant is the whole logout.
+        await postAPI('/api/preview/revoke')
+      } else {
+        // Must run before the auth cookie is cleared (the unregister API is authed).
+        await unregisterCurrentWebPush().catch(() => {})
+        await postAPI('/api/auth/logout')
+      }
     } finally {
       clearWebCaches()
       localStorage.removeItem(USERNAME_KEY)
       setUser(null)
+      if (previewEnabled()) {
+        clearPreviewConnection()
+        window.location.reload()
+      }
     }
   }, [])
 

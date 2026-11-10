@@ -7,6 +7,7 @@
  * - answer/decision 走 /api/answer 与 /api/message，带幂等键 + 防抖。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { backendStreamUrl } from '@/lib/appUrl'
 
 import {
   answerStructuredMessage,
@@ -236,7 +237,7 @@ export function useStructuredMessages(scope: StructuredScope): UseStructuredMess
     const q = new URLSearchParams()
     if (scope.channel) q.set('channel', scope.channel)
     q.set('chat_id', scope.chat_id)
-    const es = new EventSource(`/api/sse?${q.toString()}`)
+    const es = new EventSource(backendStreamUrl(`/api/sse?${q.toString()}`))
     // 服务端以「命名事件」发送：`id:..\nevent:structured_message\ndata:...`
     // （见 channel/web/web_sse.go writeSSEEvent）。EventSource 只把默认 message
     // 事件派发给 onmessage，命名事件必须 addEventListener —— 之前用 onmessage
