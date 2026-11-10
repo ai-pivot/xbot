@@ -165,6 +165,25 @@ describe('MarkdownRenderer', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
+  it('keeps markdown syntax after a bare URL out of the link (GFM greedy autolink)', () => {
+    // 2026-11-09 用户报告：`**https://…/pull/92**（`branch` → `main`…）` 里
+    // GFM 的字面 autolink 一直吞到下一个空白 ⇒ 显示字面 `**`，链接 href 变成
+    // `…/92**（`branch``（点开是 404），后面的行内代码也失去样式。
+    const content =
+      'PR 已提: **https://github.com/MindLab-Research/mint-ops/pull/92**（`ops/prd-console-20261107` → `main`, 1 文件 +9/-5, mergeable, 工作树干净）。'
+    const { container } = render(<MarkdownRenderer content={content} noDebounce />)
+
+    const link = container.querySelector('strong a')
+    expect(link).not.toBeNull()
+    expect(link).toHaveAttribute('href', 'https://github.com/MindLab-Research/mint-ops/pull/92')
+    expect(link).toHaveTextContent('https://github.com/MindLab-Research/mint-ops/pull/92')
+    expect(container.textContent).not.toContain('**')
+    expect(container.textContent).toContain('（')
+
+    const code = [...container.querySelectorAll('code')].map((node) => node.textContent)
+    expect(code).toEqual(['ops/prd-console-20261107', 'main'])
+  })
+
   it('renders strikethrough via GFM', () => {
     const { container } = render(<MarkdownRenderer content={'~~deleted~~'} />)
     expect(container.querySelector('del')).not.toBeNull()
