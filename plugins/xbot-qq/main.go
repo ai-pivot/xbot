@@ -112,6 +112,14 @@ type app struct {
 	// json.Encoder 本身不是并发安全的。
 	outMu sync.Mutex
 
+	// logMu 序列化诊断日志写入。
+	//
+	// logf 会被多个 goroutine 并发调用（网关事件循环 Gateway.Run 与 RPC 读循环
+	// handleLine → handleChannelConfig），而 logw 在生产里是 os.File（Write 本身
+	// 并发安全）但测试里注入的是 bytes.Buffer（**不**并发安全）。
+	// 2026-11-10 CI 的 -race 实测到 bytes.Buffer 上的并发写 ⇒ 这里必须加锁。
+	logMu sync.Mutex
+
 	// logw 是诊断输出（stderr）。host 会把它重定向到每插件日志文件，
 	// 所以这里可以自由打；绝不能写 stdout（stdout 只走协议帧）。
 	logw io.Writer
@@ -151,6 +159,8 @@ func (a *app) logf(format string, args ...any) {
 	if a.logw == nil {
 		return
 	}
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
 	fmt.Fprintf(a.logw, "qq-plugin: "+format+"\n", args...)
 }
 
