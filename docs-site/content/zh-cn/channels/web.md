@@ -32,6 +32,7 @@ weight: 35
 | `upload_dir` | ❌ | `""` | 上传文件自定义目录 |
 | `persona_isolation` | ❌ | `false` | 启用后每个 Web 用户的 persona 互相隔离 |
 | `invite_only` | ❌ | **`true`** | 禁止自主注册。**默认 true（安全默认）**——第一个账号仍可注册（首用户引导），之后只能由管理员创建账号。显式设为 `false` 才会重新开放公开注册。 |
+| `preview_origins` | ❌ | `[]` | 允许申请短期后端授权的外部预览前端（如 Vercel PR 预览）。为空即关闭预览授权。可写精确 origin，或一条单标签 HTTPS 通配，如 `https://xbot-preview-*-<team>.vercel.app`。设置了 `XBOT_PREVIEW_ORIGINS`（逗号分隔）时以环境变量为准。启动时读取。 |
 
 ## Web UI 安装
 
@@ -212,4 +213,4 @@ Web UI 有桌面与移动两套外壳，默认按视口宽度自动选择（≤7
 
 ### Vercel PR 预览后端连接
 
-Vercel 仅托管静态前端。预览模式先显示连接门禁，后端地址默认为 `http://localhost:8082`；测试连通性不代表授权。后端需由用户配置精确的 `XBOT_PREVIEW_ORIGINS`（也可配置一条单标签通配，如 `https://xbot-preview-*-<team>.vercel.app`，新部署无需重启后端；授权仍绑定具体 origin），在本地登录并确认授权后，粘贴短期令牌才能进入工作区。令牌仅在内存中保存，具有完整工作区能力，并非只读沙箱。详见 `docs/vercel-preview.md`；不要把凭据配置到 Vercel，也不要为前端部署自动重启后端。
+Vercel 仅托管静态前端。预览模式先显示连接门禁，后端地址默认为 `http://localhost:8082`；测试连通性不代表授权。后端需由用户在 `web.preview_origins` 中配置允许的预览 origin（或用 `XBOT_PREVIEW_ORIGINS` 覆盖），可写精确 origin，也可写一条单标签通配，如 `https://xbot-preview-*-<team>.vercel.app`，配好后重启一次，之后的新部署无需再重启；授权仍绑定具体 origin，在本地登录并确认授权后，粘贴短期令牌才能进入工作区。令牌仅在内存中保存，具有完整工作区能力，并非只读沙箱。详见 `docs/vercel-preview.md`；不要把凭据配置到 Vercel，也不要为前端部署自动重启后端。

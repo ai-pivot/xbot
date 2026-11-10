@@ -18,8 +18,7 @@ const testPreviewOrigin = "https://preview-one.vercel.app"
 
 func previewTestChannel(t *testing.T) *WebChannel {
 	t.Helper()
-	t.Setenv("XBOT_PREVIEW_ORIGINS", testPreviewOrigin)
-	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, newTestDB(t))}, bus.NewMessageBus())
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, newTestDB(t)), PreviewOrigins: []string{testPreviewOrigin}}, bus.NewMessageBus())
 	t.Cleanup(wc.Stop)
 	wc.sessions["parent"] = sessionInfo{userID: 1, username: "operator", expires: time.Now().Add(time.Hour)}
 	return wc
@@ -103,7 +102,7 @@ func TestPreviewFailClosed(t *testing.T) {
 		}
 	}
 	for _, origin := range []string{"https://preview-one.vercel.app:443", "null", "https://preview-one.vercel.app/", "https://preview-one.vercel.app:444"} {
-		if previewAllowed(origin) {
+		if wc.previewAllowed(origin) {
 			t.Errorf("accepted %q", origin)
 		}
 	}
@@ -115,7 +114,7 @@ func TestPreviewFailClosed(t *testing.T) {
 	if w.Code != 401 {
 		t.Fatal("preview token accepted as cookie")
 	}
-	t.Setenv("XBOT_PREVIEW_ORIGINS", "")
+	wc.config.PreviewOrigins = nil
 	w = previewReq(h, "POST", "/api/preview/session", testPreviewOrigin, token, "{}")
 	if w.Code != 403 {
 		t.Fatal("disabled token accepted")
@@ -439,11 +438,11 @@ func TestPreviewRPCSecretPolicy(t *testing.T) {
 	}
 }
 
-// XBOT_PREVIEW_ORIGINS 支持单标签通配，免得每个 Vercel 部署（主机名带 hash）都要改环境变量重启后端。
+// web.preview_origins / XBOT_PREVIEW_ORIGINS 支持单标签通配，免得每个 Vercel 部署（主机名带 hash）都要改配置重启后端。
 // 通配只能是 HTTPS、恰好一个 `*`、位于最左标签内、两侧都有字面量，且只匹配 [a-z0-9-]（不跨点）。
 func TestPreviewOriginPatternAllowlist(t *testing.T) {
 	const pattern = "https://xbot-preview-*-mattos-projects-6bf6c006.vercel.app"
-	t.Setenv("XBOT_PREVIEW_ORIGINS", "http://localhost:5173, "+pattern)
+	origins := []string{"http://localhost:5173", pattern}
 	for origin, want := range map[string]bool{
 		"https://xbot-preview-ouws4udwi-mattos-projects-6bf6c006.vercel.app":                 true,
 		"https://xbot-preview-git-fix-markdown-a-46d8f7-mattos-projects-6bf6c006.vercel.app": true,
@@ -459,8 +458,8 @@ func TestPreviewOriginPatternAllowlist(t *testing.T) {
 		"https://other-preview-x-mattos-projects-6bf6c006.vercel.app":             false,
 		"https://xbot-preview-x-other.vercel.app":                                 false,
 	} {
-		if got := previewAllowed(origin); got != want {
-			t.Errorf("previewAllowed(%q) = %v, want %v", origin, got, want)
+		if got := previewOriginAllowed(origins, origin); got != want {
+			t.Errorf("previewOriginAllowed(%q) = %v, want %v", origin, got, want)
 		}
 	}
 }
@@ -484,8 +483,7 @@ func TestPreviewOriginPatternRejectsBroadEntries(t *testing.T) {
 		"https://xbot-preview-*-team.*.app",
 	} {
 		t.Run(entry, func(t *testing.T) {
-			t.Setenv("XBOT_PREVIEW_ORIGINS", entry)
-			if previewAllowed(origin) {
+			if previewOriginAllowed([]string{entry}, origin) {
 				t.Fatalf("entry %q must not allow %q", entry, origin)
 			}
 		})
@@ -496,7 +494,7 @@ func TestPreviewOriginPatternRejectsBroadEntries(t *testing.T) {
 // 换一个同样匹配通配的 origin 也不能复用。
 func TestPreviewOriginPatternGrantBindsExactOrigin(t *testing.T) {
 	wc := previewTestChannel(t)
-	t.Setenv("XBOT_PREVIEW_ORIGINS", "https://preview-*-team.vercel.app")
+	wc.config.PreviewOrigins = []string{"https://preview-*-team.vercel.app"}
 	h := wc.newServeMux()
 	const first, second = "https://preview-aaa111-team.vercel.app", "https://preview-bbb222-team.vercel.app"
 	w := previewReq(h, "POST", "/api/preview/authorize", "http://localhost", "", `{"origin":"`+first+`"}`)
@@ -519,5 +517,25 @@ func TestPreviewOriginPatternGrantBindsExactOrigin(t *testing.T) {
 	}
 	if w := previewReq(h, "POST", "/api/preview/authorize", "http://localhost", "", `{"origin":"https://preview-x-other.vercel.app"}`); w.Code != 403 {
 		t.Fatalf("non-matching origin authorized: %d %s", w.Code, w.Body)
+	}
+}
+
+// 白名单只来自显式传入的 WebChannelConfig.PreviewOrigins（serverapp 从 config.json
+// web.preview_origins + XBOT_PREVIEW_ORIGINS 覆盖得出）；渠道自身绝不再读环境变量。
+func TestPreviewOriginsComeOnlyFromChannelConfig(t *testing.T) {
+	t.Setenv("XBOT_PREVIEW_ORIGINS", testPreviewOrigin)
+	wc := NewWebChannel(WebChannelConfig{Store: newTestStorage(t, newTestDB(t))}, bus.NewMessageBus())
+	t.Cleanup(wc.Stop)
+	wc.sessions["parent"] = sessionInfo{userID: 1, username: "operator", expires: time.Now().Add(time.Hour)}
+	h := wc.newServeMux()
+	if wc.previewAllowed(testPreviewOrigin) {
+		t.Fatal("env var leaked into a channel configured without preview origins")
+	}
+	if w := previewReq(h, "POST", "/api/preview/authorize", "http://localhost", "", `{"origin":"`+testPreviewOrigin+`"}`); w.Code != 403 {
+		t.Fatalf("authorize without configured origins: %d %s", w.Code, w.Body)
+	}
+	wc.config.PreviewOrigins = []string{testPreviewOrigin}
+	if w := previewReq(h, "POST", "/api/preview/authorize", "http://localhost", "", `{"origin":"`+testPreviewOrigin+`"}`); w.Code != 200 {
+		t.Fatalf("authorize with configured origin: %d %s", w.Code, w.Body)
 	}
 }

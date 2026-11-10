@@ -78,6 +78,10 @@ type WebChannelConfig struct {
 	AdminToken string // global admin token for privileged auth
 	InviteOnly bool   // 禁止自主注册，新账号只能由 admin 创建
 	PublicURL  string // 对外访问地址，用于生成 Runner 连接命令
+	// PreviewOrigins: external preview frontends allowed to request short-lived
+	// grants (config web.preview_origins, replaced by XBOT_PREVIEW_ORIGINS).
+	// Empty = preview authorization disabled.
+	PreviewOrigins []string
 }
 
 // WebCallbacks holds callback functions for Web channel API endpoints.

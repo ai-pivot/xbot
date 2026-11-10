@@ -11,7 +11,6 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -39,11 +38,22 @@ func previewOrigin(s string) string {
 	}
 	return s
 }
-func previewAllowed(origin string) bool {
+
+// previewEnabled reports whether any preview origin is configured. Disabled is
+// the default; the middleware then leaves all existing traffic untouched.
+func (wc *WebChannel) previewEnabled() bool {
+	return len(wc.config.PreviewOrigins) > 0
+}
+
+func (wc *WebChannel) previewAllowed(origin string) bool {
+	return previewOriginAllowed(wc.config.PreviewOrigins, origin)
+}
+
+func previewOriginAllowed(origins []string, origin string) bool {
 	if previewOrigin(origin) == "" {
 		return false
 	}
-	for _, s := range strings.Split(os.Getenv("XBOT_PREVIEW_ORIGINS"), ",") {
+	for _, s := range origins {
 		entry := strings.TrimSpace(s)
 		if entry == origin || previewPatternMatch(entry, origin) {
 			return true
@@ -118,7 +128,7 @@ func previewFromRequest(r *http.Request) *previewGrant {
 	return g
 }
 func (wc *WebChannel) previewValid(g *previewGrant) bool {
-	if g == nil || !previewAllowed(g.origin) || !time.Now().Before(g.expires) || g.ctx.Err() != nil {
+	if g == nil || !wc.previewAllowed(g.origin) || !time.Now().Before(g.expires) || g.ctx.Err() != nil {
 		return false
 	}
 	wc.sessionsMu.RLock()
@@ -147,12 +157,12 @@ func (wc *WebChannel) previewMiddleware(next http.Handler) http.Handler {
 		query := r.URL.Query().Get("preview_token")
 		// Existing CLI tokens are not preview credentials. Cross-site browser traffic
 		// is rejected before dispatch, including simple POSTs that need no preflight.
-		if strings.TrimSpace(os.Getenv("XBOT_PREVIEW_ORIGINS")) == "" && !strings.Contains(auth, "xbot_preview_") && query == "" {
+		if !wc.previewEnabled() && !strings.Contains(auth, "xbot_preview_") && query == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 		if cross || strings.HasPrefix(auth, "Bearer xbot_preview_") || query != "" {
-			if !previewAllowed(origin) {
+			if !wc.previewAllowed(origin) {
 				jsonErrorResponse(w, 403, "preview origin not allowed")
 				return
 			}
@@ -285,7 +295,7 @@ func (wc *WebChannel) handlePreviewConsent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if r.URL.Path == "/preview/authorize.js" {
-		if strings.TrimSpace(os.Getenv("XBOT_PREVIEW_ORIGINS")) == "" {
+		if !wc.previewEnabled() {
 			http.NotFound(w, r)
 			return
 		}
@@ -294,7 +304,7 @@ func (wc *WebChannel) handlePreviewConsent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	origin := r.URL.Query().Get("origin")
-	if !previewAllowed(origin) {
+	if !wc.previewAllowed(origin) {
 		jsonErrorResponse(w, 403, "preview origin not allowed")
 		return
 	}
@@ -327,7 +337,7 @@ func (wc *WebChannel) handlePreviewAuthorize(w http.ResponseWriter, r *http.Requ
 	var req struct {
 		Origin string `json:"origin"`
 	}
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req) != nil || !previewAllowed(req.Origin) {
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req) != nil || !wc.previewAllowed(req.Origin) {
 		jsonErrorResponse(w, 403, "preview origin not allowed")
 		return
 	}
