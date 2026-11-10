@@ -30,7 +30,8 @@ func previewOrigin(s string) string {
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || u.Opaque != "" {
 		return ""
 	}
-	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")) {
+	loopback := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
+	if u.Scheme != "https" && (u.Scheme != "http" || !loopback) {
 		return ""
 	}
 	if strings.ContainsAny(s, "*\\\r\n\t ") || s != u.Scheme+"://"+u.Host {
@@ -89,7 +90,8 @@ func previewLabelChars(s string) bool {
 		return false
 	}
 	for _, c := range s {
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+		lower, digit := c >= 'a' && c <= 'z', c >= '0' && c <= '9'
+		if !lower && !digit && c != '-' {
 			return false
 		}
 	}
