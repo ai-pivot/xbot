@@ -947,51 +947,10 @@ func (m *XbotMemory) writeCoreSummary(content string) {
 	os.Rename(tmpPath, path)
 }
 
-func (m *XbotMemory) updateCoreSummary(ctx context.Context, client llm.LLM, model string) {
-	if client == nil {
-		return
-	}
-
-	currentSummary := m.readCoreSummary()
-
-	// Get top high-importance memories
-	mems, err := m.recentLongTerm(10)
-	if err != nil || len(mems) == 0 {
-		return
-	}
-
-	var memSB strings.Builder
-	for _, mem := range mems {
-		if mem.Importance >= 0.7 {
-			fmt.Fprintf(&memSB, "- [%s] %s\n", mem.Type, mem.Content)
-		}
-	}
-	if memSB.Len() == 0 {
-		return
-	}
-
-	prompt := fmt.Sprintf(`Current core summary:
-%s
-
-Recent high-importance memories:
-%s
-
-Update the core summary to incorporate any new critical information.
-Keep it under %d characters. Preserve existing important information.
-Return ONLY the updated summary text, no explanations.`, currentSummary, memSB.String(), coreSummaryMaxChars)
-
-	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
-		llm.NewSystemMessage("You are a memory consolidation agent. Update the core summary concisely."),
-		llm.NewUserMessage(prompt),
-	}, nil)
-	if err != nil {
-		return
-	}
-
-	if resp.Content != "" {
-		m.writeCoreSummary(strings.TrimSpace(resp.Content))
-	}
-}
+// updateCoreSummary 已于 2026-11-09 删除（用户裁定 core summary 彻底移除）。
+// 历史上它每轮用 LLM 重写 MEMORY.md，产生 27 轮 prompt 回显 + 注入探针串的腐烂
+// 文本并被注入进上下文。现在没有任何调用点（Recall 不再注入 `## Core`，
+// Memorize/PostCompress 也不再自动重写）。
 
 // --- Heat decay and eviction ---
 

@@ -885,12 +885,12 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// no non-admin user in single-operator mode.)
 		// 分段计时（2026-11-09）：/api/session-tree 曾出现 1.6-3.5s，而 SQL 层实测仅
 		// ~14ms —— 必须用数据定位而不是猜。超过 300ms 打印各段耗时，永久保留为可观测性。
-	treeStart := time.Now()
-	channels, err := store.Tenant().ListDistinctChannels()
-	tChannels := time.Since(treeStart)
-	if err != nil {
-		return web.SessionTreeResult{}, err
-	}
+		treeStart := time.Now()
+		channels, err := store.Tenant().ListDistinctChannels()
+		tChannels := time.Since(treeStart)
+		if err != nil {
+			return web.SessionTreeResult{}, err
+		}
 		// Split channels: cli rows come from the chat-session reader (different
 		// row source), everything else is a tenants query.
 		var tenantChannels []string
@@ -906,7 +906,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			}
 		}
 
-	tCLI := time.Duration(0)
+		tCLI := time.Duration(0)
 		if hasCLI && webSQL != nil {
 			cliStart := time.Now()
 			cliChats, err := listCLIChatSessions(webSQL, "")
@@ -918,7 +918,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		}
 
 		// ONE query for every remaining channel instead of one per channel.
-	tTenants := time.Duration(0)
+		tTenants := time.Duration(0)
 		if len(tenantChannels) > 0 {
 			var tenants []web.UserChatWithPreview
 			if webSQL != nil {
@@ -963,10 +963,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// a session cache lookup each) cost 400–700ms per request and made
 		// /api/session-tree the slowest endpoint in the log; only the rows that
 		// are actually returned need it.
-	tSort := time.Since(time.Now())
 		sortStart := time.Now()
 		sortSessionTreeMains(mains)
-		tSort = time.Since(sortStart)
+		tSort := time.Since(sortStart)
 		total := len(mains)
 		if limit < 0 {
 			limit = total
@@ -996,7 +995,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 
 		// Runtime state is only needed for the page we return, and it is
 		// classified from one in-memory snapshot rather than a DB probe per row.
-	runStart := time.Now()
+		runStart := time.Now()
 		applyWebRunningStatusesFast(ag, mains)
 		tRun := time.Since(runStart)
 
@@ -1011,7 +1010,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// SessionServiceFor 打开该会话的库。子代理有上百个，每次 session-tree
 		// 请求就要开上百个会话库 —— 生产实测 7 分钟内累积 620 个打开的库。
 		applyWebRunningStatusesFast(ag, subagents)
-	buildStart := time.Now()
+		buildStart := time.Now()
 		result := buildSessionTree(mains, subagents)
 		tBuild := time.Since(buildStart)
 		result.HasMore = hasMore
@@ -1019,19 +1018,19 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 
 		if tot := time.Since(treeStart); tot > 300*time.Millisecond {
 			log.WithFields(log.Fields{
-				"total_ms":      tot.Milliseconds(),
-				"channels_ms":   tChannels.Milliseconds(),
-				"cli_ms":        tCLI.Milliseconds(),
-				"tenants_ms":    tTenants.Milliseconds(),
-				"sort_ms":       tSort.Milliseconds(),
-				"running_ms":    tRun.Milliseconds(),
-				"subagents_ms":  tSub.Milliseconds(),
-				"build_ms":      tBuild.Milliseconds(),
-				"mains":         len(mains),
-				"subagents":     len(subagents),
-				"total_mains":   total,
-				"limit":         limit,
-				"offset":        offset,
+				"total_ms":     tot.Milliseconds(),
+				"channels_ms":  tChannels.Milliseconds(),
+				"cli_ms":       tCLI.Milliseconds(),
+				"tenants_ms":   tTenants.Milliseconds(),
+				"sort_ms":      tSort.Milliseconds(),
+				"running_ms":   tRun.Milliseconds(),
+				"subagents_ms": tSub.Milliseconds(),
+				"build_ms":     tBuild.Milliseconds(),
+				"mains":        len(mains),
+				"subagents":    len(subagents),
+				"total_mains":  total,
+				"limit":        limit,
+				"offset":       offset,
 			}).Warn("session-tree slow — segment breakdown")
 		}
 		return result, nil

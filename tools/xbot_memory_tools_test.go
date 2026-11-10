@@ -12,9 +12,9 @@ package tools
 // plus letta core_memory_delete / core_memory_clear tool coverage.
 
 import (
-	"regexp"
 	"database/sql"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 

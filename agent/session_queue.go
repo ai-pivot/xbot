@@ -84,12 +84,6 @@ func queuedEntrySource(msg bus.InboundMessage) string {
 }
 
 // queueAppend records an admitted message. Call AFTER the msg landed in msgCh.
-func (ss *bgSessionState) queueLen() int {
-	ss.queueMu.Lock()
-	defer ss.queueMu.Unlock()
-	return len(ss.queue)
-}
-
 func (ss *bgSessionState) queueAppend(e queuedEntry) {
 	ss.queueMu.Lock()
 	ss.queue = append(ss.queue, e)
