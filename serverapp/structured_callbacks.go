@@ -337,7 +337,7 @@ type structuredAppender interface {
 	AppendStructuredMessage(tenantID int64, m common.StructuredMessage) (int64, bool, error)
 }
 
-func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error), answerFn func(string, web.SessionSelector, protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error), inboxFn func(web.SessionSelector, int64, int) ([]protocol.StructuredMessage, bool, int64, error), countFn func(web.SessionSelector) (int, error), listFn func(web.SessionSelector, string, int64, int64, int) ([]protocol.StructuredMessage, bool, int64, error), resolveFn func(string, web.SessionSelector, protocol.StructuredResolveInput) (*protocol.StructuredResolveResult, error)) {
+func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error), answerFn func(string, web.SessionSelector, protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error), inboxFn func(web.SessionSelector, int64, int) ([]protocol.StructuredMessage, bool, int64, error), countFn func(web.SessionSelector) (int, error), listFn func(web.SessionSelector, string, int64, int64, int) ([]protocol.StructuredMessage, bool, int64, error), resolveFn func(string, web.SessionSelector, protocol.StructuredResolveInput) (*protocol.StructuredResolveResult, error), deleteFn func(web.SessionSelector, []int64) (int, error)) {
 	sessionOf := func(sel web.SessionSelector) (storage.SessionStore, int64, error) {
 		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
 		if err != nil {
@@ -677,6 +677,17 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		}
 		return msg.MessageID, dup, nil
 	})
+
+	// deleteFn 删除收件箱里的结构化消息（单条或批量）。
+	// SessionStore 嵌入了 StructuredStore，SQLite / PG 都实现了该方法；
+	// 后端缺能力时直接报错，不静默当成"删成功"。
+	deleteFn = func(sel web.SessionSelector, ids []int64) (int, error) {
+		svc, tenantID, derr := sessionOf(sel)
+		if derr != nil {
+			return 0, derr
+		}
+		return svc.DeleteStructuredMessages(tenantID, ids)
+	}
 	return
 }
 

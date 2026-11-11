@@ -653,3 +653,41 @@ func boolInt(b bool) int {
 	}
 	return 0
 }
+
+// maxStructuredDeleteIDs 单次批量删除的上限（收件箱「一键删除」最多一次清这么多行）。
+const maxStructuredDeleteIDs = 500
+
+// DeleteStructuredMessages 见 common.StructuredStore 的契约。
+//
+// 只删 kind != ” 的结构化行：清收件箱绝不该顺手删掉普通聊天消息。
+// 与其它写路径一致，先拿 tenant 的 historyLock，避免与回放/压缩并发。
+func (s *SessionService) DeleteStructuredMessages(tenantID int64, ids []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if len(ids) > maxStructuredDeleteIDs {
+		return 0, fmt.Errorf("too many ids (%d > %d)", len(ids), maxStructuredDeleteIDs)
+	}
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, tenantID)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	res, err := conn.ExecContext(context.Background(),
+		fmt.Sprintf(`DELETE FROM session_messages WHERE tenant_id = ? AND kind != '' AND id IN (%s)`, ph),
+		args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete structured messages: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}

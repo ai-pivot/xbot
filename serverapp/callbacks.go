@@ -1197,13 +1197,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	}
 
 	// ─── 结构化消息（sendmessage-structured）───
-	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList, structuredResolve := structuredCallbacks(ag)
+	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList, structuredResolve, structuredDelete := structuredCallbacks(ag)
 	callbacks.StructuredAppend = structuredAppend
 	callbacks.StructuredAnswer = structuredAnswer
 	callbacks.StructuredInbox = structuredInbox
 	callbacks.StructuredCount = structuredCount
 	callbacks.StructuredMessages = structuredList
 	callbacks.StructuredResolve = structuredResolve
+	callbacks.StructuredDelete = structuredDelete
 
 	// ─── 跨会话活动流（通信视图性能重构）───
 	// AgentActivityList 走后端无关的 InteractiveAgents store（SQLite / PG 均可）。

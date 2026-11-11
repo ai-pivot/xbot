@@ -202,6 +202,56 @@ func (wc *WebChannel) handleInboxResolve(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
 }
 
+// maxInboxDeleteIDs 单次删除上限，与 storage 侧 maxStructuredDeleteIDs 对齐。
+const maxInboxDeleteIDs = 500
+
+// handleInboxDelete 删除收件箱里的结构化消息（单条 = 传一个 id，一键删除 = 传全部）。
+//
+// POST /api/inbox/delete
+//
+//	{"channel":"web","chat_id":"chat_X","ids":[12,13]}
+//
+// 只删 kind != ” 的结构化行；普通聊天消息无法经此路径删除（storage 侧也有同样的
+// 条件兜底），避免把「清收件箱」做成「删聊天记录」。
+func (wc *WebChannel) handleInboxDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var input struct {
+		Channel string  `json:"channel"`
+		ChatID  string  `json:"chat_id"`
+		IDs     []int64 `json:"ids"`
+	}
+	if err := decodeJSONBody(r, &input, true); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(input.IDs) == 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "ids is required")
+		return
+	}
+	if len(input.IDs) > maxInboxDeleteIDs {
+		jsonErrorResponse(w, http.StatusBadRequest, "too many ids (max 500)")
+		return
+	}
+	if wc.callbacks.StructuredDelete == nil {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "structured messages unavailable")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	sel, ok := wc.resolveAPISession(w, r, senderID, input.Channel, input.ChatID)
+	if !ok {
+		return
+	}
+	deleted, err := wc.callbacks.StructuredDelete(sel, input.IDs)
+	if err != nil {
+		writeStructuredError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
 func (wc *WebChannel) handleStructuredMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")

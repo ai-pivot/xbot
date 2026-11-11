@@ -321,6 +321,10 @@ type WebCallbacks struct {
 	// 首次处理时把回流消息投给发起 agent。幂等（重复处理 Duplicate=true，不再回流）。
 	StructuredResolve func(senderID string, sel SessionSelector, input protocol.StructuredResolveInput) (*protocol.StructuredResolveResult, error)
 
+	// StructuredDelete 删除收件箱里的结构化消息（单条或批量，ids 上限 500）。
+	// 只删 kind != '' 的结构化行，不会误删普通聊天消息。nil ⇒ 路由回 503。
+	StructuredDelete func(sel SessionSelector, ids []int64) (int, error)
+
 	// ── 跨会话活动流（通信视图性能重构）────────────────────────────────────
 	//
 	// 这两个回调**只打主库**：会话按 chat 分库（one session one DB）之后，跨会话
@@ -1093,6 +1097,7 @@ func (wc *WebChannel) newServeMux() http.Handler {
 	mux.HandleFunc("/api/inbox", wc.authMiddleware(wc.handleInbox))
 	// 用户看板卡片处理（to="user" 闭环）：approve / reject / dismiss。
 	mux.HandleFunc("/api/inbox/resolve", wc.authenticatedPOST(wc.handleInboxResolve))
+	mux.HandleFunc("/api/inbox/delete", wc.authenticatedPOST(wc.handleInboxDelete))
 	// 跨会话活动流（通信视图性能重构）：只读主库索引表，绝不打开会话分库。
 	//   /api/activity —— 最近的 report/decision/answer/... 摘要流
 	//   /api/agents   —— 活跃子代理（默认不含 unloaded）

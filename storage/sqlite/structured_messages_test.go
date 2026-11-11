@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -386,4 +387,48 @@ func TestListStructuredMessagesAfterIsResumable(t *testing.T) {
 			t.Fatalf("ids not strictly ascending at %d: %d <= %d", i, all[i].ID, all[i-1].ID)
 		}
 	}
+}
+
+// TestDeleteStructuredMessages 覆盖收件箱「单条删除 / 一键删除」的后端契约：
+// 按 id 删除、幂等（行已没了返回 0）、批量混合已删 id、超限拒收。
+func TestDeleteStructuredMessages(t *testing.T) {
+	svc, tenantID := newStructuredTestService(t)
+	ctx := context.Background()
+
+	mk := func(corr string) int64 {
+		id, _, err := svc.AppendStructuredMessage(tenantID, StructuredMessage{
+			Kind:          StructuredKindAskUser,
+			ChatID:        "chat-1",
+			CorrelationID: corr,
+			Content:       "问题 " + corr,
+			Direction:     "in",
+		})
+		if err != nil {
+			t.Fatalf("append %s: %v", corr, err)
+		}
+		return id
+	}
+	id1, id2 := mk("ask-1"), mk("ask-2")
+
+	// 单条删除
+	if n, err := svc.DeleteStructuredMessages(tenantID, []int64{id1}); err != nil || n != 1 {
+		t.Fatalf("delete one: n=%d err=%v (want 1, nil)", n, err)
+	}
+	// 幂等：同 id 再删一次 → 0 行，不报错
+	if n, err := svc.DeleteStructuredMessages(tenantID, []int64{id1}); err != nil || n != 0 {
+		t.Fatalf("delete again: n=%d err=%v (want 0, nil)", n, err)
+	}
+	// 批量：存在的 + 不存在的 → 只计实际删除
+	if n, err := svc.DeleteStructuredMessages(tenantID, []int64{id2, 999999}); err != nil || n != 1 {
+		t.Fatalf("batch delete: n=%d err=%v (want 1, nil)", n, err)
+	}
+	// 超限拒收（上限 500）
+	if _, err := svc.DeleteStructuredMessages(tenantID, make([]int64, 501)); err == nil {
+		t.Fatal("over-limit batch must be rejected")
+	}
+	// 空列表是 no-op
+	if n, err := svc.DeleteStructuredMessages(tenantID, nil); err != nil || n != 0 {
+		t.Fatalf("empty ids: n=%d err=%v (want 0, nil)", n, err)
+	}
+	_ = ctx
 }

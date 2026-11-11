@@ -66,10 +66,46 @@ export function Inbox({
   onAnswer: AnswerFn
   onDecide: DecideFn
 }) {
-  const { items, unanswered, loading, error, refresh, resolve } = useInboxBoard(scope)
+  const { items, unanswered, loading, error, refresh, resolve, deleteMany, markAllRead } =
+    useInboxBoard(scope)
   const [expanded, setExpanded] = useState<number | null>(null)
   const [draft, setDraft] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState<number | null>(null)
+  const [bulkBusy, setBulkBusy] = useState(false)
+
+  // 一键已读 = 逐条 dismiss（复用单条 CAS 语义，服务端保证幂等）。
+  const markAll = async () => {
+    if (bulkBusy || items.length === 0) return
+    setBulkBusy(true)
+    try {
+      await markAllRead()
+      setExpanded(null)
+      setDraft({})
+    } catch {
+      /* store 已把错误写进 state.error */
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  // 一键删除：不可恢复，必须二次确认。只删结构化行，不动普通聊天记录。
+  const deleteAll = async () => {
+    if (bulkBusy || items.length === 0) return
+    const ok = window.confirm(
+      `删除全部 ${items.length} 条收件箱条目？\n\n删除后不可恢复。只删结构化卡片（提问/汇报/决策/回答），不影响普通聊天记录。`,
+    )
+    if (!ok) return
+    setBulkBusy(true)
+    try {
+      await deleteMany(items.map((it) => it.message_id))
+      setExpanded(null)
+      setDraft({})
+    } catch {
+      /* 同上 */
+    } finally {
+      setBulkBusy(false)
+    }
+  }
 
   const act = async (messageId: number, action: InboxResolveAction) => {
     if (busy === messageId) return
@@ -85,6 +121,22 @@ export function Inbox({
       setExpanded((cur) => (cur === messageId ? null : cur))
     } catch {
       /* store 已把错误写进 state.error，看板顶部会显示 */
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // 单条删除：同样二次确认（不可恢复）。
+  const deleteOne = async (messageId: number) => {
+    if (busy === messageId || bulkBusy) return
+    const ok = window.confirm('删除这条收件箱条目？删除后不可恢复（只删结构化卡片，不影响聊天记录）。')
+    if (!ok) return
+    setBusy(messageId)
+    try {
+      await deleteMany([messageId])
+      setExpanded((cur) => (cur === messageId ? null : cur))
+    } catch {
+      /* store 已把错误写进 state.error */
     } finally {
       setBusy(null)
     }
@@ -107,13 +159,35 @@ export function Inbox({
             {unanswered}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          className="text-[11px] text-app-accent hover:underline"
-        >
-          刷新
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="inbox-mark-all-read"
+            onClick={() => void markAll()}
+            disabled={bulkBusy || items.length === 0}
+            className="text-[11px] text-app-accent hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+            title="把当前所有条目标记为已读（dismiss）"
+          >
+            全部已读
+          </button>
+          <button
+            type="button"
+            data-testid="inbox-delete-all"
+            onClick={() => void deleteAll()}
+            disabled={bulkBusy || items.length === 0}
+            className="text-[11px] text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+            title="删除当前所有条目（不可恢复，只删结构化卡片）"
+          >
+            全部删除
+          </button>
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            className="text-[11px] text-app-accent hover:underline"
+          >
+            刷新
+          </button>
+        </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {error && items.length > 0 ? (
@@ -173,6 +247,16 @@ export function Inbox({
                           {label}
                         </button>
                       ))}
+                      <button
+                        type="button"
+                        data-testid="inbox-delete"
+                        disabled={busy === m.message_id || bulkBusy}
+                        onClick={() => void deleteOne(m.message_id)}
+                        className="rounded border border-destructive/40 px-1.5 py-0.5 text-[11px] text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                        title="删除这条（不可恢复）"
+                      >
+                        删除
+                      </button>
                       {m.kind === 'ask_user' ? (
                         <>
                           <input

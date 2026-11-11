@@ -123,3 +123,19 @@ export async function resolveInboxItem(input: {
   )
   return raw.result ?? raw
 }
+
+/**
+ * 删除收件箱条目（单条 = 传一个 id，一键删除 = 传全部可见 id）。
+ *
+ * 服务端只删 `kind != ''` 的结构化行（ask_user/report/decision/answer/event/
+ * command），普通聊天消息无法经此路径删除 —— 这是刻意的边界，避免「清收件箱」
+ * 变成「删聊天记录」。上限 500 条/次。
+ */
+export async function deleteInboxItems(input: {
+  ids: number[]
+  channel?: string
+  chat_id?: string
+}): Promise<{ deleted: number }> {
+  const raw = await postAPI<{ deleted?: number }>('/api/inbox/delete', input)
+  return { deleted: raw.deleted ?? 0 }
+}

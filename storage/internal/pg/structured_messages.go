@@ -609,3 +609,20 @@ func (s *sessionStore) GetStructuredMessageByID(tenantID, id int64) (*common.Str
 	}
 	return &m, nil
 }
+
+// DeleteStructuredMessages 见 common.StructuredStore 的契约（只删 kind != ” 的结构化行）。
+func (s *sessionStore) DeleteStructuredMessages(tenantID int64, ids []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if len(ids) > 500 {
+		return 0, fmt.Errorf("too many ids (%d > 500)", len(ids))
+	}
+	tag, err := s.pool.Exec(context.Background(),
+		`DELETE FROM session_messages WHERE tenant_id = $1 AND kind != '' AND id = ANY($2)`,
+		tenantID, ids)
+	if err != nil {
+		return 0, fmt.Errorf("delete structured messages: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}

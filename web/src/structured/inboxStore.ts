@@ -25,7 +25,7 @@ import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 
 import { APIError } from '@/lib/api'
-import { fetchInbox, resolveInboxItem } from './api'
+import { deleteInboxItems, fetchInbox, resolveInboxItem } from './api'
 import type { InboxResolveAction, InboxResult, StructuredMessage } from './types'
 
 export interface InboxState {
@@ -283,5 +283,37 @@ export function useInboxBoard(scopeArg: InboxScope) {
     },
     [],
   )
-  return { ...snapshot, refresh, resolve }
+
+  /** 删除收件箱条目（单条或批量）。返回实际删除行数。 */
+  const deleteMany = useCallback(
+    async (ids: number[]) => {
+      if (ids.length === 0) return 0
+      const r = await deleteInboxItems({ ids, channel, chat_id: chatID })
+      await refresh()
+      return r.deleted
+    },
+    [channel, chatID, refresh],
+  )
+
+  /**
+   * 一键已读 = 对当前每一条执行 dismiss。
+   *
+   * 复用单条 resolve 的 CAS 语义（服务端保证幂等），串行执行避免把 CAS 打爆；
+   * 单条失败（如已被别处处理 → 409）不中断整批 —— 批量操作不该被一条异常打断。
+   */
+  const markAllRead = useCallback(async () => {
+    let done = 0
+    for (const it of snapshot.items) {
+      try {
+        const r = await resolve(it.message_id, 'dismiss')
+        if (r) done++
+      } catch {
+        // 忽略单条失败：可能已被其它端处理掉了
+      }
+    }
+    await refresh()
+    return done
+  }, [snapshot.items, resolve, refresh])
+
+  return { ...snapshot, refresh, resolve, deleteMany, markAllRead }
 }
