@@ -17,6 +17,7 @@ package xbot
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +47,45 @@ var injectionPatterns = []string{
 
 // draftMarkers 未完成草稿的行首标记（LLM 内心独白被误存）。
 var draftMarkers = []string{"wait.", "so i should", "let me count"}
+
+// controlTags 模型输出 / 协议控制标签。
+//
+// 2026-11-11 实证：#112343 的正文里混进了 "</think><tool_call>"、"importance"、
+// 以及 "Smg 曎 max gap" / "mington" 这类被截断的碎片 —— 流式输出被切断后，
+// 半截协议标记和乱码一起当成了记忆正文。这类内容一旦落库没有任何价值，还会
+// 污染检索（BM25 命中一堆碎片）与注入（占掉注入预算）。
+var controlTags = []string{
+	"</think",
+	"<tool_call",
+	"</tool_call",
+	"<|im_start|",
+	"<|im_end|",
+	"<|endoftext|>",
+	"<system>",
+	"</system>",
+	"[inst]",
+	"[/inst]",
+}
+
+// clampImportance 把 importance 归一到 [0,1]。
+//
+// 2026-11-11 实证：#112343 的 importance 落库为 24440.0。ListMemories 用
+// OrderImportance 排序，于是这一行永久霸占 memory_manage list 的第一位，
+// 正常记忆被挤出前 50 条 —— 用户看到的现象就是"记忆坏了/更新不进去"。
+// 写入侧必须钳制；非有限值（NaN/Inf）按默认 0.5 处理。
+func clampImportance(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0.5
+	}
+	if v <= 0 {
+		// 与既有 "importance == 0 → 0.5" 的默认语义保持一致。
+		return 0.5
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
 
 // DuplicateMemoryError 表示候选内容与既有 ACTIVE 记忆重复。
 type DuplicateMemoryError struct {
@@ -85,6 +125,11 @@ func validateMemoryContent(content string) error {
 		}
 		if isKanaRune(r) {
 			return fmt.Errorf("memory content rejected: contains Japanese kana (mojibake heuristic)")
+		}
+	}
+	for _, tag := range controlTags {
+		if strings.Contains(lower, tag) {
+			return fmt.Errorf("memory content rejected: contains protocol control tag %q (truncated stream)", tag)
 		}
 	}
 	return nil
@@ -215,6 +260,9 @@ func (m *XbotMemory) ProposeMemory(ctx context.Context, entry LongTermMemory) (p
 	if scope == "" {
 		scope = "global"
 	}
+	// importance 钳制（第 1 项修复，与二段式无关）：越界值必须在暂存前就归一，
+	// 否则 pending proposal 里也带着 24440 这种值。
+	entry.Importance = clampImportance(entry.Importance)
 	if scope == "session" {
 		id, aerr := m.AddMemory(ctx, entry)
 		if aerr != nil {
@@ -223,6 +271,8 @@ func (m *XbotMemory) ProposeMemory(ctx context.Context, entry LongTermMemory) (p
 		return 0, id, nil
 	}
 
+	// global scope：**必须**两步。第一步只暂存 proposal（TTL 10 分钟），
+	// 过期或未确认一律不落库 —— 这是既定设计，不允许为"用起来顺手"改成直写。
 	proposalStore.Lock()
 	defer proposalStore.Unlock()
 	proposalStore.dropExpired()

@@ -1331,9 +1331,13 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64, error) {
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
-	if entry.Importance == 0 {
-		entry.Importance = 0.5
+	// 写入闸门：AddMemory 是公开 API，不能假设上游一定校验过（除 memory_add /
+	// UpdateMemory 外，未来任何新调用点都会直接走到这里）。缺了这一步，垃圾
+	// 正文与越界 importance 都能落库 —— 见 clampImportance 的实证注释。
+	if err := validateMemoryContent(entry.Content); err != nil {
+		return 0, err
 	}
+	entry.Importance = clampImportance(entry.Importance)
 	// 2026-11-10 用户裁定：存储原版（记忆落库不脱敏，脱敏只在出站层）。
 	if entry.Keywords == "" {
 		entry.Keywords = extractKeywords(entry.Content)
@@ -1397,7 +1401,7 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 	for _, r := range rows {
 		entries = append(entries, MemoryEntry{
 			ID: r.ID, Type: r.Type, Content: r.Content, Keywords: r.Keywords, Tags: r.Tags,
-			Importance: r.Importance, CreatedAt: r.CreatedAt.Format(time.RFC3339), Scope: r.Scope,
+			Importance: clampImportance(r.Importance), CreatedAt: r.CreatedAt.Format(time.RFC3339), Scope: r.Scope,
 		})
 	}
 	return entries, nil
@@ -1407,13 +1411,18 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 //
 // 2026-11-10 用户裁定：存储原版（更新路径也不脱敏）。
 func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywords, tags string, importance float64) error {
+	// 更新走与新增同一套闸门：memory_manage update 是模型可直接调用的入口，
+	// 不校验就等于给了一条绕过 validate 的写路径（2026-11-11 实证）。
+	if err := validateMemoryContent(content); err != nil {
+		return err
+	}
 	return m.store.UpdateAgentLongTermMemory(ctx, agentmem.LongTermMemory{
 		ID:         id,
 		UserID:     m.scopeArg(),
 		Content:    content,
 		Keywords:   keywords,
 		Tags:       tags,
-		Importance: importance,
+		Importance: clampImportance(importance),
 		SearchText: buildSearchText(content, keywords, tags),
 	})
 }

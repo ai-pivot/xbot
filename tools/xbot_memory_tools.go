@@ -84,7 +84,7 @@ type MemoryAddTool struct{}
 
 func (t *MemoryAddTool) Name() string { return "memory_add" }
 func (t *MemoryAddTool) Description() string {
-	return "Stage a memory for future conversations (two-phase write). First call: scope='global' (default) creates a PROPOSAL — nothing is persisted until you confirm with memory_confirm(proposal_id); scope='session' writes directly (session-local only). Duplicates, injection patterns, oversized or garbage content are rejected. Use this for important facts, user preferences, key decisions, or anything worth remembering."
+	return "Stage a memory for future conversations (two-phase write). First call: scope='global' (default) creates a PROPOSAL — nothing is persisted until you confirm with memory_confirm(proposal_id); scope='session' writes directly (session-local only). Duplicates, injection patterns, protocol control tags, oversized or garbage content are rejected. Use this for important facts, user preferences, key decisions, or anything worth remembering."
 }
 func (t *MemoryAddTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
@@ -265,6 +265,7 @@ func (t *MemoryManageTool) Parameters() []llm.ToolParam {
 		{Name: "id", Type: "integer", Description: "Memory ID (required for delete and update)", Required: false},
 		{Name: "type", Type: "string", Description: "Filter by type (for list): fact, preference, event, decision, skill, or all", Required: false},
 		{Name: "content", Type: "string", Description: "New content (for update)", Required: false},
+		{Name: "limit", Type: "integer", Description: "Max rows for list (default 50, max 500)", Required: false},
 		{Name: "keywords", Type: "string", Description: "New keywords (for update, optional)", Required: false},
 		{Name: "importance", Type: "number", Description: "New importance 0.0-1.0 (for update, optional)", Required: false},
 	}
@@ -279,6 +280,7 @@ func (t *MemoryManageTool) Execute(ctx *ToolContext, input string) (*ToolResult,
 		Keywords   string  `json:"keywords"`
 		Tags       string  `json:"tags"`
 		Importance float64 `json:"importance"`
+		Limit      int     `json:"limit"`
 	}](input)
 	if err != nil {
 		return nil, err
@@ -294,7 +296,14 @@ func (t *MemoryManageTool) Execute(ctx *ToolContext, input string) (*ToolResult,
 		if params.Type == "" {
 			params.Type = "all"
 		}
-		entries, err := mem.ListMemories(ctx.Ctx, params.Type, 50)
+		limit := params.Limit
+		if limit <= 0 {
+			limit = 50
+		}
+		if limit > 500 {
+			limit = 500
+		}
+		entries, err := mem.ListMemories(ctx.Ctx, params.Type, limit)
 		if err != nil {
 			return nil, fmt.Errorf("list memories failed: %w", err)
 		}
