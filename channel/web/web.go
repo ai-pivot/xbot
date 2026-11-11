@@ -87,6 +87,22 @@ type WebChannelConfig struct {
 
 // WebCallbacks holds callback functions for Web channel API endpoints.
 // Injected from main to decouple channel from agent/tools packages.
+// MemoryItem 是记忆面板展示的一条长期记忆。
+//
+// 只暴露面板需要的字段：importance 已在写入侧被钳到 [0,1]（见 memory/xbot 的
+// clampImportance），读侧也钳过，所以这里拿到的一定是合法值 —— 历史脏数据
+// （曾出现过 importance=24440 把正常记忆全挤出列表）不会再污染排序。
+type MemoryItem struct {
+	ID         int64   `json:"id"`
+	Type       string  `json:"type"`
+	Content    string  `json:"content"`
+	Keywords   string  `json:"keywords"`
+	Tags       string  `json:"tags"`
+	Importance float64 `json:"importance"`
+	Scope      string  `json:"scope"`
+	CreatedAt  string  `json:"created_at"`
+}
+
 type WebCallbacks struct {
 	// RunnerList lists every managed machine (no credentials).
 	RunnerList func() ([]tools.RunnerInfo, error)
@@ -324,6 +340,12 @@ type WebCallbacks struct {
 	// StructuredDelete 删除收件箱里的结构化消息（单条或批量，ids 上限 500）。
 	// 只删 kind != '' 的结构化行，不会误删普通聊天消息。nil ⇒ 路由回 503。
 	StructuredDelete func(sel SessionSelector, ids []int64) (int, error)
+
+	// ── 长期记忆面板（/api/memory）──
+	// 三个回调都是 nil 时路由回 503（显式不可用，不静默成功）。
+	MemoryList   func(sel SessionSelector, memType string, limit int) ([]MemoryItem, error)
+	MemoryUpdate func(sel SessionSelector, id int64, content, keywords, tags string, importance float64) error
+	MemoryDelete func(sel SessionSelector, id int64) error
 
 	// ── 跨会话活动流（通信视图性能重构）────────────────────────────────────
 	//
@@ -1098,6 +1120,9 @@ func (wc *WebChannel) newServeMux() http.Handler {
 	// 用户看板卡片处理（to="user" 闭环）：approve / reject / dismiss。
 	mux.HandleFunc("/api/inbox/resolve", wc.authenticatedPOST(wc.handleInboxResolve))
 	mux.HandleFunc("/api/inbox/delete", wc.authenticatedPOST(wc.handleInboxDelete))
+	mux.HandleFunc("/api/memory", wc.authMiddleware(wc.handleMemoryList))
+	mux.HandleFunc("/api/memory/update", wc.authenticatedPOST(wc.handleMemoryUpdate))
+	mux.HandleFunc("/api/memory/delete", wc.authenticatedPOST(wc.handleMemoryDelete))
 	// 跨会话活动流（通信视图性能重构）：只读主库索引表，绝不打开会话分库。
 	//   /api/activity —— 最近的 report/decision/answer/... 摘要流
 	//   /api/agents   —— 活跃子代理（默认不含 unloaded）

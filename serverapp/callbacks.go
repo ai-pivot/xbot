@@ -24,6 +24,7 @@ import (
 	"xbot/channel/web"
 	"xbot/config"
 	log "xbot/logger"
+	xbotmemory "xbot/memory/xbot"
 	"xbot/push"
 	"xbot/session"
 	"xbot/storage"
@@ -1205,6 +1206,67 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	callbacks.StructuredMessages = structuredList
 	callbacks.StructuredResolve = structuredResolve
 	callbacks.StructuredDelete = structuredDelete
+
+	// ── 长期记忆面板（/api/memory）──
+	//
+	// 通过 session → memory provider 拿 *xbotmemory.XbotMemory。用 GetSession
+	// 而不是 GetOrCreateSession：面板"只是打开看看"不该凭空造出会话。
+	xbotMem := func(sel web.SessionSelector) (*xbotmemory.XbotMemory, error) {
+		sess, ok := ag.MultiSession().GetSession(sel.Channel, sel.ChatID)
+		if !ok {
+			return nil, fmt.Errorf("session not found: %s/%s", sel.Channel, sel.ChatID)
+		}
+		prov := sess.Memory()
+		xm, ok := prov.(*xbotmemory.XbotMemory)
+		if !ok {
+			return nil, fmt.Errorf("memory provider is not xbot (got %T)", prov)
+		}
+		return xm, nil
+	}
+
+	callbacks.MemoryList = func(sel web.SessionSelector, memType string, limit int) ([]web.MemoryItem, error) {
+		xm, err := xbotMem(sel)
+		if err != nil {
+			return nil, err
+		}
+		if limit <= 0 {
+			limit = 50
+		}
+		if limit > 500 {
+			limit = 500
+		}
+		entries, err := xm.ListMemories(context.Background(), memType, limit)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]web.MemoryItem, 0, len(entries))
+		for _, e := range entries {
+			out = append(out, web.MemoryItem{
+				ID: e.ID, Type: e.Type, Content: e.Content,
+				Keywords: e.Keywords, Tags: e.Tags,
+				Importance: e.Importance, Scope: e.Scope, CreatedAt: e.CreatedAt,
+			})
+		}
+		return out, nil
+	}
+
+	callbacks.MemoryUpdate = func(sel web.SessionSelector, id int64, content, keywords, tags string, importance float64) error {
+		xm, err := xbotMem(sel)
+		if err != nil {
+			return err
+		}
+		// importance 的钳制与内容校验在 XbotMemory.UpdateMemory 内部（写入闸门），
+		// 这里不重复实现，避免两处规则漂移。
+		return xm.UpdateMemory(context.Background(), id, content, keywords, tags, importance)
+	}
+
+	callbacks.MemoryDelete = func(sel web.SessionSelector, id int64) error {
+		xm, err := xbotMem(sel)
+		if err != nil {
+			return err
+		}
+		return xm.DeleteMemory(context.Background(), id)
+	}
 
 	// ─── 跨会话活动流（通信视图性能重构）───
 	// AgentActivityList 走后端无关的 InteractiveAgents store（SQLite / PG 均可）。
