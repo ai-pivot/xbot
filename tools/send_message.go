@@ -74,6 +74,9 @@ in this session (repeated clicks never re-deliver).
   their parent agent, which decides whether the user should be interrupted.
 - kind must be "report" (default when omitted) or "ask_user" (payload.questions required).
   decision/answer are replies to an agent, not cards.
+- ask_user 的 payload 形状（照抄即可）：
+  {"questions":[{"id":"q1","question":"问题文本（用户看到的）","options":[{"id":"a","label":"选项文字"}],"multi_select":false,"allow_other":true}]}
+  选项必须写成 {id,label} 对象——只给字符串数组时 label 会丢，卡片会渲染成空复选框。
 - Example: SendMessage(to="user", kind="report", message="N1 后端闭环完成：...",
   payload="{\"summary\":\"一句话结论\",\"needs_approval\":true}", idempotency_key="n1-1")`
 }
@@ -96,7 +99,12 @@ func (t *SendMessageTool) Parameters() []llm.ToolParam {
 		{Name: "message", Type: "string", Description: "Message content to send. For groups, use @agent:role/instance to trigger specific agents.", Required: true},
 		{Name: "kind", Type: "string", Description: "Optional structured kind: report | ask_user | answer | decision. Omit or 'text' for a plain message. Use kind=decision to approve/reject (批复) an existing report/ask_user — then payload must contain {\"verdict\":\"approve|reject|modify\"} and reply_to must be the target message_id. " +
 			"When kind=ask_user, the `message` field MUST carry the FULL context the user needs to decide — the user sees ONLY this message and the questions, nothing else (no chat history, no tool output). Write it as a self-contained briefing: (a) what triggered this question, (b) the concrete facts/numbers/paths involved, (c) what each option will cause, (d) what happens if the user picks nothing. Example: 'backend盘库发现 b300-9 根盘 97%（剩 6.6G），/tmp 下有 4 个 9 月实验副本共 77G 已导出 patch。A=立即删实验副本释放 77G；B=等今晚低峰再做。不做则明早可能写满触发告警。' A bare question without this context is a defect — the user will not be able to answer it."},
-		{Name: "payload", Type: "string", Description: "Optional JSON object string carrying the structured body, e.g. {\"summary\":\"...\"} for report, {\"questions\":[...]} for ask_user, {\"verdict\":\"approve\",\"comment\":\"...\"} for decision."},
+		{Name: "payload", Type: "string", Description: "Optional JSON object string carrying the structured body. Schema per kind — " +
+			"report: {\"summary\":\"一句话结论\",\"needs_approval\":true}; " +
+			"decision: {\"verdict\":\"approve|reject|modify\",\"comment\":\"...\"}; " +
+			"answer: {\"answers\":{\"<question_id>\":\"答案\"}} or {\"cancelled\":true}; " +
+			"ask_user: {\"questions\":[{\"id\":\"q1\",\"question\":\"给用户看的问题文本\",\"options\":[{\"id\":\"a\",\"label\":\"用户看到的选项文字\",\"description\":\"可选补充说明\"}],\"multi_select\":false,\"allow_other\":true,\"required\":true}]}. " +
+			"ask_user 要点（2026-11-11 实测过空选项 bug）：① options 的每一项必须是 {id,label} 对象，`label` 才是渲染出来的文字；传纯字符串数组服务端会归一化，但显式写对象最稳。② multi_select=true 才渲染复选框，false/缺省是单选。③ allow_other=true 会额外给一个自由输入框。④ 每个 question 的 `id` 用于回传答案，同一 payload 内必须唯一；缺省时服务端会用问题文本前 24 字补。⑤ 只问真正需要用户拍板的事，options 建议 2–6 个。"},
 		{Name: "reply_to", Type: "string", Description: "Required for kind=decision: the message_id being approved/rejected."},
 		{Name: "idempotency_key", Type: "string", Description: "Optional. Same key twice = only one row (safe against double-clicks / retries)."},
 	}
@@ -224,6 +232,9 @@ func (t *SendMessageTool) sendToUserBoard(ctx *ToolContext, addr string, p SendM
 		if _, ok := payload["questions"]; !ok {
 			return nil, fmt.Errorf("payload.questions is required for kind=ask_user (to=%q)", addr)
 		}
+		// 归一化 options：前端读 opt.label，而 protocol 侧 Options 是 []string。
+		// 2026-11-11 实测不归一化会渲染出 N 个空复选框。
+		protocol.NormalizeAskPayload(payload)
 	}
 
 	// ④ 落库（注入的 userNotice 实现；未注入 = 该运行时没有用户看板）

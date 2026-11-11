@@ -262,6 +262,11 @@ func isStructuredKind(kind string) bool { return structuredKinds[kind] }
 
 // validateStructuredPayload 校验 payload 体积与 kind 必需字段。
 func validateStructuredPayload(input protocol.StructuredMessageInput) error {
+	// 先把 ask_user 的 options 归一化成 [{id,label}]（字符串形态原地转换）。
+	// 必须在写入前做：前端 StructuredCards 读 opt.label，而 protocol 侧
+	// AskUserQuestion.Options 是 []string，两种形态都会被调用方传进来。
+	protocol.NormalizeAskPayload(input.Payload)
+
 	// 顶层 text 与 payload 同受 256 KiB 限制：text 会落库并进入 LLM 上下文，
 	// 只限制 payload 会让客户端用 text 绕过体积上限（HTTP 层 1MB body 兜不住语义）。
 	if len(input.Text) > maxStructuredPayloadBytes {

@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
+  AskOption,
   AskPayload,
   AskQuestion,
   DecisionPayload,
@@ -384,7 +385,22 @@ export function AskUserCard({
             <div key={q.id} className="mb-3 last:mb-0">
               <p className="mb-1.5 text-sm font-medium">{q.question}</p>
               <div className="flex flex-col gap-1.5">
-                {(q.options ?? []).map((opt) => {
+                {(q.options ?? []).map((raw, optIdx) => {
+                  // 兼容两种 payload 形态：
+                  //   {id,label,description} —— 前端规范（types.ts 的 AskOption）
+                  //   "纯字符串"             —— protocol/events.go 的
+                  //                             AskUserQuestion.Options []string
+                  // 2026-11-11 实测：agent 按 protocol 传字符串数组时 opt.label 为
+                  // undefined，卡片只渲染出空复选框（用户报告的「选项全是空的」）。
+                  // 服务端已同步归一化，这里再兜一层以防库里已有的历史行。
+                  const opt: AskOption =
+                    typeof raw === 'string'
+                      ? { id: raw, label: raw }
+                      : {
+                          ...raw,
+                          id: raw?.id ?? `opt-${optIdx}`,
+                          label: raw?.label ?? raw?.id ?? `选项 ${optIdx + 1}`,
+                        }
                   const active = chosen.includes(opt.id)
                   return (
                     <label
