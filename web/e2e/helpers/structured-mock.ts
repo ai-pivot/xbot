@@ -208,6 +208,8 @@ export function answerRow(targetID: number, opts: { cancelled?: boolean } = {}):
     reply_to: String(targetID),
     correlation_id: 'req-1',
     cancelled: opts.cancelled ?? false,
-    text: opts.cancelled ? '已取消' : 'q1:yes',
+    // 与服务端 answerText 一致：落库的是 option 的 **label**，不是 `qid:optid`
+    // 内部代号（2026-11-11 改）。mock 必须跟随，否则会用旧形态骗过断言。
+    text: opts.cancelled ? '已取消' : '是',
   }
 }
