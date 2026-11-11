@@ -12,6 +12,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { MarkdownRenderer } from '@/components/agent/MarkdownRenderer'
+
 import type {
   AskOption,
   AskPayload,
@@ -182,15 +184,18 @@ function AskContextBlock({ text, questions }: { text: string; questions: AskQues
       <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
         背景
       </p>
-      <p
+      {/* 背景正文走 markdown 渲染：发问方写的是 markdown（**加粗**、列表、代码），
+          按纯文本渲染会把 ** 原样显示出来（2026-11-11 用户反馈）。
+          ref 挂在外层 div 上，line-clamp 折叠与 overflow 检测都还在。 */}
+      <div
         ref={ref}
         data-testid="ask-user-context-text"
-        className={`whitespace-pre-wrap break-words text-[13px] leading-relaxed text-slate-700 dark:text-slate-200 ${
+        className={`break-words text-[13px] leading-relaxed text-slate-700 dark:text-slate-200 ${
           expanded ? '' : 'line-clamp-6'
         }`}
       >
-        {body}
-      </p>
+        <MarkdownRenderer content={body} noDebounce />
+      </div>
       {overflowing || expanded ? (
         <button
           type="button"

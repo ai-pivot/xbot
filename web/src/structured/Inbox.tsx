@@ -19,6 +19,7 @@ import { useState } from 'react'
 
 import { StructuredCard, KIND_META, LongText, formatSender, messageSummary, type AnswerFn, type DecideFn } from './StructuredCards'
 import { useInboxBoard, type InboxScope } from './inboxStore'
+import { useSessionStore } from '@/hooks/useSessionStore'
 import type { InboxResolveAction, StructuredMessage } from './types'
 
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / M月D日 HH:mm。 */
@@ -68,6 +69,9 @@ export function Inbox({
 }) {
   const { items, unanswered, loading, error, refresh, resolve, deleteMany, markAllRead } =
     useInboxBoard(scope)
+  // 处置/删除后本会话的 history 就过期了（回答/决策行已落库）—— bump 让挂着的
+  // 会话面板重拉，否则从收件箱返回会看到旧状态、必须手动刷新。
+  const { bumpHistoryEpoch } = useSessionStore()
   const [expanded, setExpanded] = useState<number | null>(null)
   const [draft, setDraft] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState<number | null>(null)
@@ -79,6 +83,7 @@ export function Inbox({
     setBulkBusy(true)
     try {
       await markAllRead()
+      bumpHistoryEpoch()
       setExpanded(null)
       setDraft({})
     } catch {
@@ -98,6 +103,7 @@ export function Inbox({
     setBulkBusy(true)
     try {
       await deleteMany(items.map((it) => it.message_id))
+      bumpHistoryEpoch()
       setExpanded(null)
       setDraft({})
     } catch {
@@ -112,6 +118,7 @@ export function Inbox({
     setBusy(messageId)
     try {
       await resolve(messageId, action, draft[messageId]?.trim() || undefined)
+      bumpHistoryEpoch()
       // 成功后这条已被 store 移除；清掉草稿与展开态即可。
       setDraft((cur) => {
         const next = { ...cur }
@@ -134,6 +141,7 @@ export function Inbox({
     setBusy(messageId)
     try {
       await deleteMany([messageId])
+      bumpHistoryEpoch()
       setExpanded((cur) => (cur === messageId ? null : cur))
     } catch {
       /* store 已把错误写进 state.error */

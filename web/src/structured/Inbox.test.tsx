@@ -15,6 +15,13 @@ import type { StructuredMessage } from './types'
 
 vi.mock('sonner', () => ({ toast: vi.fn() }))
 
+// Inbox 处置完卡片会调 store 的 bumpHistoryEpoch（让会话面板重拉 history）。
+// 单测里没有 SessionStoreProvider，给一个最小 stub —— 顺便可以断言它确实被调用。
+const bumpHistoryEpoch = vi.fn()
+vi.mock('@/hooks/useSessionStore', () => ({
+  useSessionStore: () => ({ bumpHistoryEpoch }),
+}))
+
 import { Inbox } from './Inbox'
 import { getInboxState, resetInboxStore } from './inboxStore'
 

@@ -950,7 +950,8 @@ func answersFromPayload(payload map[string]any) ([]protocol.StructuredAnswer, bo
 // 校验答案形状 → CAS 置位目标 ask_user → 写 answer 行 → 投递 agent。
 func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage.SessionStore, tenantID int64, ag *agent.Agent, activityIdx storage.ActivityStore, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error) {
 	// 校验答案形状（multi_select=false 时 option_ids ≤ 1 等）。
-	if err := validateAskUserAnswers(svc, tenantID, input); err != nil {
+	specs, err := validateAskUserAnswers(svc, tenantID, input)
+	if err != nil {
 		return nil, false, err
 	}
 	payload := map[string]any{
@@ -959,7 +960,7 @@ func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage
 		"answered_by": senderID,
 	}
 	raw, _ := json.Marshal(payload)
-	text := answerText(input)
+	text := answerText(input, specs)
 	id, _, created, err := svc.AnswerAskUser(tenantID, sel.ChatID, input.CorrelationID,
 		text, string(raw), input.IdempotencyKey, senderID, senderID, input.Cancelled)
 	if err != nil {
@@ -1007,14 +1008,17 @@ func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage
 	return toProtocolStructured(*stored), !created, nil
 }
 
-// validateAskUserAnswers 按 ask_user 信封校验回答。
-func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input protocol.StructuredAnswerInput) error {
+// validateAskUserAnswers 按 ask_user 信封校验回答，并返回问题规格。
+//
+// 顺带返回 specs 是为了让 answerText 能把 optionId 翻译成用户可见的 label，
+// 而不必再查一遍库（同一 correlation 的 ask_user 行刚刚已经读过了）。
+func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input protocol.StructuredAnswerInput) ([]askQuestionSpec, error) {
 	if input.Cancelled {
-		return nil
+		return nil, nil
 	}
 	rows, _, _, err := svc.ListStructuredMessages(tenantID, "ask_user", 0, 200)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var target *common.StructuredMessage
 	for i := range rows {
@@ -1025,7 +1029,7 @@ func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input prot
 	}
 	if target == nil {
 		// 不存在时交给 AnswerAskUser 返回 NOT_FOUND（保持单一判定点）。
-		return nil
+		return nil, nil
 	}
 	questions := askQuestions(target.StructuredJSON)
 	byID := make(map[string]askQuestionSpec, len(questions))
@@ -1035,23 +1039,28 @@ func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input prot
 	for _, ans := range input.Answers {
 		q, ok := byID[ans.QuestionID]
 		if !ok {
-			return fmt.Errorf("invalid answer: unknown question_id %q", ans.QuestionID)
+			return nil, fmt.Errorf("invalid answer: unknown question_id %q", ans.QuestionID)
 		}
 		if !q.MultiSelect && len(ans.OptionIDs) > 1 {
-			return fmt.Errorf("invalid answer: question %q is single-select", ans.QuestionID)
+			return nil, fmt.Errorf("invalid answer: question %q is single-select", ans.QuestionID)
 		}
 		if ans.Text != "" && !q.AllowOther {
-			return fmt.Errorf("invalid answer: question %q does not allow custom text", ans.QuestionID)
+			return nil, fmt.Errorf("invalid answer: question %q does not allow custom text", ans.QuestionID)
 		}
 	}
-	return nil
+	return questions, nil
 }
 
 type askQuestionSpec struct {
 	ID          string
+	Question    string
 	MultiSelect bool
 	AllowOther  bool
 	Required    bool
+	// Options 是 optionID → 用户可见文字（label）的映射。
+	// 回答落库时用它把内部 id 翻译成 label —— 否则用户会在历史里看到
+	// "smoke:yes" 这种内部代号（2026-11-11 用户实测反馈）。
+	Options map[string]string
 }
 
 func askQuestions(structuredJSON string) []askQuestionSpec {
@@ -1059,9 +1068,14 @@ func askQuestions(structuredJSON string) []askQuestionSpec {
 		Payload struct {
 			Questions []struct {
 				ID          string `json:"id"`
+				Question    string `json:"question"`
 				MultiSelect bool   `json:"multi_select"`
 				AllowOther  bool   `json:"allow_other"`
 				Required    bool   `json:"required"`
+				Options     []struct {
+					ID    string `json:"id"`
+					Label string `json:"label"`
+				} `json:"options"`
 			} `json:"questions"`
 		} `json:"payload"`
 	}
@@ -1074,28 +1088,69 @@ func askQuestions(structuredJSON string) []askQuestionSpec {
 		if id == "" {
 			id = fmt.Sprintf("q%d", i+1)
 		}
-		out = append(out, askQuestionSpec{ID: id, MultiSelect: q.MultiSelect, AllowOther: q.AllowOther, Required: q.Required})
+		opts := make(map[string]string, len(q.Options))
+		for _, o := range q.Options {
+			if o.ID == "" {
+				continue
+			}
+			lbl := o.Label
+			if lbl == "" {
+				lbl = o.ID
+			}
+			opts[o.ID] = lbl
+		}
+		out = append(out, askQuestionSpec{
+			ID: id, Question: q.Question, MultiSelect: q.MultiSelect,
+			AllowOther: q.AllowOther, Required: q.Required, Options: opts,
+		})
 	}
 	return out
 }
 
-func answerText(input protocol.StructuredAnswerInput) string {
+// answerText 把结构化的答案渲染成**人话**，落进会话历史。
+//
+// 关键：option 用 label 而不是内部 id。旧实现拼 `questionId:optionId`，用户会在
+// 历史里看到 "smoke:yes" 这种看不懂的代号（2026-11-11 实测反馈）。specs 缺失或
+// 该 option 没有 label 时才退回 id（老数据兼容）。
+func answerText(input protocol.StructuredAnswerInput, specs []askQuestionSpec) string {
 	if input.Cancelled {
 		return "已取消"
 	}
+	options := make(map[string]map[string]string, len(specs))
+	questions := make(map[string]string, len(specs))
+	for _, sp := range specs {
+		options[sp.ID] = sp.Options
+		questions[sp.ID] = sp.Question
+	}
+
 	var parts []string
 	for _, a := range input.Answers {
-		piece := a.QuestionID + ":"
-		if len(a.OptionIDs) > 0 {
-			piece += strings.Join(a.OptionIDs, ",")
+		var chosen []string
+		for _, id := range a.OptionIDs {
+			if lbl := options[a.QuestionID][id]; lbl != "" {
+				chosen = append(chosen, lbl)
+			} else {
+				chosen = append(chosen, id)
+			}
 		}
+		piece := strings.Join(chosen, "、")
 		if a.Text != "" {
-			if len(a.OptionIDs) > 0 {
-				piece += " "
+			if piece != "" {
+				piece += "　"
 			}
 			piece += a.Text
 		}
+		if piece == "" {
+			piece = "（未选择）"
+		}
+		// 多问题时把问题正文带上，否则 "、；、" 这种回答读不出在答什么
+		if len(input.Answers) > 1 && questions[a.QuestionID] != "" {
+			piece = questions[a.QuestionID] + " → " + piece
+		}
 		parts = append(parts, piece)
 	}
-	return strings.Join(parts, "; ")
+	if len(parts) == 0 {
+		return "已回答"
+	}
+	return strings.Join(parts, "；")
 }

@@ -17,6 +17,7 @@ import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
+import { useSessionStore } from '@/hooks/useSessionStore'
 import { sameSession } from "@/lib/session-grouping"
 import { useAgentChatState } from '@/chat/useAgentChatState'
 import { useTodos } from '@/hooks/useTodos'
@@ -172,10 +173,14 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     active: shouldSubscribe,
   })
 
+  // 收件箱里处置过卡片 ⇒ store 会 bump historyEpoch ⇒ 这里依赖变化即重拉，
+  // 用户不用手动刷新（2026-11-11 实测：从收件箱返回后会话状态是旧的）。
+  const { historyEpoch } = useSessionStore()
   const chat = useChatMessages({
     chatID,
     channel: messageChannel,
     enabled: historyEnabled,
+    historyEpoch,
     ws,
     subAgentRole: params.subAgentRole,
     subAgentInstance: params.subAgentInstance,
