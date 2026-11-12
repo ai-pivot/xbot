@@ -256,6 +256,12 @@ func (a *Agent) buildMainRunConfig(
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(ctx, channel, chatID, senderID, messages, senderName, sandboxUserID)
 
+	// turn 级触发来源：主 Agent 的 cron 回落路径（drainAndProcessNotifications →
+	// injectBgUserMessageWithTriggerSource）会把它写进入站 metadata。
+	// 主会话 turn 没有父会话，抑制不作用于这里；但字段必须说真话（可观测性 +
+	// 避免未来读到假的 ""）。
+	cfg.TriggerSource = msg.Metadata[triggerSourceMetadataKey]
+
 	// TurnID is assigned by chatProcessLoop (per-session monotonic counter) and
 	// carried via msg.Metadata. Propagate to RunConfig so every progress event
 	// and the final reply carry it for frontend association.

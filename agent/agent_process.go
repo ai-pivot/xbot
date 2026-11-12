@@ -443,6 +443,9 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	// preserved (queue seq = turn_id = processing order).
 	type bgSection struct{ label, content string }
 	var sections []bgSection
+	// cron/非 cron 节计数：一次突发 = 一条 user 消息 = 一个 turn，所以「这条
+	// 合并消息是否整条来自 cron」只能按整条判（见 bgSectionsTriggerSource）。
+	cronSections, otherSections := 0, 0
 	// 发送方取**第一条有 sender 的通知**（批量成一条消息后只有一个 sender 字段）；
 	// 后续无 sender 的通知不会"继承"上一条身份 —— 与逐条注入时的语义一致（CR#4）。
 	firstSender := ""
@@ -485,6 +488,11 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 			continue
 		}
 		sections = append(sections, bgSection{label: bgNotificationSectionLabel(notif), content: content})
+		if _, isCron := notif.(*tools.CronFired); isCron {
+			cronSections++
+		} else {
+			otherSections++
+		}
 		if firstSender == "" && senderID != "" {
 			firstSender = senderID
 		}
@@ -517,11 +525,14 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 		// 总览：让读者立刻知道这条消息里有 N 条通知、每节都有【i/N】标号与来源。
 		joined = fmt.Sprintf("🔔 合并通知 ×%d（每节以 【i/N】 标注范围，来源见节头）\n\n%s", len(sections), joined)
 	}
-	a.injectBgUserMessage(channelName, chatID, firstSender, joined)
+	// 整条都是 cron 才标记（混批不标：那一轮里可能夹着人要看的真实结果）。
+	triggerSource := bgSectionsTriggerSource(cronSections, otherSections)
+	a.injectBgUserMessageWithTriggerSource(channelName, chatID, firstSender, joined, triggerSource)
 	log.WithFields(log.Fields{
-		"channel":     channelName,
-		"chat_id":     chatID,
-		"notif_count": len(sections),
+		"channel":        channelName,
+		"chat_id":        chatID,
+		"notif_count":    len(sections),
+		"trigger_source": triggerSource,
 	}).Info("Bg notifications: injected as ONE batched user message")
 }
 

@@ -71,6 +71,11 @@ type RunConfig struct {
 	// ManageTools, subscription/runner actions) after the multi-user removal.
 	OriginUserIsAdmin bool
 
+	// TriggerSource 是本轮 Run 的**触发来源**（per-turn，禁止跨 turn 残留）：
+	// "" = 用户 / 父代理等常规入站消息；triggerSourceCron = cron 定时任务。
+	// 传递链路与判定语义见 agent/trigger_source.go —— 这里只保证它**每轮重算**。
+	TriggerSource string
+
 	// === 可观测性 ===
 	// Observability carries tracing identifiers attached to every LLM HTTP
 	// request (X-Session-Id / X-Request-Id / X-User-Id / X-Turn-Id / X-Trace-Id),

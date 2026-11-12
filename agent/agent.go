@@ -5465,6 +5465,9 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 			Metadata: map[string]string{
 				"instance_id":             instance,
 				bgNotificationMetadataKey: "true",
+				// 这一轮是 cron 触发的：标记进 turn 级 RunConfig.TriggerSource，
+				// 投递点据此抑制对父会话的 Progress/Completed（见 trigger_source.go）。
+				triggerSourceMetadataKey: triggerSourceCron,
 			},
 		})
 		if !interactiveDeliveryFailed(out, err) {
@@ -5547,13 +5550,24 @@ func (a *Agent) deliverNotifyToParentSession(n *tools.SubAgentBgNotify) {
 // cliInjectedUserMsg, so no user message appears — only the progress auto-start
 // fires, which lacks the user message in m.messages.
 func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content string) {
+	a.injectBgUserMessageWithTriggerSource(channelName, chatID, senderID, content, "")
+}
+
+// injectBgUserMessageWithTriggerSource 同 injectBgUserMessage，但可带上 turn 级
+// 触发来源（见 trigger_source.go）。triggerSource 为空时**不写该键** ——
+// 与既有行为逐字节一致，现有调用方零改动。
+func (a *Agent) injectBgUserMessageWithTriggerSource(channelName, chatID, senderID, content, triggerSource string) {
 	// Display is handled by emitTurnStarted in chatProcessLoop — the notification
 	// user message is delivered atomically with the TurnID via the unified progress
 	// stream, eliminating the cross-goroutine race between InjectUserMessage
 	// (caller's goroutine) and the turn's reply (handleOutbound goroutine).
-	a.injectInboundWithMetadata(channelName, chatID, senderID, content, map[string]string{
+	md := map[string]string{
 		bgNotificationMetadataKey: "true",
-	})
+	}
+	if triggerSource != "" {
+		md[triggerSourceMetadataKey] = triggerSource
+	}
+	a.injectInboundWithMetadata(channelName, chatID, senderID, content, md)
 }
 
 // buildBgNotificationRunConfig is no longer needed — idle bg notifications

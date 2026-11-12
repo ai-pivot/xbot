@@ -67,6 +67,13 @@ type interactiveAgent struct {
 	subID            string              // subscription ID for TUI status bar display
 	bgTask           *tools.SubAgentTask // waitable background task (registered on background spawn) — closed on ALL completion paths
 
+	// userInputJoined 标记**本轮 Run 期间**有 pendingMessages 被 drain 注入 ——
+	// 也就是「有人主动给这个会话发了消息」。cron turn 的抑制据此 fail-open：
+	// 纯 cron 的 turn 不通知父会话；但一旦有真实用户输入并进了这一轮，必须照常
+	// 发 Completed，否则用户那次派单就没有完成回执（2026-11-12 lead 口径）。
+	// 每轮 turn 开始时清零（SendToInteractiveSession）。
+	userInputJoined atomic.Bool
+
 	// destroyed 是**会话墓碑**：destroyInteractiveSession 在动任何资源（关库、
 	// 删文件、删租户行）之前用 CAS 置位，之后所有取用路径都必须先看它。
 	//
@@ -113,6 +120,9 @@ func (ia *interactiveAgent) wirePendingMessageDrain(sessionKey string) func() []
 		if len(msgs) == 0 {
 			return nil
 		}
+		// 有人在本轮 Run 进行中主动给这个会话发了消息，且它被并入本轮 ——
+		// cron turn 的抑制必须 fail-open（见 shouldNotifyParent）。
+		ia.userInputJoined.Store(true)
 		result := make([]tools.BgNotification, len(msgs))
 		for i, pm := range msgs {
 			pm := pm // capture
@@ -1454,6 +1464,11 @@ func (a *Agent) SpawnInteractiveSession(
 		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
 	}
 
+	// 首轮 Run 的触发来源：与 SendToInteractiveSession 同源（msg.Metadata）。
+	// ⚠️ 它会随 placeholder.cfg 模板一起被后续 send 浅拷贝，但**不会残留** ——
+	// send 路径每轮都无条件从 msg.Metadata 重算（见 SendToInteractiveSession）。
+	cfg.TriggerSource = msg.Metadata[triggerSourceMetadataKey]
+
 	// Update placeholder with cfg so GetAgentSessionDumpByFullKey returns the
 	// correct model name, max context tokens, etc. — even during the first Run().
 	// Without this, placeholder.cfg is nil, so ia.modelName() returns "" and the
@@ -1659,7 +1674,8 @@ func (a *Agent) SpawnInteractiveSession(
 			placeholder.mu.Unlock()
 
 			// Notify parent agent about iteration progress
-			if notifyMgr != nil {
+			// cron turn 不发进度（见 trigger_source.go 的 shouldNotifyParent）。
+			if notifyMgr != nil && shouldNotifyParent(&cfg, placeholder.userInputJoined.Load()) {
 				var sb strings.Builder
 				fmt.Fprintf(&sb, "Iteration %d completed.\n", snap.Iteration)
 				if snap.Content != "" {
@@ -1730,7 +1746,8 @@ func (a *Agent) SpawnInteractiveSession(
 					if bgTask != nil {
 						notifyMgr.CloseSubAgentTask(bgTask.ID, tools.BgTaskError, fmt.Sprintf("Panic: %v", r))
 					}
-					// Notify parent
+					// Notify parent — panic 路径**无条件照发**（cron turn 也发）：
+					// 异常必须让上层知道；抑制只针对正常/中断收尾。
 					if notifyMgr != nil {
 						notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
 							Key:       placeholder.parentKey,
@@ -1768,7 +1785,10 @@ func (a *Agent) SpawnInteractiveSession(
 			// the parent agent to see stale "[SubAgent X completed]" messages
 			// and try to "clean up" agents that are already gone, producing
 			// endless "agent still running" hallucinations.
-			if notifyMgr != nil && !cancelled {
+			//
+			// cron turn（且没有真实用户输入并入）不通知父会话：
+			// 定时任务不该把父会话唤醒一轮 LLM（见 trigger_source.go）。
+			if notifyMgr != nil && !cancelled && shouldNotifyParent(&cfg, placeholder.userInputJoined.Load()) {
 				content := out.Content
 				if out.Error != nil {
 					content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
@@ -1835,7 +1855,9 @@ func (a *Agent) SpawnInteractiveSession(
 
 					// Interrupt: notify parent so it knows the agent stopped.
 					// The session stays for future "send" interactions.
-					if notifyMgr != nil {
+					// cron turn（无真实用户输入并入）不吵父会话 —— 与同函数另外两处
+					// 守卫一致；panic 路径才保留无条件照发（异常必须让上层知道）。
+					if notifyMgr != nil && shouldNotifyParent(&cfg, placeholder.userInputJoined.Load()) {
 						content := out.Content
 						if out.Error != nil {
 							content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
@@ -2402,6 +2424,11 @@ func (a *Agent) SendToInteractiveSession(
 	ia.lastUsed = time.Now()
 
 	cfg := *ia.cfg // 浅拷贝 RunConfig 模板（已有正确的 LLMClient + Model + ThinkingMode）
+	// per-turn 触发来源：**无条件**从入站消息重算（读到空就是空）—— 绝不能沿用
+	// 模板/上一轮的 "cron"，否则残留会把用户 turn 当成 cron turn 而吞掉通知。
+	cfg.TriggerSource = msg.Metadata[triggerSourceMetadataKey]
+	// 本轮"有没有真实用户输入并入"同样 per-turn 重置（cron 抑制的 fail-open 依据）。
+	ia.userInputJoined.Store(false)
 	// 不再无条件用 GetLLM 覆盖：ia.cfg 在 spawn 时已通过 buildSubAgentRunConfig
 	// 正确解析了角色/tier 对应的 LLM，直接复用即可。
 	// Each send is a NEW turn in the subagent session — allocate the next
@@ -2527,7 +2554,7 @@ func (a *Agent) SendToInteractiveSession(
 			ia.iterationHistory = append(ia.iterationHistory, snap)
 			ia.mu.Unlock()
 
-			if notifyMgr != nil {
+			if notifyMgr != nil && shouldNotifyParent(&cfg, ia.userInputJoined.Load()) {
 				var sb strings.Builder
 				fmt.Fprintf(&sb, "Iteration %d completed.\n", snap.Iteration)
 				for _, t := range snap.Tools {
@@ -2669,6 +2696,7 @@ func (a *Agent) SendToInteractiveSession(
 				ia.cancelCurrent = nil
 				ia.lastError = fmt.Sprintf("panic: %v", r)
 				ia.mu.Unlock()
+				// panic 路径**无条件照发**：异常必须让上层知道（cron turn 也发）。
 				if a.bgTaskMgr.Load() != nil {
 					a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
 						Key:       ia.parentKey,
@@ -2769,7 +2797,9 @@ func (a *Agent) SendToInteractiveSession(
 
 				a.sendSubAgentPhaseDone(key)
 
-				if a.bgTaskMgr.Load() != nil {
+				// Cron turn 被 unload/关机打断时也不吵父会话（同 shouldNotifyParent
+				// 口径）；panic 路径例外，异常一律照发。
+				if a.bgTaskMgr.Load() != nil && shouldNotifyParent(&cfg, ia.userInputJoined.Load()) {
 					content := "[interrupted] "
 					if out.Content != "" {
 						content += out.Content
@@ -2818,7 +2848,12 @@ func (a *Agent) SendToInteractiveSession(
 		}
 
 		// Notify parent via BgTaskManager.
-		if a.bgTaskMgr.Load() != nil {
+		//
+		// cron turn（且本轮没有真实用户输入并入）**不通知父会话**：定时任务不该把
+		// 父会话唤醒一轮 LLM（判据 2，见 trigger_source.go）。
+		// fail-open：cron turn 期间若有 pendingUserMsg 被 drain 注入（有人主动给这个
+		// 会话发了消息），这一轮必须照常发 Completed —— 否则用户那次派单没有回执。
+		if a.bgTaskMgr.Load() != nil && shouldNotifyParent(&cfg, ia.userInputJoined.Load()) {
 			content := out.Content
 			if out.Error != nil {
 				content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
