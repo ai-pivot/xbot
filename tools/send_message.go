@@ -286,6 +286,15 @@ func resolveUserBoardTarget(ctx *ToolContext, addr string) (userBoardTarget, err
 	}
 	originSession := strings.TrimSpace(ctx.CallerSessionKey)
 	if originSession == "" {
+		// ⛔ 2026-11-04 P0 兜底（用户报「我批的是首辅的 report，批复却发给了御前」）：
+		// 子代理的 CallerSessionKey 由 spawn/restore 两条路径写入；任一漏写，
+		// 旧逻辑就 fallback 到 rootChatID（用户根会话）⇒ 卡片 from.session 记成御前
+		// ⇒ 用户批复回流到御前。这里再加一层：从**本次 Run 自己**还原子代理会话。
+		if sk := interactiveOriginSession(ctx); sk != "" {
+			originSession = sk
+		}
+	}
+	if originSession == "" {
 		originSession = rootChannel + ":" + rootChatID
 	}
 	originAgent := ""
@@ -324,13 +333,71 @@ func rootSessionOf(ctx *ToolContext) (channel, chatID string) {
 	if i <= 0 || i == len(key)-1 {
 		return "", ""
 	}
-	return key[:i], key[i+1:]
+	channel, chatID = key[:i], key[i+1:]
+	// ⛔ 2026-11-04 P0 防御：RootSessionKey 必须是**用户可见根会话**。
+	// 若上游（spawn/restore/嵌套 SubAgent）把子代理的 interactive key
+	// `agent:web:web-4/court.shoufu:main` 误当根 key 传下来，这里剥回 `web:web-4`，
+	// 否则 SendMessage(to="user") 会报 "cannot resolve the user's session"。
+	// 真正的修复在 agent/interactive.go 的 rootSessionAddress；这里是最后一道闸。
+	if j := strings.Index(chatID, "/"); j > 0 {
+		chatID = chatID[:j]
+		if channel == "agent" {
+			if k := strings.Index(chatID, ":"); k > 0 {
+				channel, chatID = chatID[:k], chatID[k+1:]
+			}
+		}
+	}
+	return channel, chatID
 }
 
 func firstNonEmptyString(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
 			return v
+		}
+	}
+	return ""
+}
+
+// interactiveOriginSession 从**本次 Run 自己**推断「发起方是哪个 interactive 子代理」，
+// 返回 interactive key（形如 "web:web-4/court.shoufu:main"，无 "agent:" 前缀）。
+//
+// ⛔ 2026-11-04 P0 第二层（端到端复测后仍然 from.session=web:web-4 的根因）：
+// 子代理的 turn 有**两条互相独立**的执行路径，只有第一条会带上 CallerSessionKey：
+//
+//	① SendToInteractiveSession：cfg 来自交互会话快照（spawn/restore 写入），
+//	   CallerSessionKey = interactive key；
+//	② 会话队列 / processMessage：通知注入（drainAndProcessNotifications →
+//	   injectBgUserMessage）、用户看板回流唤醒，走的都是**通用主会话路径**
+//	   buildMainRunConfig → buildBaseRunConfig，那里**根本不设 CallerSessionKey**，
+//	   而且 AgentDepth=0；ctx 里只剩：
+//	     Channel="agent", ChatID="web:web-4/court.shoufu:main"（就是 interactive key）
+//	     SessionKey=qualifyChatID("agent", chatID)="agent:web:web-4/court.shoufu:main"
+//	     RootSessionKey=同一个 canonical key（buildBaseRunConfig 写入）
+//	   所以只修 ① 时 ② 仍然把卡片记成御前会话，批复照样回流到御前 —— 这就是为什么
+//	   「修了 restore 之后 from.session 还是 web:web-4」。
+//
+// 返回值必须与 ① 的 CallerSessionKey **逐字同形**：消费端
+// serverapp.splitPhysicalSessionKey 靠「首个 ':' 在最后一个 '/' 之前」判定 agent 会话，
+// 并要求 key 不带 "agent:" 前缀（否则会去开 "agent:agent:web:…" 这种畸形租户）。
+//
+// 主会话（"web:web-4"、CLI 会话 "cli:/path"）一律返回 ""，不能误伤。
+func interactiveOriginSession(ctx *ToolContext) string {
+	if ctx == nil {
+		return ""
+	}
+	// ② 的 SessionKey 形态：agent:<origin>/<role>:<instance>
+	if sk := strings.TrimSpace(ctx.SessionKey); strings.HasPrefix(sk, "agent:") {
+		if rest, ok := strings.CutPrefix(sk, "agent:"); ok && strings.Contains(rest, "/") {
+			return rest
+		}
+	}
+	// ② 的兜底：agent 通道上 ctx.ChatID 本身就是 interactive key。
+	// 只在 channel=="agent" 时启用 —— CLI 会话的 chatID 是文件路径（含 "/"），
+	// 无脑按 "/" 判断会把 "cli:/home/smith/src" 误认成子代理。
+	if strings.TrimSpace(ctx.Channel) == "agent" {
+		if cid := strings.TrimSpace(ctx.ChatID); strings.Contains(cid, "/") {
+			return cid
 		}
 	}
 	return ""

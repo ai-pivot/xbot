@@ -259,6 +259,17 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec common.InteractiveAgent
 			rec.AgentKey, len(cfg.Messages))
 	}
 
+	// ⛔ 2026-11-04 P0（用户报「我批的是首辅的 report，批复却发给了御前」）：
+	// `cfg.CallerSessionKey` 只在 **spawn 路径**（interactive.go:1470）设置，
+	// 恢复路径漏了 —— 恢复出来的子代理 CallerSessionKey 为空，于是
+	// `tools/send_message.go:276 resolveUserBoardTarget` 走 fallback
+	// `rootChannel + ":" + rootChatID` = 用户根会话（御前），
+	// SendMessage(to="user", kind="report") 落库的 `from.session` 就成了御前会话，
+	// 用户批复（decision）按 originSession 回流时自然回到御前。
+	// 恢复路径必须与 spawn 路径同构：本子代理的物理会话 key 交给它自己。
+	// `mapKey` 就是 interactiveKey 的产物（与 spawn 时逐字一致），直接用。
+	cfg.CallerSessionKey = mapKey
+
 	ia := &interactiveAgent{
 		roleName:     rec.RoleName,
 		instance:     rec.Instance,

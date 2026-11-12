@@ -3841,7 +3841,12 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					// iterations from before the AskUser call to disappear. Also
 					// preserve lastProgressSnapshot + iterationHistories so SSE
 					// reconnect can recover the in-flight turn.
-					isWaitingUser := response != nil && response.WaitingUser
+					// ⛔ 2026-11-04 P0（用户实测：取消后前端永久卡 busy）：
+					// **取消 ≠ 暂停**。被 /cancel 时 response 里仍可能带着 AskUser 的
+					// WaitingUser=true，旧判据据此跳过 session(idle)，而 engine 侧也因
+					// waitingUser 吞掉 PhaseDone ⇒ 前端收不到任何「本轮结束」信号。
+					// 已取消的轮次必须收尾。
+					isWaitingUser := isWaitingUserPause(response, wasCancelled)
 					if !isWaitingUser {
 						// ⛔ 只有"仍是当前轮"才发 idle：迟到的旧轮收尾不得把新一轮误标 idle
 						a.emitSessionIdleIfCurrent(cancelKey, msg.Channel, msg.ChatID, msg.SenderID, runGen)
@@ -4009,6 +4014,23 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			return
 		}
 	}
+}
+
+// isWaitingUserPause 判定收尾时是否应把本轮视为「暂停等用户回答」（而非结束）。
+//
+// true  ⇒ **不发** session(idle)，保留进度快照（AskUser 问句还在等回答）；
+// false ⇒ 正常收尾。
+//
+// ⛔ 2026-11-04 P0（用户实测：取消 goal / 取消 AskUser 后前端永久卡 busy）：
+// 被 /cancel 的轮次里 response 仍可能带着 AskUser 的 WaitingUser=true，
+// 旧判据据此跳过了 session(idle)，而 engine 的 progressFinalizer 又因
+// s.waitingUser 吞掉 PhaseDone ⇒ 前端收不到任何「本轮结束」信号，永久 typing。
+// **取消 ≠ 暂停**：取消必须收尾。
+func isWaitingUserPause(response *channel.OutboundMsg, wasCancelled bool) bool {
+	if wasCancelled {
+		return false
+	}
+	return response != nil && response.WaitingUser
 }
 
 // processMessage 处理单条入站消息

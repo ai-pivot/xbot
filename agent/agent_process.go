@@ -881,6 +881,40 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 // 不是 channel:chatID。通知真正的接收方是**父 agent**（倒数第二段）。
 // 做法：按角色名在 interactiveSubAgents 里找活跃会话，把通知作为一条用户消息
 // 投进去；找不到就记 ERROR 并保留到主会话队列，绝不静默丢弃。
+// interactiveSessionByAgentID finds the exact live owner of a background run.
+// AgentID is the per-run BgSessionKey for subagents; role names alone are not
+// identities because multiple sessions may use the same role concurrently.
+func (a *Agent) interactiveSessionByAgentID(agentID string) (string, *interactiveAgent, bool) {
+	want := strings.Trim(agentID, "/")
+	if want == "" {
+		return "", nil, false
+	}
+	var foundKey string
+	var found *interactiveAgent
+	a.interactiveSubAgents.Range(func(k, v any) bool {
+		key, ok := k.(string)
+		if !ok {
+			return true
+		}
+		ia, ok := v.(*interactiveAgent)
+		if !ok || ia == nil || ia.isDestroyed() {
+			return true
+		}
+		ia.mu.Lock()
+		id := ""
+		if ia.cfg != nil {
+			id = strings.Trim(ia.cfg.AgentID, "/")
+		}
+		ia.mu.Unlock()
+		if id == want {
+			foundKey, found = key, ia
+			return false
+		}
+		return true
+	})
+	return foundKey, found, found != nil
+}
+
 func (a *Agent) deliverNotificationsByAgentPath(key string) {
 	mine := a.takePendingBgNotifications(key)
 	if len(mine) == 0 {
@@ -894,7 +928,23 @@ func (a *Agent) deliverNotificationsByAgentPath(key string) {
 	}
 
 	var targetKey, targetRole, targetInst, targetChannel, targetChatID string
-	if parentRole != "" {
+	// A BackgroundTask uses the sub-agent's AgentID path as its isolated
+	// BgSessionKey (for example main/court.shoufu/court.gongbu). That path is
+	// the OWNER of the task, not a request to notify the path's parent. Resolve
+	// the exact live interactive session first. The old code skipped directly
+	// to parentRole (the penultimate path segment), which delivered a child's
+	// Shell completion to its parent and made the child appear to never receive
+	// its own task result.
+	if exactKey, exactIA, ok := a.interactiveSessionByAgentID(key); ok {
+		ch, cid, _, _ := parseInteractiveKeyTail(exactKey)
+		if ch != "" && cid != "" {
+			targetKey, targetRole, targetInst = exactKey, exactIA.roleName, exactIA.instance
+			targetChannel, targetChatID = ch, cid
+		}
+	}
+	// SubAgentBgNotify historically uses an agent path to mean "notify the
+	// parent". Preserve that contract only when no exact owner session exists.
+	if targetKey == "" && parentRole != "" {
 		a.interactiveSubAgents.Range(func(k, v any) bool {
 			ia, ok := v.(*interactiveAgent)
 			if !ok || ia == nil || ia.roleName != parentRole {

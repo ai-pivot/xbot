@@ -213,14 +213,27 @@ function AskContextBlock({ text, questions }: { text: string; questions: AskQues
 export function LongText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false)
   if (!text) return null
+  // 短文本：直接按 Markdown 渲染（表格/列表/代码块/加粗都能显示）。
+  // 2026-11-04 用户要求：结构化消息正文必须是 Markdown —— 首辅的汇报里带
+  // 表格、代码块、三级标题，按纯文本渲染全成了乱码般的符号堆。
   if (text.length <= FOLD_LIMIT) {
-    return <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{text}</p>
+    return (
+      <div data-testid="structured-longtext">
+        <MarkdownRenderer content={text} />
+      </div>
+    )
   }
+  // 长文本：折叠态只给纯文本切片（截断的 Markdown 会渲染出破损结构），
+  // 展开后走完整 Markdown。
   return (
-    <div>
-      <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-        {expanded ? text : `${text.slice(0, FOLD_LIMIT)}…`}
-      </p>
+    <div data-testid="structured-longtext">
+      {expanded ? (
+        <MarkdownRenderer content={text} />
+      ) : (
+        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+          {`${text.slice(0, FOLD_LIMIT)}…`}
+        </p>
+      )}
       <button
         type="button"
         className="mt-1 text-[13px] text-sky-600 hover:underline dark:text-sky-400"

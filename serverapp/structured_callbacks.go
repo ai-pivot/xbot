@@ -464,6 +464,53 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		}
 		// payload.summary 优先（发送方自己给的一句话结论），否则退回正文前 200 字符。
 		indexActivity(tenantID, sel, row, structuredPayloadString(input.Payload, "summary"))
+
+		// ⛔ 2026-11-04 P0（用户实测：「我批的是首辅的 report，批复却发给了御前」）：
+		// 用户在「结构化消息」面板点「准/驳/改」时，前端走的是
+		// `appendStructuredMessage(kind=decision, reply_to=<卡片 id>)` —— decision 行
+		// 落在**用户自己的会话**（sel），而旧实现紧接着 `deliver` 也投给 sel，
+		// 于是这条批复被注入用户会话（= 御前自己），发起 report 的子代理永远收不到。
+		// 日志铁证（2026-11-04T09:06:34）：
+		//   {"kind":"decision","msg":"Injected structured message at iteration boundary",
+		//    "session_id":"web:web-4", ...}   ← 首辅发的卡，批复却进了御前
+		//
+		// 正解：decision 语义是「对某张卡的处理」，回流目标是**该卡的发起方会话**
+		// （卡片首次落库时由 tools.resolveUserBoardTarget 写进 env.origin.session）。
+		// sel 只作为审计落行位置，绝不能再向 sel 投递 —— 否则用户会话被自己的批复
+		// 自激一轮（旧行为的直接后果）。
+		// 例外：卡片的 origin 就是 sel 本身（御前自己发的 report / ask_user），
+		// 此时「回流到 sel」正是用户期望，走原逻辑，不重定向。
+		if created && input.Kind == "decision" {
+			if originSession, reroute := decisionRerouteTarget(svc, tenantID, row, sel); reroute {
+				status := decisionVerdictStatus(structuredPayloadString(input.Payload, "verdict"))
+				var cardID int64
+				if v, perr := strconv.ParseInt(row.ReplyTo, 10, 64); perr == nil {
+					cardID = v
+				}
+				card, _ := svc.GetStructuredMessageByID(tenantID, cardID)
+				cardKind := "report"
+				cardCorrelation := row.CorrelationID
+				if card != nil {
+					cardKind = card.Kind
+					if c := strings.TrimSpace(card.CorrelationID); c != "" {
+						cardCorrelation = c
+					}
+				}
+				content := userNoticeResolutionText(cardID, cardKind, status, strings.TrimSpace(input.Text))
+				if perr := persistUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation); perr != nil {
+					log.WithError(perr).WithFields(log.Fields{
+						"card_id": cardID, "origin_session": originSession,
+					}).Warn("decision: failed to persist feedback into the originating session")
+				}
+				if !deliverUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation) {
+					log.WithFields(log.Fields{
+						"card_id": cardID, "origin_session": originSession,
+					}).Warn("decision: failed to deliver feedback to the originating agent")
+				}
+				return toProtocolStructured(*row), false, nil
+			}
+		}
+
 		// Silent（to="user" 卡片）：落库但不唤醒目标会话 —— 卡片是给用户看的待办，
 		// 不是给用户会话的新一轮输入，否则会话会被自己的卡片自激。
 		deliver := created && structuredDeliverable(input.Kind) && !input.Silent
@@ -693,6 +740,11 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 
 // userNoticeOrigin 从卡片信封里取出回流目标（origin.session / origin.agent）。
 // 老行（没有 origin）返回空串：卡片仍可在看板上处理，只是没有 agent 可回流。
+// userNoticeOrigin 返回卡片**发起方**的会话与逻辑地址（卡片落库时写进 env.origin）。
+//
+// 注意：`from.session` 恒为「落库的会话」（用户的会话，见 buildStructuredEnvelope），
+// **不是**发起方 —— 回流必须读 `origin.session`。2026-11-04 的 P0 调查一度误判成
+// from.session，白改一轮。
 func userNoticeOrigin(row *common.StructuredMessage) (session, agentAddr string) {
 	if row == nil || strings.TrimSpace(row.StructuredJSON) == "" {
 		return "", ""
@@ -710,6 +762,63 @@ func userNoticeOrigin(row *common.StructuredMessage) (session, agentAddr string)
 }
 
 // userNoticeResolutionText 生成处理记录行的正文（人读）。
+// decisionRerouteTarget 判定一条 decision 是否必须回流到「卡片的发起方会话」。
+//
+// 返回 (originSession, true) 时调用方**不得**再向 sel 投递（否则用户会话被自己的
+// 批复自激一轮 —— 2026-11-04 的线上事故就是这么来的）。
+//
+// 只有同时满足下列条件才重定向：
+//  1. decision 行指向一张用户看板卡片（report / ask_user）；
+//  2. 该卡片由**某个 agent** 发起（env.origin.session 非空）；
+//  3. 发起方会话 **不是**当前用户会话本身（御前自己发的卡，回流到御前才是对的）。
+func decisionRerouteTarget(
+	svc *sqlite.SessionService,
+	tenantID int64,
+	decisionRow *sqlite.StructuredMessage,
+	sel web.SessionSelector,
+) (string, bool) {
+	if svc == nil || decisionRow == nil {
+		return "", false
+	}
+	raw := strings.TrimSpace(decisionRow.ReplyTo)
+	if raw == "" {
+		return "", false
+	}
+	cardID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || cardID <= 0 {
+		return "", false
+	}
+	card, err := svc.GetStructuredMessageByID(tenantID, cardID)
+	if err != nil || card == nil {
+		return "", false
+	}
+	if card.Kind != sqlite.StructuredKindReport && card.Kind != sqlite.StructuredKindAskUser {
+		return "", false
+	}
+	originSession, _ := userNoticeOrigin(card)
+	if originSession == "" {
+		return "", false
+	}
+	if originSession == sel.Channel+":"+sel.ChatID {
+		return "", false
+	}
+	return originSession, true
+}
+
+// decisionVerdictStatus 把前端批复的 verdict 映射成卡片处理状态（与 resolveNotice
+// 的词表一致：approved / rejected；modify 表示「要改」，不回退成 approved）。
+func decisionVerdictStatus(verdict string) string {
+	switch strings.ToLower(strings.TrimSpace(verdict)) {
+	case "approve", "approved":
+		return "approved"
+	case "reject", "rejected":
+		return "rejected"
+	case "modify", "modified":
+		return "modify"
+	}
+	return "approved"
+}
+
 func userNoticeResolutionText(messageID int64, kind, status, comment string) string {
 	label := map[string]string{
 		"approved":  "已批准",

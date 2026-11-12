@@ -171,9 +171,23 @@ export function normalizeEvent(raw: unknown, chatID: string): readonly DomainEve
 }
 
 /** channel 前缀剥离（"web:chat-1" vs "chat-1" 兼容）。 */
+// stripChannel 把会话 key 归一到「裸 chatID」，用于跨来源比较。
+//
+// ⛔ 2026-11-04 P0（用户实测：子代理窗口只有 user 消息，没有任何 streaming 进度，
+// 主代理窗口正常）：子代理的进度事件里 `payload.ChatID` 是**逻辑地址**，形如
+// `agent:web:web-4/court.shoufu:main`（后端 wireSubAgentProgress 的
+// `agentProgressKey := "agent:" + key`）；而面板传进来的 progressChatID 是
+// **物理会话 key** `web:web-4/court.shoufu:main`。
+// 旧实现只剥**一层**前缀 ⇒ 前者得 `web:web-4/court.shoufu:main`、后者得
+// `web-4/court.shoufu:main` ⇒ 永远不等 ⇒ normalizeEvent 在 chat 过滤处
+// `return null`，把子代理的**全部**进度事件静默丢掉（SSE 明明收到了）。
+// 修法：先反复剥 `agent:`（虚拟通道前缀），再按原规则剥一层物理前缀。
 function stripChannel(chatID: string): string {
-  const i = chatID.indexOf(':')
-  return i >= 0 ? chatID.slice(i + 1) : chatID
+  let s = chatID.trim()
+  // "agent:" 是逻辑包装，可能套在物理前缀外面（甚至多层，防御性处理）。
+  while (s.startsWith('agent:')) s = s.slice('agent:'.length)
+  const i = s.indexOf(':')
+  return i >= 0 ? s.slice(i + 1) : s
 }
 
 // ─── progress_structured → turn_started / iteration / phase_done / stream ──

@@ -283,7 +283,14 @@ func (s *runState) initProgress() {
 			// The tool states have been finalized above (Active→Completed),
 			// which is sufficient. The next notifyProgress from a subsequent
 			// callLLM will carry the correct state.
-			if s.waitingUser {
+			//
+			// ⛔ 2026-11-04 P0（用户实测：取消 AskUser / 清掉 goal 后前端永久卡 busy）：
+			// **取消 ≠ 暂停**。用户点停止时 ctx 已被取消，Run 随即返回，但
+			// s.waitingUser 仍是 true（AskUser 设过就再没复位）⇒ 这里把 PhaseDone
+			// 吞掉，同时 agent.go 的收尾也因 response.WaitingUser 不发 session(idle)
+			// ⇒ 前端收不到任何「本轮结束」信号，永久 typing。
+			// 判据用 ctx 是否已取消，不新增状态位：真·等用户回答时 ctx 是活的。
+			if s.waitingUser && !s.runCancelled() {
 				s.progressMu.Unlock()
 				return
 			}
@@ -304,6 +311,16 @@ func (s *runState) initProgress() {
 			}
 		}
 	}
+}
+
+// runCancelled 报告本轮 Run 是否已被取消（用户点停止 / 上层 ctx 关闭）。
+//
+// 用途：把「取消」与「等用户回答」区分开 —— 两者都表现为 s.waitingUser==true
+// （AskUser 设过就再没复位），但收尾语义**相反**：暂停必须保留全部进度快照、
+// 不发 PhaseDone；取消必须收尾发 PhaseDone + session(idle)，否则前端永久 typing
+// （2026-11-04 用户实测：取消 goal 后卡 busy）。
+func (s *runState) runCancelled() bool {
+	return s.runCtx != nil && s.runCtx.Err() != nil
 }
 
 // initDynamicInjector sets up the dynamic context injector for CWD change detection.
