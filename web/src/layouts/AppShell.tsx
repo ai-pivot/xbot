@@ -59,6 +59,7 @@ import { commands } from '@/lib/commandRouter'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
 import type { SettingsCategory } from '@/components/settings/SettingsDialog'
 import { UpdateReminder } from '@/components/UpdateReminder'
+import { ImmersiveModeButton } from '@/components/ImmersiveModeButton'
 
 // 内置面板（core.*）注册——模块级幂等调用（同 id 覆盖，与
 // registerBuiltinLayoutItems 在 App.tsx 模块级注册的模式一致）。
@@ -409,6 +410,7 @@ export function AppShell() {
             <Suspense fallback={null}>
               <SWUpdateButton />
             </Suspense>
+            <ImmersiveModeButton />
             <button
               type="button"
               aria-label={t('layout.openSettings')}
