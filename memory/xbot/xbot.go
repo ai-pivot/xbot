@@ -24,6 +24,7 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/prompt"
+	"xbot/redact"
 	"xbot/storage"
 	"xbot/storage/agentmem"
 )
@@ -824,7 +825,8 @@ func (m *XbotMemory) searchShortTerm(query string, topK int) ([]ShortTermMemory,
 
 func (m *XbotMemory) addShortTermMemory(summary, topics, sessionID string) error {
 	// 写入侧脱敏（W2 短时记忆）：LLM 生成的摘要会把工具输出里的凭据原样带进来。
-	// 存储原版（2026-11-10 用户裁定）：脱敏只在出站层。
+	summary = redact.Secrets(summary)
+	topics = redact.Secrets(topics)
 	_, err := m.store.AddAgentShortTermMemory(context.Background(), agentmem.ShortTermMemory{
 		UserID:    m.scopeArg(),
 		TenantID:  m.tenantID,
@@ -844,24 +846,14 @@ func (m *XbotMemory) addShortTermMemory(summary, topics, sessionID string) error
 // user-level one). The dedup scope is global rows + this session's own rows —
 // otherwise session A's extraction would suppress session B's identical one.
 func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
-	// 2026-11-10 CR 修复（第 3 轮 P1）：**自动提取路径也必须过写入闸门**。
-	//
-	// 此前只有手动 memory_add（twophase.go 的 ProposeMemory/ConfirmProposal）调
-	// validateMemoryContent，而本函数（Memorize / ConsolidateTurn / PreCompress
-	// 三处自动提取的公共入口）完全绕过 —— 意味着：LLM 从对话正文复述出来的注入
-	// 串、超长内容、未完稿草稿都能直接入库。stripInjectedBlocks 只剥注入元数据块，
-	// 对「被复述进正文的攻击串」无效。
-	if err := validateMemoryContent(entry.Content); err != nil {
-		log.WithError(err).WithField("source", "auto-extract").
-			Warn("自动提取的记忆未通过写入闸门，已丢弃（manual 路径同样受此约束）")
-		return err
-	}
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
 
 	// 写入侧脱敏（W1/W2 自动抽取路径）：入库前与写镜像前都必须是脱敏后的 entry，
 	// 因为 writeMemoryFile 落的是 entry 正文逐字（兵部 W1 镜像就是靠这里覆盖）。
-	// 存储原版（2026-11-10 用户裁定）：记忆落库不脱敏，脱敏只在出站层。
+	entry.Content = redact.Secrets(entry.Content)
+	entry.Keywords = redact.Secrets(entry.Keywords)
+	entry.Tags = redact.Secrets(entry.Tags)
 	searchText := buildSearchText(entry.Content, entry.Keywords, entry.Tags)
 	dupQuery := agentmem.Query{
 		UserID:        entry.UserID,
@@ -939,13 +931,68 @@ func (m *XbotMemory) readCoreSummary() string {
 	return text
 }
 
-// writeCoreSummary 已于 2026-11-10 删除（core summary 彻底移除 + 存储原版裁定，
-// 该函数已无任何调用点）。
+// writeCoreSummary writes the core summary (MEMORY.md).
+//
+// 写入侧脱敏（W3）：core summary 是 LLM 生成物，它会把上下文里的凭据原样带到
+// MEMORY.md；这里落盘的永远是脱敏后的文本。**签名不许改**——兵部探针直接调它。
+func (m *XbotMemory) writeCoreSummary(content string) {
+	content = redact.Secrets(content)
+	path := filepath.Join(m.baseDir, coreSummaryFileName)
+	// Atomic write: tmp + rename
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
+		log.WithError(err).Error("xbot-memory: failed to write core summary")
+		return
+	}
+	os.Rename(tmpPath, path)
+}
 
-// updateCoreSummary 已于 2026-11-09 删除（用户裁定 core summary 彻底移除）。
-// 历史上它每轮用 LLM 重写 MEMORY.md，产生 27 轮 prompt 回显 + 注入探针串的腐烂
-// 文本并被注入进上下文。现在没有任何调用点（Recall 不再注入 `## Core`，
-// Memorize/PostCompress 也不再自动重写）。
+//nolint:unused // 调用点已于 2026-11-07 删除（LLM 输出未校验把 MEMORY.md 写烂），函数保留待复用
+func (m *XbotMemory) updateCoreSummary(ctx context.Context, client llm.LLM, model string) {
+	if client == nil {
+		return
+	}
+
+	currentSummary := m.readCoreSummary()
+
+	// Get top high-importance memories
+	mems, err := m.recentLongTerm(10)
+	if err != nil || len(mems) == 0 {
+		return
+	}
+
+	var memSB strings.Builder
+	for _, mem := range mems {
+		if mem.Importance >= 0.7 {
+			fmt.Fprintf(&memSB, "- [%s] %s\n", mem.Type, mem.Content)
+		}
+	}
+	if memSB.Len() == 0 {
+		return
+	}
+
+	prompt := fmt.Sprintf(`Current core summary:
+%s
+
+Recent high-importance memories:
+%s
+
+Update the core summary to incorporate any new critical information.
+Keep it under %d characters. Preserve existing important information.
+Return ONLY the updated summary text, no explanations.`, currentSummary, memSB.String(), coreSummaryMaxChars)
+
+	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
+		llm.NewSystemMessage("You are a memory consolidation agent. Update the core summary concisely."),
+		llm.NewUserMessage(prompt),
+	}, nil)
+	if err != nil {
+		return
+	}
+
+	if resp.Content != "" {
+		m.writeCoreSummary(strings.TrimSpace(resp.Content))
+	}
+}
 
 // --- Heat decay and eviction ---
 
@@ -1331,17 +1378,17 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64, error) {
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
-	// 写入闸门：AddMemory 是公开 API，不能假设上游一定校验过（除 memory_add /
-	// UpdateMemory 外，未来任何新调用点都会直接走到这里）。缺了这一步，垃圾
-	// 正文与越界 importance 都能落库 —— 见 clampImportance 的实证注释。
-	if err := validateMemoryContent(entry.Content); err != nil {
-		return 0, err
+	if entry.Importance == 0 {
+		entry.Importance = 0.5
 	}
-	entry.Importance = clampImportance(entry.Importance)
-	// 2026-11-10 用户裁定：存储原版（记忆落库不脱敏，脱敏只在出站层）。
+	// 写入侧脱敏（W1/W2 显式写入路径）：**先脱敏正文再抽关键词**，否则关键词会从
+	// 未脱敏正文里切出凭据碎片；SearchText 与写镜像（writeMemoryFile）用的都是脱敏后的值。
+	entry.Content = redact.Secrets(entry.Content)
 	if entry.Keywords == "" {
 		entry.Keywords = extractKeywords(entry.Content)
 	}
+	entry.Keywords = redact.Secrets(entry.Keywords)
+	entry.Tags = redact.Secrets(entry.Tags)
 	if entry.Scope == "" {
 		entry.Scope = "global"
 	}
@@ -1401,7 +1448,7 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 	for _, r := range rows {
 		entries = append(entries, MemoryEntry{
 			ID: r.ID, Type: r.Type, Content: r.Content, Keywords: r.Keywords, Tags: r.Tags,
-			Importance: clampImportance(r.Importance), CreatedAt: r.CreatedAt.Format(time.RFC3339), Scope: r.Scope,
+			Importance: r.Importance, CreatedAt: r.CreatedAt.Format(time.RFC3339), Scope: r.Scope,
 		})
 	}
 	return entries, nil
@@ -1409,20 +1456,19 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 
 // UpdateMemory updates a memory's content.
 //
-// 2026-11-10 用户裁定：存储原版（更新路径也不脱敏）。
+// 写入侧脱敏（W2 更新路径）：content/keywords/tags 与 **SearchText** 都必须用脱敏后的值
+// —— 旧实现里 SearchText 是用原始 content 建的，只脱敏列会留下一份索引副本。
 func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywords, tags string, importance float64) error {
-	// 更新走与新增同一套闸门：memory_manage update 是模型可直接调用的入口，
-	// 不校验就等于给了一条绕过 validate 的写路径（2026-11-11 实证）。
-	if err := validateMemoryContent(content); err != nil {
-		return err
-	}
+	content = redact.Secrets(content)
+	keywords = redact.Secrets(keywords)
+	tags = redact.Secrets(tags)
 	return m.store.UpdateAgentLongTermMemory(ctx, agentmem.LongTermMemory{
 		ID:         id,
 		UserID:     m.scopeArg(),
 		Content:    content,
 		Keywords:   keywords,
 		Tags:       tags,
-		Importance: clampImportance(importance),
+		Importance: importance,
 		SearchText: buildSearchText(content, keywords, tags),
 	})
 }

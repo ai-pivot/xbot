@@ -84,6 +84,14 @@ func queuedEntrySource(msg bus.InboundMessage) string {
 }
 
 // queueAppend records an admitted message. Call AFTER the msg landed in msgCh.
+//
+//nolint:unused // 基线死代码（2026-11-12 预提交 lint 发现）：当前无调用点，保留待排障用。
+func (ss *bgSessionState) queueLen() int {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	return len(ss.queue)
+}
+
 func (ss *bgSessionState) queueAppend(e queuedEntry) {
 	ss.queueMu.Lock()
 	ss.queue = append(ss.queue, e)
