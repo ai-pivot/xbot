@@ -414,3 +414,99 @@ func (e *restoreRoleMissingError) Error() string {
 	return "cannot restore sub-agent: role definition " + e.role + " not found in " + e.dir +
 		" (the role file was deleted or renamed after spawn)"
 }
+
+// ─── 2026-11-12：让 agent 不必读源码也能正确操作 ───
+//
+// 事故背景（用户上报，御前实操踩中）：
+//   xbot 重启后内存里的 interactive 会话空了。agent 想"唤醒"重启前的首辅，
+//   先试 SubAgent(action="send") → 报 "no sub-agent with instance=main"（因为
+//   restoreInteractiveTree 只在 processMessage 入口跑，send 路径不触发它）；
+//   agent 据此判断"实例不存在"，改用 interactive=true 新建 —— 于是建出一个空会话，
+//   占住了同一个 key，restoreInteractiveTree 因"已在内存"而跳过，
+//   原记录的历史被永久遮蔽。
+//
+// 两处缺口都要在代码里补，而不是靠 agent "记住先发条消息再 send"：
+//   ① send 路径：解析失败 → 先按注册表恢复 → 重试（restoreTreeOnDemand）
+//   ② spawn 路径：内存里没有但注册表有 → 先恢复，再走"已存在"分支（restoreFromRegistryIfPresent）
+
+// countLoadedInteractiveSessions 用于判断一次 restore 是否真的新增了会话。
+func (a *Agent) countLoadedInteractiveSessions() int {
+	n := 0
+	a.interactiveSubAgents.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
+// restoreTreeOnDemand 按父会话地址做一次懒恢复，返回是否新增了会话。
+//
+// 这是 restoreInteractiveTree 的"按需触发"包装：send/inspect/interrupt 在解析
+// 失败时调用它，把"重启后未恢复"这件事在**调用点**解决掉，而不是把
+// "先发条消息再 send" 这种隐含前提留给调用方去猜。
+func (a *Agent) restoreTreeOnDemand(ctx context.Context, parentChannel, parentChatID string) bool {
+	if parentChannel == "" || parentChatID == "" {
+		return false
+	}
+	before := a.countLoadedInteractiveSessions()
+	a.restoreInteractiveTree(ctx, parentChannel, parentChatID, 0)
+	return a.countLoadedInteractiveSessions() > before
+}
+
+// restoreFromRegistryIfPresent 在 spawn 新建之前，尝试从注册表恢复同 key 的实例。
+//
+// 返回 true 表示已恢复（调用方的 LoadOrStore 会因此命中"已存在"分支，
+// 于是返回"用 send 继续"而不是新建空会话）。
+//
+// 不恢复的情形（都允许正常新建）：
+//   - key 已在内存（无需恢复）
+//   - 注册表无记录（真·首次创建）
+//   - 记录状态是 unloaded（用户/agent 显式卸载过，新建是明确意图）
+//   - 恢复失败（role 定义被删等）—— 记 Warn 后落到新建，不阻塞调用方
+//
+// restoreDecision 是「spawn 前该不该从注册表恢复」的纯判定结果。
+//
+// 抽成纯函数是为了可表驱动测试：这条判定曾是 2026-11-12 事故的直接原因
+// （旧代码在内存为空时**没有任何注册表检查**，直接新建空会话、遮蔽历史）。
+type restoreDecision int
+
+const (
+	restoreNo  restoreDecision = iota // 不需要/不能恢复，按新建处理
+	restoreYes                        // 应恢复
+)
+
+// decideRestore 纯判定：给定「内存是否已有」与「注册表查询结果」，决定是否恢复。
+func decideRestore(inMemory bool, rec *common.InteractiveAgentRecord, getErr error) restoreDecision {
+	if inMemory {
+		return restoreNo // 已在内存，无需恢复
+	}
+	if getErr != nil || rec == nil {
+		return restoreNo // 无记录 = 真·首次创建
+	}
+	if rec.Status == common.InteractiveAgentUnloaded {
+		return restoreNo // 显式卸载过：新建是明确意图，恢复会违背它
+	}
+	return restoreYes
+}
+
+func (a *Agent) restoreFromRegistryIfPresent(ctx context.Context, key, roleName string) bool {
+	_, inMemory := a.interactiveSubAgents.Load(key)
+	svc := a.interactiveAgentSvc()
+	if svc == nil {
+		return false
+	}
+	rec, err := svc.Get(key)
+	if decideRestore(inMemory, rec, err) != restoreYes {
+		return false
+	}
+	if rerr := a.restoreOneAgent(ctx, *rec); rerr != nil {
+		log.WithError(rerr).WithFields(log.Fields{
+			"key": key, "role": roleName, "status": rec.Status,
+		}).Warn("SpawnInteractive: 注册表有记录但恢复失败，按新建处理（该实例的历史将不可见）")
+		return false
+	}
+	log.WithFields(log.Fields{
+		"key": key, "role": roleName, "status": rec.Status,
+	}).Info("SpawnInteractive: 已从注册表恢复既有实例（重启恢复）——返回\"已存在\"，不新建")
+	return true
+}

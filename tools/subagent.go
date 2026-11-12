@@ -18,6 +18,11 @@ type InteractiveSubAgentManager interface {
 	// SendInteractive 向已有的 interactive session 发送消息。
 	SendInteractive(ctx *ToolContext, task, roleName, systemPrompt string, allowedTools []string, caps SubAgentCapabilities, instance, model string) (string, error)
 	// UnloadInteractive 结束 interactive session（巩固记忆 + 清理）。
+	//
+	// ⚠️ 破坏性且不可逆：会把注册表状态级联标记为 unloaded，而**重启恢复
+	// （restoreInteractiveTree）明确跳过 unloaded** —— unload 之后该实例的历史
+	// 不会被 restore 找回来。只想释放内存/打断当前迭代 → 用 InterruptInteractive；
+	// 只有确定「这个实例及其历史都不再需要」时才 unload。
 	UnloadInteractive(ctx *ToolContext, roleName, instance string) error
 	// InspectInteractive 返回 interactive session 的最近活动摘要（tail 风格）。
 	InspectInteractive(ctx *ToolContext, roleName, instance string, tailCount int) (string, error)
@@ -71,7 +76,7 @@ Persistent multi-turn session. Create once, send multiple messages, unload when 
 |------|----------|
 | SubAgent(task="...", role="explore", instance="review-1", interactive=true) | Create or reuse an interactive session (background by default) |
 | SubAgent(task="...", role="explore", instance="review-1", action="send") | Send a new user message to an existing interactive session |
-| SubAgent(task="...", role="explore", instance="review-1", action="unload") | End the interactive session and consolidate memory |
+| SubAgent(task="...", role="explore", instance="review-1", action="unload") | ⚠️ **IRREVERSIBLE** — marks the instance as unloaded in the registry, and restart-recovery **skips** unloaded instances, so its history will never be restored. Use action="interrupt" if you only want to stop the current iteration. |
 | SubAgent(task="...", role="explore", instance="review-1", action="inspect") | Inspect recent progress/state of a sub-agent |
 | SubAgent(task="...", role="explore", instance="review-1", action="interrupt") | Interrupt the current iteration of an interactive sub-agent |
 

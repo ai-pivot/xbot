@@ -1360,6 +1360,15 @@ func (a *Agent) SpawnInteractiveSession(
 			placeholder.parentKey = addr
 		}
 	}
+	// ⛔ 2026-11-12 事故（用户上报）：重启后内存为空，`interactive=true` 会走"新建"路径，
+	// 建出一个**空会话**并占住 key —— 而 restoreInteractiveTree 因"已在内存"跳过，
+	// 注册表里那条记录的历史被永久遮蔽。agent 本想唤醒旧实例，却把它变成了新会话。
+	//
+	// 修法：内存里没有时先查注册表。有记录（且未被 unload）就按 restore 路径重建，
+	// 之后下面的 LoadOrStore 会命中"已存在"分支 ⇒ 返回"用 send 继续"，
+	// 而不是静默替换成空会话。
+	a.restoreFromRegistryIfPresent(ctx, key, roleName)
+
 	if existing, loaded := a.interactiveSubAgents.LoadOrStore(key, placeholder); loaded {
 		// 墓碑上的会话（正在销毁）不算"已存在"：把它摘掉后重试一次，
 		// 让 spawn 在"TTL 刚清理完 / unload 刚触发"的窗口里也能成功。
@@ -1371,7 +1380,7 @@ func (a *Agent) SpawnInteractiveSession(
 		}
 		if loaded {
 			return &channelpkg.OutboundMsg{
-				Content: fmt.Sprintf("interactive session for role %q already exists, use action=\"send\" to continue or action=\"unload\" to end it", roleName),
+				Content: fmt.Sprintf("interactive session for role %q already exists (or was just restored from the registry after a restart — its history is intact). Use action=\"send\" to continue it. ⚠️ Do NOT create a new instance under the same key to \"reset\" it: action=\"unload\" marks it permanently unloaded and restart-recovery will skip it.", roleName),
 			}, nil
 		}
 	}
@@ -2301,8 +2310,19 @@ func (a *Agent) SendToInteractiveSession(
 	// 匹配（漏传 role 也能命中）→ 0 个/多个才报错（列出 available/candidates）。
 	key, resolveErr := a.resolveInteractiveSessionKey(originChannel, originChatID, roleName, instance)
 	if resolveErr != nil {
+		// ⛔ 2026-11-12 事故：重启后内存为空，而 restoreInteractiveTree 只在
+		// processMessage 入口跑 —— 直接 send 会报 "no sub-agent with instance=…"，
+		// agent 据此以为实例不存在，转而去 interactive=true 新建（那会丢历史）。
+		// 这里在**解析失败时按需恢复一次再重试**，把"重启后未恢复"在调用点解决掉。
+		if a.restoreTreeOnDemand(ctx, originChannel, originChatID) {
+			if k2, e2 := a.resolveInteractiveSessionKey(originChannel, originChatID, roleName, instance); e2 == nil {
+				key, resolveErr = k2, nil
+			}
+		}
+	}
+	if resolveErr != nil {
 		return &channelpkg.OutboundMsg{
-			Content: resolveErr.Error(),
+			Content: resolveErr.Error() + "（已尝试按注册表恢复仍未找到；不要用 interactive=true 新建同名实例——那会遮蔽可能存在的历史，除非确认该实例从未存在过）",
 			Error:   resolveErr,
 		}, nil
 	}
