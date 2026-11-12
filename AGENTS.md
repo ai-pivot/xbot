@@ -123,6 +123,7 @@ The highest-priority rules, one line each. **Before changing the related code, R
 - ⛔ `docs/agent/gotchas-cli-tui.md` — 读接口绝不允许改 `last_active_at`（2026-09-11 线上 bug：刷新页面把所有昨天的会话变成"今天 active"）。
 - ⛔ `docs/agent/gotchas-cli-tui.md` — `tui_control` 是 CLI 渠道专属工具（用户 2026-09-20 要求「应该只在 cli 注册」；
 - ⛔ `docs/agent/gotchas-web-frontend.md` — 工具描述就是行为：提示里让模型「等」，它就会等——反向也要主动改写（2026-09-12 用户要求 6 项工具引导优化）。
+- ⛔ `docs/agent/gotchas-web-frontend.md` — **裸 URL 紧贴 Markdown 语法会被 GFM 字面 autolink 吞掉**（2026-11-09 用户截图：`` **https://…/92**（`branch` `` 渲染成字面 `**` + href 含 `` **（`branch` `` 的 404 链接）。GitHub 同样如此（不是能等上游修的 parser bug）⇒ 必须在**源级**用 `protectBareURLs`（`web/src/lib/markdownSource.ts`）把紧贴 greedy 分隔符（`*`/反引号/`__`/`~~`/全角标点）的裸 URL 转成硬 autolink `<…>`；**禁止**改为后处理 mdast（前面那个 `**` 仍是普通 text，强调永远回不来）。守护：`markdownSource.test.ts` + `MarkdownRenderer.test.tsx` + `e2e/markdown-autolink.spec.ts`。
 - ⛔ `docs/agent/gotchas-web-frontend.md` — `break-words`（`overflow-wrap: break-word`）不能阻止「超长不可断 token」把 shrink-to-fit 盒子顶宽 —— 必须用 `wrap-anywhere`（`overflow-wrap: anywhere`）。
 - ⛔ `docs/agent/gotchas-web-frontend.md` — FileReplace 无限循环守卫（`doReplace`）—— new_string 包含 old_string 时替换是 no-op 但永远"成功"。
 - ⛔ `docs/agent/gotchas-web-frontend.md` — 每帧回调里读几何 = 强制同步布局（2026-09-18 生产 dev-build trace 归因，用户「还是卡得要死」）。
