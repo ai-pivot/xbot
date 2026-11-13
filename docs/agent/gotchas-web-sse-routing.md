@@ -55,6 +55,29 @@ OutboundMsg.Error，认领单条事件、失败原位补回，不吞同 key 的�
 引入按 slash 判断 AgentID 或手拼 channel:chatID。地址有 round-trip/fuzz 测试。
 CLI/Web 旧镜像只在兼容边界归一化，已存在子会话/真实根会话优先，不靠路径猜。
 
+## 恢复出来的子代理：BgSessionKey 曾取到「无冒号的调用链路径」（2026-11-13）
+
+生产核对（6973 个任务、9237 条完成通知配对）确认 **57 例真实错投**：创建方全是
+`agent/ba/…taizi_dpsk-perf-1`，完成通知却落在 `web/fc/chat_9C218CD94A75`
+（其父/主会话）；时间 07:31–12:21，全部早于 `12dbd0c4` 生效（13:05 部署）。
+
+根因不是 fg/bg 模式（两者实跑都正确），而是 **restore 路径**：恢复时
+`buildSubAgentRunConfig` 把 `cfg.SessionKey` 设成调用链身份 `main/<role>`（**没有冒号**，
+不是会话地址），而旧 `BgSessionKey` 逻辑在恢复配置上就取了它 ⇒ 通知 key 非法 ⇒
+旧兜底按「顶层子代理」把它注进主会话。新建（spawn）的会话 `SessionKey` 带冒号，
+所以只有恢复出来的实例中招 —— 与现场「同角色新实例正常、老的 taizi 一直漏」一致。
+
+现在 `BgSessionKey` 唯一来源是 `sessionaddr.Scope`：优先 `CallerSessionKey`
+（spawn/restore 都写的精确 map key）→ `SessionKey` → 主会话才用 `RootSessionKey`。
+恢复后工具上下文与新建同构，`agent:<key>` 精确投递。
+
+守护：`agent/restored_owner_scope_test.go` 走真实 `restoreOneAgent`，断言
+`cfg.AgentID` 仍判为子代理、`CallerSessionKey == key`、`BgSessionKey == agent:<key>`，
+fg/bg 两个模式各一遍。部署后实测：13:05 之后 23 个新任务、0 错投。
+
+排查口径（可复用）：会话库里 `Background task started [task_id: X]` 所在库 = 创建者，
+`[System Notification] Background task X completed` 所在库 = 接收者；两者不同即错投。
+
 ## 路由键
 
 `channel/web/web_eventstream.go`：
