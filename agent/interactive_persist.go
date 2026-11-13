@@ -270,6 +270,11 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec common.InteractiveAgent
 	// `mapKey` 就是 interactiveKey 的产物（与 spawn 时逐字一致），直接用。
 	cfg.CallerSessionKey = mapKey
 
+	// Restore must wire the same live progress path as spawn. Subsequent sends
+	// copy this config; without these callbacks Run still executes/persists its
+	// iterations, but neither SSE nor GetActiveProgress sees any live updates.
+	a.wireSubAgentProgress(mapKey, originChatID, &cfg)
+
 	ia := &interactiveAgent{
 		roleName:     rec.RoleName,
 		instance:     rec.Instance,

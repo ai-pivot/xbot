@@ -6,6 +6,27 @@
 结论：**直觉是对的，实现不是。** 当前 `channel` 是路由键的一部分，而订阅端有三处
 「猜 channel」，猜错即静默失联。
 
+## 已连接但只有心跳：恢复路径漏绑进度（2026-11-13）
+
+用户实测子代理 busy、迭代持续更新，但订阅 `channel=agent` 只有心跳与
+`ask_user_resolved`。不能据此断言 Run 没运行；session-tree 与 session-state
+可能使用不同状态源。生产日志确认目标所属主会话曾恢复其子代理。
+
+`restoreOneAgent` 重建 `RunConfig` 后漏调用 `a.wireSubAgentProgress`，而
+`SendToInteractiveSession` 浅拷贝恢复出的配置。于是 Run 和迭代持久化照常，
+但 `ProgressEventHandler` 与流式回调均为空，既无 SSE 业务推送，也无
+`lastProgressSnapshot`（实时快照返回 null）。修复是恢复时与 spawn 同样接线。
+
+守护：`agent/interactive_restore_progress_test.go` 真实走 restore → send → Run，
+覆盖前台/后台、连续两个 turn 的 structured/stream/done 与 turn 身份；撤掉恢复接线
+时四个 send 均无推送、测试必红。`channel/web/subagent_progress_sse_test.go`
+通过真实 HTTP 订阅生产形态的 agent key，验证进度/流式载荷到达 agent 路由、
+不会误投 web 路由。带 Iteration 的流式帧保持 `progress_structured` envelope，
+由前端 normalizer 提取 stream 载荷，不应仅凭事件名判定“无流式”。
+
+验收边界：上述为本地修复/测试；未部署或重启生产后端前，已有恢复实例仍持有旧回调，
+不能宣称生产问题已消失。
+
 ## 路由键
 
 `channel/web/web_eventstream.go`：
