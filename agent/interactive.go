@@ -39,6 +39,7 @@ type bgParentKey struct{}
 // the SubAgent's Run loop (via DrainBgNotifications). A nil error means success.
 type pendingUserMsg struct {
 	content   string
+	origin    string     // trigger_source of the delivered event ("" = explicit human/parent message)
 	replyCh   chan error // buffered(1): nil on success, error on failure
 	automatic bool       // owned task/cron event; not an explicit user/parent request
 }
@@ -136,6 +137,7 @@ func (ia *interactiveAgent) wirePendingMessageDrain(sessionKey string) func() []
 			result[i] = &tools.QueuedUserMessage{
 				Key:     sessionKey,
 				Content: pm.content,
+				Origin:  pm.origin,
 				ReplyFn: func(err error) {
 					select {
 					case pm.replyCh <- err:
@@ -2378,6 +2380,7 @@ func (a *Agent) SendToInteractiveSession(
 		replyCh := make(chan error, 1)
 		ia.pendingMessages = append(ia.pendingMessages, pendingUserMsg{
 			content:   msg.Content,
+			origin:    msg.Metadata[triggerSourceMetadataKey],
 			replyCh:   replyCh,
 			automatic: msg.Metadata[triggerSourceMetadataKey] == triggerSourceBackgroundTask || msg.Metadata[triggerSourceMetadataKey] == triggerSourceCron,
 		})

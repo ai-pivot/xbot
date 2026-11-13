@@ -3095,10 +3095,25 @@ func (s *runState) injectAsyncMessageNotification(ctx context.Context, iteration
 // SubAgent sees it between iterations. ReplyFn is called after injection to notify
 // the sender of success. The message content explicitly tells the SubAgent the delivery
 // was successful.
+// deliveredMessageContent renders the synthetic tool result for a queued
+// delivery. Automated events (cron / background task) belong to THIS session —
+// the creator of the task — so they must never be described as a message from
+// the parent agent: that mistook an owner's own task result for a parent forward.
+func deliveredMessageContent(origin, body string) string {
+	switch origin {
+	case triggerSourceBackgroundTask:
+		return fmt.Sprintf("📬 [系统通知] 你创建的后台任务已完成（本会话自己的任务，不是父 agent 转发）：\n\n%s\n\n✅ 已送达，无需回复确认。", body)
+	case triggerSourceCron:
+		return fmt.Sprintf("📬 [系统通知] 你的定时任务已触发：\n\n%s\n\n✅ 已送达，无需回复确认。", body)
+	default:
+		return fmt.Sprintf("📬 [消息已送达确认] 你收到了一条来自主 agent 的消息：\n\n%s\n\n✅ 此消息已成功送达，无需回复确认。", body)
+	}
+}
+
 func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m *tools.QueuedUserMessage) error {
 	toolName := "delivered_message"
 	toolID := fmt.Sprintf("delivered_%d_%d", iteration, time.Now().UnixNano())
-	content := fmt.Sprintf("📬 [消息已送达确认] 你收到了一条来自主 agent 的消息：\n\n%s\n\n✅ 此消息已成功送达，无需回复确认。", m.Content)
+	content := deliveredMessageContent(m.Origin, m.Content)
 
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		toolName, toolID,
