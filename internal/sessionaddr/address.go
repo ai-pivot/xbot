@@ -57,14 +57,20 @@ func IsSubAgent(agentID string) bool {
 	return id != "" && id != "main"
 }
 
-// Scope is shared by background tasks and TODO readers/writers. CallerSessionKey
-// is the exact interactive map key assigned on spawn/restore/one-shot creation.
-// Legacy configs without it retain their isolated SessionKey, NEVER the parent.
+// Scope is shared by background tasks and TODO readers/writers.
+//
+// An interactive session's own key (CallerSessionKey) is authoritative and is
+// checked FIRST, before AgentID. Rationale (2026-11-13, live bug): a restored
+// interactive session whose run config had degraded to a non-sub-agent AgentID
+// still took the RootSessionKey branch, so tasks the CHILD created were
+// registered on the PARENT session — the child's task silently became the
+// parent's task. Identity labels are display/call-chain data; the owner key is
+// physical. Never let a label outrank it.
 func Scope(agentID, callerSessionKey, sessionKey, rootKey, channel, chatID string) string {
+	if callerSessionKey != "" {
+		return Agent(callerSessionKey)
+	}
 	if IsSubAgent(agentID) {
-		if callerSessionKey != "" {
-			return Agent(callerSessionKey)
-		}
 		if sessionKey != "" {
 			return sessionKey
 		}
@@ -80,6 +86,13 @@ func Scope(agentID, callerSessionKey, sessionKey, rootKey, channel, chatID strin
 		return Key(channel, chatID)
 	}
 	return ""
+}
+
+// DegradedIdentity reports whether a config still describes itself as the main
+// agent even though an interactive owner key is present — the exact shape that
+// leaked child task completions into the parent session.
+func DegradedIdentity(agentID, callerSessionKey string) bool {
+	return callerSessionKey != "" && !IsSubAgent(agentID)
 }
 
 // IsChildKey and Context are compatibility-boundary helpers for stored agent

@@ -1381,6 +1381,23 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		// Role/AgentID paths are display/call-chain identities, not routing keys.
 		tc.BgSessionKey = sessionaddr.Scope(cfg.AgentID, cfg.CallerSessionKey,
 			cfg.SessionKey, cfg.RootSessionKey, cfg.Channel, cfg.ChatID)
+		// Loud when a run still labels itself as the main agent although it owns
+		// an interactive session: that degradation is what silently moved a
+		// child's background tasks onto the parent session.
+		if sessionaddr.DegradedIdentity(cfg.AgentID, cfg.CallerSessionKey) {
+			log.WithFields(log.Fields{
+				"agent_id":           cfg.AgentID,
+				"caller_session_key": cfg.CallerSessionKey,
+				"bg_session_key":     tc.BgSessionKey,
+				"channel":            cfg.Channel,
+				"chat_id":            cfg.ChatID,
+			}).Error("DEGRADED SUBAGENT IDENTITY: interactive owner exists but AgentID says main — background tasks are still owned by the interactove session (never the root)")
+		}
+		log.WithFields(log.Fields{
+			"agent_id":           cfg.AgentID,
+			"caller_session_key": cfg.CallerSessionKey,
+			"bg_session_key":     tc.BgSessionKey,
+		}).Debug("tool context background-task owner resolved")
 		// NOTE: OnComplete callback registration moved to Agent.bgNotifyLoop.
 		// Engine no longer registers callbacks per-buildToolContext call.
 	}

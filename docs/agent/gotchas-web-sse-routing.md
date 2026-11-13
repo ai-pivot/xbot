@@ -55,6 +55,32 @@ OutboundMsg.Error，认领单条事件、失败原位补回，不吞同 key 的�
 引入按 slash 判断 AgentID 或手拼 channel:chatID。地址有 round-trip/fuzz 测试。
 CLI/Web 旧镜像只在兼容边界归一化，已存在子会话/真实根会话优先，不靠路径猜。
 
+## 身份标签绝不能压过 owner key（2026-11-13 P0，第二次）
+
+现象（用户实测，只有老的恢复子代理 `taizi:dpsk-perf-1` 中招，新建子代理正常）：
+**子代理创建的后台任务，创建后变成了主代理的任务** —— 完成通知出现在主代理上下文里
+（而主代理随后把结果转给子代理，看起来像"父代理转发"）。
+
+根因：`sessionaddr.Scope` 先按 `AgentID` 判主/子，再取 key。恢复出来的 interactive
+会话，其 Run 配置可能退化成 `AgentID="main"`（标签错），于是走 RootSessionKey 分支 ⇒
+`BgSessionKey` = 父会话 ⇒ 任务登记在父会话上。这就是"子代理创建、却变成主代理任务"。
+
+修法：**`CallerSessionKey`（spawn/restore/one-shot 都写入的物理 owner key）优先，
+与 `AgentID` 无关**；标签只用于显示/调用链。并在 `buildToolContext` 里对
+"有交互 owner 却自称 main"的退化配置打 ERROR（字段 agent_id / caller_session_key /
+bg_session_key），避免再次静默。
+
+排查教训（重要）：
+- 子代理的 tool call **不写 `Tool call:` 日志**，所以不能用日志 `session_id` 判断
+  "谁发起了这个 Shell/bg 任务"——会把父会话的痕迹当成子代理的证据。
+- 判定归属要看**任务登记 key**（`BgSessionKey`）与任务创建者会话，不要靠 AgentID 标签。
+
+守护：`agent/degraded_owner_test.go` 覆盖 agentID ∈ {main, "", "  main  ", taizi,
+main/taizi} 时 owner 都是 `agent:<interactive key>`、且主代理自己仍用 root；并通过真实
+`restoreOneAgent` 验证恢复会话（含人为把 AgentID 改成 main 的退化场景）不丢 owner。
+变异：把 Scope 改回"AgentID 优先"，该用例立刻报
+`BgSessionKey="web:chat_..." want "agent:web:chat_.../taizi:dpsk-perf-1"`。
+
 ## 恢复出来的子代理：BgSessionKey 曾取到「无冒号的调用链路径」（2026-11-13）
 
 生产核对（6973 个任务、9237 条完成通知配对）确认 **57 例真实错投**：创建方全是
