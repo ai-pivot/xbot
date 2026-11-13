@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"xbot/internal/sessionaddr"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -145,7 +146,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					}
 					// Update background task session key for isolation
 					if m.channel != nil {
-						m.channel.bgSessionKey = "agent:" + agentChatID
+						m.channel.bgSessionKey = sessionaddr.Agent(agentChatID)
 						m.channel.updateBgTaskCountFn()
 					}
 					m.messages = nil
@@ -632,7 +633,7 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			}
 			// Update background task session key for isolation
 			if m.channel != nil {
-				m.channel.bgSessionKey = "agent:" + agentChatID
+				m.channel.bgSessionKey = sessionaddr.Agent(agentChatID)
 				m.channel.updateBgTaskCountFn()
 			}
 			m.messages = nil

@@ -57,7 +57,7 @@ func TestRoutingConstructionGuard(t *testing.T) {
 					return true
 				}
 				l, r := fieldName(left.X), fieldName(b.Y)
-				if (l == "channel" || l == "Channel" || l == "originChannel" || l == "chName") && (r == "chatID" || r == "ChatID" || r == "originChatID") {
+				if (l == "channel" || l == "Channel" || l == "originChannel" || l == "chName" || l == "ch" || l == "channelName" || l == "rootChannel" || l == "physicalChannel" || l == "ptyChannel" || l == "parentChannel") && (r == "chatID" || r == "ChatID" || r == "originChatID" || r == "chat" || r == "id" || r == "rootChatID" || r == "parentChatID") {
 					t.Errorf("%s: session address serialization must use sessionaddr.Key", fs.Position(b.Pos()))
 				}
 				return true

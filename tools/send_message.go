@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/bus"
 	"xbot/llm"
@@ -295,7 +296,7 @@ func resolveUserBoardTarget(ctx *ToolContext, addr string) (userBoardTarget, err
 		}
 	}
 	if originSession == "" {
-		originSession = rootChannel + ":" + rootChatID
+		originSession = sessionaddr.Key(rootChannel, rootChatID)
 	}
 	originAgent := ""
 	if ctx.AgentDepth >= 1 {
@@ -327,7 +328,7 @@ func resolveUserBoardTarget(ctx *ToolContext, addr string) (userBoardTarget, err
 func rootSessionOf(ctx *ToolContext) (channel, chatID string) {
 	key := strings.TrimSpace(ctx.RootSessionKey)
 	if key == "" {
-		key = strings.TrimSpace(ctx.Channel) + ":" + strings.TrimSpace(ctx.ChatID)
+		key = sessionaddr.Key(strings.TrimSpace(ctx.Channel), strings.TrimSpace(ctx.ChatID))
 	}
 	i := strings.Index(key, ":")
 	if i <= 0 || i == len(key)-1 {

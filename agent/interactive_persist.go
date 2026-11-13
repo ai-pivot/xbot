@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/bus"
 	log "xbot/logger"
@@ -134,7 +135,7 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 		return
 	}
 	if depth > maxAgentRestoreDepth {
-		log.WithFields(log.Fields{"parent": parentChannel + ":" + parentChatID, "depth": depth}).
+		log.WithFields(log.Fields{"parent": sessionaddr.Key(parentChannel, parentChatID), "depth": depth}).
 			Warn("Sub-agent restore depth exceeded — stopping recursion (possible parent cycle)")
 		return
 	}
@@ -168,7 +169,7 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 	}
 	if restored > 0 {
 		log.WithFields(log.Fields{
-			"parent":   parentChannel + ":" + parentChatID,
+			"parent":   sessionaddr.Key(parentChannel, parentChatID),
 			"restored": restored,
 			"total":    len(rows),
 			"depth":    depth,

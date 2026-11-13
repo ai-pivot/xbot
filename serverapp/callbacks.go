@@ -129,7 +129,7 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			if !ok || router == nil || chatID == "" {
 				return "", false
 			}
-			name := router.GetSessionRunner(channelName + ":" + chatID)
+			name := router.GetSessionRunner(sessionaddr.Key(channelName, chatID))
 			return name, name != "" && router.IsRunnerOnline(name)
 		},
 		RunnerSessionSet: func(channelName, chatID, name string) error {
@@ -140,7 +140,7 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			if chatID == "" {
 				return fmt.Errorf("chat_id is required")
 			}
-			return router.SetSessionRunner(channelName+":"+chatID, name)
+			return router.SetSessionRunner(sessionaddr.Key(channelName, chatID), name)
 		},
 	}
 }
@@ -1370,7 +1370,7 @@ func applyWebRunningStatusesFast(ag *agent.Agent, rows []web.UserChatWithPreview
 		if ch != "agent" && row.Type != "agent" {
 			row.WorkDir = webSessionCWD(ag, ch, chatID)
 		}
-		key := ch + ":" + chatID
+		key := sessionaddr.Key(ch, chatID)
 		if ch == "agent" || row.Type == "agent" {
 			// Sub-agents do not register chatCancelCh; their running flag lives
 			// on the interactive session. Row counts here are small.

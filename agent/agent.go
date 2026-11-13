@@ -1913,7 +1913,7 @@ func (a *Agent) ActiveRunDone(ch, chatID string) (<-chan struct{}, bool) {
 	if ch == "" || chatID == "" {
 		return nil, false
 	}
-	cancelKey := ch + ":" + chatID
+	cancelKey := sessionaddr.Key(ch, chatID)
 	a.cancelStateMu.Lock()
 	defer a.cancelStateMu.Unlock()
 	if _, active := a.chatCancelCh.Load(cancelKey); !active {
@@ -5323,7 +5323,7 @@ func (a *Agent) bgNotifyLoop() {
 				// "chat2/court.shoufu:main" 这种畸形会话，通知等于丢）。
 				if ch, chat, _, _ := parseInteractiveKeyTail(n.ParentKey); ch != "" && chat != "" {
 					a.takePendingBgNotifications(n.ParentKey)
-					n.Key = ch + ":" + chat
+					n.Key = sessionaddr.Key(ch, chat)
 					a.enqueueBgNotification(n)
 				}
 			}

@@ -436,8 +436,8 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 		ch, rest, _ := strings.Cut(addr, ":")
 		channelName, chatID = ch, rest
 	}
-	if isMirrorSessionAddress(channelName + ":" + chatID) {
-		log.WithFields(log.Fields{"session_key": sessionKey, "target": channelName + ":" + chatID}).
+	if isMirrorSessionAddress(sessionaddr.Key(channelName, chatID)) {
+		log.WithFields(log.Fields{"session_key": sessionKey, "target": sessionaddr.Key(channelName, chatID)}).
 			Error("drainAndProcessNotifications: target is still a mirror session — notification will be misdelivered")
 	}
 

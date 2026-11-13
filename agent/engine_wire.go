@@ -351,7 +351,7 @@ func (a *Agent) buildMainRunConfig(
 	if physicalChannel != "" && physicalChannel != channel {
 		// Override SessionKey so AsDefinitionsForSession/GetForSession find
 		// channel-scoped tools registered under the physical channel.
-		sessionKey = physicalChannel + ":" + chatID
+		sessionKey = sessionaddr.Key(physicalChannel, chatID)
 		cfg.SessionKey = sessionKey
 		// RootSessionKey must use the CANONICAL session key (origin channel),
 		// NOT the physical channel. Offload data is session-scoped — it must
@@ -1121,7 +1121,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 	// channel-scoped tool resolution. Otherwise fall back to the session's origin channel.
 	sessionKey := qualifyChatID(channel, chatID)
 	if physicalChannel != "" && physicalChannel != channel {
-		sessionKey = physicalChannel + ":" + chatID
+		sessionKey = sessionaddr.Key(physicalChannel, chatID)
 	}
 
 	// Pre-build RunConfig outside closure to avoid reallocating on every tool call.

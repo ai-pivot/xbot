@@ -1,6 +1,9 @@
 package agent
 
-import "time"
+import (
+	"time"
+	"xbot/internal/sessionaddr"
+)
 
 // InteractiveSessionSeed describes an in-memory interactive sub-agent session
 // snapshot for external test packages.
@@ -49,13 +52,13 @@ func (a *Agent) RegisterInteractiveSessionForTest(seed InteractiveSessionSeed) (
 //
 // 仅用于测试：真实运行链路由 registerActiveCancelState 注册。
 func (a *Agent) RegisterChatCancelForTest(channelName, chatID string) {
-	a.chatCancelCh.Store(channelName+":"+chatID, make(chan struct{}))
+	a.chatCancelCh.Store(sessionaddr.Key(channelName, chatID), make(chan struct{}))
 }
 
 // UnregisterChatCancelForTest removes a placeholder installed by
 // RegisterChatCancelForTest.
 func (a *Agent) UnregisterChatCancelForTest(channelName, chatID string) {
-	a.chatCancelCh.Delete(channelName + ":" + chatID)
+	a.chatCancelCh.Delete(sessionaddr.Key(channelName, chatID))
 }
 
 // SessionAddressForTest exposes the **production** sessionAddress so cross-package

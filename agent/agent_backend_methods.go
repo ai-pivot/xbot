@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"xbot/internal/sessionaddr"
 
 	"xbot/channel"
 	log "xbot/logger"
@@ -70,7 +71,7 @@ func (a *Agent) SetCWDForced(ch, chatID, dir string) error {
 		return fmt.Errorf("cwd is required")
 	}
 	if !filepath.IsAbs(dir) {
-		log.WithFields(log.Fields{"cwd": dir, "session": ch + ":" + chatID}).
+		log.WithFields(log.Fields{"cwd": dir, "session": sessionaddr.Key(ch, chatID)}).
 			Warn("SetCWDForced received a non-absolute path — applying it verbatim as requested")
 	}
 	// 显式工作目录（新建会话弹窗 / 会话信息里改路径）**不存在则自动创建**
@@ -86,7 +87,7 @@ func (a *Agent) SetCWDForced(ch, chatID, dir string) error {
 		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
 			return fmt.Errorf("create working directory %s: %w", dir, mkErr)
 		}
-		log.WithFields(log.Fields{"cwd": dir, "session": ch + ":" + chatID}).
+		log.WithFields(log.Fields{"cwd": dir, "session": sessionaddr.Key(ch, chatID)}).
 			Info("SetCWDForced created a missing working directory")
 	} else if !info.IsDir() {
 		return fmt.Errorf("%s exists but is not a directory", dir)
@@ -131,7 +132,7 @@ func (a *Agent) setCWD(ch, chatID, dir string, force bool) error {
 // IsProcessingByChannel returns true if there is an active Run for the given channel:chatID.
 // IsProcessingByChannel reports whether the session is busy. Pure memory.
 func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
-	key := ch + ":" + chatID
+	key := sessionaddr.Key(ch, chatID)
 	if _, found := a.chatCancelCh.Load(key); found {
 		return true
 	}
@@ -236,7 +237,7 @@ func (a *Agent) HasPendingAskUserFast(ch, chatID string) bool {
 // interactiveSubAgents when the agent is between iterations (Phase="done" but
 // still running). This unifies the busy/idle logic across all session types.
 func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent {
-	key := ch + ":" + chatID
+	key := sessionaddr.Key(ch, chatID)
 	v, ok := a.lastProgressSnapshot.Load(key)
 	if !ok {
 		// Turn has ended (snapshot deleted). Return a minimal snapshot with
@@ -555,7 +556,7 @@ func foldProgressIteration(el protocol.ProgressEvent, rec common.IterationRecord
 
 // GetTodos returns the TODO items for the given channel:chatID session.
 func (a *Agent) GetTodos(ch, chatID string) []protocol.TodoItem {
-	key := ch + ":" + chatID
+	key := sessionaddr.Key(ch, chatID)
 	if a.todoManager == nil {
 		return []protocol.TodoItem{}
 	}
@@ -579,7 +580,7 @@ func (a *Agent) SetTodos(ch, chatID string, items []protocol.TodoItem) {
 	if a.todoManager == nil {
 		return
 	}
-	key := ch + ":" + chatID
+	key := sessionaddr.Key(ch, chatID)
 	todos := make([]tools.TodoItem, len(items))
 	for i, it := range items {
 		todos[i] = tools.TodoItem{Text: it.Text, Status: it.Status}
@@ -622,7 +623,7 @@ func (a *Agent) GetGoal(ch, chatID string) *protocol.GoalInfo {
 	if a.goalManager == nil {
 		return nil
 	}
-	return a.goalManager.GoalInfo(ch + ":" + chatID)
+	return a.goalManager.GoalInfo(sessionaddr.Key(ch, chatID))
 }
 
 // SetGoal sets a goal for the given channel:chatID session.
@@ -630,7 +631,7 @@ func (a *Agent) SetGoal(ch, chatID, objective string) {
 	if a.goalManager == nil {
 		return
 	}
-	a.goalManager.Set(ch+":"+chatID, objective)
+	a.goalManager.Set(sessionaddr.Key(ch, chatID), objective)
 	// Push a progress event so the frontend displays the GoalBanner immediately.
 	a.emitGoalProgress(ch, chatID)
 }
@@ -640,9 +641,9 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 	if a.goalManager == nil {
 		return
 	}
-	a.goalManager.Clear(ch + ":" + chatID)
+	a.goalManager.Clear(sessionaddr.Key(ch, chatID))
 	// Push a progress event with nil goal so the frontend removes the GoalBanner.
-	progressKey := ch + ":" + chatID
+	progressKey := sessionaddr.Key(ch, chatID)
 	seqPtr := a.progressSeqFor(progressKey)
 	seq := seqPtr.Add(1)
 	payload := &protocol.ProgressEvent{
@@ -699,7 +700,7 @@ func (a *Agent) GetExportIterations(ch, chatID string) []protocol.ExportedIterat
 	}
 
 	// 2. In-flight iteration (partial stream content) from lastProgressSnapshot.
-	key := ch + ":" + chatID
+	key := sessionaddr.Key(ch, chatID)
 	v, ok := a.lastProgressSnapshot.Load(key)
 	if !ok {
 		return iterations

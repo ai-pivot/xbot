@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
@@ -559,7 +560,7 @@ func (wc *WebChannel) handleTerminalCreate(w http.ResponseWriter, r *http.Reques
 	if ptyChannel == "" {
 		ptyChannel = "cli"
 	}
-	tid, err := wc.ptyMgr.Create(senderID, ptyChannel+":"+req.ChatID, req.ChatID, cwd, 80, 24)
+	tid, err := wc.ptyMgr.Create(senderID, sessionaddr.Key(ptyChannel, req.ChatID), req.ChatID, cwd, 80, 24)
 	if err != nil {
 		log.WithError(err).Warn("Failed to create PTY")
 		jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("create terminal: %v", err))
