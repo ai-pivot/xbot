@@ -689,6 +689,45 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 	}
 	toolCallsByID := make(map[string]*toolCallState)
 	toolCallList := make([]*toolCallState, 0)
+	// Keep provider item IDs separate from call IDs and dense collector indices.
+	// Reasoning/message output items also consume output_index values.
+	ensureToolCall := func(itemID, callID, name string) *toolCallState {
+		tc, exists := toolCallsByID[itemID]
+		if !exists {
+			if callID == "" {
+				callID = itemID
+			}
+			tc = &toolCallState{ID: callID, Name: name, index: len(toolCallList)}
+			toolCallsByID[itemID] = tc
+			toolCallList = append(toolCallList, tc)
+			hasToolCalls = true
+		}
+		changed := !exists
+		if callID != "" && callID != tc.ID {
+			tc.ID, changed = callID, true
+		}
+		if name != "" && name != tc.Name {
+			tc.Name, changed = name, true
+		}
+		if changed {
+			eventChan <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{
+				Index: tc.index, ID: tc.ID, Name: tc.Name,
+			}}
+		}
+		return tc
+	}
+	completeToolArguments := func(tc *toolCallState, arguments string) {
+		if arguments == "" || arguments == tc.Arguments {
+			return
+		}
+		tc.Arguments = arguments
+		// Some gateways emit no deltas for multi-call responses: done is the
+		// ONLY argument carrier. Forward it to the collector, not just our local
+		// state. Replacement also repairs partial deltas without duplicating JSON.
+		eventChan <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{
+			Index: tc.index, Arguments: arguments, ArgumentsComplete: true,
+		}}
+	}
 	// Reasoning 归属模型（Responses API 专属，共用层只做无脑累积）：
 	//   - `reasoning_text.*` 是**权威全文**，实时转发；
 	//   - `reasoning_summary_text.*` 是**概括占位**，只累积、不实时发；
@@ -885,32 +924,8 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 				switchReasoningItem(event.Item.ID)
 			}
 			if event.Item.Type == "function_call" {
-				callID := event.Item.CallID
-				if callID == "" {
-					callID = event.Item.ID
-				}
-				tc := &toolCallState{
-					ID:    callID,
-					Name:  event.Item.Name,
-					index: len(toolCallList),
-				}
-				// Use event.Item.ID as the map key — this is the "item_id"
-				// that subsequent function_call_arguments.delta/done events carry.
-				// event.ItemID is empty for output_item.added events (no top-level
-				// "item_id" in the JSON; the ID lives inside event.Item.ID).
-				toolCallsByID[event.Item.ID] = tc
-				toolCallList = append(toolCallList, tc)
-				hasToolCalls = true
-
-				// Send initial tool call event (ID + Name)
-				eventChan <- StreamEvent{
-					Type: EventToolCall,
-					ToolCall: &ToolCallDelta{
-						Index: tc.index,
-						ID:    tc.ID,
-						Name:  tc.Name,
-					},
-				}
+				tc := ensureToolCall(event.Item.ID, event.Item.CallID, event.Item.Name)
+				completeToolArguments(tc, event.Item.Arguments)
 			}
 
 		case "response.function_call_arguments.delta":
@@ -928,40 +943,21 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			}
 
 		case "response.function_call_arguments.done":
-			// Tool call arguments complete — update with final values
-			tc, ok := toolCallsByID[event.ItemID]
-			if ok {
-				if event.Arguments != "" {
-					tc.Arguments = event.Arguments
-				}
-				if event.Name != "" {
+			if tc, ok := toolCallsByID[event.ItemID]; ok {
+				if event.Name != "" && event.Name != tc.Name {
 					tc.Name = event.Name
+					eventChan <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{Index: tc.index, Name: tc.Name}}
 				}
+				completeToolArguments(tc, event.Arguments)
 			}
 
 		case "response.output_item.done":
-			// Output item complete — use as fallback for tool calls that
-			// may have missed delta events (defensive).
 			if event.Item.Type == "function_call" {
-				tc, ok := toolCallsByID[event.Item.ID]
-				if ok {
-					// Only update if arguments were missing (delta events failed)
-					if tc.Arguments == "" && event.Item.Arguments != "" {
-						tc.Arguments = event.Item.Arguments
-						// Send the complete arguments as a final delta
-						eventChan <- StreamEvent{
-							Type: EventToolCall,
-							ToolCall: &ToolCallDelta{
-								Index:     tc.index,
-								Arguments: tc.Arguments,
-							},
-						}
-					}
-				}
-				// Reasoning item 完成：捕获 id/encrypted_content/summary 供回传。
-				if event.Item.Type == "reasoning" {
-					emitReasoningItem(reasoningItemFromOutputItem(event.Item))
-				}
+				tc := ensureToolCall(event.Item.ID, event.Item.CallID, event.Item.Name)
+				completeToolArguments(tc, event.Item.Arguments)
+			}
+			if event.Item.Type == "reasoning" {
+				emitReasoningItem(reasoningItemFromOutputItem(event.Item))
 			}
 
 		case "response.completed":
@@ -977,13 +973,18 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			if completed.Usage.InputTokensDetails.CachedTokens > 0 {
 				lastUsage.CacheHitTokens = completed.Usage.InputTokensDetails.CachedTokens
 			}
-			lastFinishReason = responsesStatusToFinishReason(completed.Status, hasToolCalls)
 			// 最终 output 里的 reasoning item（部分网关只在这里带 encrypted_content）。
 			for _, item := range completed.Output {
 				if item.Type == "reasoning" {
 					emitReasoningItem(reasoningItemFromOutputItem(item))
 				}
+				if item.Type == "function_call" {
+					tc := ensureToolCall(item.ID, item.CallID, item.Name)
+					completeToolArguments(tc, item.Arguments)
+				}
 			}
+
+			lastFinishReason = responsesStatusToFinishReason(completed.Status, hasToolCalls)
 
 		case "response.failed":
 			// Response failed

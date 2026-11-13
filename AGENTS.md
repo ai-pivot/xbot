@@ -4,6 +4,8 @@
 
 ## Quick Reference
 
+- Responses multi-tool streams may carry full args only in `function_call_arguments.done`, with no delta. Forward authoritative `ArgumentsComplete` snapshots to the collector as replacement, never append; otherwise tools receive empty/truncated JSON. See `docs/agent/llm.md` and its sanitized live-capture regression.
+- Restored interactive subagents need the same `wireSubAgentProgress` wiring as spawn. Missing callbacks leave genuine running/persisting iterations invisible to SSE and live snapshots. See `docs/agent/gotchas-web-sse-routing.md`.
 - Server retry configuration: `--config` uses `config.LoadWithPath` (shared defaults/env); raw `LoadFromFile` is for persistence edits. Zero retry attempts means 5 total attempts, never unlimited. Provider code `unsupported_country_region_territory` fails immediately. See `docs/agent/llm.md`.
 
 - Streaming selection reparses: native restoration is bounded to 16384 UTF-16 source/rendered characters and 256 text nodes. Above the limit, skip restoration but preserve the captured annotation quote. Ordinary typewriter frames skip traversal. See `docs/agent/message-annotations.md`.

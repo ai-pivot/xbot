@@ -1,0 +1,38 @@
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":9,"output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_2","name":"get_weather","arguments":"","status":"in_progress"}}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","sequence_number":10,"item_id":"fc_1","output_index":1,"arguments":"{\"city\": \"Beijing\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":11,"output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_2","name":"get_weather","arguments":"{\"city\": \"Beijing\"}","status":"completed"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":12,"output_index":2,"item":{"type":"function_call","id":"fc_3","call_id":"call_4","name":"get_weather","arguments":"","status":"in_progress"}}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","sequence_number":13,"item_id":"fc_3","output_index":2,"arguments":"{\"city\": \"Shanghai\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":14,"output_index":2,"item":{"type":"function_call","id":"fc_3","call_id":"call_4","name":"get_weather","arguments":"{\"city\": \"Shanghai\"}","status":"completed"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":15,"output_index":3,"item":{"type":"function_call","id":"fc_5","call_id":"call_6","name":"get_weather","arguments":"","status":"in_progress"}}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","sequence_number":16,"item_id":"fc_5","output_index":3,"arguments":"{\"city\": \"Tokyo\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":17,"output_index":3,"item":{"type":"function_call","id":"fc_5","call_id":"call_6","name":"get_weather","arguments":"{\"city\": \"Tokyo\"}","status":"completed"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":18,"output_index":4,"item":{"type":"function_call","id":"fc_7","call_id":"call_8","name":"get_weather","arguments":"","status":"in_progress"}}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","sequence_number":19,"item_id":"fc_7","output_index":4,"arguments":"{\"city\": \"London\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":20,"output_index":4,"item":{"type":"function_call","id":"fc_7","call_id":"call_8","name":"get_weather","arguments":"{\"city\": \"London\"}","status":"completed"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_9","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_2","name":"get_weather","arguments":"{\"city\": \"Beijing\"}","status":"completed"},{"type":"function_call","id":"fc_3","call_id":"call_4","name":"get_weather","arguments":"{\"city\": \"Shanghai\"}","status":"completed"},{"type":"function_call","id":"fc_5","call_id":"call_6","name":"get_weather","arguments":"{\"city\": \"Tokyo\"}","status":"completed"},{"type":"function_call","id":"fc_7","call_id":"call_8","name":"get_weather","arguments":"{\"city\": \"London\"}","status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
