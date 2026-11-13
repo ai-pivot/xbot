@@ -131,10 +131,17 @@ func TestLegacyBackgroundTaskWithAmbiguousAgentIDIsNotDelivered(t *testing.T) {
 	}
 }
 
-func TestBackgroundTaskTurnDoesNotNotifyParent(t *testing.T) {
+// A background-task-triggered turn is real work with a real conclusion: the
+// parent must receive the completion report. Suppressing it (an earlier version
+// did) silently dropped the sub-agent's last output before going idle.
+func TestBackgroundTaskTurnStillNotifiesParent(t *testing.T) {
 	cfg := &RunConfig{TriggerSource: triggerSourceBackgroundTask}
-	if shouldNotifyParent(cfg, false) {
-		t.Fatal("owner's autonomous task completion woke its parent")
+	if !shouldNotifyParent(cfg, false) {
+		t.Fatal("background-task turn must still report completion to the parent")
+	}
+	cronCfg := &RunConfig{TriggerSource: triggerSourceCron}
+	if shouldNotifyParent(cronCfg, false) {
+		t.Fatal("cron turn must still be suppressed")
 	}
 	if !shouldNotifyParent(cfg, true) {
 		t.Fatal("explicit user input lost its completion report")

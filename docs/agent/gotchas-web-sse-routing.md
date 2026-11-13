@@ -55,6 +55,15 @@ OutboundMsg.Error，认领单条事件、失败原位补回，不吞同 key 的�
 引入按 slash 判断 AgentID 或手拼 channel:chatID。地址有 round-trip/fuzz 测试。
 CLI/Web 旧镜像只在兼容边界归一化，已存在子会话/真实根会话优先，不靠路径猜。
 
+## 抑制父级回执的边界：只允许 cron（2026-11-13 回归）
+
+我曾把「后台任务完成唤醒的那一轮」也纳入 `shouldNotifyParent` 的抑制范围，理由是不想用自动事件吵醒父代理。这是错的并造成回归：**子代理 idle 前的最后一段输出再也没通知父级**。
+
+现在的规则只有一条：`cron` 触发的 turn（且没有真实用户输入并入时）不投递；**其余一切 turn（含后台任务完成唤醒的）照常向父会话投递 Completed/Progress**。自动事件仍然不置 `userInputJoined`（那是「有人主动派活」的判据），所以 cron 的 fail-open 语义不变。
+
+守护：`agent/notification_owner_isolation_test.go::TestBackgroundTaskTurnStillNotifiesParent`
+（background_task turn 必须投递；cron turn 必须抑制）。
+
 ## 身份标签绝不能压过 owner key（2026-11-13 P0，第二次）
 
 现象（用户实测，只有老的恢复子代理 `taizi:dpsk-perf-1` 中招，新建子代理正常）：

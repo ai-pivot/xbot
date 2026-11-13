@@ -37,6 +37,8 @@ func isCronTriggeredTurn(cfg *RunConfig) bool {
 //
 //   - 常规 turn：投递（既有行为）。
 //   - cron turn：**不投递** —— 定时任务不该把父会话唤醒一轮 LLM。
+//   - 后台任务完成唤醒的 turn：**照常投递**。它可能有真实结论，父代理必须收到；
+//     早期版本把它一并抑制，导致子代理 idle 前的最后输出再也没通知父级（回归）。
 //   - 但 cron turn 期间若**真有** pendingUserMsg 被 drain 注入（有人主动给这个
 //     会话发了消息），fail-open 照常投递：用户那次派单必须有完成回执，
 //     宁可多发一条，也不能吞掉人的输入（2026-11-12 lead 口径）。
@@ -44,7 +46,7 @@ func isCronTriggeredTurn(cfg *RunConfig) bool {
 // 异常路径（panic）不走本函数：panic 通知一律照发，异常必须让上层知道；
 // interrupt（Completed 的 "[interrupted]" 变体）按 cron 口径抑制，见各调用点注释。
 func shouldNotifyParent(cfg *RunConfig, userInputJoined bool) bool {
-	return userInputJoined || (!isCronTriggeredTurn(cfg) && (cfg == nil || cfg.TriggerSource != triggerSourceBackgroundTask))
+	return userInputJoined || !isCronTriggeredTurn(cfg)
 }
 
 // bgSectionsTriggerSource 判定一条**合并后**的通知 user 消息（一次突发 = 一条
