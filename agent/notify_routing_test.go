@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -124,24 +123,18 @@ func TestAgentPathKeyNotificationIsNotDropped(t *testing.T) {
 		Content:  "任务完成：已删除 overdue 项",
 	})
 
-	// 调用 drain：不允许静默丢弃 —— 通知必须离开该 key 的队列，
-	// 要么被投递出去，要么被保留到别处（"recovered"）。
+	// Unaddressed events stay under their original key: neither swallowed nor
+	// reassigned to a guessed parent / main / invented recovered session.
 	a.drainAndProcessNotifications(badKey)
-
-	if left := a.pendingBgNotifications(badKey); len(left) != 0 {
-		t.Fatalf("非法 key 的通知仍滞留在原队列（%d 条），说明兜底没走通", len(left))
+	if len(a.pendingBgNotifications(badKey)) != 1 {
+		t.Fatal("unresolved event was lost or reassigned")
 	}
-	// 兜底路径必须把内容保留在某处（投递到主会话或 "recovered" 队列），不能蒸发：
-	recovered := a.pendingBgNotifications("recovered")
+	if len(a.pendingBgNotifications("recovered")) != 0 {
+		t.Fatal("invented recovered recipient")
+	}
 	select {
 	case msg := <-a.bus.Inbound:
-		if !strings.Contains(msg.Content, "任务完成") {
-			t.Fatalf("投递内容丢失: %q", msg.Content)
-		}
-		return
+		t.Fatalf("unresolved notification leaked to main: %+v", msg)
 	default:
-	}
-	if len(recovered) == 0 {
-		t.Fatal("通知既没投递也没保留 —— 又被吞了")
 	}
 }

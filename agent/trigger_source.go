@@ -24,7 +24,8 @@ const (
 	// triggerSourceMetadataKey 是入站消息 metadata 上的键名。
 	triggerSourceMetadataKey = "trigger_source"
 	// triggerSourceCron 表示这一轮 Run 由 cron 定时任务触发。
-	triggerSourceCron = "cron"
+	triggerSourceCron           = "cron"
+	triggerSourceBackgroundTask = "background_task"
 )
 
 // isCronTriggeredTurn 判定本轮 Run 是否由 cron 触发（nil-safe：裸 RunConfig 不是 cron turn）。
@@ -43,7 +44,7 @@ func isCronTriggeredTurn(cfg *RunConfig) bool {
 // 异常路径（panic）不走本函数：panic 通知一律照发，异常必须让上层知道；
 // interrupt（Completed 的 "[interrupted]" 变体）按 cron 口径抑制，见各调用点注释。
 func shouldNotifyParent(cfg *RunConfig, userInputJoined bool) bool {
-	return !isCronTriggeredTurn(cfg) || userInputJoined
+	return userInputJoined || (!isCronTriggeredTurn(cfg) && (cfg == nil || cfg.TriggerSource != triggerSourceBackgroundTask))
 }
 
 // bgSectionsTriggerSource 判定一条**合并后**的通知 user 消息（一次突发 = 一条

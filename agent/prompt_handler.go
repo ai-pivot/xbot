@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"xbot/internal/sessionaddr"
 
 	"xbot/bus"
 	"xbot/channel"
@@ -42,7 +43,7 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 	}
 
 	// 获取工具定义
-	sessionKey := msg.Channel + ":" + msg.ChatID
+	sessionKey := sessionaddr.Key(msg.Channel, msg.ChatID)
 	userCtx := UserContextFromContext(ctx)
 	toolDefs := visibleToolDefs(a.tools.AsDefinitionsForSession(sessionKey, tenantSession.TenantID()), userCtx.PermUsers, msg.Channel)
 
@@ -168,7 +169,7 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 	}
 
 	// 清除记忆整理状态，取消正在进行的整理任务（多路径协调）
-	tenantKey := msg.Channel + ":" + msg.ChatID
+	tenantKey := sessionaddr.Key(msg.Channel, msg.ChatID)
 
 	// 清理 offload 数据
 	if a.offloadStore != nil {

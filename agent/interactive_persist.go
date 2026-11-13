@@ -313,6 +313,8 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec common.InteractiveAgent
 		return nil
 	}
 
+	a.retryOwnerNotifications(mapKey)
+
 	// 5) 注册 AgentChannel（SendMessage 的寻址依赖它）。
 	if a.registerAgentChannel != nil {
 		sendFn := func(sendCtx context.Context, task string) (string, error) {

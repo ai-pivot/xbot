@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/bus"
 	"xbot/channel"
@@ -44,7 +45,7 @@ func (a *Agent) handleContextInfo(ctx context.Context, msg bus.InboundMessage, t
 	}
 
 	// 获取工具定义并计算 token
-	sessionKey := msg.Channel + ":" + msg.ChatID
+	sessionKey := sessionaddr.Key(msg.Channel, msg.ChatID)
 	userCtx := UserContextFromContext(ctx)
 	toolDefs := visibleToolDefs(a.tools.AsDefinitionsForSession(sessionKey, tenantSession.TenantID()), userCtx.PermUsers, msg.Channel)
 	toolDefsTokens := len(toolDefs) * 200 // rough estimate
@@ -408,7 +409,7 @@ func (a *Agent) handleSessionInfo(ctx context.Context, msg bus.InboundMessage) (
 		}
 	}
 	// Stream timing stats from the most recent LLM call (persists across turns)
-	progressKey := msg.Channel + ":" + msg.ChatID
+	progressKey := sessionaddr.Key(msg.Channel, msg.ChatID)
 	if v, ok := a.lastStreamStats.Load(progressKey); ok {
 		if stats, ok := v.(*protocol.StreamStats); ok && stats != nil {
 			fmt.Fprintf(&sb, "| TTFT | %d ms |\n", stats.TTFTMs)

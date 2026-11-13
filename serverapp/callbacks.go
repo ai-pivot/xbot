@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent"
 	"xbot/llm"
@@ -27,7 +28,7 @@ import (
 	"xbot/push"
 	"xbot/session"
 	"xbot/storage"
-	"xbot/storage/sqlite"
+	"xbot/storage/common"
 	"xbot/tools"
 )
 
@@ -38,8 +39,8 @@ import (
 // （PG 后端未实现该特性 ⇒ **未覆盖项**）。这里按能力取用，拿不到就明确报错，
 // 绝不静默降级 —— 静默降级会让群发写进不存在的表，消息凭空蒸发。
 type groupMessageStore interface {
-	AppendGroupMessage(tenantID int64, msg llm.ChatMessage, env sqlite.GroupMessageEnvelope) (int64, error)
-	ListGroupMessages(tenantID int64, groupID string, beforeID int64, limit int) ([]sqlite.GroupMessageRow, bool, int64, error)
+	AppendGroupMessage(tenantID int64, msg llm.ChatMessage, env common.GroupMessageEnvelope) (int64, error)
+	ListGroupMessages(tenantID int64, groupID string, beforeID int64, limit int) ([]common.GroupMessageRow, bool, int64, error)
 }
 
 // groupMessagesOf 取出群组消息能力；后端不支持时返回可读错误。
@@ -274,7 +275,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	if store != nil {
 		shareStore := store.Config()
 		callbacks.ShareCreate = func(createdBy int, pluginID, contentType, payload, title, expiresAt string) (*protocol.SharedArtifact, error) {
-			a := &sqlite.SharedArtifact{
+			a := &common.SharedArtifact{
 				PluginID:    pluginID,
 				ContentType: contentType,
 				Payload:     payload,
@@ -312,8 +313,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 
 	// ─── Agent 通信指挥室（群组可视化）────────────────────────────────────
 	// 群元数据在主库两张小表；消息仍读调用者自己的会话库（不跨库聚合）。
-	if webDB := ag.MultiSession().DB(); webDB != nil {
-		groupSvc := sqlite.NewGroupService(webDB.Conn())
+	if store != nil && store.Groups() != nil {
+		groupSvc := store.Groups()
 		callbacks.GroupList = func(memberAddr string) ([]protocol.Group, error) {
 			rows, err := groupSvc.ListGroupsFor(context.Background(), memberAddr)
 			if err != nil {
@@ -332,7 +333,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
 				return nil, err
 			} else if !ok {
-				return nil, sqlite.ErrNotGroupMember
+				return nil, common.ErrNotGroupMember
 			}
 			rows, err := groupSvc.ListMembers(context.Background(), groupID)
 			if err != nil {
@@ -351,7 +352,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
 				return nil, 0, false, err
 			} else if !ok {
-				return nil, 0, false, sqlite.ErrNotGroupMember
+				return nil, 0, false, common.ErrNotGroupMember
 			}
 			if channelName == "" || chatID == "" {
 				return nil, 0, false, fmt.Errorf("session selector is required")
@@ -390,7 +391,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
 				return nil, err
 			} else if !ok {
-				return nil, sqlite.ErrNotGroupMember
+				return nil, common.ErrNotGroupMember
 			}
 			m, err := groupSvc.AddMember(context.Background(), groupID, addr)
 			if err != nil {
@@ -405,7 +406,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if ok, err := groupSvc.IsAliveMember(context.Background(), groupID, memberAddr); err != nil {
 				return nil, err
 			} else if !ok {
-				return nil, sqlite.ErrNotGroupMember
+				return nil, common.ErrNotGroupMember
 			}
 			if channelName == "" || chatID == "" {
 				return nil, fmt.Errorf("session selector is required")
@@ -419,7 +420,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				role = "user"
 			}
 			now := time.Now()
-			env := sqlite.GroupMessageEnvelope{
+			env := common.GroupMessageEnvelope{
 				GroupID: groupID, Kind: input.Kind, CorrelationID: input.CorrelationID,
 				To: input.To, Payload: input.Payload,
 				SenderType: input.SenderType, SenderID: input.SenderID, SenderName: input.SenderName,
@@ -533,7 +534,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// intermediate assistant + one final). Querying by turn_id merges them
 		// into a complete list. Falls back to Detail JSON when no structured
 		// data exists (old data pre-v55).
-		var turnIterMap map[uint64][]sqlite.IterationRecord
+		var turnIterMap map[uint64][]common.IterationRecord
 		tenantID := sess.TenantID()
 		if tenantID > 0 {
 			// Collect unique turn_ids
@@ -557,7 +558,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				}
 				batch, _ := svc.GetIterationHistoryByTurns(tenantID, turnIDs)
 				if len(batch) > 0 {
-					turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(batch))
+					turnIterMap = make(map[uint64][]common.IterationRecord, len(batch))
 					for turnID, recs := range batch {
 						if len(recs) > 0 {
 							turnIterMap[turnID] = recs
@@ -645,7 +646,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// 旧数据修复（2026-09-30 事故）：锚定到该迭代的注入型工具对补进详情
 		//（新数据由 Fix A 持久化，去重短路）。foldTools=false ⇒ 完整字段（这是
 		//「完整覆盖轻字段」的唯一来源）。
-		recs, err := legacySyntheticPairRepair(svc, tenantID, turnID, []sqlite.IterationRecord{rec})
+		recs, err := legacySyntheticPairRepair(svc, tenantID, turnID, []common.IterationRecord{rec})
 		if err != nil {
 			return protocol.HistoryIteration{}, false, err
 		}
@@ -671,7 +672,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// "bg task 要会话维度展示，active session 哪个就展示哪个 session 的别混一起").
 		// Admin sees the CURRENT session's tasks too — not a cross-session dump.
 		// Multi-user removal: one operator owns every session — no ownership check.
-		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
+		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sessionaddr.Key(sel.Channel, sel.ChatID))), nil
 	}
 	callbacks.CronRemove = func(channel, chatID, jobID string) (bool, error) {
 		if ag.MultiSession() == nil || ag.MultiSession().Store() == nil {
@@ -1083,7 +1084,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			}
 		}
 		if err := tenantStore.DeleteChat(channel, senderID, chatID); err != nil {
-			if !removedLocal || !errors.Is(err, sqlite.ErrChatNotFound) {
+			if !removedLocal || !errors.Is(err, common.ErrChatNotFound) {
 				return err
 			}
 		}
@@ -1204,20 +1205,21 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	}
 
 	// ─── 结构化消息（sendmessage-structured）───
-	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList, structuredResolve := structuredCallbacks(ag)
+	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList, structuredResolve, structuredDelete := structuredCallbacks(ag)
 	callbacks.StructuredAppend = structuredAppend
 	callbacks.StructuredAnswer = structuredAnswer
 	callbacks.StructuredInbox = structuredInbox
 	callbacks.StructuredCount = structuredCount
 	callbacks.StructuredMessages = structuredList
 	callbacks.StructuredResolve = structuredResolve
+	callbacks.StructuredDelete = structuredDelete
 
 	// ─── 跨会话活动流（通信视图性能重构）───
 	// 只绑主库连接（webSQL）。PG 后端没有 activity_index/interactive_agents 的
 	// 兼容实现 ⇒ 两个回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
-	if webSQL != nil {
-		activityIdx := sqlite.NewActivityIndex(webSQL)
-		agentSvc := sqlite.NewInteractiveAgentService(webSQL)
+	if store != nil && store.Activity() != nil && store.InteractiveAgents() != nil {
+		activityIdx := store.Activity()
+		agentSvc := store.InteractiveAgents()
 		callbacks.ActivityList = func(limit int, within time.Duration, kinds []string) ([]web.ActivityEntry, bool, error) {
 			rows, hasMore, err := activityIdx.List(limit, within, kinds)
 			if err != nil {
@@ -1238,7 +1240,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			return out, hasMore, nil
 		}
 		callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
-			cutoff := time.Now().Add(-sqlite.NormalizeActivityWindow(within))
+			cutoff := time.Now().Add(-common.NormalizeActivityWindow(within))
 			rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
 			if err != nil {
 				return nil, err
@@ -2214,6 +2216,24 @@ func (b *sessionTreeBuilder) setAlias(key string, ref sessionTreeNodeRef) {
 }
 
 func (b *sessionTreeBuilder) resolveParent(agent web.UserChatWithPreview) (sessionTreeNodeRef, bool) {
+	// An existing or structurally parsed child is authoritative. In particular
+	// CLI child keys start with '/' too; never strip them as root mirrors.
+	if agent.ParentChannel == "agent" {
+		if address, ok := sessionaddr.Parse(agent.ParentChatID); ok {
+			if root, exists := b.lookupMainParent(address.Channel, address.ChatID); exists {
+				return root, true
+			}
+		}
+	}
+	_, childAddress := parseAgentTenantChatID(agent.ParentChatID)
+	_, liveAlias := b.lookupAgent(agent.ParentChatID)
+	if agent.ParentChannel == "agent" && !childAddress && !liveAlias {
+		parent := sessionaddr.NormalizeStoredParent(sessionaddr.Key(agent.ParentChannel, agent.ParentChatID))
+		if address, ok := sessionaddr.Parse(parent); ok {
+			agent.ParentChannel, agent.ParentChatID = address.Channel, address.ChatID
+		}
+	}
+
 	if agent.ParentChannel == "agent" {
 		return b.resolveAgentParent(agent.ParentChatID, agent.LastActive)
 	}
@@ -2223,8 +2243,8 @@ func (b *sessionTreeBuilder) resolveParent(agent web.UserChatWithPreview) (sessi
 	if !canSynthesizeSessionTreeParent(agent) {
 		return sessionTreeNodeRef{}, false
 	}
-	parent := b.addMain(synthesizedParentRow(agent))
-	return sessionTreeNodeRef{channel: parent.Channel, chatID: parent.ChatID, mainIndex: len(b.nodes) - 1}, true
+	node := b.addMain(synthesizedParentRow(agent))
+	return sessionTreeNodeRef{channel: node.Channel, chatID: node.ChatID, mainIndex: len(b.nodes) - 1}, true
 }
 
 func (b *sessionTreeBuilder) resolveAgentParent(agentChatID, lastActive string) (sessionTreeNodeRef, bool) {
@@ -2362,7 +2382,7 @@ func sessionTreeKey(channel, chatID string) string {
 	if channel == "" {
 		channel = "web"
 	}
-	return channel + ":" + chatID
+	return sessionaddr.Key(channel, chatID)
 }
 
 type agentTenantInfo struct {
@@ -2626,7 +2646,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		},
 		LLMAddSubscription: func(senderID string, sub *channel.Subscription) error {
 			svc := ag.LLMFactory().GetSubscriptionSvc()
-			newSub := &sqlite.LLMSubscription{
+			newSub := &common.LLMSubscription{
 				SenderID: senderID,
 				Name:     sub.Name,
 				Provider: sub.Provider,
@@ -2776,7 +2796,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 // shareToProtocol converts a storage row into the wire contract. The two types
 // stay separate on purpose: the wire contract must not drag storage concerns
 // (or a storage import) into channel/web.
-func shareToProtocol(a *sqlite.SharedArtifact) *protocol.SharedArtifact {
+func shareToProtocol(a *common.SharedArtifact) *protocol.SharedArtifact {
 	if a == nil {
 		return nil
 	}
@@ -2820,7 +2840,7 @@ const (
 //
 // 错误冒泡（绝不静默降级）：修复查询失败让端点显式失败，而不是返回与主
 // 快照不一致的未修复段。
-func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID uint64, recs []sqlite.IterationRecord) ([]sqlite.IterationRecord, error) {
+func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID uint64, recs []common.IterationRecord) ([]common.IterationRecord, error) {
 	rows, err := svc.GetSyntheticPairRowsByTurn(tenantID, turnID)
 	if err != nil {
 		return nil, err
@@ -2849,7 +2869,7 @@ func legacySyntheticPairRepair(svc storage.SessionStore, tenantID int64, turnID 
 // 详情由 /api/iteration_detail 按需补齐。
 //
 // regionLimit <= 0 ⇒ DefaultHistoryRegionRequest；> MaxHistoryRegionRequest ⇒ 钳到上限。
-func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]protocol.HistoryIteration, int) {
+func historyRegionSegment(recs []common.IterationRecord, regionLimit int) ([]protocol.HistoryIteration, int) {
 	limit := regionLimit
 	if limit <= 0 {
 		limit = DefaultHistoryRegionRequest
@@ -2872,7 +2892,7 @@ func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]pro
 }
 
 // foldHistoryIterations 把一段记录映射为折叠视图的迭代形态（轻字段 + ToolsFolded）。
-func foldHistoryIterations(recs []sqlite.IterationRecord) []protocol.HistoryIteration {
+func foldHistoryIterations(recs []common.IterationRecord) []protocol.HistoryIteration {
 	out := make([]protocol.HistoryIteration, 0, len(recs))
 	for _, rec := range recs {
 		out = append(out, channel.MapIterationRecord(rec, channel.FoldToolsForRecord(rec)))

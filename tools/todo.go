@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"xbot/internal/sessionaddr"
 
 	"xbot/llm"
 )
@@ -266,38 +267,10 @@ func (m *TodoManager) GetTodos(sessionKey string) []TodoItem {
 	return result
 }
 
-// sessionKey helper
-// For SubAgents (AgentID contains "/", e.g. "main/explore"), prepends AgentID
-// to isolate their TODOs from the main agent. Main agent (AgentID="main")
-// keeps the original Channel:ChatID key so all readers remain compatible.
+// sessionKey uses the exact same owner scope as background tasks and the engine.
 func (m *TodoManager) sessionKey(ctx *ToolContext) string {
-	// SubAgent（AgentID 含 "/"）：用 SessionKey（subAgentID）隔离 —— 与主 Agent
-	// 的 todos 分开（SubAgent 的子任务列表独立）。
-	if strings.Contains(ctx.AgentID, "/") {
-		if ctx.SessionKey != "" {
-			return ctx.SessionKey
-		}
-		if ctx.Channel != "" && ctx.ChatID != "" {
-			return ctx.AgentID + ":" + ctx.Channel + ":" + ctx.ChatID
-		}
-		return ""
-	}
-	// 主 Agent：用 RootSessionKey（canonical = origin channel:chatID）。
-	// 不能用 SessionKey —— web 用户浏览 CLI 会话时 physicalChannel override 会
-	// 把它改成 "web:chatID"，而 GetActiveProgress 恢复路径读 "cli:chatID"
-	// （canonical）→ turn 结束后（后打开的客户端 / 刷新）读不到 todos
-	// （"手机端实时显示、电脑端后打开不显示"的根因）。todos 是会话级状态，
-	// 必须用 canonical key 让所有读写路径一致。
-	if ctx.RootSessionKey != "" {
-		return ctx.RootSessionKey
-	}
-	if ctx.SessionKey != "" {
-		return ctx.SessionKey
-	}
-	if ctx.Channel != "" && ctx.ChatID != "" {
-		return ctx.Channel + ":" + ctx.ChatID
-	}
-	return ""
+	return sessionaddr.Scope(ctx.AgentID, ctx.CallerSessionKey, ctx.SessionKey,
+		ctx.RootSessionKey, ctx.Channel, ctx.ChatID)
 }
 
 // --- TodoWriteTool ---

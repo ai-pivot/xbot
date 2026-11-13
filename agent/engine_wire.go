@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent/hooks"
 	"xbot/bus"
@@ -847,8 +848,8 @@ func (a *Agent) buildSubAgentRunConfig(
 		// tc.BgTaskManager，缺它 → SubAgent 的 Shell 一旦超时/显式后台运行就报
 		// "background tasks not supported (BgTaskManager not configured)"
 		// （用户实测：SubAgent 里跑 cargo check 被 auto-promote 后直接失败）。
-		// buildToolContext 已按 AgentID 含 "/" 判定 SubAgent → BgSessionKey 用
-		// SubAgent 自己的 sessionKey（隔离，不污染主会话的后台任务归属）。
+		// buildToolContext 使用精确的 main AgentID 判定主会话 → BgSessionKey 用
+		// 本 SubAgent 的 SessionKey（隔离，不污染主会话的后台任务归属）。
 		BgTaskManager: a.bgTaskMgr.Load(),
 		// 明确不接的（有意为之，勿"顺手补上"）：
 		//   - InjectInbound：只有主 Agent 注入入站消息（channel plugin / agent loop
@@ -940,7 +941,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 用于 offload_recall 等需要访问父 session 数据的场景（如 SubAgent 回忆父 Agent 的 offload 数据）。
 	rootKey := parentCtx.RootSessionKey
 	if rootKey == "" {
-		rootKey = parentCtx.Channel + ":" + parentCtx.ChatID
+		rootKey = sessionaddr.Key(parentCtx.Channel, parentCtx.ChatID)
 	}
 	cfg.RootSessionKey = rootKey
 
@@ -1279,7 +1280,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 
 		// Re-resolve sandbox per tool call — picks up runner switches immediately
 		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
-			cfg.Sandbox = router.SandboxForSession(cfg.Channel + ":" + cfg.ChatID)
+			cfg.Sandbox = router.SandboxForSession(sessionaddr.Key(cfg.Channel, cfg.ChatID))
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
@@ -1704,7 +1705,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	// callback the Run loop never drains between iterations and the sender
 	// blocks on replyCh until its timeout. Mirrors the three interactive Run
 	// call sites (SpawnInteractiveSession ×2 + SendToInteractiveSession).
-	cfg.DrainBgNotifications = oneshotIA.wirePendingMessageDrain(originChannel + ":" + originChatID)
+	cfg.DrainBgNotifications = oneshotIA.wirePendingMessageDrain(sessionaddr.Key(originChannel, originChatID))
 
 	// Create TenantSession for message persistence (same as interactive SubAgents).
 	agentTenantSession, err := a.multiSession.GetOrCreateSession("agent", oneshotKey)
@@ -1932,7 +1933,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		oneshotIA.cancelCurrent = bgCancel
 		oneshotIA.mu.Unlock()
 
-		sessionKey := originChannel + ":" + originChatID
+		sessionKey := sessionaddr.Key(originChannel, originChatID)
 		notifyMgr := a.bgTaskMgr.Load()
 		var bgTask *tools.SubAgentTask
 		if notifyMgr != nil {
@@ -2714,10 +2715,12 @@ func interactiveSessionsToStatuses(sessions []InteractiveSessionInfo) []SubAgent
 //	⇒ Trim("/") + Split 只剩一段 ⇒ 取不到父 role ⇒ 通知全部落进主会话，
 //	子代理会话永远收不到 idle ⇒ 面板卡 busy、SSE 静默。
 //
-// 没有路径根时退化为单段 roleName（语义 = 顶层子代理，父就是主会话）。
+// 没有路径根时使用 main 作为内部路径根。这样顶层子代理仍是明确的
+// AgentID（含 slash），不会被 buildToolContext 误判为主 Agent；同时它不再
+// 以 slash 开头，因此不会触发旧的非法 key 解析路径。
 func subAgentPath(parentAgentID, roleName string) string {
 	if parentAgentID == "" {
-		return roleName
+		return "main/" + roleName
 	}
 	return parentAgentID + "/" + roleName
 }

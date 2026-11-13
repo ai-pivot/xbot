@@ -565,6 +565,31 @@ func TestBuildToolContext_BgSessionKeyCanonical(t *testing.T) {
 	if subTc.BgSessionKey != "main/explore" {
 		t.Errorf("SubAgent BgSessionKey = %q, want %q (subAgentID isolation)", subTc.BgSessionKey, "main/explore")
 	}
+
+	// A top-level interactive subagent has an AgentID path even without a
+	// parent; buildToolContext must not mistake it for the main agent and use
+	// RootSessionKey.
+	topLevelID := subAgentPath("", "taizi")
+	topLevelCfg := &RunConfig{
+		AgentID: topLevelID, Channel: "web", ChatID: "chat1",
+		SessionKey: topLevelID, RootSessionKey: "web:chat1", BgTaskManager: mgr,
+	}
+	topLevelTC := buildToolContext(context.Background(), topLevelCfg)
+	if topLevelTC.BgSessionKey != topLevelID || topLevelTC.BgSessionKey == topLevelCfg.RootSessionKey {
+		t.Errorf("top-level SubAgent BgSessionKey = %q, want isolated %q (not root %q)", topLevelTC.BgSessionKey, topLevelID, topLevelCfg.RootSessionKey)
+	}
+
+	// A nested tool context must carry its parent's exact BgSessionKey in the
+	// SessionKey field. It may not fall back to an empty SessionKey or sibling.
+	nestedID := subAgentPath(topLevelID, "court.bingbu")
+	nestedCfg := &RunConfig{
+		AgentID: nestedID, Channel: "web", ChatID: "chat1",
+		SessionKey: nestedID, RootSessionKey: topLevelCfg.RootSessionKey, BgTaskManager: mgr,
+	}
+	nestedTC := buildToolContext(context.Background(), nestedCfg)
+	if nestedTC.BgSessionKey != nestedID {
+		t.Errorf("nested SubAgent BgSessionKey = %q, want isolated %q", nestedTC.BgSessionKey, nestedID)
+	}
 }
 
 func TestSubAgentCallback_StaleIterationNoPollution(t *testing.T) {

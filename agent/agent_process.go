@@ -9,6 +9,7 @@ import (
 	"strings"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/internal/sessionaddr"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
@@ -400,6 +401,13 @@ func firstNonEmptyLine(s string) string {
 // （用户截图：Next turn 83 + Turn 84–88，既不能立刻发出、也拿不到一次处理完）。
 // 批量成一条同时保证：一个 turn 处理完所有事件、不会挤爆队列。
 func (a *Agent) drainAndProcessNotifications(sessionKey string) {
+	ownerHandled := false
+	for _, n := range a.pendingBgNotifications(sessionKey) {
+		ownerHandled = a.routeBackgroundTaskToOwner(n) || ownerHandled
+	}
+	if ownerHandled {
+		return
+	}
 	// ⚠️ 校验必须在 take **之前**。
 	//
 	// 2026-10-27 故障：key 有时是 agent 调用链（如
@@ -408,13 +416,8 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	// —— 通知被**永久吞掉**。表现就是：子代理明明结束了，父会话/御前收不到
 	// 任何完成通知（本次首辅 idle 落库于 08:49:24Z，我却一直没收到）。
 	// 现在：非法 key 走 agent-路径兜底，绝不丢。
-	if strings.Count(sessionKey, ":") == 0 {
-		a.deliverNotificationsByAgentPath(sessionKey)
-		return
-	}
-
-	parts := strings.SplitN(sessionKey, ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	address, valid := sessionaddr.Parse(sessionKey)
+	if !valid {
 		a.deliverNotificationsByAgentPath(sessionKey)
 		return
 	}
@@ -423,7 +426,7 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	if len(mine) == 0 {
 		return
 	}
-	channelName, chatID := parts[0], parts[1]
+	channelName, chatID := address.Channel, address.ChatID
 	// 兜底归一化（2026-11-03 P0 子代理通知投错会话）：
 	// 上游若把子代理的 parentKey 存成执行上下文镜像 "agent:<ch>:<chatID>"，
 	// 通知会被投进一个独立的镜像会话，父会话永远收不到（线上实证 36 次：
@@ -891,6 +894,7 @@ func (a *Agent) interactiveSessionByAgentID(agentID string) (string, *interactiv
 	}
 	var foundKey string
 	var found *interactiveAgent
+	matches := 0
 	a.interactiveSubAgents.Range(func(k, v any) bool {
 		key, ok := k.(string)
 		if !ok {
@@ -908,112 +912,25 @@ func (a *Agent) interactiveSessionByAgentID(agentID string) (string, *interactiv
 		ia.mu.Unlock()
 		if id == want {
 			foundKey, found = key, ia
-			return false
+			matches++
 		}
 		return true
 	})
-	return foundKey, found, found != nil
+	return foundKey, found, matches == 1
 }
 
+// Legacy events must have an explicit recipient; role paths are not addresses.
 func (a *Agent) deliverNotificationsByAgentPath(key string) {
-	mine := a.takePendingBgNotifications(key)
-	if len(mine) == 0 {
-		return
-	}
-
-	segs := strings.Split(strings.Trim(key, "/"), "/")
-	parentRole := ""
-	if len(segs) >= 2 {
-		parentRole = segs[len(segs)-2]
-	}
-	// len(segs) == 1 ⇒ key 是**顶层子代理**（`taizi`，父就是主会话，没有 agent 路径根）。
-	// parentRole 保持空 ⇒ 走下面的「落主会话」分支，这是正确落点，不是异常。
-	// 2026-11-13 之前 subAgentID 会被拼成 `"/taizi"`（parentAgentID 为空），
-	// Trim + Split 后同样是单段，但日志报成 Error "unresolvable"，把人往
-	// 「会话找不到」的方向带偏 —— 实际只是「这个子代理没有 agent 父路径」。
-
-	var targetKey, targetRole, targetInst, targetChannel, targetChatID string
-	// A BackgroundTask uses the sub-agent's AgentID path as its isolated
-	// BgSessionKey (for example main/court.shoufu/court.gongbu). That path is
-	// the OWNER of the task, not a request to notify the path's parent. Resolve
-	// the exact live interactive session first. The old code skipped directly
-	// to parentRole (the penultimate path segment), which delivered a child's
-	// Shell completion to its parent and made the child appear to never receive
-	// its own task result.
-	if exactKey, exactIA, ok := a.interactiveSessionByAgentID(key); ok {
-		ch, cid, _, _ := parseInteractiveKeyTail(exactKey)
-		if ch != "" && cid != "" {
-			targetKey, targetRole, targetInst = exactKey, exactIA.roleName, exactIA.instance
-			targetChannel, targetChatID = ch, cid
-		}
-	}
-	// SubAgentBgNotify historically uses an agent path to mean "notify the
-	// parent". Preserve that contract only when no exact owner session exists.
-	if targetKey == "" && parentRole != "" {
-		a.interactiveSubAgents.Range(func(k, v any) bool {
-			ia, ok := v.(*interactiveAgent)
-			if !ok || ia == nil || ia.roleName != parentRole {
-				return true
-			}
-			ks, _ := k.(string)
-			// 从会话 key（web:web-4/court.shoufu:main）还原真实 channel/chatID，
-			// 不能凭空造 "agent:<role>/<inst>" —— 那会创建畸形 tenant。
-			ch, cid, _, _ := parseInteractiveKeyTail(ks)
-			if ch == "" || cid == "" {
-				return true
-			}
-			targetKey, targetRole, targetInst = ks, ia.roleName, ia.instance
-			targetChannel, targetChatID = ch, cid
-			return false
-		})
-	}
-
-	var b strings.Builder
-	for _, n := range mine {
-		if sn, ok := n.(*tools.SubAgentBgNotify); ok && sn != nil {
-			fmt.Fprintf(&b, "[子代理通知] %s\n", sn.Content)
+	for _, n := range a.pendingBgNotifications(key) {
+		if a.routeBackgroundTaskToOwner(n) {
 			continue
 		}
-		fmt.Fprintf(&b, "[子代理通知] %v\n", n)
-	}
-	body := b.String()
-
-	if targetKey != "" {
-		log.WithFields(log.Fields{
-			"bad_key": key, "parent_role": targetRole,
-			"target_key": targetKey, "count": len(mine),
-		}).Warn("bg notification key was an agent path; routed to parent interactive session")
-		go func() {
-			_, err := a.SendToInteractiveSession(context.Background(), targetRole, bus.InboundMessage{
-				Channel:  targetChannel,
-				ChatID:   targetChatID,
-				Content:  body,
-				Metadata: map[string]string{"instance_id": targetInst, "bg_notify_recovered": "true"},
-			})
-			if err != nil {
-				log.WithError(err).WithField("target_key", targetKey).
-					Error("bg notification recovery delivery failed")
+		if report, ok := n.(*tools.SubAgentBgNotify); ok && report.ParentKey != "" {
+			if _, exists := a.interactiveSubAgents.Load(report.ParentKey); exists {
+				a.deliverNotifyToParentSession(report)
+				continue
 			}
-		}()
-		return
-	}
-
-	// 找不到父会话：绝不丢，落到主会话队列。
-	// 单段 key（顶层子代理）走到这里是**正常路径**（父就是主会话），用 Warn；
-	// 多段却没命中才是真的异常（父 role 在注册表里找不到），用 Error —— 两者
-	// 之前混在同一个 Error 里，把「顶层子代理」误报成「会话找不到」（2026-11-13）。
-	{
-		entry := log.WithFields(log.Fields{"bad_key": key, "count": len(mine), "segs": len(segs)})
-		if len(segs) <= 1 {
-			entry.Warn("bg notification from a top-level subagent (no agent path root); delivered to main session")
-		} else {
-			entry.Error("bg notification key unresolvable and no matching parent session; keeping for main session")
 		}
-	}
-	for _, n := range mine {
-		if sn, ok := n.(*tools.SubAgentBgNotify); ok && sn != nil {
-			sn.Key = "recovered"
-		}
-		a.enqueueBgNotification(n)
+		log.WithField("unresolved_recipient", key).Warn("notification has no exact live recipient; retained without guessing parent/main")
 	}
 }

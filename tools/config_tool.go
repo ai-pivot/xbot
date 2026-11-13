@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"xbot/internal/sessionaddr"
 
 	llm "xbot/llm"
 	log "xbot/logger"
@@ -535,7 +536,7 @@ func (t *ConfigTool) runnerAction(ctx *ToolContext, sub, name, newName, mode, do
 		if name == "" {
 			return nil, fmt.Errorf("config runner switch: name is required")
 		}
-		sessionKey := ctx.Channel + ":" + ctx.ChatID
+		sessionKey := sessionaddr.Key(ctx.Channel, ctx.ChatID)
 		router, ok := GetSandbox().(*SandboxRouter)
 		if !ok {
 			return nil, fmt.Errorf("config runner switch: remote runner support not available")
@@ -554,7 +555,7 @@ func (t *ConfigTool) runnerAction(ctx *ToolContext, sub, name, newName, mode, do
 		return NewResult(fmt.Sprintf("Session bound to runner %q.", name)), nil
 
 	case "unbind":
-		sessionKey := ctx.Channel + ":" + ctx.ChatID
+		sessionKey := sessionaddr.Key(ctx.Channel, ctx.ChatID)
 		router, ok := GetSandbox().(*SandboxRouter)
 		if !ok {
 			return nil, fmt.Errorf("config runner unbind: remote runner support not available")
@@ -586,7 +587,7 @@ func (t *ConfigTool) runnerAction(ctx *ToolContext, sub, name, newName, mode, do
 			if !ok {
 				return NewResult("Remote runner support is not available in this deployment."), nil
 			}
-			sessionKey := ctx.Channel + ":" + ctx.ChatID
+			sessionKey := sessionaddr.Key(ctx.Channel, ctx.ChatID)
 			bound := router.GetSessionRunner(sessionKey)
 			if bound == "" {
 				return NewResult("This session is unbound — tools run on the local host. " +

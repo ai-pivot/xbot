@@ -27,7 +27,7 @@ import (
 // TestDecisionReroutesToOriginatingAgentSession 锁住回流落点。
 func TestDecisionReroutesToOriginatingAgentSession(t *testing.T) {
 	ag := newTestAgentForCWD(t)
-	appendFn, _, _, _, _, _ := structuredCallbacks(ag)
+	appendFn, _, _, _, _, _, _ := structuredCallbacks(ag)
 
 	sel := web.SessionSelector{Channel: "web", ChatID: "chat-reroute"}
 	const agentKey = "web:chat-reroute/court.shoufu:main"
@@ -89,7 +89,7 @@ func TestDecisionReroutesToOriginatingAgentSession(t *testing.T) {
 // —— 重定向不能把「自己发的卡」也甩到别处（否则御前永远收不到自己的批复）。
 func TestDecisionStaysInSessionWhenCardOriginatedHere(t *testing.T) {
 	ag := newTestAgentForCWD(t)
-	appendFn, _, _, _, _, _ := structuredCallbacks(ag)
+	appendFn, _, _, _, _, _, _ := structuredCallbacks(ag)
 
 	sel := web.SessionSelector{Channel: "web", ChatID: "chat-self"}
 

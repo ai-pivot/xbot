@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"xbot/internal/sessionaddr"
 
 	"xbot/llm"
 	log "xbot/logger"
@@ -147,7 +148,7 @@ func (t *SearchToolsTool) formatResultsDedup(results []memory.ToolIndexEntry, qu
 // executeFallback provides a simple text-based search when tool indexer is not available
 func (t *SearchToolsTool) executeFallback(ctx *ToolContext, query string, topK int) (*ToolResult, error) {
 	// Get MCP catalog from registry
-	sessionKey := ctx.Channel + ":" + ctx.ChatID
+	sessionKey := sessionaddr.Key(ctx.Channel, ctx.ChatID)
 	mcpCatalog := ctx.Registry.GetMCPCatalog(sessionKey)
 	// 使用渠道过滤的工具组
 	toolGroups := ctx.Registry.GetToolGroupsForChannel(ctx.Channel)

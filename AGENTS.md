@@ -107,6 +107,8 @@
 | `docs/agent/gotchas-misc.md` | 2026-09-17 batch (synthetic tools, reminder parsing, CoT) |
 
 ## ⛔ Critical invariants (one-line index — full text in the knowledge files)
+- Background task routing: exact owner `agent:<CallerSessionKey>` via `internal/sessionaddr`; tasks return to creator, subagent reports to explicit ParentKey. Never infer owner from role/slash or use fuzzy lookup for automated delivery. Missing/ambiguous owner stays pending, never forwarded to parent/main. See `docs/agent/gotchas-web-sse-routing.md`.
+
 
 The highest-priority rules, one line each. **Before changing the related code, Read the named file** — it carries the full rule, the incident that produced it, and the guard test.
 

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent/hooks"
 	"xbot/channel"
@@ -184,7 +185,7 @@ func newRunState(cfg RunConfig) *runState {
 
 	sessionKey := cfg.SessionKey
 	if sessionKey == "" && cfg.Channel != "" {
-		sessionKey = cfg.Channel + ":" + cfg.ChatID
+		sessionKey = sessionaddr.Key(cfg.Channel, cfg.ChatID)
 	}
 
 	offloadSessionKey := sessionKey
@@ -371,15 +372,10 @@ func (s *runState) cleanupTodos() {
 // override 会把它改成 "web:chatID"，而恢复路径读 "cli:chatID" → turn 结束后
 // 后打开的客户端读不到 todos（"手机端实时显示、电脑端后打开不显示"的根因）。
 //
-// SubAgent（AgentID 含 "/"）：用 sessionKey（subAgentID）隔离，与主 Agent 分开。
+// SubAgent：用 sessionKey（subAgentID）隔离，与主 Agent 分开。
 func (s *runState) todoKey() string {
-	if strings.Contains(s.cfg.AgentID, "/") {
-		return s.sessionKey
-	}
-	if s.cfg.RootSessionKey != "" {
-		return s.cfg.RootSessionKey
-	}
-	return s.sessionKey
+	return sessionaddr.Scope(s.cfg.AgentID, s.cfg.CallerSessionKey,
+		s.sessionKey, s.cfg.RootSessionKey, s.cfg.Channel, s.cfg.ChatID)
 }
 
 // refreshStructuredTodos unconditionally copies the TodoManager's current

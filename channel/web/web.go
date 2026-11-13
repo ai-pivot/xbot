@@ -22,6 +22,7 @@ import (
 
 	"xbot/bus"
 	ch "xbot/channel"
+	"xbot/internal/sessionaddr"
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
@@ -1440,8 +1441,8 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 	}
 
 	routeChannel := "web"
-	if channelName, qualifiedChatID, ok := strings.Cut(payload.ChatID, ":"); ok && qualifiedChatID == chatID {
-		routeChannel = channelName
+	if address, ok := sessionaddr.Parse(payload.ChatID); ok && address.ChatID == chatID {
+		routeChannel = address.Channel
 	}
 	if !wc.hub.sendToSession(routeChannel, chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")

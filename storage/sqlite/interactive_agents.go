@@ -219,13 +219,16 @@ func (s *InteractiveAgentService) MarkOrphanedIdleUnloaded(liveKeys []string) (i
 	                 AND NOT EXISTS (
 	                       SELECT 1 FROM tenants t
 	                        WHERE t.channel = 'agent'
-	                          AND t.chat_id = interactive_agents.parent_channel || ':' ||
+	                          AND (t.chat_id = interactive_agents.parent_channel || ':' || interactive_agents.parent_chat_id
+                                      || '/' || interactive_agents.role_name
+                                      || CASE WHEN interactive_agents.instance <> '' THEN ':' || interactive_agents.instance ELSE '' END
+                               OR t.chat_id = interactive_agents.parent_channel || ':' ||
 	                              CASE WHEN instr(interactive_agents.parent_chat_id, '/') > 0
 	                                   THEN substr(interactive_agents.parent_chat_id, 1,
 	                                               instr(interactive_agents.parent_chat_id, '/') - 1)
 	                                   ELSE interactive_agents.parent_chat_id END
 	                              || '/' || interactive_agents.role_name
-	                              || CASE WHEN interactive_agents.instance <> '' THEN ':' || interactive_agents.instance ELSE '' END)`
+	                              || CASE WHEN interactive_agents.instance <> '' THEN ':' || interactive_agents.instance ELSE '' END))`
 
 	if len(liveKeys) == 0 {
 		res, err := s.db.Exec(stmt, InteractiveAgentUnloaded, now, InteractiveAgentIdle)

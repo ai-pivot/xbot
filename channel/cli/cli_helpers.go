@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"os/exec"
 	ch "xbot/channel"
@@ -20,7 +21,7 @@ import (
 // qualifyChatID combines channel name and chatID into the "channel:chatID" format
 // used throughout the codebase as the canonical session key.
 func qualifyChatID(channel, chatID string) string {
-	return channel + ":" + chatID
+	return sessionaddr.Key(channel, chatID)
 }
 
 // ParseSettingBool parses a boolean setting value.

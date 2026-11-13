@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent"
 	"xbot/bus"
@@ -2963,7 +2964,7 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			return nil, fmt.Errorf("chat_id is required")
 		}
-		name := router.GetSessionRunner(p.Channel + ":" + p.ChatID)
+		name := router.GetSessionRunner(sessionaddr.Key(p.Channel, p.ChatID))
 		return map[string]any{"name": name, "online": name != "" && router.IsRunnerOnline(name)}, nil
 	})
 
@@ -2980,7 +2981,7 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			return fmt.Errorf("chat_id is required")
 		}
-		return router.SetSessionRunner(p.Channel+":"+p.ChatID, p.Name)
+		return router.SetSessionRunner(sessionaddr.Key(p.Channel, p.ChatID), p.Name)
 	})
 
 }

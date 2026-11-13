@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent/hooks"
 	"xbot/bus"
@@ -1705,7 +1706,7 @@ func isCancelCommand(content string) bool {
 }
 
 func (a *Agent) interceptCancel(msg bus.InboundMessage) {
-	cancelKey := msg.Channel + ":" + msg.ChatID
+	cancelKey := sessionaddr.Key(msg.Channel, msg.ChatID)
 	log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
 	a.cancelStateMu.Lock()
 	if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
@@ -3027,7 +3028,7 @@ func (a *Agent) wantsPreReplyNotify(channelName string) bool {
 // used by TUI session filtering (handleInjectedUserMsg). All inject paths must
 // use this helper instead of inline string concatenation.
 func qualifyChatID(channel, chatID string) string {
-	return channel + ":" + chatID
+	return sessionaddr.Key(channel, chatID)
 }
 
 // ensureCheckpointStore creates a per-session CheckpointStore if one doesn't
@@ -3100,7 +3101,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// nil 守卫：PG 后端不初始化 cron（见 initServices）—— 无调度器可启动。
 	if a.cronSch != nil {
 		a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
-			sessionKey := channel + ":" + chatID
+			sessionKey := sessionaddr.Key(channel, chatID)
 			// nil-guard: bare &Agent{} construction (no New() Store) must not
 			// panic on a cron trigger — same contract as the interactive.go read
 			// sites. Normal chain stores the manager before cron starts.
@@ -3183,7 +3184,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				continue
 			}
 
-			key := msg.Channel + ":" + msg.ChatID
+			key := sessionaddr.Key(msg.Channel, msg.ChatID)
 			q := getOrCreateQueue(key)
 			select {
 			case q <- msg:
@@ -3777,7 +3778,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			var err error
 			cancelCh := make(chan struct{}, 1)
 			// cancelKey 仅用 channel:chatID（不含 senderID），与 /cancel 拦截处保持一致
-			cancelKey := msg.Channel + ":" + msg.ChatID
+			cancelKey := sessionaddr.Key(msg.Channel, msg.ChatID)
 			reqCtx, reqCancel := context.WithCancel(ctx)
 			hadPending := a.registerActiveCancelState(cancelKey, cancelCh, reqCancel)
 
@@ -3975,7 +3976,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// Remote sandbox 连接应保持常驻，不做 idle 清理
 			if a.sandboxIdleTimeout > 0 && lastSenderID != "" {
 				// Skip idle cleanup for remote sandbox — the runner connection should be persistent
-				if !a.isRemoteUser(msg.Channel + ":" + msg.ChatID) {
+				if !a.isRemoteUser(sessionaddr.Key(msg.Channel, msg.ChatID)) {
 					idleTimer = time.AfterFunc(a.sandboxIdleTimeout, func() {
 						if err := a.sandbox.CloseForUser(lastSenderID); err != nil {
 							log.WithError(err).Warnf("Idle sandbox cleanup failed for user %s", lastSenderID)
@@ -4578,7 +4579,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 
 	promptWorkDir := a.workDir
-	if ws := a.remoteWorkspace(msg.Channel + ":" + msg.ChatID); ws != "" {
+	if ws := a.remoteWorkspace(sessionaddr.Key(msg.Channel, msg.ChatID)); ws != "" {
 		promptWorkDir = ws
 	}
 
@@ -5283,6 +5284,12 @@ func (a *Agent) bgNotifyLoop() {
 			// Always buffer first
 			a.enqueueBgNotification(notif)
 
+			// Shell/task completions belong to the exact creator session. Never
+			// confuse them with a child's explicit report to its parent.
+			if a.routeBackgroundTaskToOwner(notif) {
+				continue
+			}
+
 			// ① cron 的子代理归属（tools/cron.go 的 cronOwnership）：
 			// job.Channel="agent"、job.ChatID=<interactive key> ⇒ 这条到期的
 			// 定时任务属于创建它的子代理会话。**若该会话还活着**（持久
@@ -5308,7 +5315,6 @@ func (a *Agent) bgNotifyLoop() {
 			if n, ok := notif.(*tools.SubAgentBgNotify); ok && n.ParentKey != "" {
 				if _, live := a.interactiveSubAgents.Load(n.ParentKey); live {
 					// 已交给父会话，不要在主会话再排一次
-					a.takePendingBgNotifications(n.ParentKey)
 					a.deliverNotifyToParentSession(n)
 					continue
 				}
@@ -5417,7 +5423,7 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 	if c == nil {
 		return false
 	}
-	channelName, chatID, role, instance, ok := splitCronSubAgentTarget(c.Key)
+	_, _, role, instance, ok := splitCronSubAgentTarget(c.Key)
 	if !ok {
 		return false
 	}
@@ -5479,18 +5485,8 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 	// 子代理与主会话看到的定时任务文本必须相同，别各写一份格式。
 	content := fmt.Sprintf("⏰ [定时任务触发] %s", c.Message)
 	go func() {
-		out, err := a.SendToInteractiveSession(context.Background(), role, bus.InboundMessage{
-			Channel:  channelName,
-			ChatID:   chatID,
-			SenderID: c.Sid,
-			Content:  content,
-			Metadata: map[string]string{
-				"instance_id":             instance,
-				bgNotificationMetadataKey: "true",
-				// 这一轮是 cron 触发的：标记进 turn 级 RunConfig.TriggerSource，
-				// 投递点据此抑制对父会话的 Progress/Completed（见 trigger_source.go）。
-				triggerSourceMetadataKey: triggerSourceCron,
-			},
+		out, err := a.sendToExactInteractiveSession(interactiveKeyRaw, c.Sid, content, map[string]string{
+			triggerSourceMetadataKey: triggerSourceCron,
 		})
 		if !interactiveDeliveryFailed(out, err) {
 			return
@@ -5534,30 +5530,14 @@ func firstNonNilError(err error, out *channel.OutboundMsg) error {
 // 用户消息并驱动一轮 Run」的唯一实现：父会话 idle 时会被唤醒，running 时
 // 消息进 pendingMessages 在下一个迭代边界被 drain。不新造通道。
 func (a *Agent) deliverNotifyToParentSession(n *tools.SubAgentBgNotify) {
-	channel, chatID, role, instance := parseInteractiveKeyTail(n.ParentKey)
-	if role == "" || channel == "" || chatID == "" {
-		log.WithField("parent_key", n.ParentKey).
-			Warn("deliverNotifyToParentSession: 无法解析父会话 key，放弃投递")
+	if !a.takeOneBgNotification(n.Key, n) {
 		return
 	}
-	content := tools.FormatSubAgentBgNotify(n)
 	go func() {
-		_, err := a.SendToInteractiveSession(context.Background(), role, bus.InboundMessage{
-			Channel:  channel,
-			ChatID:   chatID,
-			SenderID: n.Sid,
-			Content:  content,
-			Metadata: map[string]string{
-				"instance_id":             instance,
-				bgNotificationMetadataKey: "true",
-			},
-		})
-		if err != nil {
-			log.WithError(err).WithFields(log.Fields{
-				"parent_key": n.ParentKey,
-				"role":       n.Role,
-				"instance":   n.Instance,
-			}).Warn("向父会话投递子代理通知失败（该会话可能已 TTL 回收）")
+		out, err := a.sendToExactInteractiveSession(n.ParentKey, n.Sid, tools.FormatSubAgentBgNotify(n), nil)
+		if interactiveDeliveryFailed(out, err) {
+			a.enqueueBgNotification(n)
+			log.WithError(firstNonNilError(err, out)).WithField("parent_key", n.ParentKey).Warn("parent notification delivery failed; retained for explicit recipient")
 		}
 	}()
 }
@@ -5614,7 +5594,7 @@ func (a *Agent) InjectAsyncMessage(channel, chatID, senderID, content, source st
 //
 // Always notifies TUI for visibility.
 func (a *Agent) injectAsyncMessage(channel, chatID, senderID, content, source string) string {
-	sessionKey := channel + ":" + chatID
+	sessionKey := sessionaddr.Key(channel, chatID)
 
 	// Resolve real senderID if not provided
 	if senderID == "" {

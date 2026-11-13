@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent"
 	"xbot/channel/web"
@@ -248,7 +249,7 @@ func buildStructuredEnvelope(senderID string, sel web.SessionSelector, input pro
 	env := map[string]any{
 		"schema":          "xbot.message/v1",
 		"kind":            input.Kind,
-		"from":            map[string]any{"type": "user", "id": senderID, "session": sel.Channel + ":" + sel.ChatID},
+		"from":            map[string]any{"type": "user", "id": senderID, "session": sessionaddr.Key(sel.Channel, sel.ChatID)},
 		"to":              input.To,
 		"correlation_id":  input.CorrelationID,
 		"reply_to":        input.ReplyTo,
@@ -335,6 +336,10 @@ type noticeResolver interface {
 
 type structuredAppender interface {
 	AppendStructuredMessage(tenantID int64, m common.StructuredMessage) (int64, bool, error)
+}
+
+type structuredReader interface {
+	GetStructuredMessageByID(tenantID, id int64) (*common.StructuredMessage, error)
 }
 
 func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error), answerFn func(string, web.SessionSelector, protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error), inboxFn func(web.SessionSelector, int64, int) ([]protocol.StructuredMessage, bool, int64, error), countFn func(web.SessionSelector) (int, error), listFn func(web.SessionSelector, string, int64, int64, int) ([]protocol.StructuredMessage, bool, int64, error), resolveFn func(string, web.SessionSelector, protocol.StructuredResolveInput) (*protocol.StructuredResolveResult, error), deleteFn func(web.SessionSelector, []int64) (int, error)) {
@@ -772,9 +777,9 @@ func userNoticeOrigin(row *common.StructuredMessage) (session, agentAddr string)
 //  2. 该卡片由**某个 agent** 发起（env.origin.session 非空）；
 //  3. 发起方会话 **不是**当前用户会话本身（御前自己发的卡，回流到御前才是对的）。
 func decisionRerouteTarget(
-	svc *sqlite.SessionService,
+	svc structuredReader,
 	tenantID int64,
-	decisionRow *sqlite.StructuredMessage,
+	decisionRow *common.StructuredMessage,
 	sel web.SessionSelector,
 ) (string, bool) {
 	if svc == nil || decisionRow == nil {
@@ -792,14 +797,14 @@ func decisionRerouteTarget(
 	if err != nil || card == nil {
 		return "", false
 	}
-	if card.Kind != sqlite.StructuredKindReport && card.Kind != sqlite.StructuredKindAskUser {
+	if card.Kind != common.StructuredKindReport && card.Kind != common.StructuredKindAskUser {
 		return "", false
 	}
 	originSession, _ := userNoticeOrigin(card)
 	if originSession == "" {
 		return "", false
 	}
-	if originSession == sel.Channel+":"+sel.ChatID {
+	if originSession == sessionaddr.Key(sel.Channel, sel.ChatID) {
 		return "", false
 	}
 	return originSession, true

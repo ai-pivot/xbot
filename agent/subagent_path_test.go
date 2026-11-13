@@ -22,12 +22,10 @@ import (
 
 func TestSubAgentPath_NoLeadingSlashWhenRootEmpty(t *testing.T) {
 	got := subAgentPath("", "taizi")
-	if got != "taizi" {
-		t.Fatalf("subAgentPath(\"\", \"taizi\") = %q, want \"taizi\".\n"+
-			"  A leading \"/\" makes this value look like an AgentID path but parse to a\n"+
-			"  single segment, so bg notifications fall back to the main session and the\n"+
-			"  sub-agent session never receives idle (2026-11-13, 32x ERROR bad_key=\"/taizi\").",
-			got)
+	if got != "main/taizi" {
+		t.Fatalf("subAgentPath(\"\", \"taizi\") = %q, want \"main/taizi\".\n"+
+			"  A stable main root keeps top-level subagents distinguishable from the main Agent,\n"+
+			"  while avoiding the old malformed leading-slash key.", got)
 	}
 	if strings.HasPrefix(got, "/") {
 		t.Fatalf("subAgentPath must never start with \"/\", got %q", got)
@@ -41,13 +39,12 @@ func TestSubAgentPath_NestedKeepsFullChain(t *testing.T) {
 	}
 }
 
-// TestSubAgentPath_TopLevelKeyIsSingleSegment 单段 key 必须能被识别为「顶层子代理」，
-// 即 Trim("/")+Split 后 len==1 —— deliverNotificationsByAgentPath 依赖这一点区分
-// 「父就是主会话」（正常）与「父 role 找不到」（真异常）。
-func TestSubAgentPath_TopLevelKeyIsSingleSegment(t *testing.T) {
+// A top-level child must retain the main root segment because buildToolContext
+// identifies subagents by the presence of an AgentID path separator.
+func TestSubAgentPath_TopLevelKeyHasAgentRoot(t *testing.T) {
 	key := subAgentPath("", "taizi")
 	segs := strings.Split(strings.Trim(key, "/"), "/")
-	if len(segs) != 1 {
-		t.Fatalf("top-level key %q splits into %d segments %v, want 1", key, len(segs), segs)
+	if len(segs) != 2 || segs[0] != "main" || segs[1] != "taizi" {
+		t.Fatalf("top-level key %q splits into %v, want [main taizi]", key, segs)
 	}
 }

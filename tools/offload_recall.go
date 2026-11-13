@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"xbot/internal/sessionaddr"
 
 	"xbot/llm"
 )
@@ -76,7 +77,7 @@ func (t *OffloadRecallTool) Execute(ctx *ToolContext, args string) (*ToolResult,
 	// SubAgent 自身的 sessionKey 是独立的（如 agent:main/code-reviewer），需要用 RootSessionKey 定位父 session
 	sessionKey := ctx.RootSessionKey
 	if sessionKey == "" {
-		sessionKey = ctx.Channel + ":" + ctx.ChatID
+		sessionKey = sessionaddr.Key(ctx.Channel, ctx.ChatID)
 	}
 	if sessionKey == ":" {
 		sessionKey = ""

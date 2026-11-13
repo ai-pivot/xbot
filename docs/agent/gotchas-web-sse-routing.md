@@ -27,6 +27,34 @@
 验收边界：上述为本地修复/测试；未部署或重启生产后端前，已有恢复实例仍持有旧回调，
 不能宣称生产问题已消失。
 
+## 子代理 BackgroundTask 归属与路由收敛（2026-11-13 P0）
+
+此次回归来自把顶层 AgentID 从 `/taizi` 改成单段 `taizi`，而工具上下文根据
+是否含 `/` 判子代理，误把它的后台任务归属设成根会话。仅补一个路径前缀不够：
+同 role 的多实例、不同根会话拥有相同 AgentID 路径，仍会串消息。
+
+现在唯一地址实现是 `internal/sessionaddr`：`Key/Parse` 序列化，`Child/SplitChild`
+构造/反解 interactive 地址，`Scope` 为后台任务与 TODO 读写提供相同 owner。
+生产 spawn、restore、one-shot 已有的 `CallerSessionKey` 是精确物理 map key，
+任务地址统一为 `agent:<CallerSessionKey>`；嵌套 key 自带的 agent 层必须保留。
+角色路径仅用于显示/调用链，不许当投递地址。旧任务只有 AgentID 时，只有**唯一**
+匹配才可恢复，歧义/缺失保持原 key pending，绝不按角色猜父级或改投主会话。
+
+`routeBackgroundTaskToOwner` 专管任务归属，`sendToExactInteractiveSession`
+是自动通知的唯一 interactive 投递原语：通过内部 context 传精确地址，禁止
+human-facing 模糊 role/instance 查找与跨树 fallback；失败同时检查 error 和
+OutboundMsg.Error，认领单条事件、失败原位补回，不吞同 key 的兄弟通知。
+初始化/恢复完成后 `retryOwnerNotifications` 只重投该 owner 的 pending。
+子代理向父级汇报仍使用显式 ParentKey，不能与任务 owner 语义互换。
+自动后台任务 turn 不再反向通知上级；pending 自动事件也不冒充用户输入，
+用户/父级真实派单仍保留 completion 回执。
+
+守护：真实 BackgroundTaskManager→bgNotifyLoop→interactive pending 管线覆盖
+顶层/嵌套、同角色多实例、不同根会话、缺失/初始化/恢复、歧义 legacy key，
+并验证主会话无副本。`internal/sessionaddr/guard_test.go` 扫描 AST，禁止重新
+引入按 slash 判断 AgentID 或手拼 channel:chatID。地址有 round-trip/fuzz 测试。
+CLI/Web 旧镜像只在兼容边界归一化，已存在子会话/真实根会话优先，不靠路径猜。
+
 ## 路由键
 
 `channel/web/web_eventstream.go`：

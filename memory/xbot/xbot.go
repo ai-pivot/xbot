@@ -931,68 +931,9 @@ func (m *XbotMemory) readCoreSummary() string {
 	return text
 }
 
-// writeCoreSummary writes the core summary (MEMORY.md).
-//
-// 写入侧脱敏（W3）：core summary 是 LLM 生成物，它会把上下文里的凭据原样带到
-// MEMORY.md；这里落盘的永远是脱敏后的文本。**签名不许改**——兵部探针直接调它。
-func (m *XbotMemory) writeCoreSummary(content string) {
-	content = redact.Secrets(content)
-	path := filepath.Join(m.baseDir, coreSummaryFileName)
-	// Atomic write: tmp + rename
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
-		log.WithError(err).Error("xbot-memory: failed to write core summary")
-		return
-	}
-	os.Rename(tmpPath, path)
-}
-
-//nolint:unused // 调用点已于 2026-11-07 删除（LLM 输出未校验把 MEMORY.md 写烂），函数保留待复用
-func (m *XbotMemory) updateCoreSummary(ctx context.Context, client llm.LLM, model string) {
-	if client == nil {
-		return
-	}
-
-	currentSummary := m.readCoreSummary()
-
-	// Get top high-importance memories
-	mems, err := m.recentLongTerm(10)
-	if err != nil || len(mems) == 0 {
-		return
-	}
-
-	var memSB strings.Builder
-	for _, mem := range mems {
-		if mem.Importance >= 0.7 {
-			fmt.Fprintf(&memSB, "- [%s] %s\n", mem.Type, mem.Content)
-		}
-	}
-	if memSB.Len() == 0 {
-		return
-	}
-
-	prompt := fmt.Sprintf(`Current core summary:
-%s
-
-Recent high-importance memories:
-%s
-
-Update the core summary to incorporate any new critical information.
-Keep it under %d characters. Preserve existing important information.
-Return ONLY the updated summary text, no explanations.`, currentSummary, memSB.String(), coreSummaryMaxChars)
-
-	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
-		llm.NewSystemMessage("You are a memory consolidation agent. Update the core summary concisely."),
-		llm.NewUserMessage(prompt),
-	}, nil)
-	if err != nil {
-		return
-	}
-
-	if resp.Content != "" {
-		m.writeCoreSummary(strings.TrimSpace(resp.Content))
-	}
-}
+// Automatic core-summary rewriting was removed in November 2026. Do not
+// resurrect the unused write/update helpers: unvalidated LLM summaries corrupted
+// MEMORY.md. Memory validation and two-phase writes remain the supported path.
 
 // --- Heat decay and eviction ---
 
@@ -1376,6 +1317,10 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 // transaction (storage.AgentMemoryStore): a crash between them would leave two
 // contradictory facts both ACTIVE and both injected.
 func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64, error) {
+	if err := validateMemoryContent(entry.Content); err != nil {
+		return 0, err
+	}
+	entry.Importance = clampImportance(entry.Importance)
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
 	if entry.Importance == 0 {
@@ -1459,6 +1404,10 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 // 写入侧脱敏（W2 更新路径）：content/keywords/tags 与 **SearchText** 都必须用脱敏后的值
 // —— 旧实现里 SearchText 是用原始 content 建的，只脱敏列会留下一份索引副本。
 func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywords, tags string, importance float64) error {
+	if err := validateMemoryContent(content); err != nil {
+		return err
+	}
+	importance = clampImportance(importance)
 	content = redact.Secrets(content)
 	keywords = redact.Secrets(keywords)
 	tags = redact.Secrets(tags)

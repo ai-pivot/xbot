@@ -12,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent"
 	"xbot/bus"
@@ -1267,16 +1268,16 @@ func resumePendingTurns(ag *agent.Agent, store storage.Storage, sigCh chan os.Si
 		// Since v71 the reply lives in the per-session DB (TenantSession).
 		tenant, err := ag.MultiSession().GetOrCreateSession(pr.Channel, pr.ChatID)
 		if err != nil {
-			log.WithError(err).WithField("session", pr.Channel+":"+pr.ChatID).Error("Failed to open session for resume check, keeping record for next restart")
+			log.WithError(err).WithField("session", sessionaddr.Key(pr.Channel, pr.ChatID)).Error("Failed to open session for resume check, keeping record for next restart")
 			continue
 		}
 		hasReply, err := tenant.HasAssistantReplyAfterLastUser()
 		if err != nil {
-			log.WithError(err).WithField("session", pr.Channel+":"+pr.ChatID).Error("Failed to check assistant reply, keeping record for next restart")
+			log.WithError(err).WithField("session", sessionaddr.Key(pr.Channel, pr.ChatID)).Error("Failed to check assistant reply, keeping record for next restart")
 			continue
 		}
 		if hasReply {
-			log.WithField("session", pr.Channel+":"+pr.ChatID).Info("Turn already completed, skipping resume")
+			log.WithField("session", sessionaddr.Key(pr.Channel, pr.ChatID)).Info("Turn already completed, skipping resume")
 			store.Tenant().ClearPendingResume(pr.Channel, pr.ChatID)
 			continue
 		}

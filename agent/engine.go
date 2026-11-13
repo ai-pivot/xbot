@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent/hooks"
 	"xbot/bus"
@@ -1055,7 +1056,7 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 
 		// Re-resolve sandbox per tool call — picks up runner switches immediately
 		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
-			cfg.Sandbox = router.SandboxForSession(cfg.Channel + ":" + cfg.ChatID)
+			cfg.Sandbox = router.SandboxForSession(sessionaddr.Key(cfg.Channel, cfg.ChatID))
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
@@ -1376,26 +1377,10 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	// 注入 BgTaskManager 后台任务管理器
 	if cfg.BgTaskManager != nil {
 		tc.BgTaskManager = cfg.BgTaskManager
-		// BgSessionKey：主 Agent 用 canonical sessionKey（RootSessionKey =
-		// origin channel:chatID），SubAgent（AgentID 含 "/"）用自己的
-		// SessionKey（subAgentID）隔离。不能无条件用 cfg.SessionKey ——
-		// web 用户浏览 CLI 会话时 physicalChannel override 把它改成
-		// "web:chatID"，Shell 后台任务会注册到 (web, chatID) → 完成通知注入时
-		// GetOrCreateSession("web", chatID) 创建重复 tenant（"会话变两个 +
-		// cancel 后 busy + 历史丢失"的根因：通知 turn 跑在新 tenant 里）。
-		sessionKey := cfg.SessionKey
-		if !strings.Contains(cfg.AgentID, "/") && cfg.RootSessionKey != "" {
-			sessionKey = cfg.RootSessionKey
-		}
-		if sessionKey == "" {
-			sessionKey = cfg.Channel + ":" + cfg.ChatID
-		}
-		// 注意：SubAgent 的 BgSessionKey **故意**是 subAgentID（AgentID 路径），
-		// 用于隔离各子代理的后台任务（见 engine_test.go
-		// TestBuildToolContext_BgSessionKeyCanonical）。它不是 channel:chatID，
-		// 下游必须能路由它 —— 由 deliverNotificationsByAgentPath 兜底，
-		// 不要再在这里"修正"成父会话 key（那会破坏隔离）。
-		tc.BgSessionKey = sessionKey
+		// Use the exact owner assigned at spawn/restore, shared with TODO scope.
+		// Role/AgentID paths are display/call-chain identities, not routing keys.
+		tc.BgSessionKey = sessionaddr.Scope(cfg.AgentID, cfg.CallerSessionKey,
+			cfg.SessionKey, cfg.RootSessionKey, cfg.Channel, cfg.ChatID)
 		// NOTE: OnComplete callback registration moved to Agent.bgNotifyLoop.
 		// Engine no longer registers callbacks per-buildToolContext call.
 	}
@@ -1405,11 +1390,11 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	// 注入调用链深度：SendMessage(to="user") 的权限判据（0=主会话，1=最上级 agent）。
 	//
 	// 取 len(Chain)-1：Chain[0] 是发起方自己（"main"），所以主会话 = 0 层。
-	// 防御：链缺失但 AgentID 含 "/"（确定是子代理）时按 ≥2 处理 —— 宁可挡住
+	// 防御：链缺失但 AgentID != "main"（确定是子代理）时按 ≥2 处理 —— 宁可挡住
 	// 也不能让一个链丢失的深层子代理拿到用户看板的写权限。
 	{
 		depth := len(CallChainFromContext(ctx).Chain) - 1
-		if depth <= 0 && strings.Contains(strings.TrimSpace(cfg.AgentID), "/") {
+		if depth <= 0 && isSubAgentID(cfg.AgentID) {
 			depth = 2
 		}
 		if depth < 0 {
