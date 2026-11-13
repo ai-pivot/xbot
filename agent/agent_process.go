@@ -926,6 +926,11 @@ func (a *Agent) deliverNotificationsByAgentPath(key string) {
 	if len(segs) >= 2 {
 		parentRole = segs[len(segs)-2]
 	}
+	// len(segs) == 1 ⇒ key 是**顶层子代理**（`taizi`，父就是主会话，没有 agent 路径根）。
+	// parentRole 保持空 ⇒ 走下面的「落主会话」分支，这是正确落点，不是异常。
+	// 2026-11-13 之前 subAgentID 会被拼成 `"/taizi"`（parentAgentID 为空），
+	// Trim + Split 后同样是单段，但日志报成 Error "unresolvable"，把人往
+	// 「会话找不到」的方向带偏 —— 实际只是「这个子代理没有 agent 父路径」。
 
 	var targetKey, targetRole, targetInst, targetChannel, targetChatID string
 	// A BackgroundTask uses the sub-agent's AgentID path as its isolated
@@ -993,9 +998,18 @@ func (a *Agent) deliverNotificationsByAgentPath(key string) {
 		return
 	}
 
-	// 找不到父会话：绝不丢，落到主会话队列并高声告警。
-	log.WithFields(log.Fields{"bad_key": key, "count": len(mine)}).
-		Error("bg notification key unresolvable and no matching parent session; keeping for main session")
+	// 找不到父会话：绝不丢，落到主会话队列。
+	// 单段 key（顶层子代理）走到这里是**正常路径**（父就是主会话），用 Warn；
+	// 多段却没命中才是真的异常（父 role 在注册表里找不到），用 Error —— 两者
+	// 之前混在同一个 Error 里，把「顶层子代理」误报成「会话找不到」（2026-11-13）。
+	{
+		entry := log.WithFields(log.Fields{"bad_key": key, "count": len(mine), "segs": len(segs)})
+		if len(segs) <= 1 {
+			entry.Warn("bg notification from a top-level subagent (no agent path root); delivered to main session")
+		} else {
+			entry.Error("bg notification key unresolvable and no matching parent session; keeping for main session")
+		}
+	}
 	for _, n := range mine {
 		if sn, ok := n.(*tools.SubAgentBgNotify); ok && sn != nil {
 			sn.Key = "recovered"

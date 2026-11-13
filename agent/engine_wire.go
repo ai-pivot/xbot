@@ -795,7 +795,19 @@ func (a *Agent) buildSubAgentRunConfig(
 		llm.NewUserMessage(task),
 	}
 
-	subAgentID := parentAgentID + "/" + roleName
+	// ⛔ 2026-11-13 P0（用户报「子代理会话在 Web 上收不到任何 SSE / busy 不对」）：
+	// `parentAgentID` 是**父 agent 的 AgentID 路径**，由主会话（用户直接对话）直接
+	// spawn 子代理时它是**空的**（主会话没有 agent 路径根）。旧实现无条件拼接
+	// `parentAgentID + "/" + roleName` ⇒ subAgentID 变成 `"/taizi"` —— 一个既不是
+	// 会话 key（无冒号）也不是合法 AgentID 路径的畸形值。后果链（线上实证 32 条）：
+	//   drainAndProcessNotifications 看到「无冒号」⇒ 走 deliverNotificationsByAgentPath
+	//   兜底 ⇒ Trim("/taizi","/") 后按 "/" 切只剩一段 ⇒ 取不到父 role ⇒
+	//   ERROR "bg notification key unresolvable and no matching parent session;
+	//   keeping for main session" ⇒ 子代理的完成/状态通知**全部落进主会话**，
+	//   子代理会话永远收不到 idle ⇒ 面板卡 busy、SSE 静默。
+	// 修法：没有父路径根时退化为单段 roleName（语义 = 顶层子代理，父就是主会话），
+	// 不再产出以 "/" 开头的畸形 ID。
+	subAgentID := subAgentPath(parentAgentID, roleName)
 
 	// SubAgent LLM resolution — via UserContext, no direct LLMFactory access.
 	llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens, subID := userCtx.ResolveLLMForModelWithFallback(model)
@@ -2688,4 +2700,24 @@ func interactiveSessionsToStatuses(sessions []InteractiveSessionInfo) []SubAgent
 		}
 	}
 	return statuses
+}
+
+// subAgentPath 拼子代理的 AgentID 路径（根/父/子）。
+//
+// ⛔ 2026-11-13 P0（用户报「子代理会话在 Web 上收不到任何 SSE / busy 不对」）：
+// `parentAgentID` 是父 agent 的路径根，**主会话（用户直接对话）spawn 子代理时它是空的**
+// —— 主会话不是 agent，没有路径根。旧实现无条件拼 `parentAgentID + "/" + roleName`，
+// 于是 subAgentID 变成 `"/taizi"`：既不是会话 key（无冒号），也不是合法 AgentID 路径。
+// 后果链（线上实证 32 条）：
+//
+//	drainAndProcessNotifications 见「无冒号」⇒ deliverNotificationsByAgentPath 兜底
+//	⇒ Trim("/") + Split 只剩一段 ⇒ 取不到父 role ⇒ 通知全部落进主会话，
+//	子代理会话永远收不到 idle ⇒ 面板卡 busy、SSE 静默。
+//
+// 没有路径根时退化为单段 roleName（语义 = 顶层子代理，父就是主会话）。
+func subAgentPath(parentAgentID, roleName string) string {
+	if parentAgentID == "" {
+		return roleName
+	}
+	return parentAgentID + "/" + roleName
 }
