@@ -68,7 +68,6 @@ const NAMED: Record<string, ToolCategory> = {
   TodoList: 'task',
   Cron: 'task',
   EventTrigger: 'task',
-  Worktree: 'task',
   // 记忆/技能
   Skill: 'memory',
   compact_context: 'memory',

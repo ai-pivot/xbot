@@ -89,7 +89,7 @@ func (c *RemoteCLIChannel) SetWidgetRegistry(wr *plugin.WidgetRegistry) {
 }
 
 // SetWidgetGetCWD injects a per-chatID CWD resolver used for session-specific
-// widget rendering (git branch, worktree, etc.).
+// widget rendering (git branch, etc.).
 func (c *RemoteCLIChannel) SetWidgetGetCWD(fn func(chatID string) string) {
 	c.widgetGetCWD = fn
 }

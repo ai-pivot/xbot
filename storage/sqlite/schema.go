@@ -91,6 +91,12 @@ CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, r
 CREATE INDEX IF NOT EXISTS idx_sm_tenant_role_id ON session_messages(tenant_id, role, id) WHERE role IN ('user','assistant');
 -- v74: 群组展示的游标分页索引（按群取一页，id DESC 直接走索引）。
 CREATE INDEX IF NOT EXISTS ix_sm_group_cursor ON session_messages(group_id, id DESC);
+-- v80: 历史读路径的三条部分索引（大库实测：历史轮次/展示消息/turn 内 user 消息
+-- 三条查询在缺索引时退化为 tenant_id 全扫）。partial index 让写侧代价只落在
+-- 命中的记录类型上，普通 message 行不进 markers 索引。
+CREATE INDEX IF NOT EXISTS idx_sm_markers ON session_messages(tenant_id, id) WHERE record_type IN ('compress','prune');
+CREATE INDEX IF NOT EXISTS idx_sm_display_msg ON session_messages(tenant_id, id) WHERE record_type='message' AND display_only=0;
+CREATE INDEX IF NOT EXISTS idx_sm_turn_user ON session_messages(tenant_id,turn_id,id) WHERE record_type='message' AND display_only=0 AND role='user';
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,
@@ -157,7 +163,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (79);
+INSERT INTO schema_version (version) VALUES (80);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -315,6 +321,9 @@ CREATE TABLE user_chats (
     UNIQUE(channel, sender_id, chat_id)
 );
 CREATE INDEX idx_user_chats_sender ON user_chats(channel, sender_id);
+-- 生产库（v79）早已有这条索引，仓库 schema 一直没声明 → 新库/重建库缺它，
+-- /api/session-tree 的 label/sort_order 子查询退化成逐行 SCAN uc。
+CREATE INDEX IF NOT EXISTS idx_user_chats_channel_chat ON user_chats(channel, chat_id);
 
 CREATE TABLE IF NOT EXISTS pending_resumes (
     channel TEXT NOT NULL,
@@ -530,5 +539,20 @@ func ensureStartupSchema(ctx context.Context, db *DB) {
 	}
 	if err := NewAgentMemoryService(db).EnsureAgentMemorySchema(ctx); err != nil {
 		log.WithError(err).Warn("Ensure agent memory schema failed; continuing without it")
+	}
+	// 索引兜底（幂等）：这些索引不在迁移链里，老库可能整库缺失，而
+	// initSchema 在 version == schemaVersion 时直接 return，不会补建。
+	//
+	// idx_sm_tenant_turn 是 /api/iteration_detail 的关键路径：
+	// GetSyntheticPairRowsByTurn 按 (tenant_id, turn_id) 过滤 session_messages，
+	// 缺这个索引时 SQLite 只能退到 idx_session_messages_tenant_history
+	// (tenant_id, id) 后全量过滤 —— 单个大会话几十万消息，实测 p50 1676ms。
+	// 部分索引把范围限制在 record_type='message'（占绝大多数行），与查询的
+	// WHERE 前缀一致，EXPLAIN 可验证走的是 SEARCH 而非 SCAN。
+	if _, err := db.Conn().ExecContext(ctx, `
+	CREATE INDEX IF NOT EXISTS idx_sm_tenant_turn
+	    ON session_messages(tenant_id, turn_id, id) WHERE record_type = 'message';
+	`); err != nil {
+		log.WithError(err).Warn("Ensure idx_sm_tenant_turn failed; /api/iteration_detail may stay slow")
 	}
 }

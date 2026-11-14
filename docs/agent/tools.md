@@ -163,18 +163,6 @@ Core tool (always loaded). AI reads/modifies xbot configuration.
 
 **Masking**: Sensitive keys (`api_key`, `runner_token`) show `sk-a***` on read. Writes are NOT blocked — users can type API keys anyway.
 
-## Worktree Tool (`tools/worktree.go`, `tools/worktree_registry.go`)
-
-Git worktree-based multi-agent workspace isolation. When multiple agents work on the same git repository, this tool creates isolated worktrees so agents don't conflict on the same files.
-
-**Actions**: `init`, `cleanup`, `status`
-
-- **init**: Creates a new git worktree for the calling agent, registers it in the global `WorktreeRegistry`. First agent in a repo uses the main project directly (role="primary"). Subsequent agents get their own worktree (role="peer" or "child"). Returns the worktree path.
-- **cleanup**: Removes the worktree and deregisters from the registry.
-- **status**: Lists all active worktrees in the current repo, including peers.
-
-**Registry**: `WorktreeRegistry` (`tools/worktree_registry.go`) is a global singleton tracking all active worktrees by repo path. Supports peer discovery so agents can find each other's workspaces.
-
 ## TodoWrite / TodoList Tools (`tools/todo.go`)
 
 Structured TODO management with cross-session persistence.

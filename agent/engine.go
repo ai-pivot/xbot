@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent/hooks"
 	"xbot/bus"
@@ -71,6 +72,11 @@ type RunConfig struct {
 	// ManageTools, subscription/runner actions) after the multi-user removal.
 	OriginUserIsAdmin bool
 
+	// TriggerSource 是本轮 Run 的**触发来源**（per-turn，禁止跨 turn 残留）：
+	// "" = 用户 / 父代理等常规入站消息；triggerSourceCron = cron 定时任务。
+	// 传递链路与判定语义见 agent/trigger_source.go —— 这里只保证它**每轮重算**。
+	TriggerSource string
+
 	// === 可观测性 ===
 	// Observability carries tracing identifiers attached to every LLM HTTP
 	// request (X-Session-Id / X-Request-Id / X-User-Id / X-Turn-Id / X-Trace-Id),
@@ -96,8 +102,6 @@ type RunConfig struct {
 	InitialCWD          string        // 初始当前工作目录（宿主机路径，用于 SubAgent 继承父 Agent 的 CWD）
 	InitialGroupID      string        // 群组 ID（SubAgent 继承，用于 SendMessage 跨群校验）
 	InitialGroupMembers []string      // 群组成员列表（用于 system prompt 注入）
-	// IsWorktreeIsolated indicates this agent runs in an isolated git worktree.
-	IsWorktreeIsolated bool
 
 	// === 循环控制 ===
 	MaxOutputTokens int // 0 = 使用 LLM client 默认值
@@ -112,6 +116,17 @@ type RunConfig struct {
 	// 传 1 ⇒ 摘要只允许一次 LLM 调用，触顶即返回明确错误（压缩失败是**非致命**的，
 	// 见 compress_failure_nonfatal_test.go），绝不无限空转。
 	MaxIterations int
+	// DisableSystemReminder 关闭 transient system_reminder fake tool pair 的注入。
+	// 专供**内部一次性 Run**（当前唯一用户：上下文压缩摘要，agent/compress.go
+	// 的 compressCfg）—— 这类调用不是「对话轮」，没有「这一轮用户说了什么」可
+	// 提醒；更重要的是形状约束：压缩请求要求「最后一条消息 = 压缩指令（user）」，
+	// 尾部接一对 assistant(tool_call)+tool 会直接破坏该契约（TestCompactMessages_*
+	// 会红：last request message must be instruction）。
+	//
+	// 必须是**显式开关**：不用 MaxIterations>0 或 AgentID=="compressor" 隐式推断
+	// —— 隐式条件会在将来新增内部 Run 时静默生效/失效，且无法表达「某个内部 Run
+	// 仍要 reminder」的例外。
+	DisableSystemReminder bool
 	// IterationStart 偏移 Run 的迭代编号（resume 场景）：> 0 时首个迭代号是
 	// IterationStart+1 而非 1。重启恢复的 Run（InjectInboundResume）复用被中断
 	// turn 的 turn_id，而迭代号是 turn 域唯一的（iteration_history 按
@@ -406,8 +421,6 @@ type RunConfig struct {
 	// PeerMessageFn sends peer-to-peer messages between CLI sessions.
 	// Used by SendMessage tool for busy/idle routing.
 	PeerMessageFn func(targetSessionKey, message string) string
-	// AutoWorktreeEnabled controls whether Worktree(init) can create worktrees.
-	AutoWorktreeEnabled bool
 	// IterationLoopDetection enables the iteration-loop breaker (consecutive
 	// identical iterations → duplicate tool calls replaced with a fake LOOP
 	// DETECTED result, repeated loops force-terminate the Run). Experimental —
@@ -1001,6 +1014,13 @@ func executeWithHooks(
 // Used for SubAgent and other scenarios that don't need session MCP / activation checks.
 func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 	return func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+		// ⛔ 历史伪工具名（system_reminder）：即便注册表被外部来源（插件 / 会话 MCP）
+		// 塞了同名真实工具，也**绝不执行** —— 它会把整份上下文快照（user-msg + cwd +
+		// todos + subagents + guidelines）交回给模型，等于给模型开了一条可自取的
+		// prompt injection 通道。见 perm_control_helpers.go 的 neverExposedToolNames。
+		if isNeverExposedToolName(tc.Name) {
+			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
+		}
 		tool, ok := cfg.Tools.GetForSession(tc.Name, cfg.TenantID, cfg.SessionKey)
 		if !ok {
 			// Synthetic notification tools (background_task_result etc.) are
@@ -1036,7 +1056,7 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 
 		// Re-resolve sandbox per tool call — picks up runner switches immediately
 		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
-			cfg.Sandbox = router.SandboxForSession(cfg.Channel + ":" + cfg.ChatID)
+			cfg.Sandbox = router.SandboxForSession(sessionaddr.Key(cfg.Channel, cfg.ChatID))
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
@@ -1297,8 +1317,6 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		PreferredSandbox:     cfg.PreferredSandbox,
 		Sandbox:              resolvedSandbox,
 		DataDir:              cfg.DataDir,
-		IsWorktreeIsolated:   cfg.IsWorktreeIsolated,
-		AutoWorktreeEnabled:  cfg.AutoWorktreeEnabled,
 		PeerMessageFn:        cfg.PeerMessageFn,
 
 		// 注入入站消息
@@ -1359,27 +1377,48 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	// 注入 BgTaskManager 后台任务管理器
 	if cfg.BgTaskManager != nil {
 		tc.BgTaskManager = cfg.BgTaskManager
-		// BgSessionKey：主 Agent 用 canonical sessionKey（RootSessionKey =
-		// origin channel:chatID），SubAgent（AgentID 含 "/"）用自己的
-		// SessionKey（subAgentID）隔离。不能无条件用 cfg.SessionKey ——
-		// web 用户浏览 CLI 会话时 physicalChannel override 把它改成
-		// "web:chatID"，Shell 后台任务会注册到 (web, chatID) → 完成通知注入时
-		// GetOrCreateSession("web", chatID) 创建重复 tenant（"会话变两个 +
-		// cancel 后 busy + 历史丢失"的根因：通知 turn 跑在新 tenant 里）。
-		sessionKey := cfg.SessionKey
-		if !strings.Contains(cfg.AgentID, "/") && cfg.RootSessionKey != "" {
-			sessionKey = cfg.RootSessionKey
+		// Use the exact owner assigned at spawn/restore, shared with TODO scope.
+		// Role/AgentID paths are display/call-chain identities, not routing keys.
+		tc.BgSessionKey = sessionaddr.Scope(cfg.AgentID, cfg.CallerSessionKey,
+			cfg.SessionKey, cfg.RootSessionKey, cfg.Channel, cfg.ChatID)
+		// Loud when a run still labels itself as the main agent although it owns
+		// an interactive session: that degradation is what silently moved a
+		// child's background tasks onto the parent session.
+		if sessionaddr.DegradedIdentity(cfg.AgentID, cfg.CallerSessionKey) {
+			log.WithFields(log.Fields{
+				"agent_id":           cfg.AgentID,
+				"caller_session_key": cfg.CallerSessionKey,
+				"bg_session_key":     tc.BgSessionKey,
+				"channel":            cfg.Channel,
+				"chat_id":            cfg.ChatID,
+			}).Error("DEGRADED SUBAGENT IDENTITY: interactive owner exists but AgentID says main — background tasks are still owned by the interactove session (never the root)")
 		}
-		if sessionKey == "" {
-			sessionKey = cfg.Channel + ":" + cfg.ChatID
-		}
-		tc.BgSessionKey = sessionKey
+		log.WithFields(log.Fields{
+			"agent_id":           cfg.AgentID,
+			"caller_session_key": cfg.CallerSessionKey,
+			"bg_session_key":     tc.BgSessionKey,
+		}).Debug("tool context background-task owner resolved")
 		// NOTE: OnComplete callback registration moved to Agent.bgNotifyLoop.
 		// Engine no longer registers callbacks per-buildToolContext call.
 	}
 
 	// 注入 MessageSender（Dispatcher 引用，允许 Agent 向任何 Channel 发消息）
 	tc.MessageSender = cfg.MessageSender
+	// 注入调用链深度：SendMessage(to="user") 的权限判据（0=主会话，1=最上级 agent）。
+	//
+	// 取 len(Chain)-1：Chain[0] 是发起方自己（"main"），所以主会话 = 0 层。
+	// 防御：链缺失但 AgentID != "main"（确定是子代理）时按 ≥2 处理 —— 宁可挡住
+	// 也不能让一个链丢失的深层子代理拿到用户看板的写权限。
+	{
+		depth := len(CallChainFromContext(ctx).Chain) - 1
+		if depth <= 0 && isSubAgentID(cfg.AgentID) {
+			depth = 2
+		}
+		if depth < 0 {
+			depth = 0
+		}
+		tc.AgentDepth = depth
+	}
 	// 注入 AgentChannel 注册/注销回调
 	tc.RegisterAgentChannel = cfg.RegisterAgentChannel
 	tc.UnregisterAgentChannel = cfg.UnregisterAgentChannel

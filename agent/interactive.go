@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/bus"
 	channelpkg "xbot/channel"
@@ -37,8 +38,10 @@ type bgParentKey struct{}
 // The sender blocks on replyCh until the message is successfully injected into
 // the SubAgent's Run loop (via DrainBgNotifications). A nil error means success.
 type pendingUserMsg struct {
-	content string
-	replyCh chan error // buffered(1): nil on success, error on failure
+	content   string
+	origin    string     // trigger_source of the delivered event ("" = explicit human/parent message)
+	replyCh   chan error // buffered(1): nil on success, error on failure
+	automatic bool       // owned task/cron event; not an explicit user/parent request
 }
 
 // interactiveAgent 封装一个 interactive SubAgent 会话。
@@ -66,6 +69,13 @@ type interactiveAgent struct {
 	pendingMessages  []pendingUserMsg    // messages queued while Run is in progress
 	subID            string              // subscription ID for TUI status bar display
 	bgTask           *tools.SubAgentTask // waitable background task (registered on background spawn) — closed on ALL completion paths
+
+	// userInputJoined 标记**本轮 Run 期间**有 pendingMessages 被 drain 注入 ——
+	// 也就是「有人主动给这个会话发了消息」。cron turn 的抑制据此 fail-open：
+	// 纯 cron 的 turn 不通知父会话；但一旦有真实用户输入并进了这一轮，必须照常
+	// 发 Completed，否则用户那次派单就没有完成回执（2026-11-12 lead 口径）。
+	// 每轮 turn 开始时清零（SendToInteractiveSession）。
+	userInputJoined atomic.Bool
 
 	// destroyed 是**会话墓碑**：destroyInteractiveSession 在动任何资源（关库、
 	// 删文件、删租户行）之前用 CAS 置位，之后所有取用路径都必须先看它。
@@ -113,12 +123,21 @@ func (ia *interactiveAgent) wirePendingMessageDrain(sessionKey string) func() []
 		if len(msgs) == 0 {
 			return nil
 		}
+		// 有人在本轮 Run 进行中主动给这个会话发了消息，且它被并入本轮 ——
+		// cron turn 的抑制必须 fail-open（见 shouldNotifyParent）。
+		for _, pm := range msgs {
+			if !pm.automatic {
+				ia.userInputJoined.Store(true)
+				break
+			}
+		}
 		result := make([]tools.BgNotification, len(msgs))
 		for i, pm := range msgs {
 			pm := pm // capture
 			result[i] = &tools.QueuedUserMessage{
 				Key:     sessionKey,
 				Content: pm.content,
+				Origin:  pm.origin,
 				ReplyFn: func(err error) {
 					select {
 					case pm.replyCh <- err:
@@ -172,6 +191,31 @@ func (ia *interactiveAgent) compressRatio() float64 {
 // 为什么需要它（2026-10-22 P0：连续两次 spawn lead 会话后报
 // "assert: LLM messages must have exactly one system message; got 0"，会话直接
 // 不可用，只能 unload 重建）：
+// deriveRunBaseContext 返回 interactive session 的 Run 应该挂靠的父 ctx。
+//
+// 唯一权威是 Agent 生命周期（a.agentCtx）。调用方的 ctx **不参与**生命周期决定：
+// 它只能表达「这一刻还值不值得受理这次请求」，不能表达「这个 Run 该活多久」。
+//
+// 违反这条会产生一个非常隐蔽的 bug：调用方自己也是 bg session 时（例如
+// proj.xbot.lead 给首辅发消息），子代理的 Run 会挂在调用方那一轮的 ctx 上；
+// 调用方 turn 一结束 ctx 就 cancel，子代理 Run 跟着 cancel，于是
+// `cancelled == true`，而 interactive.go 里包住 SendSubAgentNotify 的条件
+// `if notifyMgr != nil && !cancelled` 整段被跳过 —— **子代理的最后一条消息
+// 永远不通知父会话**。表现就是「它明明 idle 了，御前却收不到」。
+//
+// unload / TTL / interrupt 仍然能正常取消会话：它们走 runCancel，不依赖这里。
+func (a *Agent) deriveRunBaseContext(caller context.Context) context.Context {
+	if a.agentCtx != nil {
+		return a.agentCtx
+	}
+	// 裸 &Agent{}（测试）没有 agentCtx：保留 caller 的 value，但剥离它的 cancel，
+	// 否则同样的"父 turn 结束就杀掉子代 Run"会在测试里复现。
+	if caller == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(caller)
+}
+
 // SendToInteractiveSession 用 `[ia.systemPrompt] + ia.messages + [user]` 拼装，
 // 而 ia.systemPrompt 的唯一来源是「spawn 时从 cfg.Messages[0] 拷一份」。任何
 // 不经过 spawn 的构造路径（重启恢复、将来新增的 fork/迁移路径）只要漏拷它，
@@ -439,7 +483,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		return
 	}
 
-	agentProgressKey := "agent:" + key
+	agentProgressKey := sessionaddr.Agent(key)
 
 	// broadcast sends a clone of payload to each ProgressSender channel.
 	// Each channel gets an independent clone to prevent cross-channel mutation.
@@ -600,7 +644,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 // Used when a background subagent is interrupted, since the normal Run() exit path
 // doesn't send PhaseDone on cancellation.
 func (a *Agent) sendSubAgentPhaseDone(key string) {
-	agentProgressKey := "agent:" + key
+	agentProgressKey := sessionaddr.Agent(key)
 
 	// Build PhaseDone payload from the last known progress snapshot.
 	// Deep-copy via cloneProgressEvent (not `cp := *snap`) — the shallow copy
@@ -794,7 +838,7 @@ func (a *Agent) destroyInteractiveSessionIfCurrent(key string, expected *interac
 
 func (a *Agent) destroyInteractiveSessionResources(key string) {
 	// Clean up progress snapshot and iteration history
-	agentProgressKey := "agent:" + key
+	agentProgressKey := sessionaddr.Agent(key)
 	a.lastProgressSnapshot.Delete(agentProgressKey)
 	a.iterationHistories.Delete(agentProgressKey)
 
@@ -958,34 +1002,14 @@ func (a *Agent) emitRemovedSubAgentEventFor(key string, ia *interactiveAgent) {
 // instance 为空时，行为与旧版一致（向后兼容）。
 // 设置 instance 后，同一个 role 可以创建多个独立的 interactive session。
 func interactiveKey(channel, chatID, roleName, instance string) string {
-	key := qualifyChatID(channel, chatID) + "/" + roleName
-	if instance != "" {
-		key += ":" + instance
-	}
-	return key
+	return sessionaddr.Child(channel, chatID, roleName, instance)
 }
 
 // parseInteractiveKeyTail 从完整地址键里解出 (channel, chatID, role, instance)。
 // 与 parseInteractiveKeyParent 互补：后者只要父路径，本函数还要 role/instance，
 // 供 ContinueInteractiveSession 在精确键 miss 时按 (role, instance) 兜底匹配。
 func parseInteractiveKeyTail(key string) (channel, chatID, role, instance string) {
-	slashIdx := strings.LastIndex(key, "/")
-	if slashIdx <= 0 {
-		return "", "", "", ""
-	}
-	colonIdx := strings.Index(key, ":")
-	if colonIdx < 0 || colonIdx >= slashIdx {
-		return "", "", "", ""
-	}
-	channel = key[:colonIdx]
-	chatID = key[colonIdx+1 : slashIdx]
-	tail := key[slashIdx+1:]
-	if i := strings.Index(tail, ":"); i >= 0 {
-		role, instance = tail[:i], tail[i+1:]
-	} else {
-		role = tail
-	}
-	return channel, chatID, role, instance
+	return sessionaddr.SplitChild(key)
 }
 
 // resolveInteractiveSessionKey 是所有「按 role/instance 寻址 interactive session」
@@ -1308,10 +1332,32 @@ func (a *Agent) SpawnInteractiveSession(
 		// 这条记录 ⇒ 进程重启后子代理全部丢失（2026-10-21 实测：入库行是
 		// ('agent:tester/probe-1','','',...)）。origin* 已在本函数开头解析，
 		// 与 interactiveKey 用的是同一对值，语义一致。
-		if originChannel != "" && originChatID != "" {
-			placeholder.parentKey = originChannel + ":" + originChatID
+		//
+		// ⛔ 2026-11-03 P0「子代理 turn 结束不通知父会话」：
+		// origin 由 `SubAgent` / `CreateChat` 在 **agent 执行上下文**里给出，形如
+		// channel="agent"、chatID="web:web-4" —— 而 `agent:<ch>:<chatID>` 只是
+		// 会话的**执行上下文镜像**，不是用户可见会话。直接拼出
+		//   parentKey = "agent:web:web-4"
+		// 之后 SendSubAgentNotify 会把它当成 (channel=agent, chatID=web:web-4)
+		// 投递，落进一个独立的 agent:web:web-4 会话；父会话真实位置是
+		// (web, web-4)，永远收不到。线上证据（36 次）：
+		//   {"channel":"agent","chat_id":"web:web-4",
+		//    "msg":"Bg notifications: injected as ONE batched user message"}
+		// 正确落点由 chatID 自身携带，所以 agent 前缀必须剥掉还原成
+		// (web, web-4)，否则通知、user 看板回流、cascade 清理全部指错会话。
+		if addr, ok := sessionAddress(originChannel, originChatID); ok {
+			placeholder.parentKey = addr
 		}
 	}
+	// ⛔ 2026-11-12 事故（用户上报）：重启后内存为空，`interactive=true` 会走"新建"路径，
+	// 建出一个**空会话**并占住 key —— 而 restoreInteractiveTree 因"已在内存"跳过，
+	// 注册表里那条记录的历史被永久遮蔽。agent 本想唤醒旧实例，却把它变成了新会话。
+	//
+	// 修法：内存里没有时先查注册表。有记录（且未被 unload）就按 restore 路径重建，
+	// 之后下面的 LoadOrStore 会命中"已存在"分支 ⇒ 返回"用 send 继续"，
+	// 而不是静默替换成空会话。
+	a.restoreFromRegistryIfPresent(ctx, key, roleName)
+
 	if existing, loaded := a.interactiveSubAgents.LoadOrStore(key, placeholder); loaded {
 		// 墓碑上的会话（正在销毁）不算"已存在"：把它摘掉后重试一次，
 		// 让 spawn 在"TTL 刚清理完 / unload 刚触发"的窗口里也能成功。
@@ -1323,7 +1369,7 @@ func (a *Agent) SpawnInteractiveSession(
 		}
 		if loaded {
 			return &channelpkg.OutboundMsg{
-				Content: fmt.Sprintf("interactive session for role %q already exists, use action=\"send\" to continue or action=\"unload\" to end it", roleName),
+				Content: fmt.Sprintf("interactive session for role %q already exists (or was just restored from the registry after a restart — its history is intact). Use action=\"send\" to continue it. ⚠️ Do NOT create a new instance under the same key to \"reset\" it: action=\"unload\" marks it permanently unloaded and restart-recovery will skip it.", roleName),
 			}, nil
 		}
 	}
@@ -1380,7 +1426,15 @@ func (a *Agent) SpawnInteractiveSession(
 		}) // 清理占位符
 		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
 	}
-	subCtx := WithCallChain(ctx, cc.Spawn(roleName))
+	// 生命周期语义（2026-10-26 用户令）：
+	// interactive session 的存活区间 = spawn → unload。
+	// **一轮 Run 结束不等于 creator 死亡**，所以子会话不得继承父 Run ctx 的
+	// 取消信号 —— 否则父回合自然结束，子会话就被连带 kill。
+	// 实测事故：首辅派工部，工部 37 秒后被 "background session cancelled (unload)"
+	// 杀掉，恰好等于父那一轮的剩余时长。
+	// WithoutCancel 保留全部 values（调用链 / UserContext / bgParentKey），
+	// 只切断取消传播；显式销毁仍走 UnloadInteractiveSession → cancelChildSessions。
+	subCtx := WithCallChain(context.WithoutCancel(ctx), cc.Spawn(roleName))
 
 	// ⛔ 会话用户身份快照（2026-09-30 panic 根治）：Run ctx 从 agentCtx 派生时
 	// 会丢 UserContext，嵌套 spawn 因此拿 nil panic（50/50）—— spawn 时把它存进
@@ -1407,6 +1461,11 @@ func (a *Agent) SpawnInteractiveSession(
 		})
 		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
 	}
+
+	// 首轮 Run 的触发来源：与 SendToInteractiveSession 同源（msg.Metadata）。
+	// ⚠️ 它会随 placeholder.cfg 模板一起被后续 send 浅拷贝，但**不会残留** ——
+	// send 路径每轮都无条件从 msg.Metadata 重算（见 SendToInteractiveSession）。
+	cfg.TriggerSource = msg.Metadata[triggerSourceMetadataKey]
 
 	// Update placeholder with cfg so GetAgentSessionDumpByFullKey returns the
 	// correct model name, max context tokens, etc. — even during the first Run().
@@ -1557,16 +1616,25 @@ func (a *Agent) SpawnInteractiveSession(
 
 	if background {
 		// Background mode: launch Run in goroutine, return immediately.
-		// Lifecycle rule: bg subagents never outlive their parent.
+		// Lifecycle rule (2026-10-26 用户令修订)：
+		// **子会话的寿命跟着父会话的 unload，而不是父的某一轮 Run。**
 		// - First level: ctx is per-request (no marker) → derive from Agent-level ctx
 		//   so the session survives across multiple parent requests.
-		// - Nested level: ctx is a bg session's runCtx (has marker) → derive from
-		//   parent's ctx so the child dies when the parent session is cancelled/unloaded.
-		// - Agent exit: agentCancel() cascades through first-level → nested levels.
+		// - Nested level: ctx 带 bg 标记 → 仍然取父 ctx 的 values（调用链/身份），
+		//   但取消传播已在 SpawnInteractiveSession 里用 WithoutCancel 切断，
+		//   因此父回合结束不会杀死子会话；父 unload 时由 cancelChildSessions 显式级联。
+		// - Agent exit: agentCancel() 仍会级联第一层，进程随之退出。
 		var bgBase context.Context
 		if ctx.Value(bgSessionCtxKey{}) != nil {
-			// Nested: parent is a bg session → derive from parent's lifecycle
-			bgBase = ctx
+			// Nested: 父是 bg session。
+			// ⛔ 2026-10-26 第二次修：这里原来直接 `bgBase = ctx`，而 ctx 是**父这一轮的
+			// runCtx**（父回合结束时 runCancel 会取消它）。上一版只改了 subCtx，
+			// 但这行又从裸 ctx 重新派生，等于把切断的取消传播又接回去了 ——
+			// 实测后果：首辅回合结束 → 它派的工部被 cancel → 走 unload 分支销毁
+			// （日志 "background session cancelled (unload)"），工部死在写测试中途。
+			// 现在同样切断取消传播（保留调用链/UserContext），父 unload 时由
+			// cancelChildSessions 显式级联。
+			bgBase = context.WithoutCancel(ctx)
 		} else {
 			// First level: derive from Agent lifecycle
 			bgBase = a.agentCtx
@@ -1596,7 +1664,7 @@ func (a *Agent) SpawnInteractiveSession(
 		// Wire incremental snapshot callback so iteration history is visible
 		// during Run(), not only after it completes.
 		// Also send progress notifications to the parent agent via BgTaskManager.
-		sessionKey := originChannel + ":" + originChatID
+		sessionKey := sessionaddr.Key(originChannel, originChatID)
 		notifyMgr := a.bgTaskMgr.Load()
 		cfg.OnIterationSnapshot = func(snap IterationSnapshot) {
 			placeholder.mu.Lock()
@@ -1604,7 +1672,8 @@ func (a *Agent) SpawnInteractiveSession(
 			placeholder.mu.Unlock()
 
 			// Notify parent agent about iteration progress
-			if notifyMgr != nil {
+			// cron turn 不发进度（见 trigger_source.go 的 shouldNotifyParent）。
+			if notifyMgr != nil && shouldNotifyParent(&cfg, placeholder.userInputJoined.Load()) {
 				var sb strings.Builder
 				fmt.Fprintf(&sb, "Iteration %d completed.\n", snap.Iteration)
 				if snap.Content != "" {
@@ -1623,12 +1692,13 @@ func (a *Agent) SpawnInteractiveSession(
 					sb.WriteString("\n")
 				}
 				notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-					Key:      sessionKey,
-					Type:     tools.SubAgentBgNotifyProgress,
-					Role:     roleName,
-					Instance: instance,
-					Content:  sb.String(),
-					Sid:      originSender,
+					Key:       placeholder.parentKey,
+					ParentKey: placeholder.parentKey,
+					Type:      tools.SubAgentBgNotifyProgress,
+					Role:      roleName,
+					Instance:  instance,
+					Content:   sb.String(),
+					Sid:       originSender,
 				})
 			}
 		}
@@ -1662,6 +1732,7 @@ func (a *Agent) SpawnInteractiveSession(
 					// Prevent zombie session: clean up state so send/spawn can proceed
 					placeholder.mu.Lock()
 					placeholder.running = false
+					placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 					placeholder.cancelCurrent = nil
 					placeholder.lastError = fmt.Sprintf("panic: %v", r)
 					placeholder.mu.Unlock()
@@ -1673,17 +1744,19 @@ func (a *Agent) SpawnInteractiveSession(
 					if bgTask != nil {
 						notifyMgr.CloseSubAgentTask(bgTask.ID, tools.BgTaskError, fmt.Sprintf("Panic: %v", r))
 					}
-					// Notify parent
+					// Notify parent — panic 路径**无条件照发**（cron turn 也发）：
+					// 异常必须让上层知道；抑制只针对正常/中断收尾。
 					if notifyMgr != nil {
 						notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-							Key:      sessionKey,
-							Type:     tools.SubAgentBgNotifyCompleted,
-							Role:     roleName,
-							Instance: instance,
-							Content:  fmt.Sprintf("Panic: %v", r),
-							Elapsed:  time.Since(startTime),
-							Sid:      originSender,
-							Task:     msg.Content,
+							Key:       placeholder.parentKey,
+							ParentKey: placeholder.parentKey,
+							Type:      tools.SubAgentBgNotifyCompleted,
+							Role:      roleName,
+							Instance:  instance,
+							Content:   fmt.Sprintf("Panic: %v", r),
+							Elapsed:   time.Since(startTime),
+							Sid:       originSender,
+							Task:      msg.Content,
 						})
 					}
 					// subagent_stopped(removed=true) is emitted by
@@ -1710,7 +1783,10 @@ func (a *Agent) SpawnInteractiveSession(
 			// the parent agent to see stale "[SubAgent X completed]" messages
 			// and try to "clean up" agents that are already gone, producing
 			// endless "agent still running" hallucinations.
-			if notifyMgr != nil && !cancelled {
+			//
+			// cron turn（且没有真实用户输入并入）不通知父会话：
+			// 定时任务不该把父会话唤醒一轮 LLM（见 trigger_source.go）。
+			if notifyMgr != nil && !cancelled && shouldNotifyParent(&cfg, placeholder.userInputJoined.Load()) {
 				content := out.Content
 				if out.Error != nil {
 					content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
@@ -1732,14 +1808,15 @@ func (a *Agent) SpawnInteractiveSession(
 					notifyMgr.CloseSubAgentTask(bgTask.ID, status, content)
 				}
 				notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-					Key:      sessionKey,
-					Type:     tools.SubAgentBgNotifyCompleted,
-					Role:     roleName,
-					Instance: instance,
-					Content:  content,
-					Elapsed:  time.Since(startTime),
-					Sid:      originSender,
-					Task:     msg.Content,
+					Key:       placeholder.parentKey,
+					ParentKey: placeholder.parentKey,
+					Type:      tools.SubAgentBgNotifyCompleted,
+					Role:      roleName,
+					Instance:  instance,
+					Content:   content,
+					Elapsed:   time.Since(startTime),
+					Sid:       originSender,
+					Task:      msg.Content,
 				})
 			}
 
@@ -1750,6 +1827,7 @@ func (a *Agent) SpawnInteractiveSession(
 				placeholder.mu.Lock()
 				wasInterrupted := placeholder.interrupted
 				placeholder.running = false
+				placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 				placeholder.cancelCurrent = nil
 				placeholder.interrupted = false // reset for next send
 
@@ -1775,7 +1853,9 @@ func (a *Agent) SpawnInteractiveSession(
 
 					// Interrupt: notify parent so it knows the agent stopped.
 					// The session stays for future "send" interactions.
-					if notifyMgr != nil {
+					// cron turn（无真实用户输入并入）不吵父会话 —— 与同函数另外两处
+					// 守卫一致；panic 路径才保留无条件照发（异常必须让上层知道）。
+					if notifyMgr != nil && shouldNotifyParent(&cfg, placeholder.userInputJoined.Load()) {
 						content := out.Content
 						if out.Error != nil {
 							content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
@@ -1792,14 +1872,15 @@ func (a *Agent) SpawnInteractiveSession(
 							notifyMgr.CloseSubAgentTask(bgTask.ID, tools.BgTaskDone, content)
 						}
 						notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-							Key:      sessionKey,
-							Type:     tools.SubAgentBgNotifyCompleted,
-							Role:     roleName,
-							Instance: instance,
-							Content:  content,
-							Elapsed:  time.Since(startTime),
-							Sid:      originSender,
-							Task:     msg.Content,
+							Key:       placeholder.parentKey,
+							ParentKey: placeholder.parentKey,
+							Type:      tools.SubAgentBgNotifyCompleted,
+							Role:      roleName,
+							Instance:  instance,
+							Content:   content,
+							Elapsed:   time.Since(startTime),
+							Sid:       originSender,
+							Task:      msg.Content,
 						})
 					}
 					log.WithFields(log.Fields{
@@ -1853,6 +1934,7 @@ func (a *Agent) SpawnInteractiveSession(
 			// 绝不对已 close 的库 AppendMessage（use-after-close）。
 			if placeholder.isDestroyed() {
 				placeholder.running = false
+				placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 				placeholder.cancelCurrent = nil
 				placeholder.lastError = destroyedSessionError(key, roleName, instance).Error()
 				log.WithFields(log.Fields{"key": key, "role": roleName, "instance": instance}).
@@ -1861,6 +1943,7 @@ func (a *Agent) SpawnInteractiveSession(
 			}
 
 			placeholder.running = false
+			placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 			placeholder.cancelCurrent = nil
 			placeholder.lastReply = out.Content
 			placeholder.promptTokens = out.LastPromptTokens
@@ -2004,7 +2087,7 @@ func (a *Agent) SpawnInteractiveSession(
 
 	// Wire DrainBgNotifications so pending messages (sent via action=send
 	// while this Run is in progress) are injected between iterations.
-	fgSessionKey := originChannel + ":" + originChatID
+	fgSessionKey := sessionaddr.Key(originChannel, originChatID)
 	cfg.DrainBgNotifications = placeholder.wirePendingMessageDrain(fgSessionKey)
 
 	out := Run(fgRunCtx, cfg)
@@ -2015,6 +2098,7 @@ func (a *Agent) SpawnInteractiveSession(
 
 	placeholder.mu.Lock()
 	placeholder.running = false
+	placeholder.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 	placeholder.cancelCurrent = nil
 	placeholder.mu.Unlock()
 
@@ -2027,9 +2111,9 @@ func (a *Agent) SpawnInteractiveSession(
 		return &channelpkg.OutboundMsg{Content: destroyedErr.Error(), Error: destroyedErr}, nil
 	}
 
-	// Cascade: cancel and remove all child sessions spawned by this Run,
-	// ensuring no SubAgent outlives its creator even on natural completion.
-	a.cancelChildSessions(key)
+	// 不再在此级联销毁子会话：本轮的结束只是"这一轮做完了"，
+	// 父会话仍未 unload，子会话应当继续存活（生命周期 = spawn → unload）。
+	// 显式销毁路径：UnloadInteractiveSession → cancelChildSessions。
 
 	if out.Error != nil {
 		a.destroyInteractiveSession(key) // 清理占位符 + tenant session
@@ -2213,10 +2297,31 @@ func (a *Agent) SendToInteractiveSession(
 
 	// 唯一解析器（与 inspect/interrupt/unload 同一实现）：精确地址 → best-effort
 	// 匹配（漏传 role 也能命中）→ 0 个/多个才报错（列出 available/candidates）。
-	key, resolveErr := a.resolveInteractiveSessionKey(originChannel, originChatID, roleName, instance)
+	exact, _ := ctx.Value(exactInteractiveTarget{}).(string)
+	var key string
+	var resolveErr error
+	if exact != "" {
+		key = exact
+		if _, exists := a.interactiveSubAgents.Load(key); !exists {
+			resolveErr = fmt.Errorf("exact interactive target %q no longer exists", key)
+		}
+	} else {
+		key, resolveErr = a.resolveInteractiveSessionKey(originChannel, originChatID, roleName, instance)
+	}
+	if resolveErr != nil && exact == "" {
+		// ⛔ 2026-11-12 事故：重启后内存为空，而 restoreInteractiveTree 只在
+		// processMessage 入口跑 —— 直接 send 会报 "no sub-agent with instance=…"，
+		// agent 据此以为实例不存在，转而去 interactive=true 新建（那会丢历史）。
+		// 这里在**解析失败时按需恢复一次再重试**，把"重启后未恢复"在调用点解决掉。
+		if a.restoreTreeOnDemand(ctx, originChannel, originChatID) {
+			if k2, e2 := a.resolveInteractiveSessionKey(originChannel, originChatID, roleName, instance); e2 == nil {
+				key, resolveErr = k2, nil
+			}
+		}
+	}
 	if resolveErr != nil {
 		return &channelpkg.OutboundMsg{
-			Content: resolveErr.Error(),
+			Content: resolveErr.Error() + "（已尝试按注册表恢复仍未找到；不要用 interactive=true 新建同名实例——那会遮蔽可能存在的历史，除非确认该实例从未存在过）",
 			Error:   resolveErr,
 		}, nil
 	}
@@ -2274,8 +2379,10 @@ func (a *Agent) SendToInteractiveSession(
 
 		replyCh := make(chan error, 1)
 		ia.pendingMessages = append(ia.pendingMessages, pendingUserMsg{
-			content: msg.Content,
-			replyCh: replyCh,
+			content:   msg.Content,
+			origin:    msg.Metadata[triggerSourceMetadataKey],
+			replyCh:   replyCh,
+			automatic: msg.Metadata[triggerSourceMetadataKey] == triggerSourceBackgroundTask || msg.Metadata[triggerSourceMetadataKey] == triggerSourceCron,
 		})
 		ia.mu.Unlock()
 
@@ -2338,6 +2445,11 @@ func (a *Agent) SendToInteractiveSession(
 	ia.lastUsed = time.Now()
 
 	cfg := *ia.cfg // 浅拷贝 RunConfig 模板（已有正确的 LLMClient + Model + ThinkingMode）
+	// per-turn 触发来源：**无条件**从入站消息重算（读到空就是空）—— 绝不能沿用
+	// 模板/上一轮的 "cron"，否则残留会把用户 turn 当成 cron turn 而吞掉通知。
+	cfg.TriggerSource = msg.Metadata[triggerSourceMetadataKey]
+	// 本轮"有没有真实用户输入并入"同样 per-turn 重置（cron 抑制的 fail-open 依据）。
+	ia.userInputJoined.Store(false)
 	// 不再无条件用 GetLLM 覆盖：ia.cfg 在 spawn 时已通过 buildSubAgentRunConfig
 	// 正确解析了角色/tier 对应的 LLM，直接复用即可。
 	// Each send is a NEW turn in the subagent session — allocate the next
@@ -2457,14 +2569,13 @@ func (a *Agent) SendToInteractiveSession(
 
 		// Re-wire OnIterationSnapshot for incremental history updates
 		// (same as SpawnInteractiveSession does for the initial Run).
-		sessionKey := originChannel + ":" + originChatID
 		notifyMgr := a.bgTaskMgr.Load()
 		cfg.OnIterationSnapshot = func(snap IterationSnapshot) {
 			ia.mu.Lock()
 			ia.iterationHistory = append(ia.iterationHistory, snap)
 			ia.mu.Unlock()
 
-			if notifyMgr != nil {
+			if notifyMgr != nil && shouldNotifyParent(&cfg, ia.userInputJoined.Load()) {
 				var sb strings.Builder
 				fmt.Fprintf(&sb, "Iteration %d completed.\n", snap.Iteration)
 				for _, t := range snap.Tools {
@@ -2475,12 +2586,13 @@ func (a *Agent) SendToInteractiveSession(
 					sb.WriteString("\n")
 				}
 				notifyMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
-					Key:      sessionKey,
-					Type:     tools.SubAgentBgNotifyProgress,
-					Role:     roleName,
-					Instance: instance,
-					Content:  sb.String(),
-					Sid:      originSender,
+					Key:       ia.parentKey,
+					ParentKey: ia.parentKey,
+					Type:      tools.SubAgentBgNotifyProgress,
+					Role:      roleName,
+					Instance:  instance,
+					Content:   sb.String(),
+					Sid:       originSender,
 				})
 			}
 		}
@@ -2517,7 +2629,7 @@ func (a *Agent) SendToInteractiveSession(
 		ia.messages = append(ia.messages, newMessages[len(newMessages)-1])
 	}
 	ia.iterationHistory = nil
-	agentProgressKey := "agent:" + key
+	agentProgressKey := sessionaddr.Agent(key)
 	a.lastProgressSnapshot.Delete(agentProgressKey)
 	a.iterationHistories.Delete(agentProgressKey)
 	// A2: streamState is part of the same per-turn reset — the main agent's
@@ -2538,19 +2650,23 @@ func (a *Agent) SendToInteractiveSession(
 	// the committed OLD turn's slot.
 	ia.cfg.TurnID = cfg.TurnID
 
-	// Derive context from agent lifecycle so the async Run survives
-	// past the caller's tool execution deadline. Without this, a parent
-	// agent's SendMessage tool call would kill the child's Run when the
-	// tool timeout fires.
-	var asyncBase context.Context
-	if ctx.Value(bgSessionCtxKey{}) != nil {
-		asyncBase = ctx
-	} else if a.agentCtx != nil {
-		asyncBase = a.agentCtx
-	} else {
-		asyncBase = context.Background()
-	}
-	runCtx, runCancel := context.WithCancel(asyncBase)
+	// Derive the Run's lifetime from the Agent lifecycle ONLY.
+	//
+	// 这段注释原本就写着「必须从 agent lifecycle 派生，否则父 agent 的
+	// SendMessage 工具调用会在工具超时时杀掉子代理的 Run」——但实现留了一个
+	// `if ctx.Value(bgSessionCtxKey{}) != nil { asyncBase = ctx }` 分支，于是
+	// **当调用方本身也是 bg session 时**（典型：proj.xbot.lead 给首辅发消息），
+	// 子代理的 Run 反而挂在调用方的 ctx 上。
+	//
+	// 后果很具体：调用方那一轮结束 → ctx cancel → 子代理 Run 被 cancel →
+	// `cancelled == true` → interactive.go 里包住 SendSubAgentNotify 的
+	// `if notifyMgr != nil && !cancelled` 整段被跳过 → **子代理 idle 前的最后
+	// 一条消息永远不通知父会话**。这正是皇上报的「他 idle 了但没通知你」。
+	//
+	// 生命周期只能有一个权威来源：a.agentCtx。调用方的 ctx 不参与 ——
+	// 它要表达的只是「这一刻还值不值得受理这次 send」，不是「这个 Run 该活多久」。
+	// unload / TTL / interrupt 仍然能正常取消，它们走的是 runCancel。
+	runCtx, runCancel := context.WithCancel(a.deriveRunBaseContext(ctx))
 	// Mark as bg session context so nested SubAgents detect it and
 	// derive their lifecycle from this session (not a grandparent).
 	runCtx = context.WithValue(runCtx, bgSessionCtxKey{}, true)
@@ -2597,19 +2713,21 @@ func (a *Agent) SendToInteractiveSession(
 				clipanic.Report("agent.interactive.SendAsync", fmt.Sprintf("%s:%s", roleName, instance), r)
 				ia.mu.Lock()
 				ia.running = false
+				ia.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 				ia.cancelCurrent = nil
 				ia.lastError = fmt.Sprintf("panic: %v", r)
 				ia.mu.Unlock()
+				// panic 路径**无条件照发**：异常必须让上层知道（cron turn 也发）。
 				if a.bgTaskMgr.Load() != nil {
-					sessionKey := originChannel + ":" + originChatID
 					a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
-						Key:      sessionKey,
-						Type:     tools.SubAgentBgNotifyCompleted,
-						Role:     roleName,
-						Instance: instance,
-						Content:  fmt.Sprintf("Panic: %v", r),
-						Elapsed:  time.Since(startTime),
-						Sid:      originSender,
+						Key:       ia.parentKey,
+						ParentKey: ia.parentKey,
+						Type:      tools.SubAgentBgNotifyCompleted,
+						Role:      roleName,
+						Instance:  instance,
+						Content:   fmt.Sprintf("Panic: %v", r),
+						Elapsed:   time.Since(startTime),
+						Sid:       originSender,
 					})
 				}
 				a.emitSessionState(protocol.SessionEvent{
@@ -2625,7 +2743,7 @@ func (a *Agent) SendToInteractiveSession(
 		}()
 
 		// Wire DrainBgNotifications for pending message delivery.
-		drainKey := originChannel + ":" + originChatID
+		drainKey := sessionaddr.Key(originChannel, originChatID)
 		cfg.DrainBgNotifications = ia.wirePendingMessageDrain(drainKey)
 
 		out := Run(runCtx, cfg)
@@ -2639,6 +2757,7 @@ func (a *Agent) SendToInteractiveSession(
 
 		ia.mu.Lock()
 		ia.running = false
+		ia.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 		ia.cancelCurrent = nil
 		wasInterrupted := ia.interrupted
 		ia.interrupted = false
@@ -2699,7 +2818,9 @@ func (a *Agent) SendToInteractiveSession(
 
 				a.sendSubAgentPhaseDone(key)
 
-				if a.bgTaskMgr.Load() != nil {
+				// Cron turn 被 unload/关机打断时也不吵父会话（同 shouldNotifyParent
+				// 口径）；panic 路径例外，异常一律照发。
+				if a.bgTaskMgr.Load() != nil && shouldNotifyParent(&cfg, ia.userInputJoined.Load()) {
 					content := "[interrupted] "
 					if out.Content != "" {
 						content += out.Content
@@ -2709,15 +2830,15 @@ func (a *Agent) SendToInteractiveSession(
 					// No pre-truncation — see the SpawnInteractiveSession note:
 					// the notification path offloads oversized payloads and
 					// attaches a working offload_recall(id=…) marker.
-					sessionKey := originChannel + ":" + originChatID
 					a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
-						Key:      sessionKey,
-						Type:     tools.SubAgentBgNotifyCompleted,
-						Role:     roleName,
-						Instance: instance,
-						Content:  content,
-						Elapsed:  time.Since(startTime),
-						Sid:      originSender,
+						Key:       ia.parentKey,
+						ParentKey: ia.parentKey,
+						Type:      tools.SubAgentBgNotifyCompleted,
+						Role:      roleName,
+						Instance:  instance,
+						Content:   content,
+						Elapsed:   time.Since(startTime),
+						Sid:       originSender,
 					})
 				}
 				log.WithFields(log.Fields{
@@ -2748,22 +2869,27 @@ func (a *Agent) SendToInteractiveSession(
 		}
 
 		// Notify parent via BgTaskManager.
-		if a.bgTaskMgr.Load() != nil {
+		//
+		// cron turn（且本轮没有真实用户输入并入）**不通知父会话**：定时任务不该把
+		// 父会话唤醒一轮 LLM（判据 2，见 trigger_source.go）。
+		// fail-open：cron turn 期间若有 pendingUserMsg 被 drain 注入（有人主动给这个
+		// 会话发了消息），这一轮必须照常发 Completed —— 否则用户那次派单没有回执。
+		if a.bgTaskMgr.Load() != nil && shouldNotifyParent(&cfg, ia.userInputJoined.Load()) {
 			content := out.Content
 			if out.Error != nil {
 				content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
 			}
 			// No pre-truncation: oversized payloads are offloaded downstream
 			// (with an offload_recall marker) instead of losing their tail here.
-			sessionKey := originChannel + ":" + originChatID
 			a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
-				Key:      sessionKey,
-				Type:     tools.SubAgentBgNotifyCompleted,
-				Role:     roleName,
-				Instance: instance,
-				Content:  content,
-				Elapsed:  time.Since(startTime),
-				Sid:      originSender,
+				Key:       ia.parentKey,
+				ParentKey: ia.parentKey,
+				Type:      tools.SubAgentBgNotifyCompleted,
+				Role:      roleName,
+				Instance:  instance,
+				Content:   content,
+				Elapsed:   time.Since(startTime),
+				Sid:       originSender,
 			})
 		}
 
@@ -2773,11 +2899,8 @@ func (a *Agent) SendToInteractiveSession(
 		// （用户报告"有时候不渲染最后一个 iter"）。子代理面板收不到 text/
 		// session(idle) 事件（带父 chatID），无后续 reload，缺到手动刷新。
 
-		// Cascade: cancel and remove all child sessions spawned by this Run.
-		// This ensures no SubAgent outlives its creator even on natural completion.
-		// The session itself stays for future "send" interactions, but its children
-		// (which were created to serve this specific Run) must be cleaned up.
-		a.cancelChildSessions(key)
+		// 与 fg 路径同理：本轮结束不等于父会话 unload，子会话保留。
+		// 销毁由 UnloadInteractiveSession → cancelChildSessions 显式触发。
 
 		// --- Write back results ---
 		ia.mu.Lock()
@@ -2787,6 +2910,7 @@ func (a *Agent) SendToInteractiveSession(
 		// 错误 —— 而不是一条含糊的 sqlite 报错或静默丢失。
 		if ia.isDestroyed() {
 			ia.running = false
+			ia.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 			ia.cancelCurrent = nil
 			destroyedErr := destroyedSessionError(key, roleName, instance)
 			if out.Error == nil {
@@ -2950,6 +3074,7 @@ func (a *Agent) InterruptInteractiveSession(
 	// without waiting for the background goroutine to detect cancellation.
 	// The goroutine will see runCtx.Err() != nil and know it was interrupted.
 	ia.running = false
+	ia.lastUsed = time.Now() // 收尾即活动：TTL 从「最后一次活动」算，不是「最后一次 send」
 	ia.interrupted = true
 	log.WithFields(log.Fields{
 		"role":     roleName,
@@ -3256,6 +3381,31 @@ func (a *Agent) UnloadInteractiveSession(
 
 // buildParentToolContext 从 InboundMessage 构建 SubAgent 需要的 parent ToolContext。
 // 与 spawnSubAgent 中的 parentCtx 构建保持一致。
+// rootSessionAddress 把 (channel, chatID) 归一化成**用户可见根会话**地址。
+//
+// ⛔ 2026-11-04 P0：spawn/restore 时传入的 origin 可能是子代理自己的 interactive key
+// （`agent` / `web:web-4/court.shoufu:main`，来自 SendMessage(to="session:...") 注入），
+// 直接 `qualifyChatID(channel, chatID)` 会把 RootSessionKey 写成子代理 key，
+// 进而让 `SendMessage(to="user")` 解析出 (agent, web:web-4/court.shoufu:main) 而报
+// "cannot resolve the user's session"。
+//
+// 归一化规则（与 sessionAddress 互补：这里额外剥 "/<role>:<instance>" 后缀）：
+//
+//	agent:web:web-4/court.shoufu:main  →  web:web-4
+//	web:web-4                          →  web:web-4
+//	agent:web:web-4                    →  web:web-4
+func rootSessionAddress(channel, chatID string) string {
+	if i := strings.Index(chatID, "/"); i > 0 {
+		chatID = chatID[:i]
+	}
+	if channel == "agent" {
+		if i := strings.Index(chatID, ":"); i > 0 {
+			channel, chatID = chatID[:i], chatID[i+1:]
+		}
+	}
+	return qualifyChatID(channel, chatID)
+}
+
 func (a *Agent) buildParentToolContext(ctx context.Context, channel, chatID, senderID string, msg bus.InboundMessage) *tools.ToolContext {
 	workspaceRoot := a.workspaceRoot(senderID)
 	if !a.isRemoteUser(senderID) {
@@ -3285,9 +3435,19 @@ func (a *Agent) buildParentToolContext(ctx context.Context, channel, chatID, sen
 		SenderName:          msg.SenderName,
 		// RootSessionKey：canonical 根会话 key。主 agent 与它的 SubAgent 共享同一
 		// 个 offload store 目录（都写 root key → 互相可见），这里显式给出，避免
-		// 依赖 buildSubAgentRunConfig 里 "parentCtx.Channel+":"+ChatID" 的回落
+		// 依赖 buildSubAgentRunConfig 里 "sessionaddr.Key(parentCtx.Channel, ChatID)" 的回落
 		// （嵌套 SubAgent 的 channel/chatID 一旦不是 root，回落就会指向错误目录）。
-		RootSessionKey: qualifyChatID(channel, chatID),
+		//
+		// ⛔ 2026-11-04 P0（「我批的是首辅的 report，批复却发给了御前」暴露的第二层）：
+		// `channel/chatID` 来自 `resolveOriginIDs(msg)` —— 当消息由
+		// `SendMessage(to="session:agent:web:web-4/court.shoufu:main")` 注入时，
+		// origin 就是**子代理自己的会话**，于是 RootSessionKey 被写成
+		// `agent:web:web-4/court.shoufu:main`（子代理 key），而不是用户可见根会话
+		// `web:web-4`。后果：`rootSessionOf(ctx)` 解析出 (agent, web:web-4/court.shoufu:main)
+		// ⇒ `SendMessage(to="user")` 报 "cannot resolve the user's session"。
+		// 根 key 必须是**用户可见会话**，用 sessionAddress 剥掉 agent 镜像前缀与
+		// `/<role>:<instance>` 后缀。
+		RootSessionKey: rootSessionAddress(channel, chatID),
 	}
 	// Restore parent's CWD for SubAgent directory inheritance
 	if msg.Metadata != nil {
@@ -3352,6 +3512,159 @@ func (a *Agent) CleanupInteractiveSessions(ctx context.Context, channel, chatID 
 
 // resolveOriginIDs 从 InboundMessage 中提取 origin channel/chatID/senderID，
 // 带有 fallback 到顶层字段的逻辑。
+// sessionAddress 把 (channel, chatID) 归一化成**用户可见会话**的地址 "channel:chatID"。
+//
+// ⛔ 2026-11-03 P0（子代理完成通知投错会话，线上实证 36 次）：
+// `agent:<ch>:<chatID>` 是会话的**执行上下文镜像**，不是用户可见会话。spawn 子代理时
+// 拿到的 origin 正是这种形态（channel="agent"、chatID="web:web-4"），旧代码直接
+// `sessionaddr.Key(originChannel, originChatID)` 拼出 "agent:web:web-4" 存进 parentKey，
+// 此后通知、用户看板回流、cascade 清理全部指向那个独立存在的镜像会话
+// （sessions/agent/8f/web_web-4-8ff53b7cc715.db，13MB/2934 条），父会话永远收不到。
+//
+// 这是**唯一**允许把 (channel, chatID) 拼成会话地址的地方 —— 任何地方再手拼
+// `a + ":" + b` 都是同一个 bug 的复发入口。
+//
+// 判据与读侧（isMirrorSessionAddress / normalizeStoredParentKey）**共用**
+// agentContextMirrorTarget，不许两边各写一份（2026-11-04 御前补正：生产改了读没改
+// 就是漂移，cli 父活洞就是这么漏掉的）。
+func sessionAddress(channel, chatID string) (string, bool) {
+	return sessionaddr.Context(channel, chatID)
+}
+
+// agentContextMirrorTarget 判断 agent 执行上下文里的 chatID 是不是「执行上下文镜像」，
+// 是则返回它对应的**真实会话地址**（= 剥掉一层 "agent:" 后的串）。
+//
+// agent 上下文的 chatID 只有两种，用**结构**区分（不靠「有没有 /」猜）：
+//
+//	① 真 interactive 子代理 map key："<ch>:<chatID>/<role>[:<instance>]"，
+//	   首个 "/" 之前那段是 "<ch>:<非空 chatID>"（例 "web:web-4/court.shoufu:main"）
+//	   —— 真会话，**不剥**（剥了会把通知投进 web 渠道的畸形 chatID，2026-11-03 踩过）。
+//	② 执行上下文镜像："<ch>:<chatID>"，首个 "/" 之前那段是 "<ch>:"（chatID 为空，
+//	   例 "cli:/home/smith/repo"、"web:web-4"）—— 必须剥，否则 cli 父被写成
+//	   "agent:cli:/path"（假祖先活洞）。
+//
+// 两个反例（都在测试里锁死）：
+//
+//	agentContextMirrorTarget("web:web-4")            → ("web:web-4", true)    镜像
+//	agentContextMirrorTarget("cli:/home/smith/repo") → ("cli:/home/smith/repo", true) 镜像
+//	agentContextMirrorTarget("web:web-4/court.x:1")  → ("", false)            真地址
+//	agentContextMirrorTarget("web-4")                → ("", false)            不是地址
+func agentContextMirrorTarget(chatID string) (string, bool) {
+	return sessionaddr.MirrorTarget(chatID)
+}
+
+// canonicalAgentChatID 剥掉一层 "agent:" 前缀，把 agent 会话地址还原成
+// interactiveSubAgents 的 map key：
+//
+//	"agent:web:web-4/court.shoufu:main" → "web:web-4/court.shoufu:main"
+//
+// 为什么需要（2026-11-04 现场）：同一个子代理会话在不同链路里有两种写法 ——
+// map key 从不带这层前缀，而 sessionAddress 对**含 "/" 的 chatID**（父是 agent
+// 会话的嵌套子代理）不会再剥，于是 parentKey 被写成 "agent:<key>"。裸 Load
+// 这种形态必然 miss，进而把父会话认错（行掉进 orphan，前端不渲染）。
+func canonicalAgentChatID(s string) string {
+	return strings.TrimPrefix(s, "agent:")
+}
+
+// normalizeStoredParentKey 剥掉**存量** parentKey 上的执行上下文镜像层：
+//
+//	"agent:web:web-4"  → "web:web-4"          （镜像：agent:<ch>:<chatID>）
+//	"agent:web:web-4/court.shoufu:main"       不变（真子代理地址，rest 含 "/"）
+//
+// 为什么需要（2026-11-04 打回项）：df68f64a 之前 spawn 的会话把
+// sessionAddress(agent, "web:web-4") 的旧结果 "agent:web:web-4" 直接写进了
+// ia.parentKey（见 interactive.go:1336 的事故注释）。新代码已经不会再产生这种
+// 形态，但**存量内存里的会话**（以及按 interactive_persist.go:258
+// `rec.ParentChannel + ":" + rec.ParentChatID` 恢复出来的会话）带着它。
+// 不剥这一层，interactiveParentAddress 的字符串拆分分支会把它拆成
+// ("agent", "web:web-4") —— 一个父会话树里必然 miss 的身份 ⇒ 行 orphan。
+//
+// 判据复用 isMirrorSessionAddress（定义见 interactive.go:3598；其唯一实现是
+// agentContextMirrorTarget，**与 sessionAddress 共用同一份** —— 生产侧与读侧
+// 各写一份就会漂移，cli 父活洞正是这么漏掉的）：首个 "/" 之前是
+// "<ch>:<非空 chatID>" 的 "agent:<key>" 是真子代理地址，绝不剥（剥了会打到
+// web 渠道的畸形 chatID）；首个 "/" 之前是 "<ch>:"（chatID 为空，cli 路径父
+// "agent:cli:/repo" 就是这种）或整条不含 "/" 的才是镜像。
+//
+// 循环只为防御「镜像套镜像」（"agent:agent:web:web-4"）。上限 4 轮的残留条件：
+// ≥5 层镜像会残留一层未剥 —— 不可产生（sessionAddress 每次调用只剥一层，
+// 且剥完就不再是镜像形态），上限只是防死循环的死线，不是功能边界。
+func normalizeStoredParentKey(parentKey string) string {
+	return sessionaddr.NormalizeStoredParent(parentKey)
+}
+
+// interactiveParentAddress 把子代理的 parentKey（父会话地址 = sessionAddress 的
+// 结果）解析成**父会话的身份**，供列表/树挂载使用。
+//
+// parentKey 有两种形态，且**无法只靠字符串区分**（cli 主会话地址
+// "cli:/repo:x" 同样含 "/"）：
+//   - 一级子代理：父是普通会话，"web:web-4" / "cli:/repo:x"
+//   - 嵌套子代理：父是另一个子代理，其地址就是那个会话的 map key
+//
+// 因此以**注册表存在性**为准：命中 → 父是 agent 会话（返回 map key 本身）；
+// 未命中 → 按 "channel:chatID" 拆成普通会话父。
+//
+// ③ 之前先剥**存量镜像层**（normalizeStoredParentKey）：df68f64a 之前 spawn
+// 的会话 parentKey 是 "agent:web:web-4"，直接拆会得到 ("agent","web:web-4")。
+// 详见 normalizeStoredParentKey 的注释。
+func (a *Agent) interactiveParentAddress(parentKey string) (channel, chatID string) {
+	if parentKey == "" {
+		return "", ""
+	}
+	if _, ok := a.interactiveSubAgents.Load(parentKey); ok {
+		return "agent", parentKey
+	}
+	if canon := canonicalAgentChatID(parentKey); canon != parentKey {
+		if _, ok := a.interactiveSubAgents.Load(canon); ok {
+			return "agent", canon
+		}
+	}
+	// ③ 存量镜像兜底（2026-11-04 打回项）：df68f64a 之前写进 parentKey 的
+	// "agent:web:web-4" 先剥成 "web:web-4" 再拆，否则会拆出 ("agent","web:web-4")
+	// 这个不存在的父身份（父会话树里 lookupAgent 必然 miss ⇒ 行 orphan）。
+	if mirror := normalizeStoredParentKey(parentKey); mirror != parentKey {
+		if ch, rest, ok := splitSessionAddress(mirror); ok {
+			return ch, rest
+		}
+	}
+	// agent: 前缀既不是可识别的镜像、也不是注册表里的 agent 会话（例如
+	// 同源形态 "agent:web-4"，即 origin=(channel=agent, chatID=web-4) 的旧结果）：
+	// 这一层里 channel 分隔已经丢了，**无法由字符串还原**父 channel，任何拆分都是
+	// 猜（拆成 ("agent","web-4") 只会让行 orphan）。如实按字符串拆，保持
+	// 45b69ce5 的行为，不做假父；这类形态在生产库里 0 行（见 FIX.md §8）。
+	if ch, rest, ok := splitSessionAddress(parentKey); ok {
+		return ch, rest
+	}
+	return "", ""
+}
+
+// splitSessionAddress 把会话地址 "channel:chatID" 拆回 (channel, chatID)。
+// 与 sessionAddress 互逆，用于把 ia.parentKey 还原成父会话的身份：
+//   - "web:web-4"                          → ("web", "web-4")       主会话父
+//   - "agent:web:web-4/court.shoufu:main"  → ("agent", "web:web-4/court.shoufu:main")
+//     后者正是父子代理的 interactive map key，可直接喂给 lookupAgent。
+func splitSessionAddress(addr string) (channel, chatID string, ok bool) {
+	ch, rest, cut := strings.Cut(addr, ":")
+	if !cut || ch == "" || rest == "" {
+		return "", "", false
+	}
+	return ch, rest, true
+}
+
+// isMirrorSessionAddress 判断地址是否仍是执行上下文镜像（"agent:<ch>:<chatID>"）。
+// 判据与生产侧 sessionAddress **共用同一个** agentContextMirrorTarget：
+// 只有 rest 是「镜像的 chatID 部分」时才为真 —— 真子代理地址
+// （"agent:web:web-4/role:inst"，首个 "/" 前 chatID 非空）不算镜像，
+// 而 cli 路径父 "agent:cli:/home/smith/repo"（首个 "/" 前是 "cli:"）算镜像。
+func isMirrorSessionAddress(addr string) bool {
+	rest, ok := strings.CutPrefix(addr, "agent:")
+	if !ok {
+		return false
+	}
+	_, mirror := agentContextMirrorTarget(rest)
+	return mirror
+}
+
 func resolveOriginIDs(msg bus.InboundMessage) (channel, chatID, sender string) {
 	channel = msg.OriginChannel()
 	chatID = msg.OriginChatID()
@@ -3414,7 +3727,9 @@ func (a *Agent) ListInteractiveSessions(channel, chatID string) []InteractiveSes
 		ia.mu.Lock()
 		parentChannel, parentChatID := parseInteractiveKeyParent(keyStr)
 		if ia.parentKey != "" {
-			parentChannel, parentChatID = "agent", ia.parentKey
+			if ch, chatID := a.interactiveParentAddress(ia.parentKey); ch != "" {
+				parentChannel, parentChatID = ch, chatID
+			}
 		}
 		info := InteractiveSessionInfo{
 			Role:          ia.roleName,
@@ -3434,6 +3749,58 @@ func (a *Agent) ListInteractiveSessions(channel, chatID string) []InteractiveSes
 		return true
 	})
 	return results
+}
+
+// ListAllInteractiveSessions 一次遍历返回**所有 channel** 的会话（key 前缀按
+// channel 分组）。
+//
+// 2026-11-09 性能：/api/session-tree 旧路径先 ListInteractiveSessions("web")、
+// 再 ("cli")、再 ("agent") —— 三次都跑 cleanupExpiredSessions（各遍历 471 项并加锁）
+// 且各自完整 Range 一遍 map。单次遍历按前缀分组，语义完全等价、开销降到 1/3。
+func (a *Agent) ListAllInteractiveSessions() map[string][]InteractiveSessionInfo {
+	a.cleanupExpiredSessions()
+	out := make(map[string][]InteractiveSessionInfo, 4)
+	a.interactiveSubAgents.Range(func(key, value any) bool {
+		keyStr, ok := key.(string)
+		if !ok {
+			return true
+		}
+		ia, ok := value.(*interactiveAgent)
+		if !ok || ia == nil || ia.isDestroyed() {
+			return true
+		}
+		channel := keyStr
+		if i := strings.Index(keyStr, ":"); i > 0 {
+			channel = keyStr[:i]
+		}
+		ia.mu.Lock()
+		parentChannel, parentChatID := parseInteractiveKeyParent(keyStr)
+		if ia.parentKey != "" {
+			// 与 ListInteractiveSessions 保持一致：父地址由 interactiveParentAddress
+			// 解析（父可能是 web/cli/agent 任一 channel）。绝不能硬编码 "agent" ——
+			// 那会把 web:chat-x 下的子代理标成 agent:chat-x，父节点找不到变孤儿。
+			if ch, cid := a.interactiveParentAddress(ia.parentKey); ch != "" {
+				parentChannel, parentChatID = ch, cid
+			}
+		}
+		info := InteractiveSessionInfo{
+			Role:          ia.roleName,
+			Instance:      ia.instance,
+			Running:       ia.running,
+			Background:    ia.background,
+			Task:          ia.task,
+			Preview:       summarizeInteractivePreviewLocked(ia),
+			ChatID:        parseInteractiveKeyChatID(keyStr),
+			Key:           keyStr,
+			ParentKey:     ia.parentKey,
+			ParentChannel: parentChannel,
+			ParentChatID:  parentChatID,
+		}
+		ia.mu.Unlock()
+		out[channel] = append(out[channel], info)
+		return true
+	})
+	return out
 }
 
 func parseInteractiveKeyParent(key string) (channel, chatID string) {

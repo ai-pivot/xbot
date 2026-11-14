@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"xbot/internal/sessionaddr"
 )
 
 // structured_route.go —— 结构化消息的**地址解析**（逻辑地址 → 物理会话 key）。
@@ -59,11 +60,11 @@ func scopeForms(channel, chatID string) map[string]struct{} {
 			base = rest
 		}
 	default:
-		base = ch + ":" + id
+		base = sessionaddr.Key(ch, id)
 	}
 	forms[base] = struct{}{}
 	if strings.Contains(base, "/") {
-		forms["agent:"+base] = struct{}{}
+		forms[sessionaddr.Agent(base)] = struct{}{}
 	}
 	return forms
 }
@@ -139,7 +140,7 @@ func subtreePrefixes(channel, chatID string) []string {
 	if id == "" || ch == "" || ch == "agent" {
 		return nil
 	}
-	return []string{ch + ":" + id + "/"}
+	return []string{sessionaddr.Key(ch, id) + "/"}
 }
 
 // matchesSubtreePrefix 判断候选作用域形态是否落在调用方的子树前缀内。

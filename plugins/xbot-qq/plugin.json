@@ -1,0 +1,70 @@
+{
+  "id": "xbot.qq",
+  "name": "QQ Channel",
+  "version": "0.3.0",
+  "description": "QQ 渠道（官方开放平台 bot.q.qq.com）：app_id + app_secret 换 access_token，WebSocket 网关收 C2C / 群 @ 消息，按 openid 做白名单与管理员判定。不含 OneBot / NapCat 兼容层。",
+  "author": "xbot",
+  "runtime": "stdio",
+  "entry": "./bin/qq-plugin",
+  "activationEvents": [
+    "onStart"
+  ],
+  "permissions": [
+    "channels.register"
+  ],
+  "contributes": {
+    "channelProvider": {
+      "name": "qq",
+      "config_schema": [
+        {
+          "key": "enabled",
+          "label": "启用 QQ 渠道",
+          "description": "关闭时插件保持加载但不连接 QQ 官方网关。",
+          "type": "toggle",
+          "default_value": "false",
+          "category": "连接"
+        },
+        {
+          "key": "app_id",
+          "label": "AppID",
+          "description": "QQ 开放平台 → 机器人 → 开发设置 里的 AppID（纯数字）。",
+          "type": "text",
+          "default_value": "",
+          "category": "连接"
+        },
+        {
+          "key": "app_secret",
+          "label": "AppSecret",
+          "description": "QQ 开放平台 → 机器人 → 开发设置 里的 AppSecret；只用于换 access_token。",
+          "type": "password",
+          "default_value": "",
+          "category": "连接"
+        },
+        {
+          "key": "sandbox",
+          "label": "沙箱环境（应用未发布时必开）",
+          "description": "开启时 OpenAPI 走 sandbox.api.sgroup.qq.com，关闭时走正式域名 api.sgroup.qq.com。应用未在开放平台发布时正式域名的 /gateway 一律 401（11298/40023002），只有沙箱能连。默认开启；发布上线后再关掉。",
+          "type": "toggle",
+          "default_value": "true",
+          "category": "连接"
+        },
+        {
+          "key": "allow",
+          "label": "消息白名单",
+          "description": "决定哪些发送者的消息交给 agent。匹配的是 openid（不是 QQ 号）；每行/逗号分隔，支持精确值与通配模式（* 任意长度，? 一个字符）；填 * 表示处理所有消息。留空 = 不处理任何消息。",
+          "type": "textarea",
+          "default_value": "",
+          "category": "准入"
+        },
+        {
+          "key": "admins",
+          "label": "管理员名单",
+          "description": "拥有管理员权限的发送者 openid。每行/逗号分隔，支持通配。留空 = 无管理员。注意：host 侧 agent.admins 才是权限最终权威，两处口径需一致。",
+          "type": "textarea",
+          "default_value": "",
+          "category": "权限"
+        }
+      ]
+    }
+  }
+}

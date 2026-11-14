@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/bus"
 	log "xbot/logger"
@@ -70,7 +71,13 @@ func (a *Agent) persistInteractiveAgent(ia *interactiveAgent, status string) {
 	parentAgentID := ""
 	if ia.cfg != nil {
 		workspaceRoot = ia.cfg.WorkspaceRoot
-		parentAgentID = ia.cfg.AgentID
+		// cfg.AgentID 由 `parentAgentID + "/" + roleName` 拼成，父 agent 是主会话
+		// 时 parentAgentID 为空，于是值变成 "/court.shoufu"（前导斜杠）。
+		// 这里只清理**落库的展示字段**：不动 cfg.AgentID 本身，因为
+		// engine.go 的 BgSessionKey 规则依赖「AgentID 是否含 /」来区分主 Agent
+		// 与 SubAgent，改了会让子代理的后台任务不再隔离（见
+		// TestBuildToolContext_BgSessionKeyCanonical）。
+		parentAgentID = strings.Trim(ia.cfg.AgentID, "/")
 	}
 
 	rec := common.InteractiveAgentRecord{
@@ -97,19 +104,22 @@ func (a *Agent) persistInteractiveAgent(ia *interactiveAgent, status string) {
 	}
 }
 
-// markPersistedAgentStatus 只更新状态与 turn_id。
+// markPersistedAgentStatus 把会话状态写回注册表。
+//
+// 走 persistInteractiveAgent（全量 upsert）而不是一条 UPDATE status/turn_id：
+// 注册表的字段是**一起**描述“这个子代理现在是什么样”的，分成两条写路径必然
+// 漂移 —— 实际情况是 persistInteractiveAgent 只在 spawn/restore 调用，而
+// MarkStatus 只改 status/turn_id，于是 last_reply 在 spawn 之后**再也没有任何
+// 代码写过**（内存里 ia.lastReply 明明一直有值），last_reply_at 永远停在 spawn
+// 那一刻，UI 和恢复逻辑读到的都是陈旧数据。
+//
+// turnID 保留在签名里是为了让调用点显式表达意图；SubAgent 的 turn 是 untracked
+// （RunConfig.TurnID 注释：0 = SubAgent/tests），因此不写入注册表。
 func (a *Agent) markPersistedAgentStatus(ia *interactiveAgent, status string, turnID uint64) {
 	if ia == nil || a.multiSession == nil {
 		return
 	}
-	svc := a.interactiveAgentSvc()
-	if svc == nil {
-		return
-	}
-	key := "agent:" + ia.roleName + "/" + ia.instance
-	if err := svc.MarkStatus(key, status, turnID); err != nil {
-		log.WithError(err).WithField("agent_key", key).Warn("Failed to mark interactive agent status")
-	}
+	a.persistInteractiveAgent(ia, status)
 }
 
 // restoreInteractiveTree 递归恢复 parent 名下的整棵子代理树。
@@ -125,7 +135,7 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 		return
 	}
 	if depth > maxAgentRestoreDepth {
-		log.WithFields(log.Fields{"parent": parentChannel + ":" + parentChatID, "depth": depth}).
+		log.WithFields(log.Fields{"parent": sessionaddr.Key(parentChannel, parentChatID), "depth": depth}).
 			Warn("Sub-agent restore depth exceeded — stopping recursion (possible parent cycle)")
 		return
 	}
@@ -150,12 +160,16 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 			continue
 		}
 		restored++
-		// 递归恢复它的孩子：孙代理的 parent 是 (agent, "<role>/<instance>")。
-		a.restoreInteractiveTree(ctx, "agent", rec.RoleName+"/"+rec.Instance, depth+1)
+		// 递归恢复它的孩子。子代理的 parent 记录是
+		//   (channel=<同一 channel>, chatID="<本节点的 chatID>/<role>:<instance>")
+		// —— 与写入侧保持一致；旧实现查 ("agent", "<role>/<instance>")，
+		// 和 DB 里存的格式对不上，孙代理永远恢复不出来。
+		childChatID := rec.ParentChatID + "/" + rec.RoleName + ":" + rec.Instance
+		a.restoreInteractiveTree(ctx, rec.ParentChannel, childChatID, depth+1)
 	}
 	if restored > 0 {
 		log.WithFields(log.Fields{
-			"parent":   parentChannel + ":" + parentChatID,
+			"parent":   sessionaddr.Key(parentChannel, parentChatID),
 			"restored": restored,
 			"total":    len(rows),
 			"depth":    depth,
@@ -163,9 +177,34 @@ func (a *Agent) restoreInteractiveTree(ctx context.Context, parentChannel, paren
 	}
 }
 
+// restoreMapKey 由持久化记录推出「内存里的会话 key」与「origin chatID」。
+//
+// 不变式（2026-10-26 定，有回归测试锁住）：
+//
+//	spawn 时   key = interactiveKey(originChannel, originChatID, role, instance)
+//	restore 时 必须得到**同一个**字符串
+//
+// 记录里 parentChatID 形如 "<originChatID>/<parentRole>:<parentInstance>"，
+// 因此 origin chatID 就是第一个 "/" 之前那段。两处一旦走偏，恢复出来的实例
+// 会挂在错 key 下，父代理随后报
+// "no sub-agent with instance=… in your sub-agent tree"。
+func restoreMapKey(rec common.InteractiveAgentRecord) (originChatID, mapKey string) {
+	originChatID = rec.ParentChatID
+	if i := strings.Index(originChatID, "/"); i > 0 {
+		originChatID = originChatID[:i]
+	}
+	return originChatID, interactiveKey(rec.ParentChannel, originChatID, rec.RoleName, rec.Instance)
+}
+
 // restoreOneAgent 重建单个子代理并注册 AgentChannel（幂等）。
 func (a *Agent) restoreOneAgent(ctx context.Context, rec common.InteractiveAgentRecord) error {
-	mapKey := interactiveKey(rec.ParentChannel, rec.ParentChatID, rec.RoleName, rec.Instance)
+	// ⛔ 2026-10-26 树断链 bug：spawn 用 interactiveKey(origin, role, instance) 建 key，
+	// 而恢复用 interactiveKey(parentChannel, parentChatID, ...) —— parentChatID 是
+	// 「<origin_chatID>/<parent_role>:<parent_instance>」，两者拼出来根本不是同一个 key。
+	// 后果：实例挂在错 key 下，SubAgent/SendMessage 按 (origin, role, instance) 解析时
+	// 找不到 ⇒ 父代理报 "no sub-agent with instance=… in your sub-agent tree"。
+	// 父的 origin chatID 就是 parentChatID 里第一个 "/" 之前那段。
+	originChatID, mapKey := restoreMapKey(rec)
 	if existing, ok := a.interactiveSubAgents.Load(mapKey); ok {
 		// 正在销毁的那一代不挡恢复（墓碑会话没有可用资源）：摘掉后重建。
 		if ia, ok := existing.(*interactiveAgent); ok && ia != nil && ia.isDestroyed() {
@@ -190,13 +229,16 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec common.InteractiveAgent
 	//
 	// 提示词必须带 role rules（如 roles/RULES.md）：这里只传 role.SystemPrompt 的话，
 	// 重启后恢复出来的子代理会静默丢掉自己声明的规则（2026-10-22 review 发现的绕过路径）。
+	// 渲染/归属用 origin chatID（= parentChatID 去掉 "/<role>:<instance>" 后缀），
+	// 不能把带后缀的 parentChatID 当成聊天 ID 传下去 —— 那会让子代理把消息
+	// 路由到 "web-4/court.shoufu:main" 这种不存在的会话。
 	parentMsg := bus.InboundMessage{
 		Channel:  rec.ParentChannel,
-		ChatID:   rec.ParentChatID,
+		ChatID:   originChatID,
 		SenderID: rec.OriginUserID,
 		Content:  rec.Task,
 	}
-	parentCtx := a.buildParentToolContext(ctx, rec.ParentChannel, rec.ParentChatID, rec.OriginUserID, parentMsg)
+	parentCtx := a.buildParentToolContext(ctx, rec.ParentChannel, originChatID, rec.OriginUserID, parentMsg)
 	cfg, err := a.buildSubAgentRunConfig(
 		ctx, parentCtx, rec.Task, tools.RoleSystemPrompt(role), role.AllowedTools, role.Capabilities,
 		role.Name, true, rec.Instance, rec.ModelName)
@@ -217,6 +259,22 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec common.InteractiveAgent
 		return fmt.Errorf("restore sub-agent %q: rebuilt config carries no system prompt (messages=%d) — refusing to resurrect a promptless session",
 			rec.AgentKey, len(cfg.Messages))
 	}
+
+	// ⛔ 2026-11-04 P0（用户报「我批的是首辅的 report，批复却发给了御前」）：
+	// `cfg.CallerSessionKey` 只在 **spawn 路径**（interactive.go:1470）设置，
+	// 恢复路径漏了 —— 恢复出来的子代理 CallerSessionKey 为空，于是
+	// `tools/send_message.go:276 resolveUserBoardTarget` 走 fallback
+	// `rootChannel + ":" + rootChatID` = 用户根会话（御前），
+	// SendMessage(to="user", kind="report") 落库的 `from.session` 就成了御前会话，
+	// 用户批复（decision）按 originSession 回流时自然回到御前。
+	// 恢复路径必须与 spawn 路径同构：本子代理的物理会话 key 交给它自己。
+	// `mapKey` 就是 interactiveKey 的产物（与 spawn 时逐字一致），直接用。
+	cfg.CallerSessionKey = mapKey
+
+	// Restore must wire the same live progress path as spawn. Subsequent sends
+	// copy this config; without these callbacks Run still executes/persists its
+	// iterations, but neither SSE nor GetActiveProgress sees any live updates.
+	a.wireSubAgentProgress(mapKey, originChatID, &cfg)
 
 	ia := &interactiveAgent{
 		roleName:     rec.RoleName,
@@ -255,6 +313,8 @@ func (a *Agent) restoreOneAgent(ctx context.Context, rec common.InteractiveAgent
 	if _, loaded := a.interactiveSubAgents.LoadOrStore(mapKey, ia); loaded {
 		return nil
 	}
+
+	a.retryOwnerNotifications(mapKey)
 
 	// 5) 注册 AgentChannel（SendMessage 的寻址依赖它）。
 	if a.registerAgentChannel != nil {
@@ -298,14 +358,38 @@ func (a *Agent) resumeIfPreviouslyRunning(rec common.InteractiveAgentRecord, ia 
 			log.WithError(err).WithField("agent_key", key).Warn("Restore: failed to mark interrupted")
 		}
 	}
+
+	// ⛔ 2026-10-26「假忙碌」bug：旧实现这里是
+	//     a.InjectInboundResume("agent", rec.RoleName+"/"+rec.Instance, ...)
+	// 它把 resume 消息投进 bus.Inbound 的 "agent" 渠道 —— 但：
+	//   1) 系统里没有名为 "agent" 的渠道消费者；
+	//   2) interactive 会话从不通过 bus.Inbound 驱动，它只走
+	//      SendToInteractiveSession / ContinueInteractiveSession。
+	// ⇒ 消息进了没人读的队列，会话状态却一直是 running（DB 与内存都这么标），
+	//   于是「假忙碌」：首辅 15:09 恢复后到 15:48 一条日志都没有，
+	//   工部交付的回执只能躺在 pendingMessages 里没人 drain。
+	//
+	// 现在改为：**如实标记 interrupted 并置回 idle**，不假装续跑。
+	// 下一次 send / 上级投递会正常驱动它（idle 分支会起新一轮 Run）。
+	// 代价：重启前那一轮不会自动接上——这是可接受的，远好过静默卡死。
+	ia.mu.Lock()
+	ia.running = false
+	ia.cancelCurrent = nil
+	ia.mu.Unlock()
 	log.WithFields(log.Fields{
 		"agent_key": key,
 		"turn_id":   rec.TurnID,
-	}).Info("Restore: resuming previously running sub-agent")
-	a.InjectInboundResume("agent", rec.RoleName+"/"+rec.Instance, rec.OriginUserID)
+	}).Info("Restore: 上一轮未完成 → 标记 interrupted 并置 idle，等待下一次 send 驱动")
 }
 
 // lookupRoleDefinition 从 agents 目录重新解析 role（恢复时以磁盘定义为准）。
+//
+// 但「磁盘目录」不是唯一来源：内置（embed）role（如 explore）从来不在
+// agents 目录里，spawn 侧一直靠 tools.GetSubAgentRole 的 embed fallback 拿到它。
+// 恢复侧此前只查磁盘，于是每次恢复内置 role 的子代理都记一条
+// 「role definition explore not found in …/agents (the role file was deleted or
+// renamed after spawn)」并整棵子树跳过 —— 生产窗口内实测 250 条，根因只有这一个。
+// 2026-10-31：与 spawn 侧对齐，磁盘查不到时回落到 embed 定义。
 func (a *Agent) lookupRoleDefinition(roleName string) (*tools.SubAgentRole, error) {
 	dir := a.agentsDir
 	roles, err := tools.LoadAgentRoles(dir)
@@ -317,7 +401,25 @@ func (a *Agent) lookupRoleDefinition(roleName string) (*tools.SubAgentRole, erro
 			return &roles[i], nil
 		}
 	}
+	if role, ok := embeddedRoleDefinition(roleName); ok {
+		return role, nil
+	}
 	return nil, &restoreRoleMissingError{role: roleName, dir: dir}
+}
+
+// embeddedRoleDefinition 从二进制内嵌的 agent 定义里解析 role。
+// 与 tools.GetSubAgentRole 的 embed 分支同义，但不依赖全局 agentsDir 状态，
+// 便于恢复路径单测隔离。
+func embeddedRoleDefinition(roleName string) (*tools.SubAgentRole, bool) {
+	data, err := tools.ReadEmbeddedAgentFile(roleName)
+	if err != nil {
+		return nil, false
+	}
+	role, err := tools.ParseAgentFileContent(data, roleName)
+	if err != nil || role.Name == "" {
+		return nil, false
+	}
+	return &role, true
 }
 
 // restoreRoleMissingError 表示 role 定义文件已不存在 —— 恢复必须显式失败，
@@ -330,4 +432,100 @@ type restoreRoleMissingError struct {
 func (e *restoreRoleMissingError) Error() string {
 	return "cannot restore sub-agent: role definition " + e.role + " not found in " + e.dir +
 		" (the role file was deleted or renamed after spawn)"
+}
+
+// ─── 2026-11-12：让 agent 不必读源码也能正确操作 ───
+//
+// 事故背景（用户上报，御前实操踩中）：
+//   xbot 重启后内存里的 interactive 会话空了。agent 想"唤醒"重启前的首辅，
+//   先试 SubAgent(action="send") → 报 "no sub-agent with instance=main"（因为
+//   restoreInteractiveTree 只在 processMessage 入口跑，send 路径不触发它）；
+//   agent 据此判断"实例不存在"，改用 interactive=true 新建 —— 于是建出一个空会话，
+//   占住了同一个 key，restoreInteractiveTree 因"已在内存"而跳过，
+//   原记录的历史被永久遮蔽。
+//
+// 两处缺口都要在代码里补，而不是靠 agent "记住先发条消息再 send"：
+//   ① send 路径：解析失败 → 先按注册表恢复 → 重试（restoreTreeOnDemand）
+//   ② spawn 路径：内存里没有但注册表有 → 先恢复，再走"已存在"分支（restoreFromRegistryIfPresent）
+
+// countLoadedInteractiveSessions 用于判断一次 restore 是否真的新增了会话。
+func (a *Agent) countLoadedInteractiveSessions() int {
+	n := 0
+	a.interactiveSubAgents.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
+// restoreTreeOnDemand 按父会话地址做一次懒恢复，返回是否新增了会话。
+//
+// 这是 restoreInteractiveTree 的"按需触发"包装：send/inspect/interrupt 在解析
+// 失败时调用它，把"重启后未恢复"这件事在**调用点**解决掉，而不是把
+// "先发条消息再 send" 这种隐含前提留给调用方去猜。
+func (a *Agent) restoreTreeOnDemand(ctx context.Context, parentChannel, parentChatID string) bool {
+	if parentChannel == "" || parentChatID == "" {
+		return false
+	}
+	before := a.countLoadedInteractiveSessions()
+	a.restoreInteractiveTree(ctx, parentChannel, parentChatID, 0)
+	return a.countLoadedInteractiveSessions() > before
+}
+
+// restoreFromRegistryIfPresent 在 spawn 新建之前，尝试从注册表恢复同 key 的实例。
+//
+// 返回 true 表示已恢复（调用方的 LoadOrStore 会因此命中"已存在"分支，
+// 于是返回"用 send 继续"而不是新建空会话）。
+//
+// 不恢复的情形（都允许正常新建）：
+//   - key 已在内存（无需恢复）
+//   - 注册表无记录（真·首次创建）
+//   - 记录状态是 unloaded（用户/agent 显式卸载过，新建是明确意图）
+//   - 恢复失败（role 定义被删等）—— 记 Warn 后落到新建，不阻塞调用方
+//
+// restoreDecision 是「spawn 前该不该从注册表恢复」的纯判定结果。
+//
+// 抽成纯函数是为了可表驱动测试：这条判定曾是 2026-11-12 事故的直接原因
+// （旧代码在内存为空时**没有任何注册表检查**，直接新建空会话、遮蔽历史）。
+type restoreDecision int
+
+const (
+	restoreNo  restoreDecision = iota // 不需要/不能恢复，按新建处理
+	restoreYes                        // 应恢复
+)
+
+// decideRestore 纯判定：给定「内存是否已有」与「注册表查询结果」，决定是否恢复。
+func decideRestore(inMemory bool, rec *common.InteractiveAgentRecord, getErr error) restoreDecision {
+	if inMemory {
+		return restoreNo // 已在内存，无需恢复
+	}
+	if getErr != nil || rec == nil {
+		return restoreNo // 无记录 = 真·首次创建
+	}
+	if rec.Status == common.InteractiveAgentUnloaded {
+		return restoreNo // 显式卸载过：新建是明确意图，恢复会违背它
+	}
+	return restoreYes
+}
+
+func (a *Agent) restoreFromRegistryIfPresent(ctx context.Context, key, roleName string) bool {
+	_, inMemory := a.interactiveSubAgents.Load(key)
+	svc := a.interactiveAgentSvc()
+	if svc == nil {
+		return false
+	}
+	rec, err := svc.Get(key)
+	if decideRestore(inMemory, rec, err) != restoreYes {
+		return false
+	}
+	if rerr := a.restoreOneAgent(ctx, *rec); rerr != nil {
+		log.WithError(rerr).WithFields(log.Fields{
+			"key": key, "role": roleName, "status": rec.Status,
+		}).Warn("SpawnInteractive: 注册表有记录但恢复失败，按新建处理（该实例的历史将不可见）")
+		return false
+	}
+	log.WithFields(log.Fields{
+		"key": key, "role": roleName, "status": rec.Status,
+	}).Info("SpawnInteractive: 已从注册表恢复既有实例（重启恢复）——返回\"已存在\"，不新建")
+	return true
 }

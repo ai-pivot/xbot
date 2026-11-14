@@ -8,7 +8,7 @@
  */
 import {
   SquareTerminal, FileText, Search, FolderSearch, FilePlus, FilePen,
-  Globe, Download, Sparkles, Wrench, GitBranch, FolderOpen,
+  Globe, Download, Sparkles, Wrench, FolderOpen,
   Clock, MessageSquare, Users, Settings, ListTodo, Edit, Zap,
   Layers, HelpCircle, Upload, type LucideIcon,
 } from 'lucide-react'
@@ -33,7 +33,6 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   SubAgent:     Sparkles,
   CreateChat:   Sparkles,
   SendMessage:  MessageSquare,
-  Worktree:     GitBranch,
   AskUser:      HelpCircle,
 
   // Tool management

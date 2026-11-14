@@ -267,6 +267,17 @@ func TestListInteractiveSessionsIncludesDirectParentMetadata(t *testing.T) {
 	}
 	key := "agent:cli:/repo:Agent-main/review:1/fix:2"
 	parentKey := "cli:/repo:Agent-main/review:1"
+	// 真实运行时父会话必然在册（子代理由父 spawn，父此时仍在跑/存活）。
+	// 「父会话身份」以注册表为准：主的 cli 会话地址 "cli:/repo:x" 与 agent 父的
+	// key 无法靠字符串区分，所以这里必须先把父注册进来。
+	a.interactiveSubAgents.Store(parentKey, &interactiveAgent{
+		roleName:  "review",
+		instance:  "1",
+		parentKey: "cli:/repo:Agent-main",
+		// 父是 idle 会话：lastUsed 必须是"刚刚"，否则 cleanupExpiredSessions
+		// 会按 TTL 先把它清掉（零值 = 从元年开始算，必然过期）。
+		lastUsed: time.Now(),
+	})
 	a.interactiveSubAgents.Store(key, &interactiveAgent{
 		roleName:   "fix",
 		instance:   "2",
@@ -276,12 +287,22 @@ func TestListInteractiveSessionsIncludesDirectParentMetadata(t *testing.T) {
 	})
 
 	sessions := a.ListInteractiveSessions("agent", "")
-	if len(sessions) != 1 {
-		t.Fatalf("expected one nested session, got %#v", sessions)
+	if _, ok := a.interactiveSubAgents.Load(parentKey); !ok {
+		t.Fatalf("parent session %q must survive ListInteractiveSessions (it is in the registry); sessions=%#v", parentKey, sessions)
 	}
-	got := sessions[0]
-	if got.Key != key || got.ParentKey != parentKey {
-		t.Fatalf("unexpected keys: %#v", got)
+	// 父（cli:/repo:Agent-main/review:1）也是 agent 前缀 key，一起返回。
+	var got *InteractiveSessionInfo
+	for i := range sessions {
+		if sessions[i].Key == key {
+			got = &sessions[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected nested session %q, got %#v", key, sessions)
+	}
+	if got.ParentKey != parentKey {
+		t.Fatalf("unexpected parent key: %#v", got)
 	}
 	if got.ParentChannel != "agent" || got.ParentChatID != parentKey {
 		t.Fatalf("unexpected direct parent metadata: %#v", got)

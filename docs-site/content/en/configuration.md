@@ -249,22 +249,6 @@ Duration values are human-readable strings: `"30m"`, `"1h30m"`, `"5s"`.
 For backward compatibility, legacy nanosecond numbers are also accepted.
 {{< /hint >}}
 
-### Experimental features
-
-```json
-{
-  "agent": {
-    "experimental": {
-      "auto_worktree": false
-    }
-  }
-}
-```
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `auto_worktree` | `false` | Auto-create git worktrees when multiple agents share a repo |
-
 ## Sandbox configuration
 
 ```json

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -901,13 +902,18 @@ const (
 // SubAgentBgNotify is a background notification for interactive subagent events.
 // Implements BgNotification so it flows through the same NotifyCh pipeline.
 type SubAgentBgNotify struct {
-	Key      string               // channel:chatID for routing
-	Type     SubAgentBgNotifyType // "progress" or "completed"
-	Role     string               // subagent role name
-	Instance string               // subagent instance ID
-	Content  string               // formatted notification content for the LLM
-	Elapsed  time.Duration        // total elapsed time (for completed notifications)
-	Sid      string               // original user ID that triggered the subagent
+	Key string // routing key：父会话 key（interactive 会话时为完整
+	//                              "channel:chatID/role:instance"，顶层时为 "channel:chatID"）
+	// ParentKey 是派发这次 spawn/send 的那个 agent 的会话 key。
+	// 非空且对应一个 active interactive session 时，通知直接投给它，
+	// 不再落到底层 IM 会话（否则父 agent 收不到自己派活的结果）。
+	ParentKey string
+	Type      SubAgentBgNotifyType // "progress" or "completed"
+	Role      string               // subagent role name
+	Instance  string               // subagent instance ID
+	Content   string               // formatted notification content for the LLM
+	Elapsed   time.Duration        // total elapsed time (for completed notifications)
+	Sid       string               // original user ID that triggered the subagent
 	// Task is the ORIGINAL task the sub-agent was spawned with. It is not sent
 	// to the model (the notification body already carries the result) — it
 	// exists so the web completion card can show what was asked for, see
@@ -979,9 +985,14 @@ func (n *AsyncMessageNotification) SenderID() string { return n.Sid }
 // synthetic tool result so the agent sees it between iterations.
 // ReplyFn is called after injection to notify the sender of success/failure.
 type QueuedUserMessage struct {
-	Key     string          // session key for routing (unused for SubAgent drain, but required by interface)
-	Sid     string          // sender ID
-	Content string          // the message content
+	Key     string // session key for routing (unused for SubAgent drain, but required by interface)
+	Sid     string // sender ID
+	Content string // the message content
+	// Origin distinguishes an automated event (cron tick / background task
+	// completion) from a real message written by a human or the parent agent.
+	// The injector must not present an automated event as "a message from the
+	// parent agent" — that made a sub-agent's own task result look forwarded.
+	Origin  string
 	ReplyFn func(err error) // called after injection: nil = success
 }
 
@@ -1033,6 +1044,27 @@ func (m *BackgroundTaskManager) SendAsyncMessage(n *AsyncMessageNotification) {
 // Safe to call from any goroutine. Drops silently if channel is full or closed.
 func (m *BackgroundTaskManager) SendSubAgentNotify(n *SubAgentBgNotify) {
 	if m.NotifyCh == nil {
+		return
+	}
+	// ── Key 入口校验（fail fast）──
+	//
+	// 2026-10-27 事故：有调用方把 **AgentID 路径**（`main/court.shoufu/court.bingbu`）
+	// 当成会话 key 塞进来。下游 drainAndProcessNotifications 按 `channel:chatID`
+	// 解析失败就把通知**静默丢掉** —— 表现为"子代理结束了，父会话收不到任何通知"。
+	// 这里在**插入时**就拒绝非法 key，并打印调用点（file:line），
+	// 让问题在第一个坏调用处暴露，而不是拖到 drain 阶段变成一行 warning。
+	if n != nil && !strings.Contains(n.Key, ":") {
+		_, file, line, ok := runtime.Caller(1)
+		caller := "?"
+		if ok {
+			caller = fmt.Sprintf("%s:%d", file, line)
+		}
+		log.WithFields(log.Fields{
+			"key":    n.Key,
+			"role":   n.Role,
+			"inst":   n.Instance,
+			"caller": caller,
+		}).Error("SendSubAgentNotify: Key 不是会话 key（必须 channel:chatID）——已拒绝，请修调用方")
 		return
 	}
 	defer func() {

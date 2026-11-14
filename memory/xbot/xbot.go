@@ -24,6 +24,7 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/prompt"
+	"xbot/redact"
 	"xbot/storage"
 	"xbot/storage/agentmem"
 )
@@ -263,8 +264,11 @@ func (m *XbotMemory) Recall(ctx context.Context, query, sessionID string) (strin
 	sb.WriteString("# Memory\n\n")
 
 	// 1. Core summary (MEMORY.md, ≤2000 chars)
-	coreSummary := m.readCoreSummary()
-	if coreSummary != "" {
+	// 2026-11-09：core summary（## Core 段）已**彻底移除**（用户裁定：自动 LLM 重写
+	// 会产生腐烂文本并每轮注入污染上下文；MEMORY.md 曾累积 27 轮 prompt 回显 +
+	// 注入探针串）。readCoreSummary/writeCoreSummary 保留但不再被注入路径调用。
+	coreSummary := ""
+	if false {
 		sb.WriteString("## Core\n")
 		sb.WriteString(coreSummary)
 		sb.WriteString("\n\n")
@@ -590,7 +594,8 @@ func (m *XbotMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 	}
 
 	// 3. Update core summary
-	m.updateCoreSummary(ctx, client, model)
+	// 2026-11-09：core 自动重写已删除（同上裁定）。不再调用 updateCoreSummary ——
+	// 它是 MEMORY.md 腐烂（27 轮 prompt 回显 + 探针串）的根源。
 
 	// 4. Decay heat scores
 	m.decayMemories()
@@ -819,6 +824,9 @@ func (m *XbotMemory) searchShortTerm(query string, topK int) ([]ShortTermMemory,
 // --- Write methods ---
 
 func (m *XbotMemory) addShortTermMemory(summary, topics, sessionID string) error {
+	// 写入侧脱敏（W2 短时记忆）：LLM 生成的摘要会把工具输出里的凭据原样带进来。
+	summary = redact.Secrets(summary)
+	topics = redact.Secrets(topics)
 	_, err := m.store.AddAgentShortTermMemory(context.Background(), agentmem.ShortTermMemory{
 		UserID:    m.scopeArg(),
 		TenantID:  m.tenantID,
@@ -841,6 +849,11 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
 
+	// 写入侧脱敏（W1/W2 自动抽取路径）：入库前与写镜像前都必须是脱敏后的 entry，
+	// 因为 writeMemoryFile 落的是 entry 正文逐字（兵部 W1 镜像就是靠这里覆盖）。
+	entry.Content = redact.Secrets(entry.Content)
+	entry.Keywords = redact.Secrets(entry.Keywords)
+	entry.Tags = redact.Secrets(entry.Tags)
 	searchText := buildSearchText(entry.Content, entry.Keywords, entry.Tags)
 	dupQuery := agentmem.Query{
 		UserID:        entry.UserID,
@@ -918,62 +931,9 @@ func (m *XbotMemory) readCoreSummary() string {
 	return text
 }
 
-func (m *XbotMemory) writeCoreSummary(content string) {
-	path := filepath.Join(m.baseDir, coreSummaryFileName)
-	// Atomic write: tmp + rename
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
-		log.WithError(err).Error("xbot-memory: failed to write core summary")
-		return
-	}
-	os.Rename(tmpPath, path)
-}
-
-func (m *XbotMemory) updateCoreSummary(ctx context.Context, client llm.LLM, model string) {
-	if client == nil {
-		return
-	}
-
-	currentSummary := m.readCoreSummary()
-
-	// Get top high-importance memories
-	mems, err := m.recentLongTerm(10)
-	if err != nil || len(mems) == 0 {
-		return
-	}
-
-	var memSB strings.Builder
-	for _, mem := range mems {
-		if mem.Importance >= 0.7 {
-			fmt.Fprintf(&memSB, "- [%s] %s\n", mem.Type, mem.Content)
-		}
-	}
-	if memSB.Len() == 0 {
-		return
-	}
-
-	prompt := fmt.Sprintf(`Current core summary:
-%s
-
-Recent high-importance memories:
-%s
-
-Update the core summary to incorporate any new critical information.
-Keep it under %d characters. Preserve existing important information.
-Return ONLY the updated summary text, no explanations.`, currentSummary, memSB.String(), coreSummaryMaxChars)
-
-	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
-		llm.NewSystemMessage("You are a memory consolidation agent. Update the core summary concisely."),
-		llm.NewUserMessage(prompt),
-	}, nil)
-	if err != nil {
-		return
-	}
-
-	if resp.Content != "" {
-		m.writeCoreSummary(strings.TrimSpace(resp.Content))
-	}
-}
+// Automatic core-summary rewriting was removed in November 2026. Do not
+// resurrect the unused write/update helpers: unvalidated LLM summaries corrupted
+// MEMORY.md. Memory validation and two-phase writes remain the supported path.
 
 // --- Heat decay and eviction ---
 
@@ -1357,14 +1317,23 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 // transaction (storage.AgentMemoryStore): a crash between them would leave two
 // contradictory facts both ACTIVE and both injected.
 func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64, error) {
+	if err := validateMemoryContent(entry.Content); err != nil {
+		return 0, err
+	}
+	entry.Importance = clampImportance(entry.Importance)
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
 	if entry.Importance == 0 {
 		entry.Importance = 0.5
 	}
+	// 写入侧脱敏（W1/W2 显式写入路径）：**先脱敏正文再抽关键词**，否则关键词会从
+	// 未脱敏正文里切出凭据碎片；SearchText 与写镜像（writeMemoryFile）用的都是脱敏后的值。
+	entry.Content = redact.Secrets(entry.Content)
 	if entry.Keywords == "" {
 		entry.Keywords = extractKeywords(entry.Content)
 	}
+	entry.Keywords = redact.Secrets(entry.Keywords)
+	entry.Tags = redact.Secrets(entry.Tags)
 	if entry.Scope == "" {
 		entry.Scope = "global"
 	}
@@ -1431,7 +1400,17 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 }
 
 // UpdateMemory updates a memory's content.
+//
+// 写入侧脱敏（W2 更新路径）：content/keywords/tags 与 **SearchText** 都必须用脱敏后的值
+// —— 旧实现里 SearchText 是用原始 content 建的，只脱敏列会留下一份索引副本。
 func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywords, tags string, importance float64) error {
+	if err := validateMemoryContent(content); err != nil {
+		return err
+	}
+	importance = clampImportance(importance)
+	content = redact.Secrets(content)
+	keywords = redact.Secrets(keywords)
+	tags = redact.Secrets(tags)
 	return m.store.UpdateAgentLongTermMemory(ctx, agentmem.LongTermMemory{
 		ID:         id,
 		UserID:     m.scopeArg(),
@@ -1511,7 +1490,10 @@ func (m *XbotMemory) PostCompress(ctx context.Context, input memory.PostCompress
 	}
 
 	// 2. Update core summary
-	m.updateCoreSummary(ctx, input.LLMClient, input.Model)
+	// 2026-11-09：PostCompress 的 core-summary LLM 调用已删除（用户裁定 core 彻底
+	// 移除）。曾实测该调用在压缩管道里复活会导致每次压缩多一次 LLM 往返。
+	_ = input.LLMClient
+	_ = input.Model
 
 	// 3. Decay heat scores
 	m.decayMemories()

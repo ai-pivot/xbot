@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/internal/sessionaddr"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
@@ -118,6 +120,67 @@ func (a *Agent) takePendingBgNotifications(sessionKey string) []tools.BgNotifica
 	pending := a.bgRunPending[sessionKey]
 	delete(a.bgRunPending, sessionKey)
 	return pending
+}
+
+// sameBgNotification 判断两条通知是不是**同一条事件实例**。
+//
+// BgNotification 的四种实现（*BackgroundTask / *SubAgentBgNotify / *CronFired /
+// *AsyncMessageNotification）都是指针，指向同一对象的两个接口值即同一条事件。
+// 这里用 reflect 取指针值而不是直接 `x == y`：接口比较在动态类型不可比较
+// （未来有人加一个含 slice 的值类型实现）时会**直接 panic**，而这条路径在
+// 投递失败的回滚链路上——panic 比丢一条通知更糟。
+func sameBgNotification(x, y tools.BgNotification) bool {
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	vx, vy := reflect.ValueOf(x), reflect.ValueOf(y)
+	if vx.Kind() != reflect.Ptr || vy.Kind() != reflect.Ptr {
+		return false
+	}
+	if vx.Type() != vy.Type() || vx.IsNil() || vy.IsNil() {
+		return false
+	}
+	return vx.Pointer() == vy.Pointer()
+}
+
+// takeOneBgNotification 从 sessionKey 的 pending 队列里精确移除**这一条**通知，
+// 其余兄弟通知按原顺序留在队列里。返回是否真的找到并移除。
+//
+// 为什么必须逐条取（2026-11-04 工部验收打回项 1）：
+// takePendingBgNotifications 是"取走该 key 全部"，调用方只把**自己那一条**
+// 在失败时补回 ⇒ 同一 key 上并发的 N 条 pending 里有 N−1 条被永久吞掉。
+// 典型场景：一个子代理会话的 cron 到期事件与另一条通知同 key 同时在队，
+// 前者投递失败补回自己，后者的兄弟条目就再也不会被任何路径投递。
+//
+// 锁：bgRunPendingMu（与 enqueue/take/acknowledge 共用同一把互斥锁，
+// 所以"移除本条"与"并发入队"之间不会丢事件）。
+//
+// 返回值是**认领凭证**，调用方必须用它判定（2026-11-04 门下省 N1）：
+// 命中=本条归调用方独占；未命中=事件已被并发路径（同 session chatWorker 的
+// wireBgNotificationDrain）整队列取走并已注入，调用方**必须放手**，
+// 不许再投一次、也不许把它补回队列。
+func (a *Agent) takeOneBgNotification(sessionKey string, target tools.BgNotification) bool {
+	if target == nil {
+		return false
+	}
+	a.bgRunPendingMu.Lock()
+	defer a.bgRunPendingMu.Unlock()
+	pending := a.bgRunPending[sessionKey]
+	for i, n := range pending {
+		if !sameBgNotification(n, target) {
+			continue
+		}
+		rest := make([]tools.BgNotification, 0, len(pending)-1)
+		rest = append(rest, pending[:i]...)
+		rest = append(rest, pending[i+1:]...)
+		if len(rest) == 0 {
+			delete(a.bgRunPending, sessionKey)
+		} else {
+			a.bgRunPending[sessionKey] = rest
+		}
+		return true
+	}
+	return false
 }
 
 func (a *Agent) pendingBgNotifications(sessionKey string) []tools.BgNotification {
@@ -338,23 +401,54 @@ func firstNonEmptyLine(s string) string {
 // （用户截图：Next turn 83 + Turn 84–88，既不能立刻发出、也拿不到一次处理完）。
 // 批量成一条同时保证：一个 turn 处理完所有事件、不会挤爆队列。
 func (a *Agent) drainAndProcessNotifications(sessionKey string) {
+	ownerHandled := false
+	for _, n := range a.pendingBgNotifications(sessionKey) {
+		ownerHandled = a.routeBackgroundTaskToOwner(n) || ownerHandled
+	}
+	if ownerHandled {
+		return
+	}
+	// ⚠️ 校验必须在 take **之前**。
+	//
+	// 2026-10-27 故障：key 有时是 agent 调用链（如
+	// `main/court.shoufu/court.bingbu`），而不是 `channel:chatID`。旧实现先
+	// takePendingBgNotifications 把通知取走，再校验 key，非法就直接 return
+	// —— 通知被**永久吞掉**。表现就是：子代理明明结束了，父会话/御前收不到
+	// 任何完成通知（本次首辅 idle 落库于 08:49:24Z，我却一直没收到）。
+	// 现在：非法 key 走 agent-路径兜底，绝不丢。
+	address, valid := sessionaddr.Parse(sessionKey)
+	if !valid {
+		a.deliverNotificationsByAgentPath(sessionKey)
+		return
+	}
+
 	mine := a.takePendingBgNotifications(sessionKey)
 	if len(mine) == 0 {
 		return
 	}
-
-	parts := strings.SplitN(sessionKey, ":", 2)
-	if len(parts) != 2 {
-		log.WithField("session_key", sessionKey).Warn("drainAndProcessNotifications: invalid session key")
-		return
+	channelName, chatID := address.Channel, address.ChatID
+	// 兜底归一化（2026-11-03 P0 子代理通知投错会话）：
+	// 上游若把子代理的 parentKey 存成执行上下文镜像 "agent:<ch>:<chatID>"，
+	// 通知会被投进一个独立的镜像会话，父会话永远收不到（线上实证 36 次：
+	// {"channel":"agent","chat_id":"web:web-4","msg":"Bg notifications: injected ..."}）。
+	// 归一化统一走 sessionAddress，不在调用点手拼。
+	if addr, ok := sessionAddress(channelName, chatID); ok {
+		ch, rest, _ := strings.Cut(addr, ":")
+		channelName, chatID = ch, rest
 	}
-	channelName, chatID := parts[0], parts[1]
+	if isMirrorSessionAddress(sessionaddr.Key(channelName, chatID)) {
+		log.WithFields(log.Fields{"session_key": sessionKey, "target": sessionaddr.Key(channelName, chatID)}).
+			Error("drainAndProcessNotifications: target is still a mirror session — notification will be misdelivered")
+	}
 
 	// Inject each notification individually. Notifications are admitted
 	// sequentially through the session queue, so per-session FIFO ordering is
 	// preserved (queue seq = turn_id = processing order).
 	type bgSection struct{ label, content string }
 	var sections []bgSection
+	// cron/非 cron 节计数：一次突发 = 一条 user 消息 = 一个 turn，所以「这条
+	// 合并消息是否整条来自 cron」只能按整条判（见 bgSectionsTriggerSource）。
+	cronSections, otherSections := 0, 0
 	// 发送方取**第一条有 sender 的通知**（批量成一条消息后只有一个 sender 字段）；
 	// 后续无 sender 的通知不会"继承"上一条身份 —— 与逐条注入时的语义一致（CR#4）。
 	firstSender := ""
@@ -397,6 +491,11 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 			continue
 		}
 		sections = append(sections, bgSection{label: bgNotificationSectionLabel(notif), content: content})
+		if _, isCron := notif.(*tools.CronFired); isCron {
+			cronSections++
+		} else {
+			otherSections++
+		}
 		if firstSender == "" && senderID != "" {
 			firstSender = senderID
 		}
@@ -429,11 +528,14 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 		// 总览：让读者立刻知道这条消息里有 N 条通知、每节都有【i/N】标号与来源。
 		joined = fmt.Sprintf("🔔 合并通知 ×%d（每节以 【i/N】 标注范围，来源见节头）\n\n%s", len(sections), joined)
 	}
-	a.injectBgUserMessage(channelName, chatID, firstSender, joined)
+	// 整条都是 cron 才标记（混批不标：那一轮里可能夹着人要看的真实结果）。
+	triggerSource := bgSectionsTriggerSource(cronSections, otherSections)
+	a.injectBgUserMessageWithTriggerSource(channelName, chatID, firstSender, joined, triggerSource)
 	log.WithFields(log.Fields{
-		"channel":     channelName,
-		"chat_id":     chatID,
-		"notif_count": len(sections),
+		"channel":        channelName,
+		"chat_id":        chatID,
+		"notif_count":    len(sections),
+		"trigger_source": triggerSource,
 	}).Info("Bg notifications: injected as ONE batched user message")
 }
 
@@ -774,4 +876,61 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	a.addReaction(msg)
 
 	return nil, nil
+}
+
+// deliverNotificationsByAgentPath 处理"key 是 agent 调用链而非会话 key"的通知。
+//
+// key 形如 `main/court.shoufu/court.bingbu`：这是 AgentID 路径（根/父/子），
+// 不是 channel:chatID。通知真正的接收方是**父 agent**（倒数第二段）。
+// 做法：按角色名在 interactiveSubAgents 里找活跃会话，把通知作为一条用户消息
+// 投进去；找不到就记 ERROR 并保留到主会话队列，绝不静默丢弃。
+// interactiveSessionByAgentID finds the exact live owner of a background run.
+// AgentID is the per-run BgSessionKey for subagents; role names alone are not
+// identities because multiple sessions may use the same role concurrently.
+func (a *Agent) interactiveSessionByAgentID(agentID string) (string, *interactiveAgent, bool) {
+	want := strings.Trim(agentID, "/")
+	if want == "" {
+		return "", nil, false
+	}
+	var foundKey string
+	var found *interactiveAgent
+	matches := 0
+	a.interactiveSubAgents.Range(func(k, v any) bool {
+		key, ok := k.(string)
+		if !ok {
+			return true
+		}
+		ia, ok := v.(*interactiveAgent)
+		if !ok || ia == nil || ia.isDestroyed() {
+			return true
+		}
+		ia.mu.Lock()
+		id := ""
+		if ia.cfg != nil {
+			id = strings.Trim(ia.cfg.AgentID, "/")
+		}
+		ia.mu.Unlock()
+		if id == want {
+			foundKey, found = key, ia
+			matches++
+		}
+		return true
+	})
+	return foundKey, found, matches == 1
+}
+
+// Legacy events must have an explicit recipient; role paths are not addresses.
+func (a *Agent) deliverNotificationsByAgentPath(key string) {
+	for _, n := range a.pendingBgNotifications(key) {
+		if a.routeBackgroundTaskToOwner(n) {
+			continue
+		}
+		if report, ok := n.(*tools.SubAgentBgNotify); ok && report.ParentKey != "" {
+			if _, exists := a.interactiveSubAgents.Load(report.ParentKey); exists {
+				a.deliverNotifyToParentSession(report)
+				continue
+			}
+		}
+		log.WithField("unresolved_recipient", key).Warn("notification has no exact live recipient; retained without guessing parent/main")
+	}
 }

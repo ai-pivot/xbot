@@ -5,13 +5,13 @@
  * formats — see tools/shell.go, tools/grep.go, tools/glob.go, tools/edit.go)
  * plus render smoke tests for the dedicated views.
  */
-import { describe, expect, it } from 'vitest'
-import { fireEvent, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
 import { ToolRender, parseShell, parseRead, parseGrepResult, parseGlobResult, langFromPath, parseSyntheticHints, parseShareFile } from '@/components/agent/ToolRender'
-import { syntheticShortName, syntheticSubject } from '@/components/agent/SyntheticToolCard'
+import { SyntheticToolCard, syntheticShortName, syntheticSubject } from '@/components/agent/SyntheticToolCard'
 import { DiffView, extractDiffSource, parseUnifiedDiff } from '@/components/agent/DiffView'
 import type { WebToolProgress } from '@/types/shared'
 
@@ -730,5 +730,170 @@ describe('ToolRender · share_file', () => {
     renderWithProviders(<ToolRender tool={tool} />)
     expect(screen.queryByTestId('share-file-card')).toBeNull()
     expect(screen.getByText(/publish failed/)).toBeInTheDocument()
+  })
+})
+
+// ── 2026-10-30 P0 回归：「已复制」复位定时器泄漏（与 UserMessage 同一类故障）──
+//
+// 两处都是裸 `window.setTimeout(() => setCopied(false), N)`：
+//   • SyntheticToolCard.CodeBlock（通知卡片的「原始命令」复制，1200ms）
+//   • ToolRender.ShareFileRender（share_file 复制链接，1500ms）
+// 卡片在 N 毫秒内被虚拟滚动回收 / 切会话卸载后回调仍在跑；测试环境 teardown
+// 之后 jsdom 的 `window` 已销毁 ⇒ 回调路径抛 `ReferenceError: window is not
+// defined` 的**未捕获异常**：用例全过但 vitest 退出码非 0，拦掉所有人的 pre-commit。
+
+/** 共用的定时器泄漏断言工具：盯住「N 毫秒复位回调有没有被执行 / 有没有被排上」。 */
+function trackResetTimers(ms: number) {
+  const fakeSetTimeout = globalThis.setTimeout
+  const state = { runs: 0, scheduled: 0 }
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+    fn: TimerHandler,
+    delay?: number,
+    ...args: unknown[]
+  ) => {
+    if (delay === ms) state.scheduled += 1
+    return fakeSetTimeout(((...passed: unknown[]) => {
+      if (delay === ms) state.runs += 1
+      return (fn as (...x: unknown[]) => void)(...passed)
+    }) as TimerHandler, delay, ...args)
+  }) as unknown as typeof setTimeout)
+  return state
+}
+
+async function flushClipboard() {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+async function tick(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+}
+
+describe('SyntheticToolCard · copy reset timer cleanup (2026-10-30 regression)', () => {
+  const RESET_MS = 1200
+
+  function makeCard() {
+    return makeTool({
+      name: 'background_task_result',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'bg_task',
+        task_id: '3f8f492a',
+        task: 'make build',
+        status: 'done',
+        output: 'ok',
+      }),
+    })
+  }
+
+  // 「原始命令」代码块里的复制按钮（与折叠按钮区分：复制按钮带 title）。
+  function copyButton(): HTMLElement {
+    const btn = screen.getByTestId('synthetic-command').parentElement?.querySelector('button[title]')
+    if (!btn) throw new Error('synthetic copy button not found')
+    return btn as HTMLElement
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('① unmount 早于 1200ms 时清掉复位定时器（回调不再执行、无错误输出）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const timers = trackResetTimers(RESET_MS)
+
+    const { unmount } = renderWithProviders(<SyntheticToolCard tool={makeCard()} />)
+    fireEvent.click(copyButton())
+    await flushClipboard()
+    expect(timers.scheduled).toBe(1)
+    expect(timers.runs).toBe(0)
+
+    unmount() // 1200ms 之前卸载
+    await tick(2000)
+    expect(timers.runs).toBe(0) // 被清理掉的定时器不该再执行
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it('② 卸载后剪贴板 promise 才 resolve：不排复位定时器、不报错', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let release: () => void = () => {}
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockReturnValue(pending) } })
+    const timers = trackResetTimers(RESET_MS)
+
+    const { unmount } = renderWithProviders(<SyntheticToolCard tool={makeCard()} />)
+    fireEvent.click(copyButton())
+    unmount()
+
+    await act(async () => { release() })
+    await flushClipboard()
+
+    expect(timers.scheduled).toBe(0) // 卸载后不再起定时器
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('ToolRender · share_file copy reset timer cleanup (2026-10-30 regression)', () => {
+  const RESET_MS = 1500
+
+  function makeShareTool() {
+    return makeTool({
+      name: 'share_file',
+      status: 'done',
+      summary: 'Published data.json → /api/files/download?key=agent%2Fabc%2Fdata.json',
+    })
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('① unmount 早于 1500ms 时清掉复位定时器（回调不再执行、无错误输出）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const timers = trackResetTimers(RESET_MS)
+
+    const { unmount } = renderWithProviders(<ToolRender tool={makeShareTool()} />)
+    fireEvent.click(screen.getByTestId('share-file-copy'))
+    await flushClipboard()
+    expect(timers.scheduled).toBe(1)
+    expect(timers.runs).toBe(0)
+
+    unmount() // 1500ms 之前卸载
+    await tick(2500)
+    expect(timers.runs).toBe(0)
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it('② 卸载后剪贴板 promise 才 resolve：不排复位定时器、不报错', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let release: () => void = () => {}
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockReturnValue(pending) } })
+    const timers = trackResetTimers(RESET_MS)
+
+    const { unmount } = renderWithProviders(<ToolRender tool={makeShareTool()} />)
+    fireEvent.click(screen.getByTestId('share-file-copy'))
+    unmount()
+
+    await act(async () => { release() })
+    await flushClipboard()
+
+    expect(timers.scheduled).toBe(0) // 卸载后不再起定时器
+    expect(errorSpy).not.toHaveBeenCalled()
   })
 })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"xbot/internal/sessionaddr"
 
 	"xbot/llm"
 	log "xbot/logger"
@@ -53,7 +54,7 @@ func (a *Agent) resolveForkSourceSession(ctx context.Context, originChannel, ori
 		// (bgParentKey marker set by both the foreground and background Run paths).
 		if parentKey, ok := ctx.Value(bgParentKey{}).(string); ok && parentKey != "" {
 			if sess, found := a.multiSession.GetSession("agent", parentKey); found {
-				return sess, "agent:" + parentKey, nil
+				return sess, sessionaddr.Agent(parentKey), nil
 			}
 			return nil, "", fmt.Errorf("fork \"me\": parent session %q not found", parentKey)
 		}
@@ -69,7 +70,7 @@ func (a *Agent) resolveForkSourceSession(ctx context.Context, originChannel, ori
 		// 2a. Full interactive key: interactive sessions live under channel
 		// "agent" with the interactiveKey as chatID.
 		if sess, found := a.multiSession.GetSession("agent", rest); found {
-			return sess, "agent:" + rest, nil
+			return sess, sessionaddr.Agent(rest), nil
 		}
 		// 2b. "role/instance" address — resolve via the sub-agent lookup.
 		// Ambiguous → error (don't fall through); not found → fall through.
@@ -138,7 +139,7 @@ func (a *Agent) lookupSubAgentForkSource(originChannel, originChatID, role, inst
 	// Exact key under the current origin session.
 	key := interactiveKey(originChannel, originChatID, role, instance)
 	if sess, found := a.multiSession.GetSession("agent", key); found {
-		return sess, "agent:" + key, nil
+		return sess, sessionaddr.Agent(key), nil
 	}
 	// Globally unique "/role:instance" suffix match (cross-session fork).
 	var matches []string
@@ -151,7 +152,7 @@ func (a *Agent) lookupSubAgentForkSource(originChannel, originChatID, role, inst
 	})
 	if len(matches) == 1 {
 		if sess, found := a.multiSession.GetSession("agent", matches[0]); found {
-			return sess, "agent:" + matches[0], nil
+			return sess, sessionaddr.Agent(matches[0]), nil
 		}
 	}
 	if len(matches) > 1 {

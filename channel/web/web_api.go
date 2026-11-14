@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+
 	ch "xbot/channel"
 	"xbot/protocol"
 	"xbot/tools"
@@ -51,10 +53,47 @@ func (wc *WebChannel) isUnknownSession(senderID, channelName, chatID string) boo
 	if chatID == senderID {
 		return false
 	}
+	// ⛔ agent 会话的 key 天然含冒号（`web:chat/role:inst`）与斜杠，必须**先**探测再走
+	// 下面的 "含冒号即视为已知" 快捷路径。旧实现在这里被 `strings.Contains(chatID, ":")`
+	// 短路 ⇒ 任何拼错/带 `agent:` 前缀的 key 都被当成「已知会话」，history 返回
+	// **200 + 0 条消息**（前端看起来"这个子代理没有历史"，而不是报错）——2026-11-14
+	// 用户报「子代理 history 接口有问题」的根因。
+	if channelName == "agent" {
+		return !wc.callbacks.SessionExists("agent", chatID)
+	}
 	if strings.Contains(chatID, ":") || webChatIDLooksLikeSubAgent(chatID) {
 		return false
 	}
 	return !wc.callbacks.SessionExists(channelName, chatID)
+}
+
+// canonicalAgentChatID 把外部可能传来的 agent 会话 key 归一到 interactive map key。
+//
+// 前端/旧缓存在不同路径上会写成 `agent:web:chat/role:inst`（多一层路由前缀），而
+// 真实 map key 是 `web:chat/role:inst`。**优先精确匹配**，只有精确 key 不存在时才
+// 逐层剥 `agent:`（嵌套子代理的 map key 自身可能以 agent: 开头，所以必须探测而不是
+// 无条件剥）。全部都不存在时返回最后一层，让 isUnknownSession 走 404 —— 绝不让
+// 非法 key 变成"空历史"。
+func (wc *WebChannel) canonicalAgentChatID(chatID string) string {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return chatID
+	}
+	if wc.callbacks.SessionExists == nil {
+		return chatID
+	}
+	cur := chatID
+	for i := 0; i < 3; i++ {
+		if wc.callbacks.SessionExists("agent", cur) {
+			return cur
+		}
+		next, ok := strings.CutPrefix(cur, "agent:")
+		if !ok || next == "" {
+			break
+		}
+		cur = next
+	}
+	return cur
 }
 
 func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, senderID, channelName, chatID string) (SessionSelector, bool) {
@@ -67,6 +106,9 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 	// ⛔ 读路径同样规范化：客户端缓存的旧 chatID 可能是全键（`web:chat_X`）⇒
 	//    不剥前缀会查/建 `web:web:chat_X` 幽灵会话（DELETE/status/history 全中招）。
 	chatID = canonicalChatID(channelName, chatID)
+	if channelName == "agent" {
+		chatID = wc.canonicalAgentChatID(chatID)
+	}
 	if chatID == "" {
 		chatID = senderID
 	}
@@ -83,16 +125,92 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 	return SessionSelector{Channel: channelName, ChatID: chatID}, true
 }
 
+// inferAPISessionChannel 推断 chatID 所属的 channel（REST 读路径用）。
+//
+// ⛔ 2026-11-13（用户报「非 web channel 会话在 Web 上看不到 SSE，busy 也不对」）：
+// 旧实现是**猜** —— 只有 agent 有专用判据（webChatIDLooksLikeSubAgent），
+// 其余一律 `return "web"`。于是 cli / feishu 会话被当成 web 路由，
+// 订阅键 `web\x00chatID` 与事件键 `cli\x00chatID` 永不相交 ⇒ 一条事件都收不到；
+// 更糟的是 isUnknownSession 会用猜出来的 channel 探测存在性，CLI 会话的
+// chatID 是文件路径、查 web 租户必然 false ⇒ SSE 直接 404。
+// 现在改为**探测**（resolveChannelForChatID），探测不到才回落 web。
 func (wc *WebChannel) inferAPISessionChannel(senderID, chatID string) string {
 	current := wc.GetCurrentSession(senderID)
 	bare := canonicalChatID(current.Channel, chatID)
 	if chatID == "" || current.ChatID == bare {
 		return current.Channel
 	}
+	if ch := wc.resolveChannelForChatID(senderID, bare); ch != "" {
+		return ch
+	}
 	if webChatIDLooksLikeSubAgent(bare) {
 		return "agent"
 	}
+	log.WithFields(log.Fields{
+		"chat_id": bare, "sender_id": senderID,
+	}).Warn("inferAPISessionChannel: channel undetectable, falling back to web")
 	return "web"
+}
+
+// resolveChannelForChatID 按 chatID **反查真实 channel**，不做任何猜测。
+//
+// 顺序（强 → 弱）：
+//  1. 当前会话就是它 ⇒ 用当前会话的 channel（用户此刻正看着这个会话，最强信号）；
+//  2. 逐个候选 channel 用 SessionExists / LocalSessionExists 探测，**唯一命中**即用；
+//  3. 多命中时优先当前会话 channel，否则取候选顺序里的第一个并 warn（记录歧义）；
+//  4. 零命中返回 ""（调用方决定：SSE 侧交给 404 判定，REST 侧回落 web 并 warn）。
+//
+// 候选顺序把当前会话的 channel 提到最前，避免「同名 chatID 同时存在于 web 与 cli」
+// 时静默选错（路由键是 channel-qualified 的，选错就等于订阅到另一条通道）。
+func (wc *WebChannel) resolveChannelForChatID(senderID, chatID string) string {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return ""
+	}
+	current := wc.GetCurrentSession(senderID)
+	if current.ChatID == chatID && current.Channel != "" {
+		return current.Channel
+	}
+	base := []string{"web", "cli", "feishu", "agent"}
+	candidates := make([]string, 0, len(base)+1)
+	if current.Channel != "" {
+		candidates = append(candidates, current.Channel)
+	}
+	candidates = append(candidates, base...)
+
+	exists := func(ch string) bool {
+		if wc.callbacks.SessionExists != nil && wc.callbacks.SessionExists(ch, chatID) {
+			return true
+		}
+		return wc.callbacks.LocalSessionExists != nil && wc.callbacks.LocalSessionExists(ch, chatID)
+	}
+
+	hits := make([]string, 0, 2)
+	seen := make(map[string]bool, len(candidates))
+	for _, ch := range candidates {
+		if ch == "" || seen[ch] {
+			continue
+		}
+		seen[ch] = true
+		if exists(ch) {
+			hits = append(hits, ch)
+			if len(hits) == 1 && ch == current.Channel {
+				// 当前会话通道命中即最优，无需继续探测。
+				return ch
+			}
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return ""
+	case 1:
+		return hits[0]
+	default:
+		log.WithFields(log.Fields{
+			"chat_id": chatID, "hits": hits, "picked": hits[0],
+		}).Warn("resolveChannelForChatID: ambiguous chatID across channels, picking first")
+		return hits[0]
+	}
 }
 
 // handleHistory handles POST /api/history for Web session snapshots.

@@ -467,7 +467,13 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 	loaded := 0
 	for _, m := range manifests {
 		if _, exists := pm.entries[m.ID]; exists {
-			log.WithField("plugin", m.ID).Warn("Duplicate plugin ID, skipping")
+			// 多搜索路径下同一个插件 ID 出现多次是**正常**的：DefaultPluginDirs
+			// 里 plugins/ 与 plugins/builtin/ 同时生效时，内置插件天然会被看到
+			// 两遍。旧实现打 WARN（每次启动 12 条），把"用户装了两份"这种真冲突
+			// 淹在噪声里。这里改为 debug 并记录两个来源目录，排查时能直接看出
+			// 是哪份被采纳、哪份被忽略。
+			log.WithField("plugin", m.ID).
+				Debug("Plugin ID already registered by an earlier search path, skipping duplicate")
 			continue
 		}
 
@@ -1172,6 +1178,15 @@ func (pm *PluginManager) ReloadAll(ctx context.Context) error {
 	if err := pm.ActivateAll(ctx); err != nil {
 		return err
 	}
+
+	// ⛔ 2026-10-26：ReloadAll 原来**没有**重新 wire channel provider。
+	// 后果：`config reload_plugins` 之后插件进程确实换了新二进制（日志有
+	// "Plugin activated"），但 channel 注册表里仍是**上一个插件进程**注册的
+	// provider —— 于是 UI 的渠道配置面板继续显示旧插件的 config_schema
+	// （实测：官方 QQ 版装好了，面板里还是 OneBot 的
+	//  ws_url / reverse_listen / reverse_path / access_token）。
+	// ActivateAll 只负责起进程，provider 必须再 wire 一次才能进注册表。
+	WireChannelProviders(pm)
 
 	// Notify reload listeners asynchronously to avoid blocking the RPC handler
 	// (listeners may push widget updates via WebSocket which can be slow).

@@ -7,6 +7,7 @@
  * Icons: ⏰ cron task, ▶ running bg command, ✓ completed, ✗ failed.
  */
 import { useEffect, useMemo, useState } from 'react'
+import { flattenSubAgentTree } from '@/components/session/session-tree'
 import { AlarmClock, Bot, Check, Inbox, Loader2, Play, Square, Trash2, X } from 'lucide-react'
 import { useI18n } from '@/providers/i18n'
 import { useWSConnection } from '@/hooks/useWSConnection'
@@ -14,7 +15,6 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTasks } from '@/hooks/useTasks'
 import { openMobileAgent } from '@/lib/mobileNav'
 import { StructuredLink } from '@/components/StructuredLink'
-import { flattenSubAgentTree } from '@/components/session/session-tree'
 import { parseAgentChatID } from '@/lib/session-grouping'
 import type { TabManager } from '@/hooks/useTabManager'
 import type { SessionInfo, SessionSelector } from '@/types/shared'
@@ -34,10 +34,26 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
   )
   const { cronTasks, bgTasks, loading, killBgTask, removeCronTask } = useTasks(ws, taskSession)
   const [expandedCronID, setExpandedCronID] = useState<string | null>(null)
+  // 2026-10-26 用户令：**所有子代理都要显示**，不论 busy 还是 idle；
+  // busy 的排在最上面。旧实现只取「当前节点 children」并 `filter(isActiveSubAgent)`，
+  // 于是 idle 的子代理、以及没能挂到父节点下的 orphan（后端 orphan_subagents）
+  // 在 UI 里彻底消失 —— 表现为「首辅明明 busy 却找不到它」。
+  // store 的 session.subAgents 已经是 flattenTreeAgents(整棵树) 的结果（含 orphan），
+  // 直接用它，不要在这里重新裁剪。
+  const [showIdleSubAgents, setShowIdleSubAgents] = useState(false)
+
+  // 2026-10-26 修正：数据源必须是「当前会话节点的子代理子树」。
+  // 之前误用 session.subAgents —— 那是**所有会话树里全部 agent** 的 flatten，
+  // 会把 sili / proj.xbot.* / tester / taizi 这些与当前对话无关的会话也列进来。
+  // 同时**不再按状态过滤**：idle 的子代理同样要能看到并点开查历史。
   const subAgents = useMemo(() => {
     const activeNode = findSessionNode(session.sessions, sessionForFocusedAgent(tabManager, session.activeSession))
-    if (activeNode?.children?.length) return flattenSubAgentTree([activeNode]).filter(isActiveSubAgent)
-    return []
+    if (!activeNode) return []
+    const children = activeNode.children ?? []
+    if (children.length === 0) return []
+    const all = flattenSubAgentTree([{ ...activeNode, children }])
+    const busy = (a: (typeof all)[number]) => isActiveSubAgent(a)
+    return [...all].sort((a, b) => Number(busy(b)) - Number(busy(a)))
   }, [session.sessions, tabManager?.activeTabId, tabManager?.tabs, session.activeSession])
 
   const hasCron = cronTasks.length > 0
@@ -204,22 +220,58 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
           </h3>
           {hasSubAgents ? (
             <div className="flex flex-col gap-1.5">
-              {subAgents.map((agent) => (
+              {/* busy 组：永远展开，带绿色脉冲点，一眼看出谁在跑 */}
+              {subAgents.filter((a) => isActiveSubAgent(a)).map((agent) => (
                 <button
                   type="button"
-                  key={`${agent.channel}:${agent.chatID}`}
+                  key={`busy:${agent.channel}:${agent.chatID}`}
                   className="flex w-full items-start gap-2 rounded-md bg-bg-tertiary px-2 py-1.5 text-left hover:bg-bg-hover"
                   onClick={() => openSubAgent(agent)}
                 >
+                  <span className="mt-1 size-2 shrink-0 animate-pulse rounded-full bg-green-500" aria-label="busy" />
                   <Bot className="mt-0.5 size-3.5 shrink-0 text-text-secondary" />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs text-text-primary">{subAgentTitle(agent)}</p>
+                    <p className="truncate text-xs font-medium text-text-primary">{subAgentTitle(agent)}</p>
                     <p className="mt-0.5 truncate text-xs text-text-muted">
-                      {agent.preview || (agent.status === 'waiting_input' ? 'waiting' : agent.running ? 'running' : agent.historical ? 'history' : 'idle')}
+                      {agent.preview || (agent.status === 'waiting_input' ? 'waiting' : 'busy')}
                     </p>
                   </div>
                 </button>
               ))}
+              {/* idle / 历史组：默认收起，避免把一屏都刷满；点开可查历史 */}
+              {(() => {
+                const idle = subAgents.filter((a) => !isActiveSubAgent(a))
+                if (idle.length === 0) return null
+                return (
+                  <>
+                    <button
+                      type="button"
+                      className="mt-1 flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-xs text-text-muted hover:bg-bg-hover"
+                      onClick={() => setShowIdleSubAgents((v) => !v)}
+                    >
+                      <span>{showIdleSubAgents ? '收起空闲/历史' : `空闲/历史 (${idle.length})`}</span>
+                      <span>{showIdleSubAgents ? '▾' : '▸'}</span>
+                    </button>
+                    {showIdleSubAgents && idle.map((agent) => (
+                      <button
+                        type="button"
+                        key={`idle:${agent.channel}:${agent.chatID}`}
+                        className="flex w-full items-start gap-2 rounded-md px-2 py-1 text-left hover:bg-bg-hover"
+                        onClick={() => openSubAgent(agent)}
+                      >
+                        <span className="mt-1 size-2 shrink-0 rounded-full bg-border" />
+                        <Bot className="mt-0.5 size-3.5 shrink-0 text-text-secondary" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs text-text-primary">{subAgentTitle(agent)}</p>
+                          <p className="mt-0.5 truncate text-xs text-text-muted">
+                            {agent.historical ? 'history' : 'idle'}
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                  </>
+                )
+              })()}
             </div>
           ) : (
             <p className="text-xs text-text-muted">—</p>
@@ -331,17 +383,15 @@ function subAgentTitle(agent: SessionInfo): string {
 
 function findSessionNode(sessions: SessionInfo[], selector: SessionSelector | null): SessionInfo | null {
   if (!selector) return null
-  const visit = (nodes: SessionInfo[]): SessionInfo | null => {
-    for (const node of nodes) {
-      const nodeAgentID = node.fullKey || node.agentChatID || node.chatID
-      const matches =
-        (node.channel === selector.channel && node.chatID === selector.chatID) ||
-        (selector.channel === 'agent' && nodeAgentID === selector.chatID)
-      if (matches) return node
-      const found = visit(node.children || [])
-      if (found) return found
+  const wantChannel = selector.channel
+  const wantChatID = selector.chatID
+  const walk = (nodes: SessionInfo[]): SessionInfo | null => {
+    for (const n of nodes) {
+      if ((!wantChannel || n.channel === wantChannel) && (!wantChatID || n.chatID === wantChatID)) return n
+      const hit = n.children?.length ? walk(n.children) : null
+      if (hit) return hit
     }
     return null
   }
-  return visit(sessions)
+  return walk(sessions)
 }

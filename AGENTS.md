@@ -4,6 +4,8 @@
 
 ## Quick Reference
 
+- Responses multi-tool streams may carry full args only in `function_call_arguments.done`, with no delta. Forward authoritative `ArgumentsComplete` snapshots to the collector as replacement, never append; otherwise tools receive empty/truncated JSON. See `docs/agent/llm.md` and its sanitized live-capture regression.
+- Restored interactive subagents need the same `wireSubAgentProgress` wiring as spawn. Missing callbacks leave genuine running/persisting iterations invisible to SSE and live snapshots. See `docs/agent/gotchas-web-sse-routing.md`.
 - Server retry configuration: `--config` uses `config.LoadWithPath` (shared defaults/env); raw `LoadFromFile` is for persistence edits. Zero retry attempts means 5 total attempts, never unlimited. Provider code `unsupported_country_region_territory` fails immediately. See `docs/agent/llm.md`.
 
 - Streaming selection reparses: native restoration is bounded to 16384 UTF-16 source/rendered characters and 256 text nodes. Above the limit, skip restoration but preserve the captured annotation quote. Ordinary typewriter frames skip traversal. See `docs/agent/message-annotations.md`.
@@ -63,14 +65,13 @@
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, model tiers (vanguard/balance/swift)
 - `docs/agent/subscription.md` — **subscription system 完整文档**: LLMFactory cache、GetLLM/GetLLMForChat/GetLLMForModel 解析链、max_context 优先级、所有切换场景（per-session/全局/settings/启动恢复）、会话隔离规则、Invalidate 速查表、TUI↔Backend 数据同步、**UserContext 统一解析（ResolveUserContext）**、**v63 多用户删除（单 operator + admin allowlist）**
-- `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, Worktree, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types, ChannelPluginTransport (stdio channel plugin transport)
+- `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types, ChannelPluginTransport (stdio channel plugin transport)
 - `docs/agent/settings.md` — settings system: single registry (agent/setting_runtime.go), cli_settings.go, UpdatePerModelConfig, subscription-scoped vs user-scoped, runtime apply chain
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build, **local/remote unification**
 - `docs/agent/hooks.md` — hooks lifecycle events, handler types, configuration, gotchas
 - `docs/agent/channel.md` — CLI (BubbleTea TUI), Feishu, Web adapters, asyncCh pattern, deterministic rendering, mouse support, settings panels
 - `docs/agent/memory.md` — letta vs flat providers; **`none` 是一等模式**（`memory_provider: "none"`：不注册任何记忆工具、不注入记忆提示词、会话 `Memory()` 为 nil、SubAgent 无记忆；显式分支在 `agent/context.go`，守护 `agent/memory_none_test.go` + `session/multitenant_none_test.go`）；**xbot provider BM25 搜索 OR 语义**（`fts5OrQuery` 召回 + bm25 排序；dedup 保持 `fts5SafeQuery` AND —— 多词查询一个词缺席不能零化结果集，"frpc vs frps" 用户报告根因）
 - `docs/agent/plugin.md` — plugin system architecture, runtimes, integration, RPC bridge
-- `docs/agent/worktree.md` — git worktree-based multi-agent workspace isolation, WorktreeRegistry, AutoDetectAndInit, peer discovery, path security
 - `docs/agent/web-message-store.md` — **Web 消息渲染架构（方案 A）**: MessageStore 单一消息状态机（Map<turnID, TurnSlot>，每 turn 1 user + 1 assistant，live 是 assistant 的未完成态）。取代 "两套数据 + buildMessageRows 启发式去重" —— 唯一性由结构保证，渲染层零去重，从根上消除 "turn 消失/重复" 整类 bug（exactDup 跨 turn 迭代号匹配等）。buildMessageRows/liveMessage prop/dedupMessages 已删除。**「一个 turn 一条 user 行」的可判定规则**：该 turn **dbID 最小**的 user 行（turn 开始时的用户消息）；同 turn 后来的 user 行是内部载体（view_image 注入，`Internal`），既不渲染（后端过滤）也不能顶掉用户消息（前端 `mergeHistory` 取最早那条）
 - `docs/agent/session-db.md` — **每会话一个 DB（one session, one DB，v71+v72）**: session_messages/iteration_history 落每会话独立 SQLite（`sessions/<channel>/<bucket>/<name>.db`），主库只留注册表（tenants.db_path/migrated/preview）+ 全局表。**无 LRU 上限**（用户硬性要求：任意数量并发会话；池生命周期 = TenantSession 缓存）。**⛔ 新会话永不迁移（2026-09-30 生产事故根治）**：`SessionService.HasLegacyRows` 经主库**现有连接**探测残留行 —— 两表皆空 ⇒ 完全不 ATTACH（旧实现无条件 ATTACH，撞上主库坏死 WAL 的 SHORT_READ(522) ⇒ 新建会话/子代理 spawn 直接失败；用户原话「新建会话又不需要迁移」）。复制核心 `DB.CopyTenantDataFromMainDB`（ATTACH + 显式列名 + 单事务 DELETE+INSERT 幂等）。**v72 删除迁移**：批量补齐 migrated=0 残留（单租户失败 WARN 跳过）→ 删主库 migrated=1 行 + 孤儿行 → VACUUM+checkpoint → 置 72（最后）。**损坏库容错**：DELETE 失败只 WARN 不阻塞启动；F2 会话库文件缺失守卫（下降级失败 ⇒ 整段删除跳过，fail-safe）；主库页级损坏的修复 = `.recover` 重建 + integrity_check/行数对账 + 换入时**删坏 -wal/-shm**（坏 WAL 索引让存量连接持续 522）。**收口点**：消息读写只经 `TenantSession.sessionSvc`（会话库）或 `MultiTenantSession.SessionServiceFor(tenantID)` —— 绝不 `NewSessionService(主库)`。preview = 主库 tenants.preview 列（写入路径维护）。**测试 gotcha**：session_messages 触发器注入/行断言必须打会话库（`mt.SessionDBFor(tenantID)`，agent 测试 helper `sessionDBConn`）—— 打主库对 appends 不生效（假绿）；手工迁移 fixture 缺表/缺列 → v72 用 tableExists/columnExists 守卫跳过。判别测试 `TestNewSessionDoesNotAttachMainDB`（把主库文件改名 ⇒ 新会话仍须可建；变异自证：探针恒 true 必红）。
 - `docs/agent/storage.md` — **存储后端抽象（SQLite + PostgreSQL）**: `storage/` 的 5 接口（`Storage`/`SessionStore`/`TenantStore`/`MemoryStore`/`ConfigStore`）+ 子接口（`SubscriptionBackend`/`TenantBackend`/`WebAuthStore`）把 SQLite 具体类型（`LLMSubscriptionService`/`UserSettingsService`/`TenantService`）从 `agent`/`serverapp`/`channel/web` 解耦；`storage/sqlite_adapter.go` 适配层 + `storage/pg_*.go`（纯 Go `pgx/v5`+`pgxpool`，无 cgo）PG 实现；`config.StorageConfig{Type,DSN}` 选择后端（`server_core.go`）。**PG gotcha**：`sql.ErrNoRows`≠`pgx.ErrNoRows`（检查永不命中）、原生 `BOOLEAN`（`= true/false`，禁 `boolean=integer`）、一次 Exec 一条语句、`search_path` 不跨 `pgxpool` 连接传播（per-test 必须独立 database）。**契约测试**：`RunStorageContractTests` + `StorageFactory`，一套跑两后端，按域分文件 `contract_{session,tenant,memory,config,cross,edge}_test.go`；`XBOT_PG_TEST_DSN` 未设则跳过 PG。**共享 replay 折叠**：append-only 历史的折叠语义只有一份实现（`sqlite.ApplyHistoryRecords` + `sqlite.ValidCheckpointSnapshot`），PG 只负责读记录后调用它 —— **禁止在后端侧重实现 replay**（重复实现正是 masks/context_edit 静默漂移的根因，2026-10-17 契约测试抓出并修复）。**运行时服务同样必须后端无关**：`Storage.Cron()`/`Trigger()`/`OAuth()` 三个访问器（`CronStore`/`event.TriggerStore`/`OAuthTokenStore`）取代了调度器/webhook 路由/OAuth 服务器里的 `*sqlite.XxxService` 字段 —— 那些字段被 `MultiSession.DB() != nil` 守卫包着，在 PG 上句柄为 nil ⇒ 功能**静默消失**（cron、webhook、OAuth 全部如此）。连带约束：OAuth 必须在 `InitServer` **之后**创建（token 存储来自后端）；`oauth_tokens` 属于主 SQLite schema（不能依赖 oauth 包的惰性建表）；`RecordFire` 不禁用 one-shot（那是 router 的职责，否则两后端行为分叉）；PG 投影里可空 TEXT 列必须 `COALESCE`。
@@ -99,12 +100,15 @@
 | `docs/agent/gotchas-web-frontend.md` | web message store & state machine, streaming/live iteration rules, iteration windowing, virtual list, tool pills, copy menu, sidebar/panel layout, feishu-free web UI contracts |
 | `docs/agent/gotchas-feishu.md` | Feishu channel: CardKit streaming cards + native CoT rendering |
 | `docs/agent/gotchas-plugins.md` | plugin system, web plugin runtime, i18n of plugin manifests |
-| `docs/agent/gotchas-tools.md` | view_image, truncation/retrieval hints, share_file key sanitization |
+| `docs/agent/gotchas-tools.md` | view_image, truncation/retrieval hints, share_file key sanitization, stale session CWD reset |
+| `docs/agent/worktree-legacy-cleanup.md` | runbook: 遗留 `.xbot-worktrees/` 目录与陈旧 CWD 的人工清理（禁止自动 prune） |
 | `docs/agent/gotchas-llm.md` | Responses API encrypted reasoning round-trip |
-| `docs/agent/gotchas-install-worktree.md` | one-click setup/release, git worktree isolation |
+| `docs/agent/gotchas-install.md` | one-click setup/release |
 | `docs/agent/gotchas-misc.md` | 2026-09-17 batch (synthetic tools, reminder parsing, CoT) |
 
 ## ⛔ Critical invariants (one-line index — full text in the knowledge files)
+- Background task routing: exact owner `agent:<CallerSessionKey>` via `internal/sessionaddr`; tasks return to creator, subagent reports to explicit ParentKey. Never infer owner from role/slash or use fuzzy lookup for automated delivery. Missing/ambiguous owner stays pending, never forwarded to parent/main. See `docs/agent/gotchas-web-sse-routing.md`.
+
 
 The highest-priority rules, one line each. **Before changing the related code, Read the named file** — it carries the full rule, the incident that produced it, and the guard test.
 
@@ -112,6 +116,7 @@ The highest-priority rules, one line each. **Before changing the related code, R
 - ⛔ `docs/agent/settings.md` — **迭代次数上限已彻底移除**（2026-10-14 用户要求「以后不加这种限制」）：`max_iterations`/`AGENT_MAX_ITERATIONS`/`set_max_iterations`/`DefaultMaxIterations=2000` 全部删除，主循环无上限；⛔ 别再引入每 turn 迭代上限（曾致迭代记录 2000 条后断流 + 压缩点锚点塌陷）。
 - ⛔ `docs/agent/install.md` — **macOS 装完二进制必须 `codesign --force --sign -`**（2026-10-14 事故：`cp` 新二进制使旧签名失效 ⇒ launchd 拒绝 exec ⇒ 服务静默起不来）。`scripts/install.sh` 已自动签名。
 - ⛔ `docs/agent/gotchas-agent-core.md` — `max_concurrency` 只能有一个存储位置（2026-09-17 用户报告根治）：「设了 100 并发，只起 4-5 个子代理就卡」+「统计里的 TTFT 很短、和入库时间对不上」。
+- ⛔ `docs/agent/gotchas-agent-core.md` — **子代理行的父会话标注必须解析成「父会话身份」**（2026-11-04「ia.running=true 但 Web 侧边栏没有子代理在跑」根治）：`ia.parentKey` 有两种形态且无法靠字符串区分（一级父=普通会话 `web:web-4`；嵌套父=另一个子代理 `agent:web:web-4/x:y`），一律当 `(agent, parentKey)` 会让运行中的子代理全部掉进 `OrphanSubAgents`；唯一入口 `Agent.interactiveParentAddress`。另：`tenants.chat_id` 就是 interactive map key，别把「带 agent: 前缀」当 running 查询 miss 的根因。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 模型解析严禁用"裸模型名"——任何时候解析模型必须带订阅 id（用户明确要求，2026-09-11）。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 压缩三把尺子 + 无限循环三重防线（2026-08-30 "200k 上下文无限循环压缩"修复）。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 停机必须先把 WAL 的已提交内容 checkpoint 进主库（2026-09-17 丢数据事故；
@@ -167,6 +172,7 @@ The highest-priority rules, one line each. **Before changing the related code, R
 - ⛔ `docs/agent/gotchas-plugins.md` — runner「所有命令 exit code 2」根治（2026-09-22 用户 P0：ssh-runner 连 GPU 机 1101 后 agent 全部命令失败）。
 - ⛔ `docs/agent/gotchas-tools.md` — 名字不承担唯一性：key 形如 `agent/<uuid>/<name>`，uuid 是每次发布新铸的 ⇒ 不同会话分享同名文件天然各自独立（守护测试断言两次分享 key 不同）。
 - ⚠️ `docs/agent/gotchas-tools.md` — `sandbox exec: fork/exec <shell>: no such file or directory` 往往**不是 shell 缺失**，而是会话 cwd 已被删除（`os/exec` 在子进程 chdir，`*os.PathError.Path` 是 shell 路径）。`cmdbuilder.Build` 现在先 `os.Stat(dir)` 并返回「working directory … use the Cd tool」；本地 none sandbox 不静默 fallback（错误目录里跑 `git`/`rm` 比失败更危险）。守护：`tools/none_sandbox_missing_dir_test.go`。
+- ⛔ `docs/agent/worktree-legacy-cleanup.md` — **遗留 `.xbot-worktrees/` 只能人工清理，禁止自动 prune**（`port-v0521-taizi` 仍被别的会话占用；`git worktree prune` 会清掉在用的登记）。turn 起点由 `agent/stale_cwd.go` 的 `resetStaleCWD` 用 `dirExists(cwd)` 复位陈旧 CWD（只对宿主可见路径生效，沙箱会话跳过）。守护：`agent/stale_cwd_test.go`。
 - ⛔ `docs/agent/gotchas-tools.md` — **二进制工具输出绝不能进文本管道**：NUL（`0x00`）是合法 UTF-8 但 PG `text` 存不了（SQLSTATE 22021 拒绝**整批 INSERT**，代价是整个 turn；SQLite 后端完全看不见）。`Read` 现在拒绝二进制（NUL / 前 8 KiB 非 UTF-8 占比 >25%），`textutil.SanitizeText`（非法序列 **+ NUL** → U+FFFD）在 `pgText`、`cmd/xbot-migrate`、agent 工具结果边界三处统一执行。守护：`tools/read_binary_test.go` / `agent/tool_output_sanitize_test.go` / `storage/pg_contract_test.go`。
 - ⛔ `docs/agent/gotchas-llm.md` — 「要了 reasoning 就必须要摘要」——`encrypted_content` 是给无状态重放用的，用户看不到（2026-09-19 用户报告 gpt-6-astra 在 Web 不显示 reasoning 的根因）。
 - ⛔ `docs/agent/gotchas-misc.md` — 注入型（fake）工具【绝不】在 content 里声明「这不是你调用的工具」（2026-09-17 用户纠正，取代同日早些时候的做法）：`agent.syntheticInjectionNotice()` 已整体删除，`newSyntheticToolPair` 不再给注入工具的结果加任何前缀 —— 注入结果就是一段普通 tool-result 文本（与 Shell/Read 输出同形态）。
@@ -311,11 +317,13 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-plugins.md` — 本地 docker sandbox 已整体删除；
 - ⚠️ `docs/agent/gotchas-plugins.md` — `/goal` 只能在后端 pop 并执行该消息后设置 —— 发送路径禁止乐观写 goal（2026-09-16 用户报告：「发 goal 消息时（点 goal 按钮），即使消息排队也会立刻设置 goal；
 - ⚠️ `docs/agent/gotchas-llm.md` — 跨轮次持久化：`session_messages.reasoning_items`（schema v66 + `migrateV65ToV66`，`tableExists`+`columnExists` 双守卫幂等）+ `appendMessageWith` 写入 / `getHistoryFromWith` 读回。
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — `setup` 能力探针必须只有一处实现，且绝不能用管道喂 grep（2026-09-11 事故：装 stable 静默变成 nightly）。
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — channels 激活修复是 manifest 驱动 + set_if_missing + builtin-only 边界：`fixChannelActivationConfig`（setup.go）只扫 `plugins/builtin/`（setup 自己装的 release 插件）的 plugin.json `contributes.channelProvider.config_schema[].{key:"enabled", d…
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — release.yml 产物矩阵：frontend job 追加 esbuild 插件 web 资产 —— 每个声明 `web.entry` 的插件都要构建，esbuild 产物按插件目录形状落盘 `build/plugin-web/<plugin-id>/web/`（`--splitting` 让该插件的 view 入口共享同一份 rpc/ui 单例 chunk；
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — plugins/package.sh 通用打包：遍历 `plugins/*/plugin.json`（源目录用连字符 `xbot-genui`，插件 ID 用点 `xbot.genui`——tarball 内是 ID 布局，脚本维护 src-dir→ID 映射）；
-- ⚠️ `docs/agent/gotchas-install-worktree.md` — PR CI 覆盖插件模块（独立 `plugins/*/go.mod`）：根模块的 `go build ./...`/`go test ./...` 永远到不了它们（嵌套 module 被 Go 排除），所以此前插件编译失败或自身测试失败只在 release 的 build-plugins job 才暴露（= 发布时）。
+- ⚠️ `docs/agent/gotchas-install.md` — `setup` 能力探针必须只有一处实现，且绝不能用管道喂 grep（2026-09-11 事故：装 stable 静默变成 nightly）。
+- ⚠️ `docs/agent/gotchas-install.md` — channels 激活修复是 manifest 驱动 + set_if_missing + builtin-only 边界：`fixChannelActivationConfig`（setup.go）只扫 `plugins/builtin/`（setup 自己装的 release 插件）的 plugin.json `contributes.channelProvider.config_schema[].{key:"enabled", d…
+- ⚠️ `docs/agent/gotchas-install.md` — release.yml 产物矩阵：frontend job 追加 esbuild 插件 web 资产 —— 每个声明 `web.entry` 的插件都要构建，esbuild 产物按插件目录形状落盘 `build/plugin-web/<plugin-id>/web/`（`--splitting` 让该插件的 view 入口共享同一份 rpc/ui 单例 chunk；
+- ⚠️ `docs/agent/gotchas-install.md` — plugins/package.sh 通用打包：遍历 `plugins/*/plugin.json`（源目录用连字符 `xbot-genui`，插件 ID 用点 `xbot.genui`——tarball 内是 ID 布局，脚本维护 src-dir→ID 映射）；
+- ⚠️ `docs/agent/gotchas-install.md` — PR CI 覆盖插件模块（独立 `plugins/*/go.mod`）：根模块的 `go build ./...`/`go test ./...` 永远到不了它们（嵌套 module 被 Go 排除），所以此前插件编译失败或自身测试失败只在 release 的 build-plugins job 才暴露（= 发布时）。
+- ⛔ `docs/agent/gotchas-web-sse-routing.md` — Web SSE 路由是 **channel-qualified**（`channel\x00chatID`），订阅端**绝不许猜 channel**（2026-11-13 用户报「非 web channel 收不到 SSE / busy 不对」）：`resolveSSESession` 旧实现硬编码 `Channel:"web"`、只有 agent 被单独救出 ⇒ cli/feishu 订阅挂 `web\x00id` 而事件在 `cli\x00id`，且 `isUnknownSession` 用猜出的 channel 探测 ⇒ CLI 路径 chatID 查 web 租户恒 false ⇒ **SSE 直接 404**。修法 `resolveChannelForChatID`（候选探测，不猜）。前端侧同理：事件 `payload.ChatID` 是 `agent:<phys>`，`stripChannel`/`bareChatID` 必须**循环**剥 `agent:` 否则子代理事件全丢 + 面板永久 busy。
+- ⚠️ `docs/agent/gotchas-interactive-identity.md` — interactive 子代理的「身份」有**两套表示**（物理 key `web:web-4/role:inst` vs 逻辑地址 `agent:web:web-4/role:inst`），五条执行路径各处理一部分 ⇒ 2026-11-04 一次爆出六个症状：批复回流到御前（restore 漏设 `CallerSessionKey`；且队列/通知注入走 `buildMainRunConfig` **根本不设**，需从 ctx 推断）、子代理进度全丢/永久 busy（前端 `stripChannel` 必须**循环**剥 `agent:`）、重启后孙代理全被误标 unloaded（key 取 `parent_chat_id` 第一段不是全串）、decision origin 是 `env.origin.session` 不是 `from.session`、取消≠暂停（`waitingUser` 不复位 ⇒ 必须按 ctx 已取消发 PhaseDone+idle）。
 - ⚠️ `docs/agent/gotchas-misc.md` — interactive SubAgent 寻址必须经唯一解析器（2026-09-17「全收口」）：所有按 `(role, instance)` 寻址的入口（`SendToInteractiveSession` / `InspectInteractiveSession` / `InterruptInteractiveSession` / `UnloadInteractiveSession` / `ContinueInteractiveSe…
 
 ## Development Principles

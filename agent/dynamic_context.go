@@ -4,17 +4,14 @@ import (
 	"fmt"
 
 	"xbot/llm"
-	"xbot/tools"
 )
 
 // DynamicContextInjector 在 Run() 循环中检测动态信息变化并注入。
-// 首轮不注入（system prompt 已包含最新值），后续 iteration 检测到 CWD 变化或 peer 变化时注入。
+// 首轮不注入（system prompt 已包含最新值），后续 iteration 检测到 CWD 变化时注入。
 // 注入位置：tool message content 末尾（与 sys_reminder 相同方式，在 sys_reminder 之前）。
 type DynamicContextInjector struct {
-	lastCWD   string
-	getCWD    func() string
-	lastPeers string
-	getPeers  func() string
+	lastCWD string
+	getCWD  func() string
 }
 
 // NewDynamicContextInjector 创建动态上下文注入器。
@@ -22,18 +19,12 @@ func NewDynamicContextInjector(getCWD func() string) *DynamicContextInjector {
 	return &DynamicContextInjector{getCWD: getCWD}
 }
 
-// NewDynamicContextInjectorWithPeers 创建带 peer 感知的动态上下文注入器。
-func NewDynamicContextInjectorWithPeers(getCWD func() string, getPeers func() string) *DynamicContextInjector {
-	return &DynamicContextInjector{getCWD: getCWD, getPeers: getPeers}
-}
-
-// InjectIfNeeded 检测 CWD 和 peer 变化，如有变化则将 <dynamic-context> 追加到最新 tool message 末尾。
+// InjectIfNeeded 检测 CWD 变化，如有变化则将 <dynamic-context> 追加到最新 tool message 末尾。
 func (d *DynamicContextInjector) InjectIfNeeded(messages []llm.ChatMessage) bool {
 	currentCWD := d.getCWD()
 
 	needInject := false
 	cwdChanged := false
-	peersChanged := false
 
 	if d.lastCWD == "" {
 		d.lastCWD = currentCWD
@@ -41,18 +32,6 @@ func (d *DynamicContextInjector) InjectIfNeeded(messages []llm.ChatMessage) bool
 		cwdChanged = true
 		needInject = true
 		d.lastCWD = currentCWD
-	}
-
-	var currentPeers string
-	if d.getPeers != nil {
-		currentPeers = d.getPeers()
-	}
-	if d.lastPeers == "" {
-		d.lastPeers = currentPeers
-	} else if currentPeers != d.lastPeers {
-		peersChanged = true
-		needInject = true
-		d.lastPeers = currentPeers
 	}
 
 	if !needInject {
@@ -66,13 +45,6 @@ func (d *DynamicContextInjector) InjectIfNeeded(messages []llm.ChatMessage) bool
 			fmt.Sprintf("- 当前目录已切换为：%s，切换后所有 Shell 命令在新目录执行", currentCWD)
 	}
 
-	if peersChanged && currentPeers != "" {
-		injection += "\n\n协作状态:\n" + currentPeers +
-			"\n\n你正在与其他 agent 协作修改同一仓库。注意：\n" +
-			"- 通过 SendMessage 与同伴协商和协调\n" +
-			"- 改动冲突时先与相关同伴直接协商，必要时请用户仲裁"
-	}
-
 	injection += "\n</dynamic-context>"
 
 	if len(messages) > 0 {
@@ -81,45 +53,4 @@ func (d *DynamicContextInjector) InjectIfNeeded(messages []llm.ChatMessage) bool
 	}
 
 	return true
-}
-
-// buildPeerContextXML builds the <peers> XML section for the dynamic context injector.
-// Only includes peers with actual worktrees (physical isolation) — lightweight
-// peer-awareness registrations without worktrees do not indicate collaboration.
-func buildPeerContextXML(workspaceRoot, sessionKey string) string {
-	repoPath, err := tools.GitRepoRoot(workspaceRoot)
-	if err != nil {
-		return ""
-	}
-
-	allPeers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
-	// Filter: only peers with actual worktrees represent real collaboration.
-	var peers []*tools.WorktreeEntry
-	for _, p := range allPeers {
-		if p.WorktreeDir != "" {
-			peers = append(peers, p)
-		}
-	}
-	if len(peers) == 0 {
-		return ""
-	}
-
-	result := "<peers"
-	if repoPath != "" {
-		result += fmt.Sprintf(` repo="%s"`, repoPath)
-	}
-	result += ">\n"
-
-	for _, p := range peers {
-		worktreeInfo := "main project"
-		if p.WorktreeDir != "" {
-			worktreeInfo = p.WorktreeDir
-		}
-		result += fmt.Sprintf(
-			`  <peer session="%s" role="%s" branch="%s" worktree="%s" status="%s"/>`,
-			p.SessionKey, p.Role, p.Branch, worktreeInfo, p.Status,
-		) + "\n"
-	}
-	result += "</peers>"
-	return result
 }

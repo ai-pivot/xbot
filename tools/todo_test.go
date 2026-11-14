@@ -91,7 +91,7 @@ func TestTodoManager_SessionKey_BackwardsCompatible(t *testing.T) {
 		t.Errorf("sessionKey with main AgentID = %q, want %q", key1b, "cli:session-1")
 	}
 
-	// SubAgent AgentID 含 "/"，使用 AgentID:Channel:ChatID
+	// Legacy subagent without an exact caller keeps its isolated SessionKey fallback; no hand-built pseudo-address.
 	ctx2 := &ToolContext{
 		Ctx:     context.Background(),
 		AgentID: "main/explore",
@@ -99,8 +99,8 @@ func TestTodoManager_SessionKey_BackwardsCompatible(t *testing.T) {
 		ChatID:  "session-1",
 	}
 	key2 := mgr.sessionKey(ctx2)
-	if key2 != "main/explore:cli:session-1" {
-		t.Errorf("sessionKey with SubAgent AgentID = %q, want %q", key2, "main/explore:cli:session-1")
+	if key2 != "main/explore" {
+		t.Errorf("sessionKey with SubAgent AgentID = %q, want %q", key2, "main/explore")
 	}
 
 	// 无 Channel/ChatID 时返回空

@@ -1,5 +1,11 @@
 import { test, expect, type Page } from '@playwright/test'
 
+// 本文件全是「窗口化 / 帧预算 / 测量时序」的性能断言，跑在共享 runner 上比普通功能
+// 测试慢一个量级。统一把单测超时从默认 60s 放大到 180s：否则"没跑完"会被报成
+// "测试超时失败"（CI 上 :524「N=20 and N=200 share the same bounded per-frame work
+// while streaming」就是这样红的，与它的性能判据无关）。
+test.setTimeout(180_000)
+
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
 
 /**
@@ -429,23 +435,25 @@ test.describe('windowing never freezes a transient (collapsed) height', () => {
     await page.waitForTimeout(250)
     // 放开（"定形"）
     await page.addStyleTag({ content: '.iter-block > * { max-height: none; }' })
-    await page.waitForTimeout(2500)
+    // 放开后需要等 ResizeObserver 重新测量 + 窗口化重新结算。原先固定 2500ms，
+    // 慢 runner 上偶尔不够；这里拉到 4000ms，随后仍用 poll 等判据本身。
+    await page.waitForTimeout(4000)
 
-    // 2026-10-22 CI：先 poll 等窗口化**真正**落地，而不是靠固定 waitForTimeout。
-    // 本文件 :314 的注释已记录 CI 上存在「首帧全部挂载」的瞬态（实测
-    // WINDOW N=60 {"nodes":2525,"mountedContents":60}）；CI 慢 runner 上该瞬态
-    // 可持续数秒，2.5s 的固定等待不够 ⇒ 报成 muted=0。poll 只是等条件成立，
-    // 真回归（窗口化彻底失效）仍会 30s 超时失败，不掩盖问题。
+    // 等的是**同一个判据本身**：muted 块存在且最小高度已过 100px。
+    // 只等"muted 数 > 0"不够 —— 那时块可能还停在压扁/未定形高度，随后一次性
+    // 采样的 mutedMin 会 < 100 而被判成"冻结在瞬态高度"（2026-11-10 反复抖的点）。
     await expect
       .poll(
         async () =>
           await page.evaluate(() => {
-            const bs = Array.from(document.querySelectorAll('.iter-block'))
-            return bs.filter((b) => (b as HTMLElement).dataset.windowMuted === 'true').length
+            const bs = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
+            const muted = bs.filter((b) => b.dataset.windowMuted === 'true')
+            if (muted.length === 0) return 0
+            return Math.min(...muted.map((b) => Math.round(b.getBoundingClientRect().height)))
           }),
         { timeout: 30000, intervals: [200, 500, 1000] },
       )
-      .toBeGreaterThan(0)
+      .toBeGreaterThan(100)
 
     const stats = await page.evaluate(() => {
       const blocks = Array.from(document.querySelectorAll('.iter-block'))
@@ -784,6 +792,20 @@ test.describe('history-loaded long turn is windowed', () => {
     // 等渲染 + 高度稳定（settle 需两次同值测量，间隔 ≥200ms；复核再 +400ms）
     await page.waitForTimeout(4000)
 
+    // 但**不能**把 4s 当成"窗口化已生效"的证明：慢 runner 上一次性采样可能拿到
+    // muted=0，被误判成回归（2026-11-10 CI 上的 flaky 就是这条）。先 poll 等窗口化
+    // 真的落地再采样；真回归（窗口化彻底失效）仍会 30s 超时失败，不掩盖问题。
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
+            return blocks.filter((b) => b.dataset.windowMuted === 'true').length
+          }),
+        { timeout: 30000, intervals: [200, 500, 1000] },
+      )
+      .toBeGreaterThan(0)
+
     const stats = await page.evaluate(() => {
       const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
       return {
@@ -852,6 +874,20 @@ test.describe('short (tool-only) iterations must be windowed too', () => {
     await page.locator('input[type="password"]').fill('test')
     await page.locator('button[type="submit"]').click()
     await page.waitForTimeout(6000)
+
+    // 6s 不是"窗口化已生效"的证明：慢 runner 上一次性采样会把还没窗口化完的
+    // 状态判成回归。先 poll 等 muted 占比过半再采样（判据不变，只是不再赌时长）。
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const bs = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
+            if (bs.length === 0) return 0
+            return bs.filter((b) => b.dataset.windowMuted === 'true').length / bs.length
+          }),
+        { timeout: 30000, intervals: [200, 500, 1000] },
+      )
+      .toBeGreaterThan(0.5)
 
     const stats = await page.evaluate(() => {
       const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
@@ -1092,7 +1128,22 @@ test.describe('switching to a streaming session must not freeze a transient heig
       undefined,
       { timeout: 20000 },
     )
-    await page.waitForTimeout(2500)
+    // 复核 / 重新结算需要时间。这里**不能**用固定 2500ms 当作"块已从压扁态恢复
+    // 高度"的证明：本用例开着 CPU 4× 节流，慢 runner 上 2500ms 明显不够，采到的
+    // mutedUnder100 > 0 会被判成「冻结块停在瞬态高度」（2026-11-10 CI 的 flaky）。
+    // poll 等的是同一个判据本身；真回归（块永远停在压扁高度）仍会 30s 超时失败。
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const bs = Array.from(
+              document.querySelectorAll('.iter-block[data-window-muted="true"]'),
+            ) as HTMLElement[]
+            return bs.filter((b) => Math.round(b.getBoundingClientRect().height) < 100).length
+          }),
+        { timeout: 30000, intervals: [200, 500, 1000] },
+      )
+      .toBe(0)
 
     const stats = await page.evaluate(() => {
       const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]

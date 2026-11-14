@@ -6,7 +6,6 @@ import (
 
 	"golang.design/x/clipboard"
 	"xbot/session"
-	"xbot/tools"
 	"xbot/version"
 
 	tea "charm.land/bubbletea/v2"
@@ -362,7 +361,6 @@ func (m *cliModel) handleSlashCommand(cmd string) tea.Cmd {
 				}
 				// Pre-creation cleanup: nuke ALL residual state for this chatID.
 				newSessionKey := "cli:" + chatID
-				tools.GlobalWorktreeRegistry.CleanupSession(newSessionKey)
 				session.DeletePersistedCWD("cli", chatID)
 				delete(m.savedSessions, newSessionKey)
 				if m.todoManager != nil {

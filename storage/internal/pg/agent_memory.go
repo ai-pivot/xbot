@@ -133,11 +133,19 @@ func (s *agentMemoryStore) AddAgentLongTermMemory(ctx context.Context, mem agent
 
 // agentOrderSQL maps the neutral ordering onto PG. Relevance flips to DESC
 // because ts_rank is higher-is-better (bm25 is the opposite on SQLite).
-func agentOrderSQL(order agentmem.Order, hasQuery bool) string {
+//
+// 2026-11-10 CR（第 1 轮 P1）修复：此前 relevance 分支**硬编码 `$2::tsquery`**，
+// 而 tsquery 的实际占位符由 `add()` 动态推进（Type=$2 / Scope=$3 /
+// SourceSession=$4 / tsquery=$5）。带任一过滤时 ORDER BY 引用的是**过滤值**
+// 而不是查询词 —— `'global'::tsquery` 合法但只匹配字面 "global"，
+// `search_tsv` 里没有该词 ⇒ 全行 rank=0 ⇒ 任意序。
+// 召回主路径 `searchLongTerm`（Scope="global" + Terms）正好命中这个组合。
+// 修复：把 queryArg 作为参数显式传入，与 `rankExpr` 使用同一个占位符。
+func pgAgentOrderSQL(order agentmem.Order, hasQuery bool, queryArg int) string {
 	switch order {
 	case agentmem.OrderRelevance:
 		if hasQuery {
-			return "ts_rank(search_tsv, $2::tsquery) DESC"
+			return fmt.Sprintf("ts_rank(search_tsv, $%d::tsquery) DESC", queryArg)
 		}
 		return "importance DESC, created_at DESC"
 	case agentmem.OrderRecency:
@@ -182,7 +190,7 @@ func (s *agentMemoryStore) SearchAgentLongTermMemories(ctx context.Context, q ag
 	}
 	query := `SELECT ` + agentLongTermCols + `, ` + rankExpr + `
 	          FROM xbot_long_term_memories WHERE ` + strings.Join(where, " AND ") + `
-	          ORDER BY ` + agentOrderSQL(q.Order, hasQuery) + fmt.Sprintf(` LIMIT $%d`, argn+1)
+	          ORDER BY ` + pgAgentOrderSQL(q.Order, hasQuery, argn) + fmt.Sprintf(` LIMIT $%d`, argn+1)
 	args = append(args, limit)
 
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -285,7 +293,7 @@ func (s *agentMemoryStore) ListAgentLongTermMemories(ctx context.Context, q agen
 	}
 	query := `SELECT ` + agentLongTermCols + `, 0::float8 AS relevance FROM xbot_long_term_memories
 	          WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ` +
-		agentOrderSQL(q.Order, false) + fmt.Sprintf(` LIMIT $%d`, len(args)+1)
+		pgAgentOrderSQL(q.Order, false, 0) + fmt.Sprintf(` LIMIT $%d`, len(args)+1)
 	args = append(args, limit)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {

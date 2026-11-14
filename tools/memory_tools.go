@@ -234,6 +234,100 @@ func (t *RethinkTool) Execute(ctx *ToolContext, input string) (*ToolResult, erro
 	return NewResult(fmt.Sprintf("Block %s rewritten (%d chars). Reasoning logged.", args.Block, len(args.NewContent))), nil
 }
 
+// --- Core Memory Delete ---
+
+// CoreMemoryDeleteTool deletes a single core memory block's content by name
+// (2026-11-07 redesign: core blocks are no longer auto-injected, so stale
+// content must be deletable by name, not only editable).
+type CoreMemoryDeleteTool struct{}
+
+func (t *CoreMemoryDeleteTool) Name() string { return "core_memory_delete" }
+func (t *CoreMemoryDeleteTool) Description() string {
+	return "Delete (empty) a single core memory block by name: persona, human, or working_context. The block row stays but its content is removed. Use when a block's content is wrong or obsolete and should not persist."
+}
+func (t *CoreMemoryDeleteTool) Parameters() []llm.ToolParam {
+	return []llm.ToolParam{
+		{
+			Name:        "block",
+			Type:        "string",
+			Description: "Block name to delete: persona, human, or working_context",
+			Required:    true,
+		},
+	}
+}
+
+type coreMemoryDeleteArgs struct {
+	Block string `json:"block"`
+}
+
+func (t *CoreMemoryDeleteTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
+	args, err := parseToolArgs[coreMemoryDeleteArgs](input)
+	if err != nil {
+		return nil, err
+	}
+	if !isValidBlock(args.Block) {
+		return NewResult("Invalid block name. Must be: persona, human, or working_context"), nil
+	}
+
+	coreSvc := ctx.CoreMemory
+	if coreSvc == nil {
+		return NewResult("Core memory is not available (memory provider is not letta)."), nil
+	}
+
+	tenantID := ctx.TenantID
+	current, _, err := coreSvc.GetBlock(tenantID, args.Block, ctx.SenderID)
+	if err != nil {
+		return nil, fmt.Errorf("read block: %w", err)
+	}
+	if current == "" {
+		return NewResult(fmt.Sprintf("Block %s is already empty — nothing to delete.", args.Block)), nil
+	}
+
+	if err := coreSvc.ClearBlock(tenantID, args.Block, ctx.SenderID); err != nil {
+		return nil, fmt.Errorf("delete block: %w", err)
+	}
+
+	log.WithFields(log.Fields{
+		"block":       args.Block,
+		"tenant_id":   tenantID,
+		"deleted_len": len(current),
+	}).Info("Core memory block deleted via core_memory_delete")
+
+	return NewResult(fmt.Sprintf("Block %s deleted (removed %d chars of content).", args.Block, len(current))), nil
+}
+
+// --- Core Memory Clear ---
+
+// CoreMemoryClearTool clears ALL core memory blocks for this tenant
+// (persona + human + working_context).
+type CoreMemoryClearTool struct{}
+
+func (t *CoreMemoryClearTool) Name() string { return "core_memory_clear" }
+func (t *CoreMemoryClearTool) Description() string {
+	return "Clear ALL core memory blocks for this tenant (persona, human, and working_context). Destructive: every block's content is emptied. Use only when the whole core memory is polluted or a full reset is intended."
+}
+func (t *CoreMemoryClearTool) Parameters() []llm.ToolParam {
+	return []llm.ToolParam{} // no parameters
+}
+
+func (t *CoreMemoryClearTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
+	coreSvc := ctx.CoreMemory
+	if coreSvc == nil {
+		return NewResult("Core memory is not available (memory provider is not letta)."), nil
+	}
+
+	tenantID := ctx.TenantID
+	if err := coreSvc.ClearAllBlocks(tenantID, ctx.SenderID); err != nil {
+		return nil, fmt.Errorf("clear all blocks: %w", err)
+	}
+
+	log.WithFields(log.Fields{
+		"tenant_id": tenantID,
+	}).Info("All core memory blocks cleared via core_memory_clear")
+
+	return NewResult("All core memory blocks (persona, human, working_context) cleared for this tenant."), nil
+}
+
 // --- Archival Memory Insert ---
 
 // ArchivalMemoryInsertTool inserts a passage into long-term archival memory.
@@ -464,6 +558,8 @@ func LettaMemoryTools() []Tool {
 		&CoreMemoryAppendTool{},
 		&CoreMemoryReplaceTool{},
 		&RethinkTool{},
+		&CoreMemoryDeleteTool{},
+		&CoreMemoryClearTool{},
 		&ArchivalMemoryInsertTool{},
 		&ArchivalMemorySearchTool{},
 		&RecallMemorySearchTool{},

@@ -315,6 +315,5 @@ CLI connects to server's web channel WebSocket endpoint with query params:
 - `docs/agent/channel.md` — CLI, Feishu, Web, QQ adapters, deterministic rendering
 - `docs/agent/memory.md` — letta vs flat providers
 - `docs/agent/conventions.md` — error handling, logging, testing, naming
-- `docs/agent/worktree.md` — git worktree multi-agent workspace isolation
 - `docs/agent/hooks.md` — hooks lifecycle, handler types, configuration
 - `docs/agent/plugin.md` — plugin system, runtimes, RPC bridge

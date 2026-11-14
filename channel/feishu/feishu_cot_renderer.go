@@ -186,7 +186,7 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 			"messageId":  "result-" + key,
 			"toolCallId": key,
 			"role":       "tool",
-			"content":    map[string]any{"type": "code", "code": cotBoundResult(redactSensitive(body))},
+			"content":    map[string]any{"type": "code", "code": cotBoundResult(protocol.RedactFixedFormats(body))},
 		}
 		if cotToolFailed(tp.Status) {
 			// 对齐 dsh-lark：error 承载**真实错误标识**（他们用 event.data.error.code；
@@ -468,11 +468,11 @@ func (r *feishuCoTRenderer) emitToolCallLocked(tp protocol.ToolProgress, key str
 	r.cot.emit("TOOL_CALL_START", map[string]any{
 		"toolCallId":   key,
 		"icon":         cotToolIcon(tp.Name),
-		"title":        redactSensitive(cotToolTitle(tp)),
+		"title":        cotToolTitle(tp),
 		"toolCallName": tp.Name,
 	})
 	if tp.Args != "" {
-		r.cot.emit("TOOL_CALL_ARGS", map[string]any{"toolCallId": key, "delta": redactSensitive(tp.Args)})
+		r.cot.emit("TOOL_CALL_ARGS", map[string]any{"toolCallId": key, "delta": tp.Args})
 	}
 	r.cot.emit("TOOL_CALL_END", map[string]any{"toolCallId": key})
 }

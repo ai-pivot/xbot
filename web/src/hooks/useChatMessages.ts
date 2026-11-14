@@ -44,6 +44,8 @@ interface UseChatMessagesOptions {
   channel?: string
   /** If true, history is (re)loaded whenever chatID changes. */
   enabled?: boolean
+  /** 递增即触发一次 history 重拉（收件箱处置卡片后由 store bump）。 */
+  historyEpoch?: number
   /** The REST + SSE connection (injected from DockviewContext for isolated roots). */
   ws: WSConnection
   /** Whether this panel should consume live WS events. History RPC loading remains enabled separately. */
@@ -354,6 +356,7 @@ export function useChatMessages({
   onSendFail,
   onCancelSuccess,
   messageStore,
+  historyEpoch = 0,
 }: UseChatMessagesOptions): UseChatMessagesResult {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
@@ -438,6 +441,9 @@ export function useChatMessages({
   }, [store, syncMessages])
 
 
+  // 见下方「收件箱处理完 → 重拉历史」的说明。
+  // 用 window 自定义事件而不是 zustand：只有"当前挂着的会话面板"需要响应，
+  // 不引入新的全局 store 生命周期。
   // Hold ws in a ref — its methods delegate to a stable MultiSSEManager instance,
   // so we don't need ws in the reload deps. Including ws would cause an infinite
   // loop: connected changes → ws identity changes → reload changes → useEffect
@@ -651,11 +657,15 @@ export function useChatMessages({
     }
   }, [loadingMore, hasMore, channel, chatID, subAgentRole, parentChatID, agentChatID])
 
-  // Load history when the chatID changes (or on first enable).
+  // Load history when the chatID changes, on first enable, **or when historyEpoch
+  // 递增**（收件箱里处置过卡片 ⇒ 本会话的回答/决策行已落库，但前端还是旧快照）。
+  // 路由从 /structured 切回来时 enabled/chatID/reload 都不变，所以必须显式给一个
+  // epoch 依赖，否则用户得手动刷新才能看到正确状态（2026-11-11 实测）。
   useLayoutEffect(() => {
     if (!enabled) return
     void reload()
-  }, [enabled, chatID, reload])
+  }, [enabled, chatID, reload, historyEpoch])
+
 
   // Echo back user messages the server re-serializes (e.g. with file info).
   // The server sends both `content` (with file markdown) and `original_content`

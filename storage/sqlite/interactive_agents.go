@@ -201,14 +201,34 @@ func (s *InteractiveAgentService) MarkOrphanedIdleUnloaded(liveKeys []string) (i
 
 	// interactive_agents 与 tenants 都在主库（PG 后端没有 interactive_agents，
 	// 见 serverapp/callbacks.go 的注释），所以这里可以直连 tenants 判定会话是否还在。
+	//
+	// ⛔ 2026-11-04 P0（重启后首辅的手下全部消失）：会话 key 必须与
+	// restoreMapKey / interactiveKey **逐字同构** —— 后者用的是
+	// `originChatID`（= parent_chat_id 里**第一个 '/' 之前**那一段），
+	// 而不是 parent_chat_id 全串。旧 SQL 直接用全串，于是所有**孙代理**
+	// （parent_chat_id 形如 "web-4/court.shoufu:main"）都被拼成
+	//   web:web-4/court.shoufu:main/court.gongbu:mixed-lora-upstream   ← 不存在
+	// 而真实租户是
+	//   web:web-4/court.gongbu:mixed-lora-upstream                     ← 存在
+	// ⇒ 判据永远 NOT EXISTS ⇒ 每次启动都把**活着的孙代理**标 unloaded
+	// ⇒ restoreInteractiveTree 跳过 unloaded ⇒ 重启后整棵树只剩第一层。
+	// 线上实证（2026-11-04 09:12:09）：mixed-lora-upstream / mixed-lora-ourown
+	// 两行被标 unloaded，而它们的会话库（622KB）与 tenants 行都完好无损。
 	const stmt = `UPDATE interactive_agents SET status = ?, updated_at = ?
 	               WHERE status = ?
 	                 AND NOT EXISTS (
 	                       SELECT 1 FROM tenants t
 	                        WHERE t.channel = 'agent'
-	                          AND t.chat_id = interactive_agents.parent_channel || ':' || interactive_agents.parent_chat_id
-	                                        || '/' || interactive_agents.role_name
-	                                        || CASE WHEN interactive_agents.instance <> '' THEN ':' || interactive_agents.instance ELSE '' END)`
+	                          AND (t.chat_id = interactive_agents.parent_channel || ':' || interactive_agents.parent_chat_id
+                                      || '/' || interactive_agents.role_name
+                                      || CASE WHEN interactive_agents.instance <> '' THEN ':' || interactive_agents.instance ELSE '' END
+                               OR t.chat_id = interactive_agents.parent_channel || ':' ||
+	                              CASE WHEN instr(interactive_agents.parent_chat_id, '/') > 0
+	                                   THEN substr(interactive_agents.parent_chat_id, 1,
+	                                               instr(interactive_agents.parent_chat_id, '/') - 1)
+	                                   ELSE interactive_agents.parent_chat_id END
+	                              || '/' || interactive_agents.role_name
+	                              || CASE WHEN interactive_agents.instance <> '' THEN ':' || interactive_agents.instance ELSE '' END))`
 
 	if len(liveKeys) == 0 {
 		res, err := s.db.Exec(stmt, InteractiveAgentUnloaded, now, InteractiveAgentIdle)

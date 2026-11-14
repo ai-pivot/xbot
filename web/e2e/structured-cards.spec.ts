@@ -96,7 +96,10 @@ test.describe('结构化消息卡片', () => {
 
     await card.getByRole('radio').nth(2).check()
     await card.getByTestId('ask-user-submit').click()
-    await expect(page.getByTestId('answer-card').filter({ hasText: 'q1:modify' }).first()).toBeVisible()
+    // 2026-11-11：answerText 改用 option 的 **label** 落库 —— 旧实现拼
+    // `questionId:optionId`，用户在历史里看到 "q1:modify" 这种内部代号读不懂。
+    // 这里断言用户点击时看到的文字「改」。
+    await expect(page.getByTestId('answer-card').filter({ hasText: '改' }).first()).toBeVisible()
     await expect(card.getByText('已回答')).toBeVisible()
     await expect(card.getByRole('radio').first()).toBeDisabled()
   })

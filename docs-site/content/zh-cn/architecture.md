@@ -79,7 +79,7 @@ xbot/
 ├── storage/
 │   ├── sqlite/              # SQLite 数据服务层
 │   └── vectordb/            # 向量数据库（chromem-go）
-├── tools/                   # 工具系统（含 Worktree、config、tui_control 等 AI-Native 工具）
+├── tools/                   # 工具系统（含 config、tui_control 等 AI-Native 工具）
 ├── plugin/                  # 插件系统（RPC 桥接、运行时、扩展点）
 ├── internal/
 │   ├── runnerclient/        # Runner 客户端（Runner 端使用）
@@ -426,7 +426,7 @@ type MemoryProvider interface {
 | **搜索** | WebSearch, ChatHistory |
 | **记忆** | memory_write, memory_list (flat), core_memory_*, archival_memory_*, recall_memory_search (letta) |
 | **上下文管理** | offload_recall, recall_masked, context_edit |
-| **SubAgent & 协作** | SubAgent（一次性 + Interactive）, CreateChat, SendMessage, Worktree |
+| **SubAgent & 协作** | SubAgent（一次性 + Interactive）, CreateChat, SendMessage |
 | **Skill/Agent** | Skill, ManageTools, search_tools |
 | **AI-Native 配置** | config（AI 读写配置）, tui_control（AI 操作 TUI 界面） |
 | **卡片** | card_create, card_add_content, card_add_interactive, card_add_container, card_preview, card_send |

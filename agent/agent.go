@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent/hooks"
 	"xbot/bus"
@@ -37,6 +38,34 @@ import (
 )
 
 // ErrLLMGenerate 表示 LLM 生成调用失败（网络、API 4xx/5xx 等）
+// isExternalDependencyFailure reports whether err looks like a network-layer
+// failure to reach an upstream service (model endpoint, remote API) rather than
+// a defect in this process.
+//
+// 判据只看传输层特征串：进程没有任何代码路径能"制造"一次 i/o timeout，
+// 出现它就意味着目标主机/端口不可达。这类事件该被记录、该告警，但不该占用
+// 程序错误（level=error）的信用额度。
+func isExternalDependencyFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, sig := range []string{
+		"i/o timeout",
+		"connection refused",
+		"connection reset by peer",
+		"no such host",
+		"network is unreachable",
+		"tls handshake timeout",
+		"context deadline exceeded",
+	} {
+		if strings.Contains(s, sig) {
+			return true
+		}
+	}
+	return false
+}
+
 var ErrLLMGenerate = errors.New("LLM generate failed")
 
 // assertNoSystemPersist checks that a system message is not being persisted to session.
@@ -710,6 +739,10 @@ type Agent struct {
 type pendingAskUserEntry struct {
 	mu      sync.RWMutex
 	pending *protocol.ProgressEvent
+	// createdAt 是这条待答提问的登记时间（D-03）。只有超过 pendingAskUserTTL
+	// 的入口才算「陈旧」，才允许被下一轮自动收回；新鲜的提问不得因为用户插了
+	// 一句话就被静默取消（旧行为见 autoResolveStalePendingAskUser）。
+	createdAt time.Time
 	// authRecordID is the id of the persisted ask_question control record
 	// this in-memory copy corresponds to (0 until first validated). The
 	// persisted ask_question/ask_answer records are the SINGLE authority:
@@ -1328,7 +1361,7 @@ func (a *Agent) setPendingAskUser(ch, chatID string, pending *protocol.ProgressE
 	}
 	key := qualifyChatID(ch, chatID)
 	for {
-		fresh := &pendingAskUserEntry{pending: clonePendingAskUser(pending)}
+		fresh := &pendingAskUserEntry{pending: clonePendingAskUser(pending), createdAt: time.Now()}
 		value, loaded := a.waitingUserSessions.LoadOrStore(key, fresh)
 		if !loaded {
 			return
@@ -1341,6 +1374,7 @@ func (a *Agent) setPendingAskUser(ch, chatID string, pending *protocol.ProgressE
 			continue
 		}
 		entry.pending = clonePendingAskUser(pending)
+		entry.createdAt = time.Now()
 		entry.mu.Unlock()
 		return
 	}
@@ -1499,7 +1533,14 @@ func (a *Agent) broadcastAskUserResolved(ch, chatID, requestID, reason string) {
 	if a.channelRange == nil {
 		return
 	}
-	ev := protocol.AskUserResolvedEvent{Channel: ch, ChatID: chatID, RequestID: requestID, Reason: reason}
+	// TTL 收回对外仍是 Reason="cancelled"（保持既有客户端语义不变），
+	// 但额外带上 CancelReason="ttl_expired" —— 用户/日志能分清"我取消的"与
+	// "超时被关掉的"（D-03 契约，别再靠文案区分）。
+	reasonOut, cancelReason := reason, ""
+	if reason == "ttl_expired" {
+		reasonOut, cancelReason = "cancelled", "ttl_expired"
+	}
+	ev := protocol.AskUserResolvedEvent{Channel: ch, ChatID: chatID, RequestID: requestID, Reason: reasonOut, CancelReason: cancelReason}
 	a.channelRange(func(_ string, c channel.Channel) bool {
 		if sender, ok := c.(channel.AskUserResolvedSender); ok {
 			sender.SendAskUserResolved(ev)
@@ -1508,26 +1549,122 @@ func (a *Agent) broadcastAskUserResolved(ch, chatID, requestID, reason string) {
 	})
 }
 
-// autoResolveStalePendingAskUser closes the "busy ⇒ no pending" invariant:
-// a turn is starting while the session still has a pending AskUser prompt
-// (the user moved on with a new message, or a stale entry survived a race).
-// The DB pairing (ask_answer "[cancelled]") is written FIRST so the persisted
-// state no longer shows a pending question — otherwise Replay would
-// resurrect the prompt on the next reconnect. Then memory + clients are
-// invalidated via resolvePendingAskUser("cancelled").
+// pendingAskUserTTL 是待答提问的自动收回时限（D-03）。
+//
+// 语义：提问是工单，只有三个出口能收敛它 —— 显式回答、显式取消（/cancel、/stop）、
+// 超时。用户插一句话（新 turn 开始）**不是**出口：旧实现让插话直接 auto-cancel
+// 提问并写一条 [cancelled]，提问从收件箱消失，用户再也答不上（D-03 缺陷本体）。
+//
+// 时限存在的理由：pending 期间 handleBgNotifySignal 会拦住通知排空（提问期间
+// 不应被后台通知打断），所以必须给"没人答"的提问一个上界，否则通知永久滞留。
+//
+// 默认 30 分钟；测试/演练可用 XBOT_PENDING_ASK_TTL 注入更短的时限（如 5s），
+// 生产不设该变量即走默认。改动只影响"多久算陈旧"，不影响"插话不作废"这条语义。
+const defaultPendingAskUserTTL = 30 * time.Minute
+
+var pendingAskUserTTL = pendingAskUserTTLFromEnv()
+
+// askUserClock 是 AskUser TTL 判定唯一允许使用的时钟（D-03 边界判据的注入点）。
+//
+// 生产路径永远走 time.Now（init 里装好，没有任何代码会改它）；只有测试用
+// setAskUserNowForTest 临时替换，用来在没有 sleep、没有真实时钟的情况下断言
+// TTL 的纳秒级边界（TTL-1ns / TTL / TTL+1ns）。
+//
+// 为什么是 atomic.Pointer 而不是裸 `var askUserNow = time.Now`：
+// chatProcessLoop 与 handleBgNotifySignal 跑在不同的 goroutine 里，都会读这个
+// 时钟；裸变量在测试里替换就是数据竞争（-race 会直接报）。存函数指针后，
+// 读侧只有一次原子 Load，热路径开销可忽略。
+var askUserClock atomic.Pointer[func() time.Time]
+
+func init() {
+	now := time.Now
+	askUserClock.Store(&now)
+}
+
+// askUserNow 返回当前时间。所有 TTL 判断都必须走它，不许直接 time.Now/time.Since，
+// 否则注入时钟的边界判据会漏掉那条路径（两条路径必须是同一语义）。
+func askUserNow() time.Time {
+	return (*askUserClock.Load())()
+}
+
+// setAskUserNowForTest 替换时钟并返回还原函数。仅供测试使用。
+func setAskUserNowForTest(f func() time.Time) (restore func()) {
+	old := askUserClock.Load()
+	askUserClock.Store(&f)
+	return func() { askUserClock.Store(old) }
+}
+
+func pendingAskUserTTLFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("XBOT_PENDING_ASK_TTL"))
+	if raw == "" {
+		return defaultPendingAskUserTTL
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.WithField("raw", raw).Warn("Invalid XBOT_PENDING_ASK_TTL, falling back to 30m")
+		return defaultPendingAskUserTTL
+	}
+	return d
+}
+
+// autoResolveStalePendingAskUser 收回**陈旧**的待答提问（D-03 后语义收窄）。
+//
+// 旧语义：只要下一个 turn 开始、且 session 上还有 pending，就当"用户已经走开了"，
+// 立刻写 ask_answer "[cancelled]" 并 resolvePendingAskUser("cancelled")。用户插一句话
+// 就会把刚问出来的问题静默作废（D-03）。
+//
+// 新语义：pending 只在这三种情况下收敛 —— 显式回答、显式取消、超过
+// pendingAskUserTTL 未答。本函数只负责第三种：新鲜提问一律保留原样返回，
+// 什么都不写、什么都不广播。
+//
+// DB pairing 仍然写 FIRST（ask_answer "[cancelled]"），否则 Replay 会在重连时把
+// 已作废的提问复活。
 func (a *Agent) autoResolveStalePendingAskUser(ch, chatID string) {
 	if !a.HasPendingAskUserFast(ch, chatID) {
 		return
 	}
+	key := qualifyChatID(ch, chatID)
+	value, ok := a.waitingUserSessions.Load(key)
+	if !ok {
+		return
+	}
+	entry := value.(*pendingAskUserEntry)
+	entry.mu.RLock()
+	createdAt := entry.createdAt
+	entry.mu.RUnlock()
+	age := askUserNow().Sub(createdAt)
+	// 零值（老版本写入/测试直接构造）视为新鲜：宁可留着让用户答，也不静默丢弃。
+	// 边界语义：age < pendingAskUserTTL 保留，age == pendingAskUserTTL 即收回
+	// （严格小于；改成 <= 会让 TTL 变成「多留 1ns」，且与 hasBlockingPendingAskUser
+	// 的语义分叉 —— 两条路径必须同一语义，见 TestAskUserTTLBoundaryInjectedClock）。
+	if createdAt.IsZero() || age < pendingAskUserTTL {
+		log.WithFields(log.Fields{
+			"channel": ch, "chat_id": chatID,
+			"age": age.String(), "ttl": pendingAskUserTTL.String(),
+		}).Info("Keeping fresh pending AskUser across a new turn (D-03)")
+		return
+	}
+	log.WithFields(log.Fields{
+		"channel": ch, "chat_id": chatID, "age": age.String(),
+	}).Info("Auto-cancelling stale pending AskUser (TTL expired)")
 	if a.multiSession != nil {
 		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
-			if _, err := sess.AppendAskAnswer("[cancelled]"); err != nil {
+			// 用户可见的记录（不只写个 [cancelled] 记号）：超时收回必须在历史里
+			// 留下「为什么关掉」的一句话，否则提问就是悄悄没了。
+			if _, err := sess.AppendAskAnswer("[cancelled] 该提问因超时未回答已关闭（ttl_expired）"); err != nil {
 				log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
 					Warn("Failed to append ask_answer pairing for auto-cancelled AskUser")
 			}
+			// 结构化提问也要一起收尾（D-03 known-behavior）：
+			// 内存 pending 只覆盖 AskUser 工具那条链路；/api/message kind=ask_user
+			// 在收件箱里是一行 session_messages 记录。只清内存不置 cancelled，
+			// 用户就会在收件箱里看到一条「还挂着、但永远答不上」的提问——那正是
+			// 「静默蒸发」的另一种形态。这里把该会话所有仍未答/未取消的
+			// ask_user 行按 correlation_id 逐条取消（幂等，已取消的跳过）。
+			cancelOpenStructuredAsks(sess, chatID)
 		}
 	}
-	a.resolvePendingAskUser(ch, chatID, "cancelled")
+	a.resolvePendingAskUser(ch, chatID, "ttl_expired")
 }
 
 func clonePendingAskUser(pending *protocol.ProgressEvent) *protocol.ProgressEvent {
@@ -1569,7 +1706,7 @@ func isCancelCommand(content string) bool {
 }
 
 func (a *Agent) interceptCancel(msg bus.InboundMessage) {
-	cancelKey := msg.Channel + ":" + msg.ChatID
+	cancelKey := sessionaddr.Key(msg.Channel, msg.ChatID)
 	log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
 	a.cancelStateMu.Lock()
 	if ch, ok := a.chatCancelCh.Load(cancelKey); ok {
@@ -1633,13 +1770,12 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		// 会话状态永停在 waiting/running ⇒ 输入框卡 busy（用户 2026-09-28：
 		// 「askuser 在被用户取消后，前端还是渲染为 busy」）。
 		//
-		// ss.busy 仍显式复位（幂等）以覆盖旧版残留 busy=true 的窗口；worktree 的
-		// busy 标记同理。SenderID: session owner —— 漏填时对 web 渠道走无过滤
+		// ss.busy 仍显式复位（幂等）以覆盖旧版残留 busy=true 的窗口。
+		// SenderID: session owner —— 漏填时对 web 渠道走无过滤
 		// fan-out 分支（广播给所有用户，多用data署下暴露会话元数据）。取消者 = 会话 owner。
 		if state, ok := a.bgSessionStates.Load(cancelKey); ok {
 			state.(*bgSessionState).busy.Store(false)
 		}
-		tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
 		a.emitSessionIdleIfNoActiveRun(cancelKey, msg.Channel, msg.ChatID, msg.SenderID)
 		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
@@ -1777,7 +1913,7 @@ func (a *Agent) ActiveRunDone(ch, chatID string) (<-chan struct{}, bool) {
 	if ch == "" || chatID == "" {
 		return nil, false
 	}
-	cancelKey := ch + ":" + chatID
+	cancelKey := sessionaddr.Key(ch, chatID)
 	a.cancelStateMu.Lock()
 	defer a.cancelStateMu.Unlock()
 	if _, active := a.chatCancelCh.Load(cancelKey); !active {
@@ -2002,10 +2138,6 @@ type Config struct {
 	PluginEnabled         bool     // Enable plugin system
 	PluginDirs            []string // Additional plugin directories
 	PluginDisabledPlugins []string // Plugin IDs to disable
-
-	// AutoWorktree enables automatic git worktree creation when multiple
-	// sessions share the same repo. Set from config.Agent.Experimental.AutoWorktree.
-	AutoWorktree bool
 
 	// CLISenderID is the sender_id used for CLI channel DB operations (default: "cli_user").
 	CLISenderID string
@@ -2390,8 +2522,12 @@ func New(cfg Config) (*Agent, error) {
 		hookManager: func() *hooks.Manager {
 			mgr, err := hooks.NewManager(cfg.XbotHome, cfg.WorkDir)
 			if err != nil {
-				log.WithError(err).Warn("Failed to load hooks config, using empty manager")
-				mgr, _ = hooks.NewManager(cfg.XbotHome, cfg.WorkDir)
+				// 配置坏了只让 hooks 失效，不能让整个 agent 起不来。
+				// 旧实现打一条 WARN 后又调了一次 NewManager —— 同参数同输入必然
+				// 同样失败，于是这里返回 nil，紧接着 5b 段 RegisterBuiltin 就
+				// nil deref panic（实测：hooks.json 写成 {"hooks":[]}，退出码 2）。
+				log.WithError(err).Warn("Failed to load hooks config — continuing with an empty hook manager; hooks stay disabled until the file is fixed")
+				return hooks.NewEmptyManager(cfg.XbotHome, cfg.WorkDir)
 			}
 			return mgr
 		}(),
@@ -2892,7 +3028,7 @@ func (a *Agent) wantsPreReplyNotify(channelName string) bool {
 // used by TUI session filtering (handleInjectedUserMsg). All inject paths must
 // use this helper instead of inline string concatenation.
 func qualifyChatID(channel, chatID string) string {
-	return channel + ":" + chatID
+	return sessionaddr.Key(channel, chatID)
 }
 
 // ensureCheckpointStore creates a per-session CheckpointStore if one doesn't
@@ -2965,7 +3101,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// nil 守卫：PG 后端不初始化 cron（见 initServices）—— 无调度器可启动。
 	if a.cronSch != nil {
 		a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
-			sessionKey := channel + ":" + chatID
+			sessionKey := sessionaddr.Key(channel, chatID)
 			// nil-guard: bare &Agent{} construction (no New() Store) must not
 			// panic on a cron trigger — same contract as the interactive.go read
 			// sites. Normal chain stores the manager before cron starts.
@@ -3048,7 +3184,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				continue
 			}
 
-			key := msg.Channel + ":" + msg.ChatID
+			key := sessionaddr.Key(msg.Channel, msg.ChatID)
 			q := getOrCreateQueue(key)
 			select {
 			case q <- msg:
@@ -3460,7 +3596,7 @@ func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
 		return
 	}
 	if parts := strings.SplitN(chatKey, ":", 2); len(parts) == 2 {
-		if a.HasPendingAskUserFast(parts[0], parts[1]) {
+		if a.hasBlockingPendingAskUser(parts[0], parts[1]) {
 			return
 		}
 	}
@@ -3544,15 +3680,11 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 
 			// Mark session busy so chatWorker skips notification drain
 			ss.busy.Store(true)
-			// 同步 worktree registry：该 session 正在迭代中（peer 协作提示依据，
-			// busy/idle = 是否在迭代中，而非时间推断）。
-			tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), true)
-			// Invariant: busy ⇒ no pending AskUser. A turn starting while the
-			// session still holds a pending prompt means the user moved on (or
-			// a stale entry survived a race) — the prompt is moot and must be
-			// resolved before the new turn runs. The AskUser ANSWER is exempt:
-			// it resolves its own prompt after the ask_answer record lands
-			// (processMessage → resolvePendingAskUser "answered").
+			// D-03：新 turn 开始**不再**意味着待答提问作废。
+			// 旧 invariant「busy ⇒ no pending」让用户插一句话就把刚问出来的问题静默
+			// cancel 掉（提问从收件箱消失、用户再也答不上）。现在这里只做一件事：
+			// 把**超时未答**的提问收回（pendingAskUserTTL），新鲜提问原样保留。
+			// AskUser ANSWER 仍然免检：它落完 ask_answer 记录后自己 resolve("answered")。
 			if msg.Metadata == nil || msg.Metadata["ask_user_answered"] != "true" {
 				a.autoResolveStalePendingAskUser(msg.Channel, msg.ChatID)
 			}
@@ -3638,7 +3770,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			case sem <- struct{}{}:
 			case <-ctx.Done():
 				ss.busy.Store(false)
-				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return false
 			}
 
@@ -3647,7 +3778,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			var err error
 			cancelCh := make(chan struct{}, 1)
 			// cancelKey 仅用 channel:chatID（不含 senderID），与 /cancel 拦截处保持一致
-			cancelKey := msg.Channel + ":" + msg.ChatID
+			cancelKey := sessionaddr.Key(msg.Channel, msg.ChatID)
 			reqCtx, reqCancel := context.WithCancel(ctx)
 			hadPending := a.registerActiveCancelState(cancelKey, cancelCh, reqCancel)
 
@@ -3711,7 +3842,12 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					// iterations from before the AskUser call to disappear. Also
 					// preserve lastProgressSnapshot + iterationHistories so SSE
 					// reconnect can recover the in-flight turn.
-					isWaitingUser := response != nil && response.WaitingUser
+					// ⛔ 2026-11-04 P0（用户实测：取消后前端永久卡 busy）：
+					// **取消 ≠ 暂停**。被 /cancel 时 response 里仍可能带着 AskUser 的
+					// WaitingUser=true，旧判据据此跳过 session(idle)，而 engine 侧也因
+					// waitingUser 吞掉 PhaseDone ⇒ 前端收不到任何「本轮结束」信号。
+					// 已取消的轮次必须收尾。
+					isWaitingUser := isWaitingUserPause(response, wasCancelled)
 					if !isWaitingUser {
 						// ⛔ 只有"仍是当前轮"才发 idle：迟到的旧轮收尾不得把新一轮误标 idle
 						a.emitSessionIdleIfCurrent(cancelKey, msg.Channel, msg.ChatID, msg.SenderID, runGen)
@@ -3765,12 +3901,21 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				// pending bg notifications in the interrupted turn, without starting a
 				// fresh bg-notification turn after the cancel ack.
 				ss.busy.Store(false)
-				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return true
 			}
 
 			if err != nil {
-				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": chatKey}).WithError(err).Error("Error processing message")
+				// 分类：外部依赖不可达（DNS/TCP 层）是运维问题，不是程序缺陷。
+				// 皇上定的基线是「日志零 error」——若把"订阅指向的集群挂了"也记成
+				// error，那条基线永远红，真正的程序缺陷就被淹在噪声里。所以网络类
+				// 失败记 WARN（仍然带完整 attempts/URL，不静默），其余一律 ERROR。
+				fields := log.Fields{"request_id": msg.RequestID, "chat": chatKey}
+				if isExternalDependencyFailure(err) {
+					log.WithFields(fields).WithError(err).
+						Warn("Error processing message: external dependency unreachable (model endpoint down?) — message still reported to the user")
+				} else {
+					log.WithFields(fields).WithError(err).Error("Error processing message")
+				}
 				// 走 sendMessage 与正常回复同一路径：可 Patch 已发出的进度条为错误内容，避免错误静默不达用户
 				content := formatErrorForUser(err)
 				if sendErr := a.sendMessage(msg.Channel, msg.ChatID, content); sendErr != nil {
@@ -3787,7 +3932,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				// append succeeds. Put any unacknowledged items back before retrying.
 				a.requeueDrainedBgNotifications(chatKey)
 				ss.busy.Store(false)
-				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				a.drainAndProcessNotifications(chatKey)
 				return true
 			}
@@ -3832,7 +3976,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// Remote sandbox 连接应保持常驻，不做 idle 清理
 			if a.sandboxIdleTimeout > 0 && lastSenderID != "" {
 				// Skip idle cleanup for remote sandbox — the runner connection should be persistent
-				if !a.isRemoteUser(msg.Channel + ":" + msg.ChatID) {
+				if !a.isRemoteUser(sessionaddr.Key(msg.Channel, msg.ChatID)) {
 					idleTimer = time.AfterFunc(a.sandboxIdleTimeout, func() {
 						if err := a.sandbox.CloseForUser(lastSenderID); err != nil {
 							log.WithError(err).Warnf("Idle sandbox cleanup failed for user %s", lastSenderID)
@@ -3860,12 +4004,10 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 				// property is preserved by handleBgNotifySignal's pending check,
 				// not by busy.
 				ss.busy.Store(false)
-				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return true
 			}
 			ss.clearDrainedThisRun()
 			ss.busy.Store(false)
-			tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 			a.drainAndProcessNotifications(chatKey)
 			return true
 		}()
@@ -3873,6 +4015,23 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			return
 		}
 	}
+}
+
+// isWaitingUserPause 判定收尾时是否应把本轮视为「暂停等用户回答」（而非结束）。
+//
+// true  ⇒ **不发** session(idle)，保留进度快照（AskUser 问句还在等回答）；
+// false ⇒ 正常收尾。
+//
+// ⛔ 2026-11-04 P0（用户实测：取消 goal / 取消 AskUser 后前端永久卡 busy）：
+// 被 /cancel 的轮次里 response 仍可能带着 AskUser 的 WaitingUser=true，
+// 旧判据据此跳过了 session(idle)，而 engine 的 progressFinalizer 又因
+// s.waitingUser 吞掉 PhaseDone ⇒ 前端收不到任何「本轮结束」信号，永久 typing。
+// **取消 ≠ 暂停**：取消必须收尾。
+func isWaitingUserPause(response *channel.OutboundMsg, wasCancelled bool) bool {
+	if wasCancelled {
+		return false
+	}
+	return response != nil && response.WaitingUser
 }
 
 // processMessage 处理单条入站消息
@@ -4405,31 +4564,6 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	sessKey := qualifyChatID(msg.Channel, msg.ChatID)
 	sbUID := sandboxUserID(msg)
 	workspaceRoot := a.workspaceRoot(sbUID)
-	detectDir := tenantSession.GetCurrentDir()
-	if detectDir == "" {
-		detectDir = workspaceRoot
-	}
-	// Peer awareness / auto worktree: register this session for collaboration.
-	// When auto_worktree is enabled, every session gets its own git worktree (no primary).
-	// When disabled, RegisterPeer provides lightweight in-memory session tracking.
-	// UserContext already resolved settings in middleware — read from there.
-	// AutoDetectAndInit is idempotent: returns existing entry if session already registered.
-	if userCtx != nil && userCtx.GetSettingBool("auto_worktree") {
-		if tools.GlobalWorktreeRegistry.GetBySession(sessKey) == nil {
-			if entry, created := tools.AutoDetectAndInit(detectDir, sessKey); entry != nil && entry.WorktreeDir != "" {
-				// Only override CWD for brand new worktrees (first creation).
-				// On restart, AutoDetectAndInit returns existing entry with created=false,
-				// so the user's last CWD (restored by loadPersistedCWD) is preserved —
-				// even if they Cd'd out of the worktree.
-				if created {
-					tenantSession.SetCurrentDir(entry.WorktreeDir)
-				}
-			}
-		}
-	} else {
-		tools.GlobalWorktreeRegistry.RegisterPeer(sessKey, detectDir)
-	}
-
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.
 	history = llm.SanitizeMessages(history)
@@ -4445,45 +4579,17 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 
 	promptWorkDir := a.workDir
-	if ws := a.remoteWorkspace(msg.Channel + ":" + msg.ChatID); ws != "" {
+	if ws := a.remoteWorkspace(sessionaddr.Key(msg.Channel, msg.ChatID)); ws != "" {
 		promptWorkDir = ws
 	}
 
-	// For worktree sessions, override promptWorkDir with the worktree path.
-	// The system prompt shows promptWorkDir as the main "工作目录", so the
-	// agent must see the worktree path here to know where it's working.
-	//
-	// SAFETY: Verify the worktree actually belongs to this session.
-	// A stale worktree path from a deleted/recreated session must NOT
-	// be used — it would put the agent in an orphaned directory.
 	cwd := tenantSession.GetCurrentDir()
-	if cwd != "" && strings.Contains(cwd, ".xbot-worktrees") {
-		// Verify ownership: the worktree must be registered to this session
-		if wtEntry := tools.GlobalWorktreeRegistry.GetBySession(sessKey); wtEntry != nil && wtEntry.WorktreeDir != "" {
-			// CWD must be inside the registered worktree (or exactly match it)
-			if cwd == wtEntry.WorktreeDir || strings.HasPrefix(cwd, wtEntry.WorktreeDir+string(os.PathSeparator)) {
-				promptWorkDir = cwd
-			} else {
-				// CWD points to a DIFFERENT worktree than what's registered.
-				// This is a stale state leak — reset to workspace root.
-				log.WithFields(log.Fields{
-					"session":    sessKey,
-					"cwd":        cwd,
-					"registered": wtEntry.WorktreeDir,
-				}).Warn("CWD points to unowned worktree, resetting to workspace root")
-				tenantSession.SetCurrentDir(workspaceRoot)
-				cwd = workspaceRoot
-			}
-		} else {
-			// No worktree registered for this session, but CWD is in a worktree.
-			// This is a stale state leak from a previous session — reset.
-			log.WithFields(log.Fields{
-				"session": sessKey,
-				"cwd":     cwd,
-			}).Warn("Session has worktree CWD but no registry entry, resetting to workspace root")
-			tenantSession.SetCurrentDir(workspaceRoot)
-			cwd = workspaceRoot
-		}
+	// 持久化 CWD 已失效（目录被删/移走/回收）⇒ 复位到 workspaceRoot。
+	// 不做这一步，该会话每一次 Shell 都会硬失败（issue #457 的症状），agent 连
+	// pwd/ls 都跑不了。判据只看"目录是否真的存在"，与任何具体工具无关。
+	// 仅对宿主可见路径生效：沙箱会话的 CWD 是沙箱内路径，宿主看不到。
+	if a.cwdIsHostPath(sessKey) {
+		cwd = resetStaleCWD(tenantSession, sessKey, workspaceRoot)
 	}
 
 	mc := NewMessageContext(
@@ -5094,6 +5200,11 @@ func (a *Agent) InjectInboundResume(channel, chatID, senderID string) {
 }
 
 func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content string, metadata map[string]string) {
+	if a.bus == nil || a.bus.Inbound == nil {
+		// bare &Agent{} / 未注入 bus 的构造：通知无处可投，记日志而不是 panic。
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).Warn("injectInbound: no bus configured, dropping message")
+		return
+	}
 	msg := bus.InboundMessage{
 		Channel:   channel,
 		SenderID:  senderID,
@@ -5103,9 +5214,15 @@ func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content str
 		Time:      time.Now(),
 		RequestID: log.NewRequestID(),
 	}
+	// agentCtx 只在 Run() 里创建：未 Run 的 agent（典型场景是单测直接构造的
+	// 最小 agent）不能因此 panic —— 入站队列是缓冲通道，投递本身是安全的。
+	var done <-chan struct{}
+	if a.agentCtx != nil {
+		done = a.agentCtx.Done()
+	}
 	select {
 	case a.bus.Inbound <- msg:
-	case <-a.agentCtx.Done():
+	case <-done:
 		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).Warn("injectInbound: agent context done, dropping message")
 	}
 }
@@ -5154,8 +5271,62 @@ func (a *Agent) bgNotifyLoop() {
 			if !ok {
 				return
 			}
+			// ⛔ 2026-10-26「progress 刷屏」bug：
+			// SubAgentBgNotifyProgress 被无条件 buffer + 投递给父会话，而父会话每收到
+			// 一条就会起一轮 Run ⇒ 子代理每迭代一次，父代理就空跑一轮 LLM。
+			// 实测：首辅在 40 秒内被灌了 6 条 progress，间隔 10-20 秒，无限刷。
+			// 进度通知的消费方只有 UI（由 OnIterationSnapshot 的进度回调推送），
+			// 不该进任何 agent 的 LLM 上下文。这里直接丢弃。
+			if n, ok := notif.(*tools.SubAgentBgNotify); ok && n.Type == tools.SubAgentBgNotifyProgress {
+				continue
+			}
+
 			// Always buffer first
 			a.enqueueBgNotification(notif)
+
+			// Shell/task completions belong to the exact creator session. Never
+			// confuse them with a child's explicit report to its parent.
+			if a.routeBackgroundTaskToOwner(notif) {
+				continue
+			}
+
+			// ① cron 的子代理归属（tools/cron.go 的 cronOwnership）：
+			// job.Channel="agent"、job.ChatID=<interactive key> ⇒ 这条到期的
+			// 定时任务属于创建它的子代理会话。**若该会话还活着**（持久
+			// interactive 子代理），必须投进那个 interactive session（以子代理身份
+			// 起一轮 Run）；若交给下面的通用 bgRunPending → bus.Inbound 路径，
+			// chatWorker 会用主 Agent 的 RunConfig（buildMainRunConfig:
+			// AgentID="main"、a.tools）在同一个 tenant session 里跑，子代理的
+			// system prompt / 工具集全丢。
+			// 会话已不在内存（one-shot 已销毁 / TTL 回收 / unload / 重启）时返回
+			// false，回落通用路径 —— **执行者是主 Agent**（不是"以子代理身份续跑"），
+			// 回落点有 INFO 日志（session_key + reason + executor=main agent）。
+			if c, ok := notif.(*tools.CronFired); ok {
+				if a.deliverCronFiredToSubAgentSession(c) {
+					continue
+				}
+			}
+
+			// ① 先看这条通知是谁派发的：ParentKey 指向一个仍在的 interactive
+			// session（例如首辅派出的工部），就投给那个会话，由它继续处理。
+			// 旧实现把 Key 设为 originChannel:originChatID，而嵌套 spawn 的
+			// origin 继承自主会话 ⇒ 通知越级注入主会话，父 agent 永远收不到
+			// 自己派活的结果（2026-10-26 实测：工部交付完成，首辅全程 idle）。
+			if n, ok := notif.(*tools.SubAgentBgNotify); ok && n.ParentKey != "" {
+				if _, live := a.interactiveSubAgents.Load(n.ParentKey); live {
+					// 已交给父会话，不要在主会话再排一次
+					a.deliverNotifyToParentSession(n)
+					continue
+				}
+				// 父会话已被 TTL/unload 回收：落回它所属的 origin 会话。
+				// 绝不能拿 parentKey 当 chatID 交给下游（SplitN(":",2) 会切出
+				// "chat2/court.shoufu:main" 这种畸形会话，通知等于丢）。
+				if ch, chat, _, _ := parseInteractiveKeyTail(n.ParentKey); ch != "" && chat != "" {
+					a.takePendingBgNotifications(n.ParentKey)
+					n.Key = sessionaddr.Key(ch, chat)
+					a.enqueueBgNotification(n)
+				}
+			}
 
 			sessionKey := notif.SessionKey()
 			if state, ok := a.bgSessionStates.Load(sessionKey); ok {
@@ -5175,6 +5346,202 @@ func (a *Agent) bgNotifyLoop() {
 	}
 }
 
+// splitCronSubAgentTarget 判断 cron 通知的目标会话（"channel:chatID"）是否是
+// 子代理会话，是则解出 (父 channel, 父 chatID, role, instance)。
+//
+// 子代理 job 的归属形态由 tools/cron.go 的 cronOwnership 定义：
+// channel="agent"、chatID=<interactive key>，其中 interactive key 形如
+// "web:web-4/court.gongbu:inst-1"（agent/interactive.go 的 interactiveKey）。
+// 主会话的 job 是 "web:web-4"、"cli:/path" 等，channel 不是 "agent"，
+// 这里直接返回 false —— 主会话路径不受任何影响。
+func splitCronSubAgentTarget(sessionKey string) (channel, chatID, role, instance string, ok bool) {
+	ch, rest, cut := strings.Cut(sessionKey, ":")
+	if !cut || ch != "agent" || rest == "" {
+		return "", "", "", "", false
+	}
+	channel, chatID, role, instance = parseInteractiveKeyTail(rest)
+	if channel == "" || chatID == "" || role == "" {
+		return "", "", "", "", false
+	}
+	return channel, chatID, role, instance, true
+}
+
+// interactiveDeliveryFailed 判定 SendToInteractiveSession 的返回值是否代表
+// "消息没有送进子代理会话"。
+//
+// ⚠️ 这个函数的失败约定很反直觉：**所有失败路径的第二个返回值都是 nil**
+// （agent/interactive.go:2260-2400 一律
+// `return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil`，
+// 失败信息只在 OutboundMsg.Error 里）。只判 `err != nil` 会把
+// "会话已销毁 / 仍在初始化 / 投递被取消"当成投递成功 —— 而调用方在此之前
+// 已经把事件 take 出 bgRunPending，于是这条 cron 事件被静默吞掉。
+//
+// out == nil（没有回执）按失败处理：宁可回落通用路径，也不丢事件。
+func interactiveDeliveryFailed(out *channel.OutboundMsg, err error) bool {
+	if err != nil {
+		return true
+	}
+	if out == nil {
+		return true
+	}
+	return out.Error != nil
+}
+
+// deliverCronFiredToSubAgentSession 把到期的 cron 事件投进**创建它的那个
+// interactive 子代理会话**。返回 true 表示已由本函数接管投递（调用方不要再走
+// 通用 bgRunPending → bus.Inbound 路径）；false 表示目标不是子代理会话、
+// 或该会话已不在内存，调用方回落既有通用路径。
+//
+// ⚠️ 能力边界（2026-11-04 工部验收打回项 2，别再对外承诺过头）：
+//   - **只对"持久 interactive 子代理会话"成立**：进程内 interactiveSubAgents
+//     里有活条目 ⇒ 走 ia.cfg 的那一轮 Run，身份、system prompt、工具集都是子代理的。
+//   - **对 one-shot 子代理不成立**：one-shot 的 Run 一结束就
+//     destroyInteractiveSession（engine_wire.go 的 Run 收尾，成功/失败/取消三条
+//     路径都 destroy），cron 是长期对象，到期时 key 早已不在 map ⇒ 本函数返回
+//     false ⇒ **由主 Agent 在 "agent:"+key 这个 tenant 上执行一轮**
+//     （buildMainRunConfig: AgentID="main"）。这里**不静默**：回落点打 INFO
+//     （session_key + reason + executor=main agent）。
+//   - 同理适用于 TTL 回收 / unload / 进程重启后的持久会话：都会回落主 Agent。
+//     期望"重启用旧 key 拿回子代理身份"是不成立的——身份只存在于内存条目里。
+//
+// 为什么不能只靠通用路径：bus.Inbound 的 "agent:<key>" 会被 chatWorker 接住，
+// 但那一轮 Run 用的是 buildMainRunConfig（AgentID="main"、a.tools）——
+// 记事本上落在同一个 tenant session，执行者却是主 Agent：子代理的 system
+// prompt、工具白名单、CallerSessionKey 全部丢失。真正"以子代理身份继续跑"
+// 的唯一原语是 SendToInteractiveSession（它走 ia.cfg 的那一轮 Run：
+// idle 时起新 turn，running 时排进 pendingMessages 由迭代边界 drain）。
+//
+// take 时机（工部验收要求二选一，这里选"失败时判定后补回"）：
+//   - 不能"先确认投递成功再 take"：SendToInteractiveSession 在 running=true 时
+//     最多阻塞 subAgentSendAckWait 才返回，在 bgNotifyLoop 的同步路径里等它
+//     会把所有会话的后台通知一起卡住 ⇒ 必须异步；而异步投递的窗口内事件若仍
+//     留在 bgRunPending，同一会话的 chatWorker 可能把它 drain 一次 ⇒ 双投。
+//   - 所以先 take（同步、防双投），投递失败时在判定点 ensure + drain 补回。
+//     take 是**逐条**（takeOneBgNotification）——只取本条，兄弟通知留在队里；
+//     ensure 按事件实例去重，保证"本条恰好一次"。
+func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
+	if c == nil {
+		return false
+	}
+	_, _, role, instance, ok := splitCronSubAgentTarget(c.Key)
+	if !ok {
+		return false
+	}
+	interactiveKeyRaw := c.Key[len("agent:"):]
+	if _, live := a.interactiveSubAgents.Load(interactiveKeyRaw); !live {
+		// 会话已销毁/尚未恢复内存：交给通用路径 —— 那一轮 Run 由**主 Agent** 执行
+		// （buildMainRunConfig: AgentID="main"），事件落在 "agent:"+key 这个 tenant
+		// session 上，父会话看不到。one-shot 子代理是这里的常客：它的 Run 结束即
+		// destroyInteractiveSession，而 cron 到期往往在那之后。
+		//
+		// 不静默（工部打回项 2 选 A 的要求）：这条 INFO 是判断"这条子代理 job
+		// 到期到底由谁执行"的唯一线索，运维/验收按它核对，不要调成 Debug。
+		log.WithFields(log.Fields{
+			"session_key": c.Key,
+			"role":        role,
+			"instance":    instance,
+			"reason":      "interactive session not in memory (one-shot destroyed / TTL-reclaimed / unloaded / lost on restart)",
+			"executor":    "main agent",
+		}).Info("定时任务回落主 Agent 执行（子代理会话已不在内存，不是以子代理身份触发）")
+		return false
+	}
+
+	// 第一道闸：**认领**本条事件 —— 用 takeOneBgNotification 的**返回值**判定，
+	// 绝不能再写成"调用后丢弃返回值"。
+	//
+	// 命中（true）：本条已从 bgRunPending 移除，本函数独占它，下面用 interactive
+	// 投递接管；投递失败时放回队列再 drain，注入**恰好 1 次**。
+	//
+	// 未命中（false）：说明**并发路径已经把它取走**了 —— 同 session 的 chatWorker
+	// 在迭代边界调 wireBgNotificationDrain → takePendingBgNotifications 整队列取走
+	// （agent/agent_process.go:319 + agent/engine_run.go:2701），那一轮 Run 已经把
+	// 这条注入给模型（synthetic tool result）。此时必须**立刻放手**：返回 false
+	// 交回 bgNotifyLoop 的通用分支（那边再 drain 只会空转，取不到东西）。
+	//
+	// ⚠️ 未命中时**不能**再投一次、也**不能** ensure 补回（2026-11-04 门下省 N1，
+	// 隔离复现 inbound messages=2 / event occurrences=2）：补回等于把一条**已经
+	// 注入过**的事件重新排队，下一次 drain 再注入一次 ⇒ 同一事件被两条路径各注入
+	// 一次。修前 f50d864a 正是丢弃返回值、"未命中"也照投，才留下这个窗口。
+	//
+	// 由此「恰好一次」是**无条件**的：takeOne 命中/未命中把两条路径分成互斥的两半，
+	// 命中那半独占事件、未命中那半什么都不做。
+	//
+	// 前置条件（调用方责任）：调用前这条事件必须已经 buffer 进 bgRunPending。
+	// 全仓唯一生产调用点 bgNotifyLoop 就是"先 enqueueBgNotification 再分流"
+	// （agent/agent.go:5273-5287），所以未命中只可能是"被并发 drain 取走"。
+	if !a.takeOneBgNotification(c.Key, c) {
+		log.WithFields(log.Fields{
+			"session_key": c.Key,
+			"role":        role,
+			"instance":    instance,
+			"reason":      "already taken by a concurrent drain (same-session chatWorker, injected in that Run)",
+			"executor":    "generic drain path (already injected there, exactly once)",
+		}).Info("定时任务已被并发 drain 认领，放弃 interactive 投递（避免双投）")
+		return false
+	}
+
+	// 文案与 drainAndProcessNotifications 的 cron 分支保持一致
+	// （那里是 `fmt.Sprintf("⏰ [定时任务触发] %s", n.Message)`）——
+	// 子代理与主会话看到的定时任务文本必须相同，别各写一份格式。
+	content := fmt.Sprintf("⏰ [定时任务触发] %s", c.Message)
+	go func() {
+		out, err := a.sendToExactInteractiveSession(interactiveKeyRaw, c.Sid, content, map[string]string{
+			triggerSourceMetadataKey: triggerSourceCron,
+		})
+		if !interactiveDeliveryFailed(out, err) {
+			return
+		}
+		// 投递失败（会话在 Load 与 Send 之间被销毁 / 仍在初始化 / 投递被取消）：
+		// 把它放回 bgRunPending 并立刻 drain —— 事件绝不丢。
+		//
+		// 走到这里时本条**由本函数独占**（上面的 takeOne 命中，把它从队列移除，
+		// 并发 drain 取不到它），所以"放回 1 条 + drain"的注入次数**无条件**是 1：
+		// 队列里不存在同一实例的第二份，兄弟条目也不受影响。
+		// 这里用 enqueueBgNotification（无条件追加）而不是"幂等 ensure"：
+		// 幂等去重在本处无可观察差异（独占语义已经保证队列里没有它），留着只会
+		// 多一个测不出来的分支；正确性不依赖它，就别假装它有用。
+		log.WithError(firstNonNilError(err, out)).WithFields(log.Fields{
+			"session_key": c.Key,
+			"role":        role,
+			"instance":    instance,
+		}).Warn("定时任务投递子代理会话失败，回落通用注入")
+		a.enqueueBgNotification(c)
+		a.drainAndProcessNotifications(c.Key)
+	}()
+	return true
+}
+
+// firstNonNilError 返回第一个非 nil 的错误；两个都 nil 时返回 nil
+// （用于日志：SendToInteractiveSession 的失败信息可能只在 OutboundMsg.Error 里）。
+func firstNonNilError(err error, out *channel.OutboundMsg) error {
+	if err != nil {
+		return err
+	}
+	if out != nil && out.Error != nil {
+		return out.Error
+	}
+	return nil
+}
+
+// deliverNotifyToParentSession 把子代理的进度/完成通知投递给**真正派发它的
+// 那个 interactive session**（父 agent），而不是底层 IM 会话。
+//
+// 走 SendToInteractiveSession 是因为它已经是「向 interactive 会话注入一条
+// 用户消息并驱动一轮 Run」的唯一实现：父会话 idle 时会被唤醒，running 时
+// 消息进 pendingMessages 在下一个迭代边界被 drain。不新造通道。
+func (a *Agent) deliverNotifyToParentSession(n *tools.SubAgentBgNotify) {
+	if !a.takeOneBgNotification(n.Key, n) {
+		return
+	}
+	go func() {
+		out, err := a.sendToExactInteractiveSession(n.ParentKey, n.Sid, tools.FormatSubAgentBgNotify(n), nil)
+		if interactiveDeliveryFailed(out, err) {
+			a.enqueueBgNotification(n)
+			log.WithError(firstNonNilError(err, out)).WithField("parent_key", n.ParentKey).Warn("parent notification delivery failed; retained for explicit recipient")
+		}
+	}()
+}
+
 // injectBgUserMessage is the unified entry point for injecting background notification
 // content as a user message. It reads senderID from the notification to preserve
 // correct sender context (workspace, sandbox, memory, LLM config).
@@ -5185,13 +5552,24 @@ func (a *Agent) bgNotifyLoop() {
 // cliInjectedUserMsg, so no user message appears — only the progress auto-start
 // fires, which lacks the user message in m.messages.
 func (a *Agent) injectBgUserMessage(channelName, chatID, senderID, content string) {
+	a.injectBgUserMessageWithTriggerSource(channelName, chatID, senderID, content, "")
+}
+
+// injectBgUserMessageWithTriggerSource 同 injectBgUserMessage，但可带上 turn 级
+// 触发来源（见 trigger_source.go）。triggerSource 为空时**不写该键** ——
+// 与既有行为逐字节一致，现有调用方零改动。
+func (a *Agent) injectBgUserMessageWithTriggerSource(channelName, chatID, senderID, content, triggerSource string) {
 	// Display is handled by emitTurnStarted in chatProcessLoop — the notification
 	// user message is delivered atomically with the TurnID via the unified progress
 	// stream, eliminating the cross-goroutine race between InjectUserMessage
 	// (caller's goroutine) and the turn's reply (handleOutbound goroutine).
-	a.injectInboundWithMetadata(channelName, chatID, senderID, content, map[string]string{
+	md := map[string]string{
 		bgNotificationMetadataKey: "true",
-	})
+	}
+	if triggerSource != "" {
+		md[triggerSourceMetadataKey] = triggerSource
+	}
+	a.injectInboundWithMetadata(channelName, chatID, senderID, content, md)
 }
 
 // buildBgNotificationRunConfig is no longer needed — idle bg notifications
@@ -5216,7 +5594,7 @@ func (a *Agent) InjectAsyncMessage(channel, chatID, senderID, content, source st
 //
 // Always notifies TUI for visibility.
 func (a *Agent) injectAsyncMessage(channel, chatID, senderID, content, source string) string {
-	sessionKey := channel + ":" + chatID
+	sessionKey := sessionaddr.Key(channel, chatID)
 
 	// Resolve real senderID if not provided
 	if senderID == "" {
@@ -5397,3 +5775,80 @@ func (a *Agent) cleanAllMaskStores(maxAgeDays int) {
 // formatToolProgress generates a human-readable one-line summary of a tool call for progress display.
 // It parses the JSON args and extracts the most important parameter(s) based on the tool name.
 // Output is concise, max ~80 chars total.
+
+// cancelOpenStructuredAsks 把某会话里所有「还没答、还没取消」的结构化 ask_user
+// 行置 cancelled（TTL 超时收回时调用）。
+//
+// 为什么需要它：内存 pending 与收件箱行是两套载体 —— 只清内存，收件箱里那条
+// 提问就永远挂在那里且无法回答（/api/answer 要求 correlation_id，而提问已不再
+// 属于任何等待中的回合）。cancelled=true 是用户可查的终态证据。
+//
+// 幂等：已 cancelled / 已 answered / 无 correlation_id 的行一律跳过。
+// structuredAskCanceller 是 cancelOpenStructuredAsks 需要的最小能力集。
+//
+// 按能力取用而不是断言 *sqlite.SessionService：合流 master 的 storage 拆分后，
+// SQLite 与 PG 各有一份实现（PG 的是 storage/internal/pg.sessionStore），写死具体
+// 类型会让 PG 部署下这条 TTL 回收整条静默失效。
+type structuredAskCanceller interface {
+	ListStructuredMessages(tenantID int64, kind string, cursor int64, limit int) ([]common.StructuredMessage, bool, int64, error)
+	MarkAskUserCancelled(tenantID int64, chatID, correlationID, reason, idempotencyKey, senderID string) (int64, int64, bool, error)
+}
+
+func cancelOpenStructuredAsks(sess *session.TenantSession, chatID string) {
+	if sess == nil {
+		return
+	}
+	svc, ok := sess.SessionService().(structuredAskCanceller)
+	if !ok {
+		return
+	}
+	tenantID := sess.TenantID()
+	rows, _, _, err := svc.ListStructuredMessages(tenantID, common.StructuredKindAskUser, 0, 200)
+	if err != nil {
+		log.WithFields(log.Fields{"chat_id": chatID}).WithError(err).
+			Warn("Failed to list structured ask_user rows for TTL cancellation")
+		return
+	}
+	for i := range rows {
+		row := rows[i]
+		if row.ChatID != chatID || row.Cancelled || row.Answered || row.CorrelationID == "" {
+			continue
+		}
+		if _, _, _, err := svc.MarkAskUserCancelled(tenantID, chatID, row.CorrelationID,
+			"ttl_expired", "", "system"); err != nil {
+			log.WithFields(log.Fields{"chat_id": chatID, "message_id": row.ID}).WithError(err).
+				Warn("Failed to mark structured ask_user cancelled on TTL expiry")
+			continue
+		}
+		log.WithFields(log.Fields{"chat_id": chatID, "message_id": row.ID,
+			"correlation_id": row.CorrelationID}).Info("Structured ask_user cancelled on TTL expiry")
+	}
+}
+
+// hasBlockingPendingAskUser 判断 pending 提问是否仍然"值得拦住通知排空"。
+//
+// 为什么不能直接用 HasPendingAskUserFast：D-03 之后 pending 可以活到 TTL（30m），
+// 而用户可能在这段时间里一言不发 —— 若只看"有没有 pending"，该会话的后台通知
+// 会被永久拦住（TTL 也就不是上界了）。所以这里按**年龄**判：超过
+// pendingAskUserTTL 的 pending 不再拦通知（它会在下一个 turn 起点被收回）。
+//
+// 零值 createdAt（老版本写入 / 测试直接构造）按"仍在等待"处理，保持同步暂停语义。
+func (a *Agent) hasBlockingPendingAskUser(ch, chatID string) bool {
+	if !a.HasPendingAskUserFast(ch, chatID) {
+		return false
+	}
+	value, ok := a.waitingUserSessions.Load(qualifyChatID(ch, chatID))
+	if !ok {
+		return false
+	}
+	entry := value.(*pendingAskUserEntry)
+	entry.mu.RLock()
+	createdAt := entry.createdAt
+	entry.mu.RUnlock()
+	if createdAt.IsZero() {
+		return true
+	}
+	// 与 autoResolveStalePendingAskUser 同一语义：age < TTL 拦住，age == TTL 已过期
+	// 不再拦（它会在下一个 turn 起点被收回）。两处都用 askUserNow()，同一时钟。
+	return askUserNow().Sub(createdAt) < pendingAskUserTTL
+}

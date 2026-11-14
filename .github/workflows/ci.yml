@@ -2,9 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # master = 发布线；experiment/xbot = 迭代主线（2026-10-26 用户令：迭代分支必须有门禁，
+    # 否则推送只靠本地三件套，质量会退化）。两者都跑同一套 7 job。
+    branches: [master, experiment/xbot]
   pull_request:
-    branches: [master]
+    branches: [master, experiment/xbot]
 
 permissions:
   contents: read
@@ -227,18 +229,51 @@ jobs:
             -d '{"username":"admin","password":"admin"}' || true
           echo "backend ready"
 
-      - name: Run E2E tests (full suite — mock + real backend)
+      # ── E2E 分两批跑 ──────────────────────────────────────────────────────
+      #
+      # 这批 spec 断言的是**测量值**（帧预算 / 窗口化块数与高度 / 滚动不抖动 /
+      # 拖拽预热顺序），对 CPU 竞争极其敏感：共享 runner 上 4 workers 并行时，
+      # rAF 调度被抢占，采样到的是"还没结算完"的中间状态。
+      # 2026-11-10 连续多轮实测：每次双 run CI 都会随机抖 1-3 个，且每次都不是
+      # 同一个用例 —— 逐个改成条件等待治不完（有的失败是 poll 等满 30s 仍拿不到
+      # 目标状态，属于采样窗口本身就错过了）。
+      # 所以按"测量类独占 CPU"处理：串行跑，其余仍并行。
+      - name: Run E2E — timing-sensitive specs (serial, workers=1)
         working-directory: web
         env:
           CI: "true"
           E2E_BASE_URL: "http://localhost:5199"
           E2E_USERNAME: "admin"
           E2E_PASSWORD: "admin"
-        # Runs the FULL Playwright suite: mock-backend tests (page.route) AND
-        # real-backend tests (login/chat/tabbar/right-sidebar) against the
-        # xbot-cli serve instance started above. Limit workers to avoid
-        # resource contention on CI runners.
-        run: npx playwright test --project=chromium --reporter=line --workers=4
+        run: |
+          npx playwright test \
+            e2e/turn-iter-perf.spec.ts \
+            e2e/stream-jitter.spec.ts \
+            e2e/frame-budget.spec.ts \
+            e2e/scroll.spec.ts \
+            e2e/scroll-stick.spec.ts \
+            e2e/scroll-overlap-guard.spec.ts \
+            e2e/queue-reorder.spec.ts \
+            e2e/region-window.spec.ts \
+            e2e/standalone-command-layout.spec.ts \
+            e2e/turn-order-consistency.spec.ts \
+            e2e/web-render-consistency.spec.ts \
+            e2e/iteration-commit-flicker.spec.ts \
+            e2e/notification-flicker.spec.ts \
+            e2e/todo-order.spec.ts \
+            --project=chromium --reporter=line --workers=1
+
+      - name: Run E2E tests (all remaining specs — mock + real backend)
+        working-directory: web
+        env:
+          CI: "true"
+          E2E_BASE_URL: "http://localhost:5199"
+          E2E_USERNAME: "admin"
+          E2E_PASSWORD: "admin"
+        # 其余 spec 是功能断言，并行安全。显式排除上面那批，避免重复执行。
+        run: |
+          SPECS=$(ls e2e/*.spec.ts | grep -v -E 'turn-iter-perf|stream-jitter|frame-budget|scroll-overlap-guard|scroll-stick|scroll\.spec|queue-reorder|region-window|standalone-command-layout|turn-order-consistency|web-render-consistency|iteration-commit-flicker|notification-flicker|todo-order')
+          npx playwright test $SPECS --project=chromium --reporter=line --workers=4
 
       - name: Stop backend server
         if: always()

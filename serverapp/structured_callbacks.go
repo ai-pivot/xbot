@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent"
 	"xbot/channel/web"
@@ -15,6 +16,8 @@ import (
 	"xbot/storage"
 	"xbot/storage/common"
 	"xbot/tools"
+
+	"github.com/google/uuid"
 )
 
 // structured_callbacks.go — 结构化消息 WebCallbacks 的真实实现。
@@ -188,12 +191,65 @@ func structuredRole(kind string) string {
 	}
 }
 
+// newAskCorrelationID 生成 ask_user 的关联键（工单钥匙）。
+//
+// 形状 ask-<uuid>：前缀让日志/前端一眼分开「回答钥匙」与 message_id；用 UUID 而不是
+// 自增 id，是因为 correlation_id 会跨会话、跨渠道出现，必须全局唯一且不可猜。
+func newAskCorrelationID() string {
+	return "ask-" + uuid.NewString()
+}
+
+// ensureAskCorrelationID 只给「缺钥匙的 ask_user」补发钥匙，其余输入原样返回。
+//
+// 三条边界（都有单测）：
+//   - 客户端显式给了 correlation_id ⇒ 尊重（幂等重投、导回填都靠它对齐）；
+//   - 非 ask_user ⇒ 不碰（report/decision/text 的 correlation_id 语义不同，
+//     凭空生成会让 reply_to 闭环对不上）；
+//   - 只补一次：入参已是最终值，落库与 envelope 共用同一个 input，天然同值。
+func ensureAskCorrelationID(input protocol.StructuredMessageInput) protocol.StructuredMessageInput {
+	if input.Kind != "ask_user" || strings.TrimSpace(input.CorrelationID) != "" {
+		return input
+	}
+	input.CorrelationID = newAskCorrelationID()
+	return input
+}
+
+// newUserCardCorrelationID 生成用户看板卡片的关联键（待办钥匙）。
+//
+// 形状 card-<uuid>：与 ask_user 的 ask-<uuid> 同源同风格（全局唯一、不可猜），
+// 但前缀区分「用户看板待办」与「工单回答钥匙」，日志/前端一眼能认出。
+func newUserCardCorrelationID() string {
+	return "card-" + uuid.NewString()
+}
+
+// ensureUserCardCorrelationID 只给「缺钥匙的 to="user" 卡片」补发钥匙。
+//
+// 为什么卡片必须有钥匙：用户处理后回流给发起 agent 的消息要带同一把钥匙，
+// 否则「我提的这条待办」和「用户对它的处理」在存储/审计里对不上（旧实现回流
+// 自造 notice-<id>，两把钥匙永远配不上对）。
+//
+// 三条边界：
+//   - 只碰 Silent（to="user" 卡片）：普通 report/decision 的 correlation_id 语义不同；
+//   - 已有钥匙 ⇒ 原样保留（ask_user 已由 ensureAskCorrelationID 发过 ask-<uuid>，
+//     幂等重投/导入回填也要能带上自己那把）；
+//   - 只补一次：落库与信封共用同一个 input，天然同值。
+func ensureUserCardCorrelationID(input protocol.StructuredMessageInput) protocol.StructuredMessageInput {
+	if !input.Silent || strings.TrimSpace(input.CorrelationID) != "" {
+		return input
+	}
+	input.CorrelationID = newUserCardCorrelationID()
+	return input
+}
+
 // buildStructuredEnvelope 生成完整信封 JSON（服务端填充 from/created_at）。
+//
+// origin 只在 to="user" 卡片上出现：它记录**发起方**（哪个 agent、哪个物理会话），
+// 用户在看板处理这张卡之后，回流消息投递到 origin.session（见 resolveFn）。
 func buildStructuredEnvelope(senderID string, sel web.SessionSelector, input protocol.StructuredMessageInput) map[string]any {
-	return map[string]any{
+	env := map[string]any{
 		"schema":          "xbot.message/v1",
 		"kind":            input.Kind,
-		"from":            map[string]any{"type": "user", "id": senderID, "session": sel.Channel + ":" + sel.ChatID},
+		"from":            map[string]any{"type": "user", "id": senderID, "session": sessionaddr.Key(sel.Channel, sel.ChatID)},
 		"to":              input.To,
 		"correlation_id":  input.CorrelationID,
 		"reply_to":        input.ReplyTo,
@@ -202,6 +258,16 @@ func buildStructuredEnvelope(senderID string, sel web.SessionSelector, input pro
 		"text":            structuredContent(input.Kind, input.Payload, input.Text),
 		"created_at":      time.Now().UTC().Format(time.RFC3339Nano),
 	}
+	if input.OriginSession != "" || input.OriginAgent != "" {
+		env["origin"] = map[string]any{
+			"session": input.OriginSession,
+			"agent":   input.OriginAgent,
+		}
+	}
+	if input.Silent {
+		env["silent"] = true
+	}
+	return env
 }
 
 // toProtocolStructured 把存储行转换为前端可渲染形态。
@@ -259,7 +325,24 @@ func refuseSelfTarget(kind string, caller tools.CallerScope, channel, realChatID
 }
 
 // structuredCallbacks 构造 WebCallbacks 的结构化消息五件套。
-func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error), answerFn func(string, web.SessionSelector, protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error), inboxFn func(web.SessionSelector, int64, int) ([]protocol.StructuredMessage, bool, int64, error), countFn func(web.SessionSelector) (int, error), listFn func(web.SessionSelector, string, int64, int64, int) ([]protocol.StructuredMessage, bool, int64, error)) {
+// noticeResolver / structuredAppender 按能力取用后端，而不是断言 *sqlite.SessionService。
+//
+// #463 之后 serverapp 不允许 import storage/sqlite（有 import_boundary_test 守着），
+// 而 PG 后端目前只实现了 structured_messages 的基础方法、没有 notice 闭环 ——
+// 所以这里断言能力：能力缺失时返回可读错误，绝不静默降级。
+type noticeResolver interface {
+	ResolveNotice(tenantID int64, chatID string, targetID int64, action, content, resolutionJSON, idempotencyKey, senderID, senderName string) (*common.NoticeResolution, error)
+}
+
+type structuredAppender interface {
+	AppendStructuredMessage(tenantID int64, m common.StructuredMessage) (int64, bool, error)
+}
+
+type structuredReader interface {
+	GetStructuredMessageByID(tenantID, id int64) (*common.StructuredMessage, error)
+}
+
+func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSelector, protocol.StructuredMessageInput) (*protocol.StructuredMessage, bool, error), answerFn func(string, web.SessionSelector, protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error), inboxFn func(web.SessionSelector, int64, int) ([]protocol.StructuredMessage, bool, int64, error), countFn func(web.SessionSelector) (int, error), listFn func(web.SessionSelector, string, int64, int64, int) ([]protocol.StructuredMessage, bool, int64, error), resolveFn func(string, web.SessionSelector, protocol.StructuredResolveInput) (*protocol.StructuredResolveResult, error), deleteFn func(web.SessionSelector, []int64) (int, error)) {
 	sessionOf := func(sel web.SessionSelector) (storage.SessionStore, int64, error) {
 		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
 		if err != nil {
@@ -324,6 +407,15 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		if input.Kind == "answer" {
 			return answerViaMessage(senderID, sel, svc, tenantID, ag, activityIdx, input)
 		}
+		// D-07：ask_user 是「可回答的工单」，correlation_id 是回答它的唯一钥匙。
+		// 创建方是服务端，所以钥匙必须由服务端发——客户端（Web 表单 / SendMessage
+		// 工具 / 飞书卡片）都可能不带。此前落库 correlation_id="" 时，/api/answer
+		// 对空值一律 400（correlation_id is required），提问在结构上不可回答：
+		// 用户看得见、点回答必失败。生成点放在落库之前，envelope 与 message 同值。
+		input = ensureAskCorrelationID(input)
+		// to="user" 卡片必须有稳定的 correlation_id：用户处理后的回流要带同一把钥匙
+		// （见 ensureUserCardCorrelationID 与 persistUserNoticeFeedback）。
+		input = ensureUserCardCorrelationID(input)
 		createdAt, err := parseStructuredCreatedAt(input.CreatedAt)
 		if err != nil {
 			return nil, false, err
@@ -331,8 +423,20 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		envelope := buildStructuredEnvelope(senderID, sel, input)
 		raw, _ := json.Marshal(envelope)
 		senderName := senderID
+		senderType := "user"
+		if input.OriginSession != "" || input.OriginAgent != "" {
+			// 卡片是 agent 发给用户的：发起方不是"用户"，看板要能显示是谁发的。
+			senderType = "agent"
+		}
+		recordType := common.HistoryRecordType("")
+		if input.Silent {
+			// to="user" 卡片：**出流** —— 只进看板，不进聊天流/历史回放/LLM 上下文。
+			// 存储仍是同一张 session_messages（record_type='notice'），不新造第二套存储。
+			recordType = common.HistoryRecordNotice
+		}
 		stored := common.StructuredMessage{
 			ChatID:         sel.ChatID,
+			RecordType:     recordType,
 			Kind:           input.Kind,
 			CorrelationID:  input.CorrelationID,
 			ReplyTo:        input.ReplyTo,
@@ -341,7 +445,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			Direction:      "in",
 			Role:           structuredRole(input.Kind),
 			Content:        structuredContent(input.Kind, input.Payload, input.Text),
-			SenderType:     "user",
+			SenderType:     senderType,
 			SenderID:       senderID,
 			SenderName:     senderName,
 			CreatedAt:      createdAt,
@@ -365,7 +469,56 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		}
 		// payload.summary 优先（发送方自己给的一句话结论），否则退回正文前 200 字符。
 		indexActivity(tenantID, sel, row, structuredPayloadString(input.Payload, "summary"))
-		deliver := created && structuredDeliverable(input.Kind)
+
+		// ⛔ 2026-11-04 P0（用户实测：「我批的是首辅的 report，批复却发给了御前」）：
+		// 用户在「结构化消息」面板点「准/驳/改」时，前端走的是
+		// `appendStructuredMessage(kind=decision, reply_to=<卡片 id>)` —— decision 行
+		// 落在**用户自己的会话**（sel），而旧实现紧接着 `deliver` 也投给 sel，
+		// 于是这条批复被注入用户会话（= 御前自己），发起 report 的子代理永远收不到。
+		// 日志铁证（2026-11-04T09:06:34）：
+		//   {"kind":"decision","msg":"Injected structured message at iteration boundary",
+		//    "session_id":"web:web-4", ...}   ← 首辅发的卡，批复却进了御前
+		//
+		// 正解：decision 语义是「对某张卡的处理」，回流目标是**该卡的发起方会话**
+		// （卡片首次落库时由 tools.resolveUserBoardTarget 写进 env.origin.session）。
+		// sel 只作为审计落行位置，绝不能再向 sel 投递 —— 否则用户会话被自己的批复
+		// 自激一轮（旧行为的直接后果）。
+		// 例外：卡片的 origin 就是 sel 本身（御前自己发的 report / ask_user），
+		// 此时「回流到 sel」正是用户期望，走原逻辑，不重定向。
+		if created && input.Kind == "decision" {
+			if originSession, reroute := decisionRerouteTarget(svc, tenantID, row, sel); reroute {
+				status := decisionVerdictStatus(structuredPayloadString(input.Payload, "verdict"))
+				var cardID int64
+				if v, perr := strconv.ParseInt(row.ReplyTo, 10, 64); perr == nil {
+					cardID = v
+				}
+				card, _ := svc.GetStructuredMessageByID(tenantID, cardID)
+				cardKind := "report"
+				cardCorrelation := row.CorrelationID
+				if card != nil {
+					cardKind = card.Kind
+					if c := strings.TrimSpace(card.CorrelationID); c != "" {
+						cardCorrelation = c
+					}
+				}
+				content := userNoticeResolutionText(cardID, cardKind, status, strings.TrimSpace(input.Text))
+				if perr := persistUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation); perr != nil {
+					log.WithError(perr).WithFields(log.Fields{
+						"card_id": cardID, "origin_session": originSession,
+					}).Warn("decision: failed to persist feedback into the originating session")
+				}
+				if !deliverUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation) {
+					log.WithFields(log.Fields{
+						"card_id": cardID, "origin_session": originSession,
+					}).Warn("decision: failed to deliver feedback to the originating agent")
+				}
+				return toProtocolStructured(*row), false, nil
+			}
+		}
+
+		// Silent（to="user" 卡片）：落库但不唤醒目标会话 —— 卡片是给用户看的待办，
+		// 不是给用户会话的新一轮输入，否则会话会被自己的卡片自激。
+		deliver := created && structuredDeliverable(input.Kind) && !input.Silent
 		item := &agent.StructuredQueueItem{
 			ID:            fmt.Sprintf("structured:%d", id),
 			Channel:       sel.Channel,
@@ -447,6 +600,88 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		return out, more, next, nil
 	}
 
+	// ── 用户看板卡片处理（to="user" 闭环的交互端）──────────────────────────
+	//
+	// 状态机：pending（agent 发卡）→ 用户在看板上 approve/reject/dismiss →
+	// resolved（CAS 置 answered/cancelled）→ 回流发起 agent。
+	//
+	// 幂等靠 storage 的 CAS + (chat_id, idempotency_key)：只有 Created==true 才投递回流。
+	resolveFn = func(senderID string, sel web.SessionSelector, input protocol.StructuredResolveInput) (*protocol.StructuredResolveResult, error) {
+		svc, tenantID, err := sessionOf(sel)
+		if err != nil {
+			return nil, err
+		}
+		action := strings.ToLower(strings.TrimSpace(input.Action))
+		status, ok := common.NoticeStatusOfAction(action)
+		if !ok {
+			return nil, fmt.Errorf("invalid action %q (want approve|reject|answer|dismiss)", input.Action)
+		}
+		if input.MessageID <= 0 {
+			return nil, fmt.Errorf("message_id is required")
+		}
+		row, err := svc.GetStructuredMessageByID(tenantID, input.MessageID)
+		if err != nil {
+			return nil, err // ErrStructuredNotFound → 404
+		}
+		if row.Kind != common.StructuredKindReport && row.Kind != common.StructuredKindAskUser {
+			return nil, fmt.Errorf("invalid: message_id %d is kind=%q, not a user board card (want report|ask_user)", input.MessageID, row.Kind)
+		}
+		originSession, originAgent := userNoticeOrigin(row)
+		comment := strings.TrimSpace(input.Comment)
+		content := userNoticeResolutionText(row.ID, row.Kind, status, comment)
+		resolutionJSON, _ := json.Marshal(map[string]any{
+			"status":         status,
+			"action":         action,
+			"comment":        comment,
+			"answered_by":    senderID,
+			"origin_session": originSession,
+			"origin_agent":   originAgent,
+		})
+		idem := strings.TrimSpace(input.IdempotencyKey)
+		if idem == "" {
+			// 默认幂等键：同一张卡的同一个动作只生效一次（双击/刷新重点都安全）。
+			idem = fmt.Sprintf("notice:%d:%s", row.ID, action)
+		}
+		resolver, rok := svc.(noticeResolver)
+		if !rok {
+			// PG 后端尚未实现 notice 闭环：显式报错而不是静默丢回流。
+			return nil, fmt.Errorf("notice resolution is not supported by this storage backend")
+		}
+		res, rerr := resolver.ResolveNotice(tenantID, sel.ChatID, input.MessageID, action, content, string(resolutionJSON), idem, senderID, senderID)
+		if rerr != nil {
+			return nil, rerr // 409（已处理）/ 404（不存在）
+		}
+		if res.Created && originSession != "" {
+			// 回流只在这里发生一次；第二次调用 Created=false，不会重复打扰发起 agent。
+			//
+			// 两步都是既有语义（与 decision 回流一致）：
+			//  1. 在**发起方会话**里留一行 decision/answer —— 它被唤醒后从历史里读到；
+			//  2. 唤醒该会话（busy → 优先队列 / idle → 新 turn）。
+			// 只投递不落行的话，agent 醒来看到的是一条空消息（DeliverStructuredMessage
+			// 的空 content 契约），用户说了什么全丢。
+			if perr := persistUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID); perr != nil {
+				log.WithError(perr).WithFields(log.Fields{
+					"message_id": input.MessageID, "origin_session": originSession,
+				}).Warn("Failed to persist user notice feedback into the originating session")
+			}
+			if !deliverUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID) {
+				log.WithFields(log.Fields{
+					"message_id": input.MessageID, "origin_session": originSession,
+				}).Warn("Failed to deliver user notice feedback to the originating agent")
+			}
+		}
+		if res.Written != nil {
+			indexActivity(tenantID, sel, res.Written, content)
+		}
+		return &protocol.StructuredResolveResult{
+			MessageID:    input.MessageID,
+			ResolutionID: res.WrittenID,
+			Status:       status,
+			Duplicate:    !res.Created,
+			Origin:       originSession,
+		}, nil
+	}
+
 	// ── 把同一份落地实现注入给工具层 ─────────────────────────────────────
 	// SendMessage(kind = report/ask_user/answer/decision) 走的就是这个 appendFn：
 	// agent 在自己会话里说"批了"→ 工具层调它 → 落到目标（子代理）会话 + CAS。
@@ -476,7 +711,246 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		}
 		return msg.MessageID, dup, nil
 	})
+
+	// to="user"（用户看板）的落地实现：与上面**同一份** append 闭包，只是落点已经
+	// 由工具层解析成用户可见的根会话，并带上 origin/silent（HTTP 客户端伪造不了：
+	// 那三个字段是 protocol.StructuredMessageInput 上的 json:"-"）。
+	//
+	// 不做 ResolveStructuredTarget：目标是普通渠道会话（web:web-4），不是 agent 地址，
+	// 且调用方（子代理）本来就允许给自己的根会话投递 —— 那是"向上报给用户"，不是越权。
+	tools.SetUserNoticeAppend(func(senderID string, caller tools.CallerScope, channel, chatID string, in protocol.StructuredMessageInput) (int64, bool, error) {
+		if !in.Silent {
+			// 防御：这条路径只服务用户看板，必须既不唤醒目标会话又带回流目标。
+			return 0, false, fmt.Errorf("user board append requires silent=true and an origin session")
+		}
+		msg, dup, err := appendFn(senderID, web.SessionSelector{Channel: channel, ChatID: chatID}, in)
+		if err != nil || msg == nil {
+			return 0, dup, err
+		}
+		return msg.MessageID, dup, nil
+	})
+
+	// deleteFn 删除收件箱里的结构化消息（单条或批量）。
+	// SessionStore 嵌入了 StructuredStore，SQLite / PG 都实现了该方法；
+	// 后端缺能力时直接报错，不静默当成"删成功"。
+	deleteFn = func(sel web.SessionSelector, ids []int64) (int, error) {
+		svc, tenantID, derr := sessionOf(sel)
+		if derr != nil {
+			return 0, derr
+		}
+		return svc.DeleteStructuredMessages(tenantID, ids)
+	}
 	return
+}
+
+// userNoticeOrigin 从卡片信封里取出回流目标（origin.session / origin.agent）。
+// 老行（没有 origin）返回空串：卡片仍可在看板上处理，只是没有 agent 可回流。
+// userNoticeOrigin 返回卡片**发起方**的会话与逻辑地址（卡片落库时写进 env.origin）。
+//
+// 注意：`from.session` 恒为「落库的会话」（用户的会话，见 buildStructuredEnvelope），
+// **不是**发起方 —— 回流必须读 `origin.session`。2026-11-04 的 P0 调查一度误判成
+// from.session，白改一轮。
+func userNoticeOrigin(row *common.StructuredMessage) (session, agentAddr string) {
+	if row == nil || strings.TrimSpace(row.StructuredJSON) == "" {
+		return "", ""
+	}
+	var env struct {
+		Origin struct {
+			Session string `json:"session"`
+			Agent   string `json:"agent"`
+		} `json:"origin"`
+	}
+	if json.Unmarshal([]byte(row.StructuredJSON), &env) != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(env.Origin.Session), strings.TrimSpace(env.Origin.Agent)
+}
+
+// userNoticeResolutionText 生成处理记录行的正文（人读）。
+// decisionRerouteTarget 判定一条 decision 是否必须回流到「卡片的发起方会话」。
+//
+// 返回 (originSession, true) 时调用方**不得**再向 sel 投递（否则用户会话被自己的
+// 批复自激一轮 —— 2026-11-04 的线上事故就是这么来的）。
+//
+// 只有同时满足下列条件才重定向：
+//  1. decision 行指向一张用户看板卡片（report / ask_user）；
+//  2. 该卡片由**某个 agent** 发起（env.origin.session 非空）；
+//  3. 发起方会话 **不是**当前用户会话本身（御前自己发的卡，回流到御前才是对的）。
+func decisionRerouteTarget(
+	svc structuredReader,
+	tenantID int64,
+	decisionRow *common.StructuredMessage,
+	sel web.SessionSelector,
+) (string, bool) {
+	if svc == nil || decisionRow == nil {
+		return "", false
+	}
+	raw := strings.TrimSpace(decisionRow.ReplyTo)
+	if raw == "" {
+		return "", false
+	}
+	cardID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || cardID <= 0 {
+		return "", false
+	}
+	card, err := svc.GetStructuredMessageByID(tenantID, cardID)
+	if err != nil || card == nil {
+		return "", false
+	}
+	if card.Kind != common.StructuredKindReport && card.Kind != common.StructuredKindAskUser {
+		return "", false
+	}
+	originSession, _ := userNoticeOrigin(card)
+	if originSession == "" {
+		return "", false
+	}
+	if originSession == sessionaddr.Key(sel.Channel, sel.ChatID) {
+		return "", false
+	}
+	return originSession, true
+}
+
+// decisionVerdictStatus 把前端批复的 verdict 映射成卡片处理状态（与 resolveNotice
+// 的词表一致：approved / rejected；modify 表示「要改」，不回退成 approved）。
+func decisionVerdictStatus(verdict string) string {
+	switch strings.ToLower(strings.TrimSpace(verdict)) {
+	case "approve", "approved":
+		return "approved"
+	case "reject", "rejected":
+		return "rejected"
+	case "modify", "modified":
+		return "modify"
+	}
+	return "approved"
+}
+
+func userNoticeResolutionText(messageID int64, kind, status, comment string) string {
+	label := map[string]string{
+		"approved":  "已批准",
+		"rejected":  "已否决",
+		"answered":  "已回答",
+		"dismissed": "已忽略",
+	}[status]
+	if label == "" {
+		label = status
+	}
+	out := fmt.Sprintf("用户处理了卡片 #%d（kind=%s）：%s", messageID, kind, label)
+	if comment != "" {
+		out += "。" + comment
+	}
+	return out
+}
+
+// splitPhysicalSessionKey 把物理会话 key 还原成存储层的 (channel, chatID)。
+//
+// interactive 子代理的会话在存储层是 channel="agent"、chatID=key
+// （形如 "web:web-4/court.shoufu:main"）；主会话是 "web:web-4"。
+func splitPhysicalSessionKey(key string) (channel, chatID string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", ""
+	}
+	slash := strings.LastIndex(key, "/")
+	colon := strings.Index(key, ":")
+	if slash > 0 && colon > 0 && colon < slash {
+		return "agent", key
+	}
+	if colon <= 0 || colon == len(key)-1 {
+		return "", ""
+	}
+	return key[:colon], key[colon+1:]
+}
+
+// persistUserNoticeFeedback 在**发起方会话**里留一行 decision/answer 回流记录。
+//
+// 为什么要单独落行（而不是把内容塞进投递）：agent.DeliverStructuredMessage 对
+// 空闲会话投的是**空 content + structured_delivery**（约定：结构化行已经先落库，
+// 避免重复写一条 user 行）。既有 decision 回流靠"decision 行就写在目标会话里"满足
+// 这个约定；用户看板的卡片行却在**用户的**会话里，所以回流必须在这里补一行，
+// 否则 agent 被唤醒后读不到用户到底说了什么。
+//
+// 幂等：idempotency_key = "notice-feedback:<card id>"，重复提交不会产生第二行。
+//
+// 钥匙对齐（N1 断言③）：cardCorrelationID 是**卡片创建时**落库的 correlation_id，
+// 回流必须逐字复用它 —— 前端/审计才能把「我提的这条待办」与「用户对它的处理」
+// 配成一对。旧实现自造 notice-<id>，等于两把互不相认的钥匙。
+// 老卡片（升级前落库、没有钥匙）退化为 notice-<id>：不阻断回流，只是无键可对。
+func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, cardKind, status, content, senderID, cardCorrelationID string) error {
+	if ag == nil || ag.MultiSession() == nil {
+		return fmt.Errorf("no session manager")
+	}
+	channel, chatID := splitPhysicalSessionKey(originSession)
+	if channel == "" || chatID == "" {
+		return fmt.Errorf("cannot parse origin session %q", originSession)
+	}
+	sess, err := ag.MultiSession().GetOrCreateSession(channel, chatID)
+	if err != nil {
+		return err
+	}
+	svc, ok := sess.SessionService().(structuredAppender)
+	if !ok {
+		return fmt.Errorf("session backend does not support structured messages")
+	}
+	kind := common.StructuredKindDecision
+	if status == "dismissed" || status == "answered" {
+		kind = common.StructuredKindAnswer
+	}
+	correlationID := strings.TrimSpace(cardCorrelationID)
+	if correlationID == "" {
+		correlationID = fmt.Sprintf("notice-%d", messageID)
+	}
+	envelope, _ := json.Marshal(map[string]any{
+		"schema":         "xbot.message/v1",
+		"kind":           kind,
+		"to":             originSession,
+		"correlation_id": correlationID,
+		"payload":        map[string]any{"status": status, "card_kind": cardKind, "card_id": messageID, "text": content},
+		"text":           content,
+	})
+	_, _, err = svc.AppendStructuredMessage(sess.TenantID(), common.StructuredMessage{
+		ChatID:         chatID,
+		Kind:           kind,
+		CorrelationID:  correlationID,
+		StructuredJSON: string(envelope),
+		Direction:      "in",
+		Role:           "user",
+		Content:        content,
+		SenderType:     "user",
+		SenderID:       senderID,
+		SenderName:     senderID,
+		IdempotencyKey: fmt.Sprintf("notice-feedback:%d", messageID),
+		CreatedAt:      time.Now(),
+	})
+	return err
+}
+
+// deliverUserNoticeFeedback 把"用户处理了卡片"回流给发起 agent（唤醒）。
+//
+// 复用既有 kind=decision 的结构化回流通道（agent.DeliverStructuredMessage）：
+// 目标会话忙则进优先队列、空闲则起一轮 —— 不另造消息通道。
+func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, kind, status, content, senderID, cardCorrelationID string) bool {
+	if ag == nil {
+		return false
+	}
+	channel, chatID := splitPhysicalSessionKey(originSession)
+	if channel == "" || chatID == "" {
+		return false
+	}
+	correlationID := strings.TrimSpace(cardCorrelationID)
+	if correlationID == "" {
+		correlationID = fmt.Sprintf("notice-%d", messageID)
+	}
+	return ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
+		ID:            fmt.Sprintf("notice-resolve:%d", messageID),
+		Channel:       channel,
+		ChatID:        chatID,
+		SenderID:      senderID,
+		SenderName:    senderID,
+		Content:       content,
+		Kind:          "decision",
+		CorrelationID: correlationID,
+		Priority:      agent.StructuredPriorityHigh,
+	})
 }
 
 // structuredFirstNonEmpty 返回第一个非空字符串（reply_to 与旧字段兼容用）。
@@ -590,7 +1064,8 @@ func answersFromPayload(payload map[string]any) ([]protocol.StructuredAnswer, bo
 // 校验答案形状 → CAS 置位目标 ask_user → 写 answer 行 → 投递 agent。
 func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage.SessionStore, tenantID int64, ag *agent.Agent, activityIdx storage.ActivityStore, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error) {
 	// 校验答案形状（multi_select=false 时 option_ids ≤ 1 等）。
-	if err := validateAskUserAnswers(svc, tenantID, input); err != nil {
+	specs, err := validateAskUserAnswers(svc, tenantID, input)
+	if err != nil {
 		return nil, false, err
 	}
 	payload := map[string]any{
@@ -599,7 +1074,7 @@ func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage
 		"answered_by": senderID,
 	}
 	raw, _ := json.Marshal(payload)
-	text := answerText(input)
+	text := answerText(input, specs)
 	id, _, created, err := svc.AnswerAskUser(tenantID, sel.ChatID, input.CorrelationID,
 		text, string(raw), input.IdempotencyKey, senderID, senderID, input.Cancelled)
 	if err != nil {
@@ -647,14 +1122,17 @@ func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage
 	return toProtocolStructured(*stored), !created, nil
 }
 
-// validateAskUserAnswers 按 ask_user 信封校验回答。
-func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input protocol.StructuredAnswerInput) error {
+// validateAskUserAnswers 按 ask_user 信封校验回答，并返回问题规格。
+//
+// 顺带返回 specs 是为了让 answerText 能把 optionId 翻译成用户可见的 label，
+// 而不必再查一遍库（同一 correlation 的 ask_user 行刚刚已经读过了）。
+func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input protocol.StructuredAnswerInput) ([]askQuestionSpec, error) {
 	if input.Cancelled {
-		return nil
+		return nil, nil
 	}
 	rows, _, _, err := svc.ListStructuredMessages(tenantID, "ask_user", 0, 200)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var target *common.StructuredMessage
 	for i := range rows {
@@ -665,7 +1143,7 @@ func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input prot
 	}
 	if target == nil {
 		// 不存在时交给 AnswerAskUser 返回 NOT_FOUND（保持单一判定点）。
-		return nil
+		return nil, nil
 	}
 	questions := askQuestions(target.StructuredJSON)
 	byID := make(map[string]askQuestionSpec, len(questions))
@@ -675,23 +1153,28 @@ func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input prot
 	for _, ans := range input.Answers {
 		q, ok := byID[ans.QuestionID]
 		if !ok {
-			return fmt.Errorf("invalid answer: unknown question_id %q", ans.QuestionID)
+			return nil, fmt.Errorf("invalid answer: unknown question_id %q", ans.QuestionID)
 		}
 		if !q.MultiSelect && len(ans.OptionIDs) > 1 {
-			return fmt.Errorf("invalid answer: question %q is single-select", ans.QuestionID)
+			return nil, fmt.Errorf("invalid answer: question %q is single-select", ans.QuestionID)
 		}
 		if ans.Text != "" && !q.AllowOther {
-			return fmt.Errorf("invalid answer: question %q does not allow custom text", ans.QuestionID)
+			return nil, fmt.Errorf("invalid answer: question %q does not allow custom text", ans.QuestionID)
 		}
 	}
-	return nil
+	return questions, nil
 }
 
 type askQuestionSpec struct {
 	ID          string
+	Question    string
 	MultiSelect bool
 	AllowOther  bool
 	Required    bool
+	// Options 是 optionID → 用户可见文字（label）的映射。
+	// 回答落库时用它把内部 id 翻译成 label —— 否则用户会在历史里看到
+	// "smoke:yes" 这种内部代号（2026-11-11 用户实测反馈）。
+	Options map[string]string
 }
 
 func askQuestions(structuredJSON string) []askQuestionSpec {
@@ -699,9 +1182,14 @@ func askQuestions(structuredJSON string) []askQuestionSpec {
 		Payload struct {
 			Questions []struct {
 				ID          string `json:"id"`
+				Question    string `json:"question"`
 				MultiSelect bool   `json:"multi_select"`
 				AllowOther  bool   `json:"allow_other"`
 				Required    bool   `json:"required"`
+				Options     []struct {
+					ID    string `json:"id"`
+					Label string `json:"label"`
+				} `json:"options"`
 			} `json:"questions"`
 		} `json:"payload"`
 	}
@@ -714,28 +1202,69 @@ func askQuestions(structuredJSON string) []askQuestionSpec {
 		if id == "" {
 			id = fmt.Sprintf("q%d", i+1)
 		}
-		out = append(out, askQuestionSpec{ID: id, MultiSelect: q.MultiSelect, AllowOther: q.AllowOther, Required: q.Required})
+		opts := make(map[string]string, len(q.Options))
+		for _, o := range q.Options {
+			if o.ID == "" {
+				continue
+			}
+			lbl := o.Label
+			if lbl == "" {
+				lbl = o.ID
+			}
+			opts[o.ID] = lbl
+		}
+		out = append(out, askQuestionSpec{
+			ID: id, Question: q.Question, MultiSelect: q.MultiSelect,
+			AllowOther: q.AllowOther, Required: q.Required, Options: opts,
+		})
 	}
 	return out
 }
 
-func answerText(input protocol.StructuredAnswerInput) string {
+// answerText 把结构化的答案渲染成**人话**，落进会话历史。
+//
+// 关键：option 用 label 而不是内部 id。旧实现拼 `questionId:optionId`，用户会在
+// 历史里看到 "smoke:yes" 这种看不懂的代号（2026-11-11 实测反馈）。specs 缺失或
+// 该 option 没有 label 时才退回 id（老数据兼容）。
+func answerText(input protocol.StructuredAnswerInput, specs []askQuestionSpec) string {
 	if input.Cancelled {
 		return "已取消"
 	}
+	options := make(map[string]map[string]string, len(specs))
+	questions := make(map[string]string, len(specs))
+	for _, sp := range specs {
+		options[sp.ID] = sp.Options
+		questions[sp.ID] = sp.Question
+	}
+
 	var parts []string
 	for _, a := range input.Answers {
-		piece := a.QuestionID + ":"
-		if len(a.OptionIDs) > 0 {
-			piece += strings.Join(a.OptionIDs, ",")
+		var chosen []string
+		for _, id := range a.OptionIDs {
+			if lbl := options[a.QuestionID][id]; lbl != "" {
+				chosen = append(chosen, lbl)
+			} else {
+				chosen = append(chosen, id)
+			}
 		}
+		piece := strings.Join(chosen, "、")
 		if a.Text != "" {
-			if len(a.OptionIDs) > 0 {
-				piece += " "
+			if piece != "" {
+				piece += "　"
 			}
 			piece += a.Text
 		}
+		if piece == "" {
+			piece = "（未选择）"
+		}
+		// 多问题时把问题正文带上，否则 "、；、" 这种回答读不出在答什么
+		if len(input.Answers) > 1 && questions[a.QuestionID] != "" {
+			piece = questions[a.QuestionID] + " → " + piece
+		}
 		parts = append(parts, piece)
 	}
-	return strings.Join(parts, "; ")
+	if len(parts) == 0 {
+		return "已回答"
+	}
+	return strings.Join(parts, "；")
 }

@@ -207,9 +207,35 @@ func (s *SessionService) withImmediateHistoryWrite(fn func(historyQueryExecer) e
 }
 
 func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage) (int64, error) {
+	// 写入侧脱敏（W4）：会话库是 LLM 上下文的回放源，也是记忆自动抽取（W1）的上游源头。
+	// INSERT 一次绑定**四个**可能承载凭据的字符串列，逐个在绑定前洗：
+	//   content / tool_arguments / tool_calls（洗每个 Arguments）/ detail（+ reasoning_content）。
+	// 这是行为变更（回放时模型看到的是 ***，不再是原凭据）—— 兵部 ORDER §5.1 的口径 (a)。
+	//
+	// ⛔ 明确**不动**的列及理由（防后人"顺手也洗了"）：
+	//   - reasoning_items：Responses API 的 encrypted_content 必须原样回传，洗了直接破 API 语义；
+	//   - tool_call_id / tool_name / role / 时间戳：结构性字段，不是内容，动了会断关联与回放。
+	// 2026-11-10 用户裁定：**存储原版**。脱敏只在「出站到前端/飞书」时做，
+	// 落库必须保持原文 —— 模型回放需要真值（原 §5.1 口径 (a)「回放时模型看到 ***」
+	// 已作废）。此前这里是写入侧脱敏的 4 处调用点。
+	content := msg.Content
+	toolArguments := msg.ToolArguments
+	detail := msg.Detail
+	reasoningContent := msg.ReasoningContent
 	var toolCallsJSON sql.NullString
 	if len(msg.ToolCalls) > 0 {
-		data, err := json.Marshal(msg.ToolCalls)
+		// tool_calls 是同一批参数的又一份副本（每个 ToolCall.Arguments 是一段 JSON）。
+		// **深拷贝后再洗**：绝不原地改 msg.ToolCalls —— 调用方持有该切片，内存侧与
+		// 下一轮 LLM 请求都读它。llm.ToolCall 全是值类型字段，copy 即深拷贝；
+		// 只洗 Arguments，name/id 不动。
+		// 存储原版：直接序列化调用方传入的 ToolCalls（不再逐 Arguments 洗）。
+		redactedCalls := make([]llm.ToolCall, len(msg.ToolCalls))
+		copy(redactedCalls, msg.ToolCalls)
+		for i := range redactedCalls {
+			_ = i
+			// 存储原版：不再洗 Arguments（2026-11-10 用户裁定）
+		}
+		data, err := json.Marshal(redactedCalls)
 		if err != nil {
 			return 0, fmt.Errorf("marshal tool_calls: %w", err)
 		}
@@ -241,8 +267,8 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 		 detail, display_only, internal_only, reasoning_content, reasoning_items, record_type, record_data,
 		 group_id, sender_type, sender_id, sender_name, created_at, turn_id, iteration)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?, ?, ?, ?, ?, ?, ?)
-	`, tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName, msg.ToolArguments,
-		toolCallsJSON, msg.Detail, displayOnly, internalOnly, msg.ReasoningContent, reasoningItemsJSON,
+	`, tenantID, msg.Role, content, msg.ToolCallID, msg.ToolName, toolArguments,
+		toolCallsJSON, detail, displayOnly, internalOnly, reasoningContent, reasoningItemsJSON,
 		msg.RecordData, msg.GroupID, msg.SenderType, msg.SenderID, msg.SenderName,
 		canonicalTimestamp(ts), msg.TurnID, msg.Iteration)
 	if err != nil {
@@ -1073,6 +1099,9 @@ func replayDisplayRecords(records []HistoryRecord) (*ReplayResult, error) {
 			// 给 UI 看的（见 HistoryRecordCommand 注释）。CommandRow 标记随消息带给
 			// 转换层，由它写出 Standalone/AnchorTurnID 供前端插回原位。
 			result.Messages = append(result.Messages, record.Message)
+		case HistoryRecordNotice:
+			// 用户看板卡片：出流。聊天流里一条都不出现（用户要在看板上看，
+			// 不是被消息淹没），因此这里不追加。
 		case HistoryRecordCompress, HistoryRecordPrune:
 			// Insert the [Compacted context] summary as a marker.
 			// Don't replace existing messages — keep the full history.
@@ -1486,6 +1515,9 @@ func ApplyHistoryRecords(records []HistoryRecord, hasCheckpoint bool) (*ReplayRe
 			}
 			result.Messages[idx].Content = answer.Answer
 			result.PendingAskUser = nil
+		case HistoryRecordNotice:
+			// 用户看板卡片：只在看板上出现，**不进任何回放**（display 与 LLM 都跳过）。
+			// 这里刻意不 continue —— 让它在 known 里登记，语义上仍是合法的历史记录。
 		default:
 			return nil, fmt.Errorf("history_id %d: unknown history record type %q", record.HistoryID, record.Type)
 		}

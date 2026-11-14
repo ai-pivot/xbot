@@ -20,10 +20,21 @@ import { normalizeEvent } from './normalize'
 import { ChatStore } from './store'
 import { initialChatState, type DomainEvent } from './types'
 
-/** chatID 归一（事件可能带 channel 前缀）—— 只比裸 chatID。 */
+/** chatID 归一（事件可能带 channel 前缀）—— 只比裸 chatID。
+ *
+ * 与 `chat/normalize.ts` 的 stripChannel 保持同一套规则：先剥掉逻辑前缀
+ * `agent:`（子代理会话的地址形如 `agent:web:web-4/role:inst`），再剥一层物理
+ * channel 前缀。只剥一层会让
+ *   `agent:web:web-4/court.shoufu:main` → `web:web-4/court.shoufu:main`
+ * 与
+ *   `web:web-4/court.shoufu:main`       → `web-4/court.shoufu:main`
+ * 不相等 ⇒ 子代理的 session(idle) 收不到 ⇒ 面板永久 busy（2026-11-04 P0）。
+ */
 function bareChatID(v: string): string {
-  const i = v.indexOf(':')
-  return i >= 0 ? v.slice(i + 1) : v
+  let s = v.trim()
+  while (s.startsWith('agent:')) s = s.slice('agent:'.length)
+  const i = s.indexOf(':')
+  return i >= 0 ? s.slice(i + 1) : s
 }
 
 export interface UseAgentChatStateArgs {

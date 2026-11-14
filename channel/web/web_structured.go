@@ -161,6 +161,97 @@ func (wc *WebChannel) handleInbox(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleInboxResolve 处理用户看板卡片：POST /api/inbox/resolve
+//
+//	{"message_id": 12, "action": "approve|reject|dismiss", "comment": "...", "idempotency_key": "..."}
+//
+// 状态机 pending → resolved（CAS），首次处理时服务端把回流消息投给发起 agent；
+// 重复提交返回 200 + duplicate=true（不重复回流），已处理但换了幂等键返回 409。
+func (wc *WebChannel) handleInboxResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var input protocol.StructuredResolveInput
+	if err := decodeJSONBody(r, &input, true); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if input.MessageID <= 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "message_id is required")
+		return
+	}
+	if input.Action == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "action is required (approve|reject|dismiss)")
+		return
+	}
+	if wc.callbacks.StructuredResolve == nil {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "structured messages unavailable")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	sel, ok := wc.resolveAPISession(w, r, senderID, input.Channel, input.ChatID)
+	if !ok {
+		return
+	}
+	result, err := wc.callbacks.StructuredResolve(senderID, sel, input)
+	if err != nil {
+		writeStructuredError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
+}
+
+// maxInboxDeleteIDs 单次删除上限，与 storage 侧 maxStructuredDeleteIDs 对齐。
+const maxInboxDeleteIDs = 500
+
+// handleInboxDelete 删除收件箱里的结构化消息（单条 = 传一个 id，一键删除 = 传全部）。
+//
+// POST /api/inbox/delete
+//
+//	{"channel":"web","chat_id":"chat_X","ids":[12,13]}
+//
+// 只删 kind != ” 的结构化行；普通聊天消息无法经此路径删除（storage 侧也有同样的
+// 条件兜底），避免把「清收件箱」做成「删聊天记录」。
+func (wc *WebChannel) handleInboxDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var input struct {
+		Channel string  `json:"channel"`
+		ChatID  string  `json:"chat_id"`
+		IDs     []int64 `json:"ids"`
+	}
+	if err := decodeJSONBody(r, &input, true); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(input.IDs) == 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "ids is required")
+		return
+	}
+	if len(input.IDs) > maxInboxDeleteIDs {
+		jsonErrorResponse(w, http.StatusBadRequest, "too many ids (max 500)")
+		return
+	}
+	if wc.callbacks.StructuredDelete == nil {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "structured messages unavailable")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	sel, ok := wc.resolveAPISession(w, r, senderID, input.Channel, input.ChatID)
+	if !ok {
+		return
+	}
+	deleted, err := wc.callbacks.StructuredDelete(sel, input.IDs)
+	if err != nil {
+		writeStructuredError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
 func (wc *WebChannel) handleStructuredMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -221,6 +312,11 @@ func isStructuredKind(kind string) bool { return structuredKinds[kind] }
 
 // validateStructuredPayload 校验 payload 体积与 kind 必需字段。
 func validateStructuredPayload(input protocol.StructuredMessageInput) error {
+	// 先把 ask_user 的 options 归一化成 [{id,label}]（字符串形态原地转换）。
+	// 必须在写入前做：前端 StructuredCards 读 opt.label，而 protocol 侧
+	// AskUserQuestion.Options 是 []string，两种形态都会被调用方传进来。
+	protocol.NormalizeAskPayload(input.Payload)
+
 	// 顶层 text 与 payload 同受 256 KiB 限制：text 会落库并进入 LLM 上下文，
 	// 只限制 payload 会让客户端用 text 绕过体积上限（HTTP 层 1MB body 兜不住语义）。
 	if len(input.Text) > maxStructuredPayloadBytes {

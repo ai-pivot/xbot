@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	log "xbot/logger"
@@ -46,7 +47,10 @@ import (
 //   - 5: 结构化消息列（chat_id / kind / correlation_id / reply_to /
 //     idempotency_key / structured_json / direction / answered / cancelled）
 //     与三个索引。旧库按列幂等 ALTER 补齐。
-const sessionSchemaVersion = 5
+//   - 6: session_messages 补 v80 的三条历史流回溯索引（markers / display /
+//     turn-user）。拆库后主库 session_messages 基本为空，索引必须建在会话库才
+//     有效；沿用幂等 ensureSessionMessagesLookupIndexes，失败只告警。
+const sessionSchemaVersion = 6
 
 // sessionSchema 是会话库的完整 DDL（主库 schema 的子集，FK 省略）。
 // 与 schema.go 的 session_messages/iteration_history 列定义保持逐列一致——
@@ -163,7 +167,105 @@ func OpenSessionDB(path string) (*DB, error) {
 // 连接池）。maxIdleConns / maxIdleTime 由调用方按访问模式调优（主库 4/0，会话库
 // 1/5min）。数据安全告警（0 字节 / 非 SQLite 头 / 同级备份）只在主库 Open 报——
 // 会话库由宿主管理生命周期（删除即删文件），不需要那套启动告警。
-func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, error) {
+// ── 进程内按路径共享 *sql.DB（与 flock 同一套引用计数）──
+//
+// 为什么必须共享：Open() 在进程内被多处独立调用（serverapp 的 sharedDB /
+// tokenDB、storage.MigrateMemoryToFiles、session.MultiTenant）。flock 早已按路径
+// 复用（见 acquireDBLock），但 sql.DB **没有** —— 每次 Open 都新建一套连接池。
+// 后果是三合一的，生产 2026-10-27 实测：
+//
+//	· fd 随打开的库数膨胀：2440 个 .db fd，而磁盘上只有 1358 个会话库
+//	· **某个短连接 Close 时，SQLite 认为「这一连接集的最后一个连接关掉了」，
+//	  checkpoint 并 unlink 掉 -wal —— 而常驻池仍持有它**。那些帧只能写进一个
+//	  已经没有目录项的 inode（实测 4MB / 1015 帧，2 个池共 8 个 fd 指向它）
+//	· 关停要逐个 close 这些多余连接，把停机拖到 52s
+//
+// 共享之后同一路径全进程只有一个 *sql.DB，上面三件事一起消失。
+//
+// :memory: 不参与共享 —— 每个 :memory: 库天然相互独立，共享会让不同测试
+// 看到彼此的数据。
+var sharedConns = struct {
+	mu sync.Mutex
+	m  map[string]*sharedConn
+}{m: make(map[string]*sharedConn)}
+
+// sharedConn 是「一个路径一行」的注册项。conn 经 connHolder 间接持有，
+// 这样 WAL 自愈（walguard.go）能对整个进程一次性换池。
+type sharedConn struct {
+	holder *connHolder
+	refs   int
+}
+
+// acquireSharedConn returns the process-wide connection pool for path, creating
+// it on first use. Every successful call must be paired with releaseSharedConn.
+func acquireSharedConn(path string, maxIdleConns int, maxIdleTime time.Duration) (*connHolder, error) {
+	sharedConns.mu.Lock()
+	defer sharedConns.mu.Unlock()
+	if e, ok := sharedConns.m[path]; ok {
+		e.refs++
+		return e.holder, nil
+	}
+	conn, err := openRawConn(path, maxIdleConns, maxIdleTime)
+	if err != nil {
+		return nil, err
+	}
+	// 记录刚打开的 -wal/-shm 身份：WAL 守卫据此判断「路径上还是不是我那个文件」。
+	walID, shmID := captureWALIdentity(path)
+	h := &connHolder{db: conn, walID: walID, shmID: shmID, maxIdle: maxIdleConns, maxIdleTime: maxIdleTime}
+	sharedConns.m[path] = &sharedConn{holder: h, refs: 1}
+	startWALGuard()
+	return h, nil
+}
+
+// releaseSharedConn drops one reference; the underlying pool is closed only when
+// the last holder releases it. Returns the Close error of that final close.
+func releaseSharedConn(path string) error {
+	sharedConns.mu.Lock()
+	defer sharedConns.mu.Unlock()
+	e, ok := sharedConns.m[path]
+	if !ok {
+		return nil
+	}
+	e.refs--
+	if e.refs > 0 {
+		log.WithFields(log.Fields{"path": path, "refs": e.refs}).
+			Debug("Database connection still referenced elsewhere; not closing the pool")
+		return nil
+	}
+	delete(sharedConns.m, path)
+	// 释放 holder 的 pinned 守护连接（2026-11-09）：它与池同生命周期，
+	// 不在这里关就会在 DB.Close 后继续持有 -wal/-shm inode ⇒ fd 泄漏
+	// （walguard 测试逐条检查进程级 fd，残留会导致后续用例误判）。
+	if e.holder != nil {
+		e.holder.mu.Lock()
+		if e.holder.pinned != nil {
+			_ = e.holder.pinned.Close()
+			e.holder.pinned = nil
+		}
+		e.holder.mu.Unlock()
+	}
+	conn := e.holder.get()
+	if conn == nil {
+		return nil
+	}
+	return conn.Close()
+}
+
+// sharedConnRefs reports the current reference count for path (0 = not open).
+// Used by tests, by the WAL sidecar guard (RemoveWALSidecars) and by shutdown
+// diagnostics.
+func sharedConnRefs(path string) int {
+	sharedConns.mu.Lock()
+	defer sharedConns.mu.Unlock()
+	if e, ok := sharedConns.m[path]; ok {
+		return e.refs
+	}
+	return 0
+}
+
+// openRawConn creates a fresh connection pool. It does NOT touch the shared
+// registry — acquireSharedConn is the only caller.
+func openRawConn(path string, maxIdleConns int, maxIdleTime time.Duration) (*sql.DB, error) {
 	if path != ":memory:" {
 		dir := filepath.Dir(path)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -178,7 +280,21 @@ func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, 
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	conn.SetMaxOpenConns(4)
+	// 2026-11-09：连接池上限从硬编码 4 提到 maxIdleConns*8（主库调用方传 8 ⇒ 64）。
+	//
+	// 为什么：生产有 ~471 个 interactive 子代理 + 多个会话并发写（写由 writeMu
+	// 串行化，但每条写事务都要占一个池连接）。MaxOpenConns(4) 时 /api/session-tree
+	// 的 4 次查询（channels/cli/tenants/agent）会排队等连接，实测端到端 1.6-3.5s；
+	// 而单线程 benchmark 同一组查询只要 13.8ms —— 差距就在「等连接」。
+	//
+	// 安全性：SQLite 的 WAL 模式天然支持「多读者 + 单写者」，读连接并发不会冲突；
+	// 写冲突已在进程内由 writeMu 串行化。Connection 是懒创建的，上限提高不会立即
+	// 占用 fd/内存。会话库（maxIdleConns=1）保持不变（4）。
+	maxOpen := 4
+	if maxIdleConns > 1 {
+		maxOpen = maxIdleConns * 8
+	}
+	conn.SetMaxOpenConns(maxOpen)
 	conn.SetMaxIdleConns(maxIdleConns)
 	conn.SetConnMaxLifetime(0)
 	if maxIdleTime > 0 {
@@ -199,7 +315,26 @@ func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, 
 		}
 	}
 	enablePersistWAL(conn)
-	db := &DB{conn: conn, path: path}
+	return conn, nil
+}
+
+func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, error) {
+	if path == ":memory:" {
+		// 每个 :memory: 库天然独立，不能共享。
+		conn, err := openRawConn(path, maxIdleConns, maxIdleTime)
+		if err != nil {
+			return nil, err
+		}
+		db := &DB{conn: conn, path: path}
+		db.logWALState("open")
+		return db, nil
+	}
+	holder, err := acquireSharedConn(path, maxIdleConns, maxIdleTime)
+	if err != nil {
+		return nil, err
+	}
+	// conn 只是「打开那一刻的快照」，读写一律走 activeConn()（可能已被 WAL 守卫换成新池）。
+	db := &DB{conn: holder.get(), holder: holder, path: path}
 	db.logWALState("open")
 	return db, nil
 }
@@ -336,6 +471,19 @@ func (db *DB) initSessionSchema() error {
 		CREATE INDEX IF NOT EXISTS ix_sm_correlation
 		    ON session_messages(correlation_id)`); err != nil {
 		return fmt.Errorf("create ix_sm_correlation: %w", err)
+	}
+	// v6: v80 的三条历史流回溯索引（markers / display / turn-user）补到**会话库**。
+	//
+	// v71/v72 拆库后主库的 session_messages 基本是 0 行，真实消息全在各会话库；
+	// 只在主库（db.go 的 v80 迁移 + ensureAdditiveTables）建这三条索引等于没建，
+	// /api/history 的回溯查询仍在会话库上全表扫（G-12 未翻绿的真正原因，
+	// 实测 p95 550ms → 240ms 由这三条索引带来）。
+	//
+	// 失败只告警不阻断：与主库同口径（db.go ensureAdditiveTables 的调用点）。
+	// 索引是优化不是可用性前提 —— 只读库（backup 副本 / mode=ro / 无 DDL 权限）
+	// 上 CREATE INDEX 必然失败，但库本身必须仍能打开。
+	if err := ensureSessionMessagesLookupIndexes(db.Conn()); err != nil {
+		log.WithError(err).Warn("ensure session_messages lookup indexes (session db) failed; history reads may stay slow")
 	}
 	return nil
 }

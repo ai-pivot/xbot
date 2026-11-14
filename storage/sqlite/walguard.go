@@ -1,0 +1,568 @@
+package sqlite
+
+// WAL/SHM 侧文件守卫（G-20261027-14）。
+//
+// ── 问题（2026-10-30 隔离实例实证）──
+//
+// serve 用 modernc.org/sqlite，进程外任何 **读写** 型 C-sqlite 客户端（python3
+// sqlite3 / sqlite3 CLI）在 serve 存活期间打开同一个库再关闭，就会触发 SQLite 的
+// 「最后一个连接关闭 ⇒ checkpoint + unlink -wal/-shm」语义：它看不到本进程的
+// 引用，认为自己是最后一个，于是把 serve 正在写的 -wal/-shm 删掉。实测一次
+// open+close 立刻让 serve 的 4 个 -wal fd + 1 个 -shm fd 全部变成 "(deleted)"
+// （fd 11/12/14/16/18，与生产 pid 2094617 逐个对应，见
+// court/evidence/gongbu/g14-walfd-20261030/01-signature-repro-notes.md）。
+//
+// `journal_mode=WAL` + `SQLITE_FCNTL_PERSIST_WAL`（enablePersistWAL）只能让
+// **我们自己**的连接关闭时不 unlink；它管不到别人删。删掉之后，serve 仍然把新帧
+// 写进那个没有目录项的 inode：数据对调用方「已提交」，对任何新连接「不存在」，
+// 且两边 checkpoint 抢同一批页（2026-10-21 malformed 的成因）。
+//
+// ── 两条不变量 ──
+//
+//  1. 删除只能发生在「没有任何连接打开该库之前」：包内唯一的 -wal/-shm 删除入口
+//     是 RemoveWALSidecars，它先看引用计数（进程内连接句柄 + flock），不为零就
+//     拒绝删除并告警。以前 session/sessiondb.go 直接 os.Remove，只要还有别的
+//     handle 指着同一路径，就会造出孤儿 fd。
+//  2. 替换/删除若由外部进程造成（我们拦不住），必须被**发现并自愈**：walGuard 每
+//     walGuardInterval 检查一次「路径上的 -wal 是否还是我打开的那个文件」
+//     （os.SameFile）。一旦 missing/replaced：先把孤儿 WAL 里已提交的帧 checkpoint
+//     回主库文件（数据不丢），再把连接池整体换掉 —— 必须是「先关干净、再开新的」，
+//     中间不留任何连接：sqlite 的 WAL-index 是按库文件在进程内共享的，只要还有一
+//     条连接指着它，孤儿的 -shm fd 就不会释放（2026-10-30 实测：换池后 deleted
+//     -shm 仍为 1，全部关闭后才归零）。
+//
+// 守卫幂等、可关：walGuardEnabled=false 只用于 RED/GREEN 自证（红=不自愈）。
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	log "xbot/logger"
+)
+
+// walGuardInterval 是自愈巡检周期。
+//
+// 2s 而不是 10s：从「外部 unlink」到「自愈完成」之间，任何新进程读这个库都只能看到
+// 主库文件里的页，WAL 里那批已提交的帧对它是不可见的 —— 这个窗口越短越好。周期内
+// 的开销只是对每个「当前还开着的库路径」做 1 次 os.Stat（微秒级），即使几百个会话库
+// 同时开着也不构成压力；真正的换池动作只在检测到异常时才发生。
+const walGuardInterval = 2 * time.Second
+
+// ── kill switch（现场运维不许改二进制就能关） ──
+//
+//	XBOT_WAL_GUARD=on|off           默认 on   off  = 守卫整体停摆（连检测都不做）
+//	XBOT_WAL_GUARD_HEAL=heal|warn   默认 warn warn = 只告警不自愈（默认）；heal = 尝试自愈
+//
+// 为什么**默认 warn**：自愈要关掉活体连接池再重开。2026-10-30 并发压测（8 写者 +
+// 强制 unlink + heal）实测：换池后 `PRAGMA integrity_check` 报 `*** in database main ***`
+// 且查询持续 `disk I/O error (522)` —— 「有并发写在飞时换池」会毁库。静默期换池是安全的
+// （隔离实例 + 包级数据安全实验都是 200/200 行 100% 可读），但代码无法廉价地判定
+// 「此刻真的静默」，所以默认只告警，把「要不要冒险自愈」交给运维显式 opt-in。
+//
+// 生效时机：**进程启动期一次**（包 init）。非法值不 panic：按默认值生效，并打一行
+// Warn 写明收到的原值与采用的值。改完环境变量需要重启进程才生效（不做运行期热改，
+// 避免「谁在什么时候翻了开关」无法追溯）。
+const (
+	envWALGuard     = "XBOT_WAL_GUARD"
+	envWALGuardHeal = "XBOT_WAL_GUARD_HEAL"
+)
+
+// walGuardEnabled 关闭时守卫整体停摆（连检测都不做）。默认 on，可由 XBOT_WAL_GUARD 覆盖。
+var walGuardEnabled = true
+
+// walGuardHealEnabled=false 时守卫只**告警**不自愈（默认）。由 XBOT_WAL_GUARD_HEAL 覆盖。
+var walGuardHealEnabled = false
+
+func init() { applyWALGuardEnv(os.LookupEnv) }
+
+// applyWALGuardEnv 解析 kill switch（拆出来是为了可测）。先落默认值再覆盖。
+func applyWALGuardEnv(lookup func(string) (string, bool)) {
+	walGuardEnabled = true
+	walGuardHealEnabled = false // 默认 warn：见文件头并发压测结论
+	if raw, ok := lookup(envWALGuard); ok {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "on", "1", "true", "yes":
+			walGuardEnabled = true
+		case "off", "0", "false", "no":
+			walGuardEnabled = false
+		default:
+			log.WithFields(log.Fields{"env": envWALGuard, "value": raw, "default": "on"}).
+				Warn("Unrecognized WAL guard kill switch value — falling back to the default")
+			walGuardEnabled = true
+		}
+	}
+	if raw, ok := lookup(envWALGuardHeal); ok {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "heal", "on", "true", "1":
+			walGuardHealEnabled = true
+		case "warn", "off", "false", "0":
+			walGuardHealEnabled = false
+		default:
+			log.WithFields(log.Fields{"env": envWALGuardHeal, "value": raw, "default": "warn"}).
+				Warn("Unrecognized WAL guard heal switch value — falling back to the default")
+			walGuardHealEnabled = false
+		}
+	}
+	if !walGuardEnabled {
+		log.WithFields(log.Fields{envWALGuard: "off"}).
+			Warn("WAL guard is DISABLED by kill switch — a foreign process can unlink xbot.db-wal/-shm and this process will keep writing to an unreachable inode (no detection, no heal)")
+	}
+}
+
+// connHolder 是「同一路径、全进程唯一连接池」的间接层。
+//
+// 为什么需要间接层：自愈必须把底层 *sql.DB 整个换掉（SQLite 不会重新打开已删除的
+// -wal），而同一个路径上有多个 DB handle（serverapp 的 sharedDB / tokenDB、
+// multitenant、迁移路径……）。它们共享同一个 connHolder，所以换池对所有人同时可见，
+// 不需要逐个通知，也不会有 handle 抱着已关闭的池。
+//
+// 写锁窗口（heal 期间）会让 get() 阻塞而不是返回 nil —— 调用方既不会拿到空指针，
+// 也不会在「旧池已关、新池未开」的瞬间写进去。
+type connHolder struct {
+	mu          sync.RWMutex
+	db          *sql.DB
+	walID       os.FileInfo // 我们打开的那个 <path>-wal（身份，用于 SameFile 比对）
+	shmID       os.FileInfo
+	maxIdle     int
+	maxIdleTime time.Duration
+
+	// pinned 是常驻守护连接（2026-11-09 "不能坏"机制，见 DB.pinnedDB 注释的由来）。
+	// 放在 holder 里而不是 DB 上：**自愈换池必须能一起处理它** —— 否则换池后旧
+	// pinned 连接仍抱着已删除的 -wal/-shm inode，孤儿 fd 残留（walguard 测试实测）。
+	// 它独立于 db 池（单独 sql.Open），因此换池时 db 关闭不影响它，需要显式重建。
+	pinned *sql.DB
+}
+
+func (h *connHolder) get() *sql.DB {
+	if h == nil {
+		return nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.db
+}
+
+func (h *connHolder) snapshot() (db *sql.DB, walID, shmID os.FileInfo) {
+	if h == nil {
+		return nil, nil, nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.db, h.walID, h.shmID
+}
+
+// openPinnedConn 建立一个独立于连接池的常驻连接（见 connHolder.pinned）。
+// 失败返回 nil（不阻塞启动/不阻塞自愈）。
+func openPinnedConn(path string) *sql.DB {
+	if path == "" || path == ":memory:" {
+		return nil
+	}
+	pdb, err := sql.Open("sqlite", "file:"+path+
+		"?_pragma=busy_timeout(3000)&_pragma=journal_mode(WAL)")
+	if err != nil {
+		log.WithError(err).Warn("pinned guard: open failed (external closers may unlink WAL)")
+		return nil
+	}
+	pdb.SetMaxOpenConns(1)
+	pdb.SetMaxIdleConns(1)
+	pdb.SetConnMaxLifetime(0)
+	var one int
+	if err := pdb.QueryRow("SELECT 1").Scan(&one); err != nil {
+		_ = pdb.Close()
+		log.WithError(err).Warn("pinned guard: probe failed (external closers may unlink WAL)")
+		return nil
+	}
+	return pdb
+}
+
+// openBrokenSentinel 返回一个**已关闭**的 *sql.DB。用途：自愈换池失败后，
+// 把 holder 的 db 从 nil 换成一个"永远返回 sql.ErrConnDone"的哨兵池 ——
+// 让所有后续操作快速失败，而不是在 nil 上 deref panic（2026-11-10 CR 第 1 轮 P1）。
+// 这同时兑现了 db.go activeConn 注释里「late caller gets sql.ErrDBClosed instead of
+// dereferencing nil」的承诺。
+func openBrokenSentinel() *sql.DB {
+	sentinel, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil
+	}
+	_ = sentinel.Close()
+	return sentinel
+}
+
+// captureWALIdentity 记录当前路径上 -wal/-shm 的身份（可能为 nil：文件尚未创建）。
+func captureWALIdentity(path string) (walID, shmID os.FileInfo) {
+	if path == "" || path == ":memory:" {
+		return nil, nil
+	}
+	walID, _ = os.Stat(path + "-wal")
+	shmID, _ = os.Stat(path + "-shm")
+	return walID, shmID
+}
+
+// ── 守卫循环 ──
+
+var walGuard = struct {
+	mu       sync.Mutex
+	started  bool
+	suppress bool          // true 时连自动巡检都不启动（测试隔离用，见 pauseWALGuard）
+	stop     chan struct{} // 关闭即让巡检 goroutine 退出
+	done     chan struct{} // 巡检 goroutine 退出后关闭（等它在飞的 tick 结束）
+}{}
+
+// startWALGuard 在第一次成功打开文件库时启动唯一的巡检 goroutine。
+//
+// 生产路径只会有这一个 goroutine；walGuardTick 是可直接调用的测试钩子，所以测试
+// 必须先把后台巡检停掉（pauseWALGuard），否则两条执行流会抢同一个「异常」：
+// 后台先把 -wal 自愈了，测试的手动 tick 就只能看到一个已经一致的状态、返回 0
+// （G-20261027-14 的 -race 确定性红灯就是这么来的，见
+// court/evidence/gongbu/g14-walfd-20261030/16-attribution-rootcause.md）。
+func startWALGuard() {
+	walGuard.mu.Lock()
+	if walGuard.started || walGuard.suppress {
+		walGuard.mu.Unlock()
+		return
+	}
+	walGuard.started = true
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	walGuard.stop, walGuard.done = stop, done
+	walGuard.mu.Unlock()
+
+	log.WithFields(log.Fields{
+		"enabled": walGuardEnabled, "heal": walGuardHealEnabled,
+		"interval": walGuardInterval.String(),
+	}).Info("WAL guard started (kill switches: " + envWALGuard + "=" + onOff(walGuardEnabled) + ", " + envWALGuardHeal + "=" + healWarn(walGuardHealEnabled) + ")")
+
+	go func() {
+		defer close(done)
+		t := time.NewTicker(walGuardInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+			}
+			// stop 之后不再开始新的 tick：否则 pauseWALGuard 返回后仍可能有一次
+			// 巡检落在测试的手动 tick 前面。
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			walGuardTick()
+		}
+	}()
+}
+
+// walGuardTick 巡检一遍当前仍然被引用的所有路径，返回自愈次数（测试钩子）。
+func walGuardTick() int {
+	if !walGuardEnabled {
+		return 0
+	}
+	type entry struct {
+		path string
+		h    *connHolder
+	}
+	var entries []entry
+	sharedConns.mu.Lock()
+	for p, e := range sharedConns.m {
+		entries = append(entries, entry{path: p, h: e.holder})
+	}
+	sharedConns.mu.Unlock()
+
+	healed := 0
+	for _, en := range entries {
+		anomaly := walIdentityAnomaly(en.path, en.h)
+		if anomaly == "" {
+			continue
+		}
+		if !walGuardHealEnabled {
+			log.WithFields(log.Fields{"path": en.path, "anomaly": anomaly}).
+				Error("WAL guard: a foreign process removed/replaced the live -wal; heal is disabled (walGuardHealEnabled=false) — writes from now on may be unreachable")
+			continue
+		}
+		if err := healForeignWALDeletion(en.path, en.h, anomaly); err != nil {
+			log.WithError(err).WithField("path", en.path).
+				Warn("WAL guard: foreign -wal loss detected but the heal attempt failed; writes from now on may be unreachable")
+			continue
+		}
+		healed++
+	}
+	return healed
+}
+
+// walIdentityAnomaly 判断路径上的 -wal 是否还是我们打开的那个文件。
+//
+// ── 两种「身份不一致」必须分开（2026-11-01 误报修复）──
+//
+// ① **良性**：会话库池是 MaxIdleConns(1) + ConnMaxIdleTime(5min)。会话静默后池丢掉
+// 最后一个物理连接，SQLite 的 last-close 语义就会 checkpoint + unlink -wal（
+// PERSIST_WAL 只设在 openRawConn 里最初那 4 条物理连接上，后来按需新建的没有）；
+// 下一轮查询在新 inode 上重建。这在生产上每 5 分钟对每个会话库发生一次，
+// 旧实现把它当成外部入侵 ⇒ 50 个库 × 每 2s 一条 error（2026-11-01 11 分钟 13085 条）。
+//
+// ② **真异常**：外部进程删/换了 -wal，而我们还有活连接的 fd 抱着那个孤儿 inode，
+// 之后的写入全部落在别人看不见的文件里（2026-10-21 malformed 的成因）。
+//
+// 判别式：**本进程里还有没有 fd 指着旧 inode**（见 sidecarOrphanFD）。良性事件里
+// 最后一条连接已经关干净、fd 全部释放；真异常里孤儿 fd 一直在。
+// 不能用「池里开了几条连接」当判据：良性场景下，下一次查询可能在两次巡检之间就把
+// 池重新开起来了（OpenConnections>0），而记录的旧身份照样过期。
+//
+// 判为良性后必须**对齐身份**（adoptIdentity），否则守卫会永久哑掉：记录清空或刷新，
+// 下一轮重新记下磁盘上当前的真实 inode，后续真异常仍能被发现。
+//
+// 只认 -wal 的身份：-shm 在「池里没有物理连接」时会由 SQLite 正常删掉（池下次取
+// 连接时重建），那是常态不是异常。
+func walIdentityAnomaly(path string, h *connHolder) string {
+	if path == "" || path == ":memory:" || h == nil {
+		return ""
+	}
+	_, walID, _ := h.snapshot()
+	cur, err := os.Stat(path + "-wal")
+	missing := err != nil || cur == nil
+
+	// idle 快路径：没有记下的身份、路径上也没有 -wal、池里一条连接都没开着
+	// ⇒ 不可能存在孤儿 fd（fd 只可能属于活连接），直接判良性、**跳过 /proc 扫描**。
+	//
+	// 为什么值得专门加这条：生产上 50+ 个会话库会长期停在「idle 且 -wal 已被
+	// last-close unlink」这个状态。不跳过的话，每个库每 2s 都要扫一遍本进程 fd 表
+	// （实测进程 104 个 fd，单次 ≈0.25ms；59 个库 ≈15ms/2s ≈ 0.75% CPU 常驻）。
+	// 判据不变：真异常里写入方一定是活连接，OpenConnections 必 >0，不会被这条短路。
+	if walID == nil && missing {
+		if db, _, _ := h.snapshot(); db == nil || db.Stats().OpenConnections == 0 {
+			return ""
+		}
+	}
+
+	// 快路径：还是池子打开时记下的那个文件（每 2s 每库只付一次 stat）。
+	if walID != nil && !missing && os.SameFile(walID, cur) {
+		return ""
+	}
+
+	if fd, ok := sidecarOrphanFD(path, cur); ok {
+		if fd == "" {
+			// 没有孤儿 fd ⇒ 我们自己关连接导致的 unlink/重建。对齐身份后返回良性。
+			h.adoptIdentity(path, cur)
+			return ""
+		}
+		log.WithFields(log.Fields{"path": path, "fd": fd}).
+			Warn("WAL guard: this process still holds an fd to a deleted/replaced -wal (orphan inode confirmed)")
+		if missing {
+			return "missing"
+		}
+		return "replaced"
+	}
+
+	// 本平台不能扫 fd：退回保守判据 —— 池里一条连接都没开着，就不可能有写入落在
+	// 孤儿 inode 上；否则按异常处理（宁可多报，不可漏报）。
+	if db, _, _ := h.snapshot(); db != nil && db.Stats().OpenConnections == 0 {
+		h.adoptIdentity(path, cur)
+		return ""
+	}
+	if missing {
+		return "missing"
+	}
+	return "replaced"
+}
+
+// adoptIdentity 把「我们持有的 sidecar 身份」对齐到磁盘当前状态。
+//
+// cur 为 nil 表示此刻路径上没有 -wal（池里暂时没有物理连接）：身份一起清空，
+// 等下一次查询建出新文件后由下一轮巡检重新记下（同样的对齐逻辑，所以不会哑）。
+func (h *connHolder) adoptIdentity(path string, cur os.FileInfo) {
+	var shm os.FileInfo
+	if cur != nil {
+		shm, _ = os.Stat(path + "-shm")
+	}
+	h.mu.Lock()
+	h.walID, h.shmID = cur, shm
+	h.mu.Unlock()
+}
+
+// healForeignWALDeletion 处理「外部进程删/替换了我们的 -wal」。
+//
+// 顺序即正确性：
+//  1. 先对旧池做 wal_checkpoint(TRUNCATE)：帧从孤儿 inode 落回主库文件，已 ack 的
+//     数据重新对所有人可见（数据安全的关键，先做）。
+//  2. 关旧池、开新池，**中间不保留任何连接**：这一步让 sqlite 释放按库文件共享的
+//     WAL-index，孤儿 -shm fd 才会真正关闭；新池在真实路径上重建 -wal/-shm。
+//  3. 新池指针在 holder 写锁内发布，所有 handle 立刻生效。
+//
+// 竞态分析：
+//   - 写锁窗口内所有 get() 阻塞（不返回 nil），窗口长度 = 关闭 + 打开一个池；
+//     关旧池会等正在执行的查询返回（database/sql 语义），最长受 busy_timeout 约束。
+//   - 旧池关闭时 PERSIST_WAL 保证它不会反过来 unlink -wal。
+//   - sharedConns 条目与引用计数、flock 全程不变 —— 不会让第二个 xbot 进程趁虚而入。
+func healForeignWALDeletion(path string, h *connHolder, anomaly string) error {
+	if h == nil {
+		return fmt.Errorf("heal %s: no connection holder", path)
+	}
+	start := time.Now()
+
+	// 1. 数据优先：把孤儿 WAL 里已提交的帧 checkpoint 进主库文件。
+	//
+	// **这一步没成功就绝不关池**：关池（最后一个连接关闭）虽然还会做一次 checkpoint，
+	// 但那一次同样可能拿不到锁；一旦两次都没成，未 checkpoint 的帧随着孤 inode 消失
+	// ⇒ 真丢数据（2026-10-30 并发压测复现过：busy 的 checkpoint 之后关池，重开后
+	// schema/表消失）。所以这里 checkpoint 必须 busy=0 且无错，否则本轮放弃自愈、
+	// 留到下一个巡检周期重试（guard 每 2s 一轮，代价只是窗口多 2s）。
+	if oldConn := h.get(); oldConn != nil {
+		// FULL 而不是 TRUNCATE：FULL 只要把帧写回主库（能在 busy_timeout 内等写者让路），
+		// TRUNCATE 还额外要求「此刻没有任何读者」才能把 WAL 归零，生产上更容易拿不到。
+		// 数据安全只依赖 FULL 成功；TRUNCATE 只用来收缩文件，失败不影响判断。
+		busy, logFrames, ckpt, err := walCheckpointFull(oldConn)
+		if err != nil || busy != 0 {
+			return fmt.Errorf("checkpoint of the orphaned WAL did not complete (busy=%d log=%d checkpointed=%d err=%v) "+
+				"— refusing to reopen the pool: uncheckpointed frames would be lost (retrying on the next tick)", busy, logFrames, ckpt, err)
+		}
+		// 这里**不做 TRUNCATE**：池里还有别的连接可能在写，TRUNCATE 会把 WAL 从头重置，
+		// 与并发写者叠加会打出 SQLITE_IOERR（2026-10-30 并发压测复现）。文件大小无所谓
+		// —— 这个 inode 马上就会随旧池关闭而消失。
+	}
+
+	maxIdle, maxIdleTime := 4, time.Duration(0)
+	if h.maxIdle > 0 {
+		maxIdle, maxIdleTime = h.maxIdle, h.maxIdleTime
+	}
+
+	// 2. 关干净 → 开新的（中间零连接）。
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	old := h.db
+	oldPinned := h.pinned
+	h.db, h.walID, h.shmID, h.pinned = nil, nil, nil, nil
+	// 先关 pinned 再关主池：pinned 是独立连接，若留到主池之后关闭会变成
+	// "最后一个连接"，触发 SQLite 的 last-close checkpoint/unlink（正是我们要避免的）。
+	if oldPinned != nil {
+		_ = oldPinned.Close()
+	}
+	if old != nil {
+		_ = old.Close()
+	}
+
+	var (
+		newConn *sql.DB
+		err     error
+	)
+	for attempt := 1; attempt <= 3; attempt++ {
+		newConn, err = openRawConn(path, maxIdle, maxIdleTime)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		// ⛔ 绝不把 h.db 留成 nil：那会让后续每一个 db.Conn() 调用方在 nil 上
+		// deref panic。换成一个已关闭的哨兵池 —— 所有操作返回 sql.ErrConnDone，
+		// 且下个 tick 仍会重试自愈（h.db != nil 时 get() 正常返回哨兵）。
+		h.mu.Lock()
+		h.db = openBrokenSentinel()
+		h.mu.Unlock()
+		return fmt.Errorf("reopen after foreign WAL loss: %w (holder left with a closed sentinel pool; all queries now fail fast instead of nil-deref, retrying next tick)", err)
+	}
+	walID, shmID := captureWALIdentity(path)
+	if walID == nil {
+		_ = newConn.Close()
+		h.mu.Lock()
+		h.db = openBrokenSentinel()
+		h.mu.Unlock()
+		return fmt.Errorf("reopened pool did not recreate %s-wal (holder left with a closed sentinel pool)", path)
+	}
+	h.db, h.walID, h.shmID = newConn, walID, shmID
+	// 重建 pinned（换池后必须重新建立，否则外部进程的下一次 open+close 又会被
+	// 判定为最后一连接）
+	if pinnedGuardEnabled {
+		h.pinned = openPinnedConn(path)
+	}
+
+	log.WithFields(log.Fields{
+		"path":          path,
+		"anomaly":       anomaly,
+		"new_wal_size":  walID.Size(),
+		"new_wal_mtime": walID.ModTime().Format(time.RFC3339),
+		"shm_present":   shmID != nil,
+		"elapsed_ms":    time.Since(start).Milliseconds(),
+	}).Error("WAL guard: a foreign process removed/replaced the live -wal (SQLite last-close unlink). Healed: orphan frames checkpointed into the main DB file, pool closed and reopened so the deleted -wal/-shm fds are released and fresh sidecars exist at the real path")
+	return nil
+}
+
+// ── 删除入口 ──
+
+// RemoveWALSidecars 是包内（以及 session 包）删除 <db> / <-wal> / <-shm> 的唯一入口。
+//
+// 它强制不变量 1：**只有在没有任何连接引用该路径时**才允许删除。否则返回错误、
+// 一个文件都不动 —— 把「删了别人正在写的 WAL」变成一次可观测的失败，而不是一批
+// deleted fd 加一批读不到的数据。
+func RemoveWALSidecars(dbPath string) error {
+	if dbPath == "" || dbPath == ":memory:" {
+		return nil
+	}
+	if refs := sharedConnRefs(dbPath); refs > 0 {
+		return fmt.Errorf("refusing to delete %s{-wal,-shm}: %d connection handle(s) still reference it "+
+			"— deleting now would orphan their -wal fds (close all handles first)", dbPath, refs)
+	}
+	if refs := dbLockRefs(dbPath); refs > 0 {
+		return fmt.Errorf("refusing to delete %s{-wal,-shm}: the process flock is still held (%d refs)", dbPath, refs)
+	}
+	var firstErr error
+	removed := 0
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.Remove(dbPath + suffix); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = fmt.Errorf("remove %s: %w", dbPath+suffix, err)
+			}
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		log.WithFields(log.Fields{"path": dbPath, "files_removed": removed}).
+			Debug("Removed database file with its WAL/SHM sidecars (no open handle, flock released)")
+	}
+	return firstErr
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
+}
+
+func healWarn(v bool) string {
+	if v {
+		return "heal"
+	}
+	return "warn"
+}
+
+// walCheckpointFull 跑 PRAGMA wal_checkpoint(FULL)：把所有已提交帧写回主库文件
+// （等价于「数据落盘」），但不要求把 WAL 归零，因此比 TRUNCATE 容易成功。
+func walCheckpointFull(conn *sql.DB) (busy, logFrames, checkpointed int, err error) {
+	if scanErr := conn.QueryRow("PRAGMA wal_checkpoint(FULL)").Scan(&busy, &logFrames, &checkpointed); scanErr != nil {
+		if _, execErr := conn.Exec("PRAGMA wal_checkpoint(FULL)"); execErr != nil {
+			return 0, 0, 0, fmt.Errorf("wal_checkpoint(FULL): %w", execErr)
+		}
+		return 0, 0, 0, nil
+	}
+	return busy, logFrames, checkpointed, nil
+}
+
+// dbLockRefs 返回该路径上 flock 的进程内引用计数（0 = 没有 handle 持锁）。
+func dbLockRefs(path string) int {
+	dbLocks.mu.Lock()
+	defer dbLocks.mu.Unlock()
+	if e, ok := dbLocks.m[path]; ok {
+		return e.refs
+	}
+	return 0
+}

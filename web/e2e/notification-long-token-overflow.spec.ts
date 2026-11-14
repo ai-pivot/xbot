@@ -20,11 +20,11 @@ const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
 const CONTENT = [
   '[System Notification] 子代理已完成（background task 3f8f492a）',
   '',
-  'Worktree: /home/smith/src/.xbot-worktrees/peer-rw7ms-natural-rewrite',
+  'WorkingDir: /home/smith/src/task-workdirs/peer-rw7ms-natural-rewrite',
   'Command: `cargo build --release --features cuda,flashinfer | tee /tmp/q12_cargo_natural_rewrite_build_output.log`',
   '',
   '结果：RC=127 | 结论：坏跑/不可引用（FAIL）',
-  '产物：/home/smith/src/.xbot-worktrees/peer-rw7ms-natural-rewrite/target/release/ferrite-graph-inference-benchmark',
+  '产物：/home/smith/src/task-workdirs/peer-rw7ms-natural-rewrite/target/release/ferrite-graph-inference-benchmark',
   '备注：详情见 https://artifacts.internal.example.com/very/deep/nested/path/builds/peer-rw7ms-natural-rewrite/logs/full_build_output.txt',
 ].join('\n')
 

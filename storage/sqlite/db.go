@@ -33,6 +33,7 @@ import (
 // immediately with SQLITE_BUSY.
 type DB struct {
 	conn         *sql.DB
+	holder       *connHolder // 仅文件库：全进程共享的连接池间接层（WAL 自愈要换池）
 	path         string
 	closed       atomic.Bool // Close 幂等（D-01）
 	mu           sync.RWMutex
@@ -80,7 +81,7 @@ type DB struct {
 	lockFile *os.File
 }
 
-const schemaVersion = 79
+const schemaVersion = 80
 const historyLockStripes = 64
 
 // dbLockEntry 是进程内对某个数据库文件持有的 flock，带引用计数。
@@ -212,7 +213,7 @@ func Open(path string) (*DB, error) {
 
 	// 主库连接池：MaxIdleConns(4)（常驻热连接，主库是全局单点）；会话库走
 	// openSQLite 的会话参数（MaxIdleConns(1) + ConnMaxIdleTime，见 OpenSessionDB）。
-	db, err := openSQLite(path, 4, 0)
+	db, err := openSQLite(path, 8, 0) // maxIdle=8 ⇒ MaxOpenConns=64（见 sessiondb.go 注释）
 	if err != nil {
 		releaseDBLock(path)
 		return nil, err
@@ -236,9 +237,44 @@ func Open(path string) (*DB, error) {
 		cancel()
 	}
 
+	db.openPinnedGuard()
+
 	log.WithFields(log.Fields{"path": path, "caller": callerTag(1)}).Info("SQLite database opened")
 	db.logWALState("open")
 	return db, nil
+}
+
+// pinnedGuardEnabled 允许测试关闭 pinned 守护连接（walguard_test 要模拟"无防护"
+// 状态下外部 unlink 的自愈路径 —— pinned 会让 -wal 在删除后立刻重建，破坏其
+// precondition）。生产恒为 true。
+var pinnedGuardEnabled = true
+
+// openPinnedGuard 在共享 connHolder 上建立常驻守护连接（见 connHolder.pinned）。
+// 只做一件事：让本进程永远持有一个打开的 WAL 句柄，使外部进程的 open+close
+// 不再被 SQLite 判定为「最后一个连接」。失败不阻塞启动（只告警）。
+func (db *DB) openPinnedGuard() {
+	if !pinnedGuardEnabled || db.path == ":memory:" || db.holder == nil {
+		return
+	}
+	h := db.holder
+	h.mu.Lock()
+	if h.pinned != nil {
+		h.mu.Unlock()
+		return
+	}
+	h.mu.Unlock()
+	pdb := openPinnedConn(db.path)
+	if pdb == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.pinned == nil {
+		h.pinned = pdb
+	} else {
+		_ = pdb.Close() // 并发 Open 竞争：保留已有的
+	}
+	h.mu.Unlock()
+	log.WithField("path", db.path).Debug("pinned guard connection established — external open/close can no longer unlink WAL")
 }
 
 // historyLock serializes compound history operations using a bounded striped
@@ -263,6 +299,9 @@ func (db *DB) Close() error {
 	if !db.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	// pinned 由共享 connHolder 持有（换池时自愈一并重建），这里不单独关闭：
+	// 同一路径可能有多个 DB handle，提前关 pinned 会让外部进程的下一次 open+close
+	// 重新被判定为"最后一个连接"。它随 holder 的最后一个引用一起释放。
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	// D-02（2026-10-22 审计）：conn.Close() 失败时也必须释放锁并清空 conn。
@@ -270,14 +309,34 @@ func (db *DB) Close() error {
 	// 引用计数永久泄漏、锁永不释放（比不修更糟）。
 	var closeErr error
 	if db.conn != nil {
-		closeErr = db.conn.Close()
-		db.conn = nil
+		// 共享连接池：这里只释放**本 handle 的引用**，只有最后一个持有者
+		// 才会真正 Close。否则一个短连接（migrate / tokenDB / 某个即开即关的
+		// 调用点）关库时，SQLite 会认为「这一连接集的最后一条连接结束了」并
+		// checkpoint + unlink -wal，而常驻池仍持有那个 fd —— 后续写入只能落进
+		// 一个没有目录项的 inode（2026-10-27 生产实证：4MB/1015 帧）。
+		if db.path == ":memory:" {
+			closeErr = db.conn.Close()
+		} else {
+			closeErr = releaseSharedConn(db.path)
+		}
+		// Deliberately NOT setting db.conn = nil: a closed *sql.DB is safe to
+		// call (every method returns sql.ErrDBClosed) whereas a nil one panics
+		// inside database/sql when it locks db.mu. Late goroutines that touch
+		// the database during shutdown — e.g. DestroySession →
+		// deleteSessionDBFile → GetTenantDBInfo, or the background sub-agent
+		// teardown path — used to take the whole process down through a
+		// recovered nil dereference. Keeping the handle turns that class of bug
+		// into an ordinary error the caller can log. Lifecycle is unchanged:
+		// the *sql.DB is owned by this DB struct, so no extra retention.
 		if closeErr != nil {
 			log.WithFields(log.Fields{"path": db.path, "error": closeErr.Error()}).Warn("SQLite close returned error")
 		} else {
 			log.WithFields(log.Fields{"path": db.path, "caller": callerTag(1)}).Info("SQLite database closed")
 		}
-		db.logWALState("close")
+		// Close 之后 SQLite 会 checkpoint 并**正常删除** -wal 文件。
+		// 这里若继续用 logWALState 的"上次有、这次没有 ⇒ 异常"判定，
+		// 每一次正常关闭都会打出 committed-data-loss 签名（2026-10-26 误报）。
+		db.logWALStateFinal("close")
 	}
 	// 释放进程级独占锁：必须在 conn.Close() 之后（checkpoint 已做完），
 	// 且无论 Close 成败都要释放。
@@ -322,6 +381,47 @@ func walAnomaly(prevInfo os.FileInfo, curPresent bool, curInfo os.FileInfo) stri
 	return ""
 }
 
+// suppressWALAnomaly drops anomalies that are a normal consequence of the
+// operation being logged rather than evidence of data loss.
+//
+// ⚠️ 2026-10-27 修正：上一版把 `checkpoint(TRUNCATE)` 也放进抑制范围，理由是
+// "TRUNCATE 会删掉并重建 -wal，inode 变化是设计内行为"。**那个理由是错的，而且
+// 它掩盖了一起正在发生的事故。**
+//
+// 现场证据（生产 pid 1024363）：
+//
+//	fd 11,14,16,...(8 个) → xbot.db-wal (deleted)  inode 2908514, 4,181,832 B
+//	磁盘上的 -wal                                  inode 2930465, size = 0
+//
+// 即：**一个 4MB、含已提交帧的 WAL 被 unlink，进程仍持着它；磁盘上换了一个空
+// inode。** 而 prevSize 只记录**上一次采样**时的大小 —— 如果上次采样时 WAL 恰好
+// 是 0，中间写满 4MB、然后被 unlink，那么 `prevSize == 0` 成立，这条本该报警的
+// REPLACED 就被静默吞掉了。用采样值判断"有没有帧可丢"根本不可靠。
+//
+// 所以规则收紧为：**inode 变了（replaced）一律不抑制**。文件被换掉就是要查的
+// 信号，宁可每次重启多 1000 条告警，也不能让一次真事故躺在噪声里。
+//
+// 仅保留一种抑制：`missing` + `close` + `prevSize == 0`。关库时删除 -wal 是
+// SQLite 的规定语义（最后一个连接关闭会 checkpoint 并 unlink），而且关库前必然
+// 已经 checkpoint 过；此时文件不存在、上次采样也是空，没有任何帧可失去。
+// prevSize > 0 的 missing 仍然照报（采样窗口里就有 2 条 prevSize=107152 的真事件）。
+func suppressWALAnomaly(anomaly, where string, prevSize int64) string {
+	if anomaly == "" {
+		return anomaly
+	}
+	// replaced = inode 变了。任何情况下都不抑制 —— 这正是上面那 4MB 事故的形态。
+	if anomaly == "replaced" {
+		return anomaly
+	}
+	if prevSize != 0 {
+		return anomaly
+	}
+	if anomaly == "missing" && where == "close" {
+		return ""
+	}
+	return anomaly
+}
+
 // logWALState records and logs the state of the <db>-wal file (presence, size,
 // mtime, and whether it disappeared/was replaced since the last observation).
 // Log-only: it changes no behaviour and is safe to call from any goroutine.
@@ -334,7 +434,7 @@ func (db *DB) logWALState(where string) {
 
 	db.walMu.Lock()
 	prevInfo, prevSize := db.lastWALInfo, db.lastWALSize
-	anomaly := walAnomaly(prevInfo, present, fi)
+	anomaly := suppressWALAnomaly(walAnomaly(prevInfo, present, fi), where, prevSize)
 	db.lastWALInfo, db.lastWALSize = fi, 0
 	if present {
 		db.lastWALSize = fi.Size()
@@ -366,6 +466,26 @@ func (db *DB) logWALState(where string) {
 	log.WithFields(fields).Info("WAL state")
 }
 
+// logWALStateFinal records the WAL state AFTER the pool is closed, where the
+// absence of -wal is the expected outcome: the last connection's Close()
+// checkpoints and unlinks it. Unlike logWALState it never raises the
+// "DISAPPEARED / committed-data-loss" warning, because that warning exists to
+// catch a *live* connection losing its WAL — not the teardown path.
+func (db *DB) logWALStateFinal(where string) {
+	if db == nil || db.path == "" || db.path == ":memory:" {
+		return
+	}
+	fi, err := os.Stat(db.path + "-wal")
+	present := err == nil && fi != nil
+	fields := log.Fields{"path": db.path, "where": where, "wal_present": present}
+	if present {
+		fields["wal_size"] = fi.Size()
+		log.WithFields(fields).Info("WAL state after close")
+		return
+	}
+	log.WithFields(fields).Info("WAL absent after close (expected: SQLite checkpointed and removed -wal)")
+}
+
 // CheckpointForShutdown copies every committed WAL frame into the main database
 // file and resets the WAL.
 //
@@ -383,8 +503,9 @@ func (db *DB) CheckpointForShutdown() error {
 		return nil
 	}
 	db.mu.RLock()
-	conn, path := db.conn, db.path
+	path := db.path
 	db.mu.RUnlock()
+	conn := db.activeConn()
 	if conn == nil {
 		return nil
 	}
@@ -429,11 +550,35 @@ func walCheckpointTruncate(conn *sql.DB) (busy, logFrames, checkpointed int, err
 	return busy, logFrames, checkpointed, nil
 }
 
-// Conn returns the underlying database connection
+// Conn returns the underlying database connection.
+//
+// 文件库走 activeConn()：WAL 守卫（walguard.go）可能在运行期把池换成新的，
+// 所有 handle 必须看到同一套池，否则会有人抱着已关闭的池继续读写。
 func (db *DB) Conn() *sql.DB {
+	return db.activeConn()
+}
+
+// activeConn 返回该 handle 当前真正使用的连接池。
+func (db *DB) activeConn() *sql.DB {
+	if db == nil {
+		return nil
+	}
+	if db.holder != nil {
+		return db.holder.get()
+	}
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	return db.conn
+}
+
+// IsClosed reports whether Close has already been called on this handle.
+//
+// After Close, Conn() still returns the (already closed) *sql.DB so that a
+// late caller gets sql.ErrDBClosed instead of dereferencing nil. That means
+// "Conn() == nil" is no longer a valid liveness test — use IsClosed() for
+// that, and keep handling the error from whatever query you run.
+func (db *DB) IsClosed() bool {
+	return db.closed.Load()
 }
 
 // initSchema creates the database schema if it doesn't exist, and runs migrations
@@ -536,6 +681,24 @@ CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at ON oauth_tokens(expires_at);
 `
 	if _, err := db.Conn().Exec(additive); err != nil {
 		return fmt.Errorf("ensure additive tables: %w", err)
+	}
+	// user_chats 的查询索引同样属于「同版本漂移」：老库可能有、新库缺，
+	// 只在 createSchema 里声明覆盖不到已在运行的库。幂等 DDL，见 migrations.go。
+	//
+	// ⛔ 与 schema.go:530-551（idx_sm_tenant_turn 兜底）同约定：**索引失败只告警，
+	// 绝不阻断 Open**。索引是纯优化，不是可用性前提 —— 只读库（backup 副本 /
+	// mode=ro / 无 DDL 权限）或索引名被占用时 CREATE INDEX 必然失败，但库本身
+	// 完全可读可用，只是 label/sort_order 子查询退化为扫表（慢一点而已）。
+	// 让「补一条索引」把「能打开库」这个前提打掉，是拿启动铁律换优化（P0 回归，
+	// 2026-10-30：2070457b 引入）。回归测试见 user_chats_index_test.go
+	// TestUserChatsChannelChatIndexReadOnlyDBStillOpens。
+	if err := ensureUserChatsLookupIndexes(db.Conn()); err != nil {
+		log.WithError(err).Warn("ensure user_chats lookup indexes failed; label subquery may stay slow")
+	}
+	// v80 的三条 session_messages 部分索引同样按「同版本漂移」处理：迁移期失败
+	// （只读库/无 DDL 权限）不阻断启动，这里每次 Open 幂等重试，同样只告警。
+	if err := ensureSessionMessagesLookupIndexes(db.Conn()); err != nil {
+		log.WithError(err).Warn("ensure session_messages lookup indexes failed; history reads may stay slow")
 	}
 	return nil
 }

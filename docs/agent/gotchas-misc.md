@@ -68,3 +68,29 @@
   放宽的依据必须写进注释：这些断言要抓的是**算法退化**（按会话数线性扫描 → 秒级；cancel 阻塞到 turn 结束 → 30 秒级），放宽 3–5 倍不弱化语义。
 - **`--- FAIL: TestHelperChild...` 可能是假信号**：`TestDoubleCloseKeepsLockForOtherHandles` 故意 fork 子进程让它打印 `expected failure: database ... already in use`，子进程 `--- FAIL` 是**预期输出**，父测试 `--- PASS`。看 CI 日志先确认父测试结论，别被 helper 的 FAIL 带偏。
 - **守护**：`storage/sqlite/activity_index_test.go`（`budget` 变量 + `(budget=%v)` 进 log）、`channel/web/web_cancel_blocking_test.go`（`cancelBudget`）、`channel/web/web_activity_test.go`（`budget`）。三处都断言本地值不变。
+
+## 2026-11-01 追加：WAL 守卫的「身份不一致」≠「外部进程动了我们的 -wal」
+
+- **症状**：生产 `xbot-2026-11-01.log` 11 分钟 17492 条
+  `WAL guard: a foreign process removed/replaced the live -wal ... anomaly=missing`，覆盖 50 个会话库、每 2s 一条。
+- **根因（是我们自己，不是入侵）**：会话库池是 `MaxIdleConns(1) + ConnMaxIdleTime(5min)`
+  （`storage/sqlite/sessiondb.go` `OpenSessionDB`）。会话静默 5 分钟后池丢掉最后一个物理连接，
+  SQLite 的 last-close 语义 checkpoint + **unlink `-wal`**；下一轮查询新建物理连接，在新 inode 上重建。
+  `enablePersistWAL`（`SQLITE_FCNTL_PERSIST_WAL`）只对 `openRawConn` 最初的 4 条物理连接设过，
+  **后来按需新建的连接没有**，所以该 unlink 依然会发生。
+  `connHolder.walID` 记的是打开那一刻的 inode ⇒ 之后永远 mismatch ⇒ 每 2s 刷一条 error。
+- **判据（唯一可靠的一条）**：**本进程里还有没有 fd 指着 `<db>-wal` 的孤儿 inode**
+  （linux `/proc/self/fd`，`sidecarOrphanFD`）。良性事件里最后一条连接已关干净、fd 全释放；
+  真外部 unlink 里活连接的 fd 还抱着那个孤儿 inode。
+  **⛔ 不能用「池里开了几条连接」当判据**：良性场景下，下一次查询可能在两次巡检之间
+  就把池重新开起来了（`OpenConnections>0`），旧身份照样过期。
+- **良性判定后必须对齐身份**（`connHolder.adoptIdentity`）：不清空/刷新身份，守卫会永久哑掉
+  （旧文件没了 → 永远 `missing`）；对齐后下一轮重新记下磁盘上当前真实 inode，真异常仍能抓到。
+- **守护**：`storage/sqlite/walguard_false_positive_test.go`
+  — `TestWALGuardIgnoresOwnIdleClose`（池 idle 关连接 + 换 inode ⇒ anomaly 必须为空，且 healed=0）
+  与 `TestWALGuardStillAlarmsOnExternalUnlinkWithLiveHandle`（活句柄被外部 unlink ⇒ 必须报警）。
+  变异对照：把良性分支退回旧行为 ⇒ 第一条 RED；把守卫短路成永不报警 ⇒ 第二条 RED
+  （脚本 `court/evidence/gongbu/restart-20261101/mutation-walguard.sh`）。
+- **计数口径**：`grep -c 'WAL guard'` 会把启动那行
+  `WAL guard started (kill switches: ...)` 也算进去（每次重启 +1）；
+  数「异常刷屏」要用 `grep -c 'WAL guard: a foreign process'`。

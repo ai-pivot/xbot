@@ -1292,7 +1292,7 @@ func (m *cliModel) renderInfoBar() string {
 	hasAgents := m.agentCount > 0
 	hasQueue := len(m.messageQueue) > 0
 
-	// Always show workspace indicator (pinned to left).
+	// Always show the workspace indicator (pinned to left).
 	wsIndicator := m.renderWorkspaceIndicator()
 
 	var parts []string
@@ -1333,53 +1333,30 @@ func (m *cliModel) renderInfoBar() string {
 		Render(content)
 }
 
-// renderWorkspaceIndicator returns a workspace status string.
-// "🏠 main workspace" for main workspace, "🌿 <name>" for worktree sessions.
+// renderWorkspaceIndicator returns the workspace status string pinned at the
+// left of the info bar: the session name for named sessions, "main workspace"
+// for the default session.
+//
+// 注：工作树工具已删除，🌿 分支随之消失；但"命名会话显示会话名"是独立于
+// 该工具的行为，不能一并丢掉（否则所有会话都显示 main workspace，用户分不清
+// 自己在哪个会话里）。
 func (m *cliModel) renderWorkspaceIndicator() string {
-	cwd := ""
-	if m.progressState.current != nil {
-		cwd = m.progressState.current.CWD
+	if name := m.sessionDisplayName(); name != "" {
+		return fmt.Sprintf("🏠 %s", m.styles.Accent.Render(name))
 	}
-
-	if cwd != "" && strings.Contains(cwd, ".xbot-worktrees") {
-		dirName := filepath.Base(cwd)
-		shortName := shortenWorktreeName(dirName)
-		return fmt.Sprintf("🌿 %s", m.styles.Accent.Render(shortName))
-	}
-
-	// No progress yet — derive from chatID. Named sessions (chatID
-	// has a session name after ':') are likely worktree sessions.
-	// Default session (chatID == workDir) is always primary.
-	if m.chatID != "" && m.chatID != m.workDir {
-		sessionName := m.chatID
-		if idx := strings.LastIndex(m.chatID, ":"); idx > 0 {
-			sessionName = m.chatID[idx+1:]
-		}
-		return fmt.Sprintf("🌿 %s", m.styles.Accent.Render(sessionName))
-	}
-
 	return fmt.Sprintf("🏠 %s", m.styles.TextMutedSt.Render("main workspace"))
 }
 
-// shortenWorktreeName shortens a worktree directory name for display.
-func shortenWorktreeName(dirName string) string {
-	// dirName format: {role}-{sessionKey_shortened}-{timestamp}
-	// e.g. peer-cli--home-user-src-xbot-worktree-20260509-180133
-	// Show just the role part + short timestamp
-	parts := strings.Split(dirName, "-")
-	if len(parts) > 2 {
-		// Last parts are timestamp: YYYYMMDD-HHMMSS
-		if len(parts) >= 4 {
-			datePart := parts[len(parts)-2] + "-" + parts[len(parts)-1]
-			if len(datePart) == 13 { // YYYYMMDD-HHMMSS
-				return parts[0] + " " + datePart[4:6] + "/" + datePart[6:8] + " " + datePart[9:11] + ":" + datePart[11:13]
-			}
-		}
+// sessionDisplayName returns the display name of a named session, or "" for the
+// default session (chatID == workDir).
+func (m *cliModel) sessionDisplayName() string {
+	if m.chatID == "" || m.chatID == m.workDir {
+		return ""
 	}
-	if len(dirName) > 25 {
-		dirName = dirName[:25] + "…"
+	if idx := strings.LastIndex(m.chatID, ":"); idx > 0 && idx+1 < len(m.chatID) {
+		return m.chatID[idx+1:]
 	}
-	return dirName
+	return m.chatID
 }
 
 // renderTodoBar renders a compact TODO progress bar between status and input.

@@ -31,6 +31,7 @@ import { DEFAULT_SESSION_CATEGORY, groupSessions, isSessionCategory, parseAgentC
 import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
 import { rememberRecentWorkDir } from '@/lib/recent-workdirs'
 import { initialActiveSession, isEmbeddedHostPage, readHostIdentity } from '@/plugin-runtime/sessionIdentity'
+import { askUserResolvedTip, shouldTipAskUserResolved } from '@/lib/askUserResolved'
 import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus, TodoItem } from '@/types/shared'
 import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
@@ -143,6 +144,14 @@ export interface SessionStore {
   subAgents: SessionInfo[]
   /** Pending AskUser prompts keyed by "channel:chatID". Survives session switch. */
   askUserPrompts: Map<string, AskUserPrompt>
+  /** 每次收件箱处置完卡片就 +1；会话面板靠它触发 history 重拉。
+   *
+   *  为什么不直接监听 window 事件：per-session 代码不许挂全局监听
+   *  （多会话面板会重复响应，跨会话污染 —— eslint no-restricted-properties 会拦）。
+   *  全局状态放 store，per-session 只读 state。 */
+  historyEpoch: number
+  /** 收件箱处置完卡片后调用，让挂着的会话面板重新拉 history。 */
+  bumpHistoryEpoch: () => void
   setCategory: (c: SessionCategory) => void
   /** Collapsed groups, keyed by `collapseKey(category, groupKey)`. For the
    *  project (path) category this is "remembered per project". */
@@ -943,6 +952,9 @@ export function useSessionStoreImpl(): SessionStore {
   const [cachedTree] = useState(loadSessionTreeCache)
   const [sessions, setSessions] = useState<SessionInfo[]>(() => cachedTree?.sessions ?? [])
   const [subAgents, setSubAgents] = useState<SessionInfo[]>(() => cachedTree?.subAgents ?? [])
+  // 收件箱处置卡片 ⇒ history 过期。递增这个 epoch，会话面板的 reload 依赖到它就重拉。
+  const [historyEpoch, setHistoryEpoch] = useState(0)
+  const bumpHistoryEpoch = useCallback(() => setHistoryEpoch((v) => v + 1), [])
   const [activeSession, setActiveSession] = useState<SessionSelector | null>(() => {
     const cachedActive = cachedTree?.sessions.find((session) => session.isCurrent && !session.synthetic)
       ?? cachedTree?.sessions.find((session) => !session.synthetic)
@@ -1854,9 +1866,18 @@ export function useSessionStoreImpl(): SessionStore {
           ?? (chatID === wsRef.current.chatID ? wsRef.current.channel : null)
           ?? (fallback && chatID === fallback.chatID ? fallback.channel : DEFAULT_CHANNEL)
         if (chatID) {
+          const key = `${channel}:${chatID}`
+          // 卡片在**本会话**真的要消失了才提示：先看本地有没有卡（没有卡就
+          // 什么都不消失，尤其别对"我刚点了回答/取消"的收尾事件再弹一句）。
+          const hadPrompt = askUserPromptTsRef.current.has(key)
           // 服务端确认该问题不再 pending ⇒ 撤销闪回抑制（此后同一 requestId 若真再来 = 真新问题）
           askAnsweredRef.current.delete(`${channel}:${chatID}`)
           dropAskUserPrompt(`${channel}:${chatID}`)
+          // 提示走既有 toast 通道（Toaster 已挂在 App 上，不新造 UI）：
+          // 超时收回 vs 主动取消是两条不同文案（cancel_reason 分辨，见 lib/askUserResolved）。
+          if (hadPrompt && shouldTipAskUserResolved(msg)) {
+            toast.info(askUserResolvedTip(msg.cancel_reason))
+          }
         }
         return
       }
@@ -1998,8 +2019,10 @@ export function useSessionStoreImpl(): SessionStore {
     clearAskUserPrompt,
     markAskUserAnswered,
     hydrateAskUserPrompt,
+    historyEpoch,
+    bumpHistoryEpoch,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, collapsedGroupSet, toggleGroupCollapsed, setGroupsCollapsed, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt, markAskUserAnswered, hydrateAskUserPrompt])
+    askUserPrompts, setCategory, collapsedGroupSet, toggleGroupCollapsed, setGroupsCollapsed, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt, markAskUserAnswered, hydrateAskUserPrompt, historyEpoch, bumpHistoryEpoch])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {

@@ -49,8 +49,35 @@ Zero-dependency memory provider (no embedding API) built on SQLite FTS5 BM25.
   `New()` resolves owner from `tenants.owner_user_id` when not passed; `SetOwnerUserID`
   fixes up providers created via the tool-extras path. `scopeArg()` NEVER falls back
   to tenant_id (that was the "different sessions see different memories" bug).
-- **Three tiers**: core summary (`MEMORY.md`, ≤2000 chars, always injected) + short-term
-  session summaries + long-term atomic memories (fact/preference/event/decision/skill).
+- **Two tiers** (core summary REMOVED 2026-11-07): short-term session summaries +
+  long-term atomic memories (fact/preference/event/decision/skill). The old core tier
+  was `MEMORY.md`, an LLM-rewritten summary re-injected every turn — unvalidated LLM
+  output rotted it to 116KB/894 lines (27 prompt echoes, an `rm -rf /` injection probe,
+  Cyrillic/kana mojibake, inner-monologue drafts) in the wild. `updateCoreSummary`
+  and the `## Core` injection are deleted; quarantined copies live in
+  `~/.xbot/memory/_quarantine/`.
+- **Two-phase write (2026-11-07)**: `memory_add` NEVER persists global-scope memories
+  directly — it stages a row in `memory_proposals` (TTL 10 min) and returns a
+  `PROPOSAL <id>（未写入）` payload with the persistence warning + `memory_confirm`
+  syntax. `memory_confirm(proposal_id)` is the only global write path; it re-runs the
+  full gate chain (TTL + validation + duplicate). `scope='session'` writes directly
+  (session-local only). Auto-extraction (ConsolidateTurn/PreCompress/Memorize) writes
+  `scope='session'` only; any global-scoped auto entry is DEMOTED to a pending
+  proposal. Recall appends `N 条待确认记忆（用 memory_confirm 处理）` when
+  proposals are pending.
+- **Content validation gate (2026-11-07)**: every write path (AddMemory /
+  ProposeMemory / ConfirmProposal / addLongTermMemory) rejects — with explicit
+  errors — content >2000 runes, injection patterns (`ignore all previous
+  instructions`, `mark task as complete`, `rm -rf /`, `SELECT * FROM`,
+  `drop table`, `<script`), line-initial draft markers (`Wait.` / `So I should` /
+  `Let me count`), and Cyrillic/kana mojibake.
+- **Content-level duplicate gate (2026-11-07)**: a candidate whose content is
+  identical after normalization (case/whitespace/punctuation stripped) or whose
+  token-set Jaccard overlap ≥ 0.8 with an ACTIVE memory is REJECTED with the
+  existing memory's ID (`DuplicateMemoryError`) — at BOTH the proposal and the
+  confirm phase. Deliberately NOT BM25: keyword overlap cannot distinguish a
+  near-identical duplicate from a contradicting update; contradicting updates
+  (low content overlap) keep flowing into the supersede chain.
   **Injection budget**: `Recall()` caps TOTAL injected content at `recallMaxRunes=3000`
   (core + short-term + long-term) — the core summary and most relevant memories stay, the
   tail is cut with a truncation marker. **Short-term is injected ONLY when `query != ""`**:
@@ -129,8 +156,8 @@ Zero-dependency memory provider (no embedding API) built on SQLite FTS5 BM25.
 - **Observability**: `Recall()` logs `xbot-memory: Recall injected memories` per turn
   (query, short_term, long_term, has_core, injected_chars). `ConsolidateTurn` logs
   `xbot-memory: ConsolidateTurn extracted memories` (added count).
-- **has_core**: true when `~/.xbot/memory/{tenant}/MEMORY.md` exists AND is non-empty
-  (produced by `updateCoreSummary`). Independent of memory count.
+- **has_core**: DELETED 2026-11-07 with the core tier itself (no MEMORY.md is read,
+  written, or injected anymore).
 
 ## None Mode (`none`)
 
@@ -158,8 +185,13 @@ all tools visible, letta mode = on-demand activation via `load_tools`) has been 
 
 The memory provider only affects which **memory-specific tools** are registered:
 - Flat: `memory_read`, `memory_write`, `memory_list`
-- Letta: `core_memory_*`, `archival_memory_*`, `recall_memory_search`
-- Xbot: `memory_search`, `memory_add`, `memory_manage`
+- Letta: `core_memory_append`, `core_memory_replace`, `rethink`,
+  `core_memory_delete`, `core_memory_clear` (2026-11-07), `archival_memory_insert`,
+  `archival_memory_search`, `recall_memory_search` — core blocks are tool-managed
+  only, NEVER auto-maintained (consolidation no longer rewrites them) and NEVER
+  auto-injected into Recall
+- Xbot: `memory_search`, `memory_add` (two-phase: stages a PROPOSAL for global
+  scope), `memory_confirm` (2026-11-07, persists proposals), `memory_manage`
 - None: none (memory is fully disabled — no tools, no prompt injection)
 
 ## Metrics

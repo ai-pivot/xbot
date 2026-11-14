@@ -12,7 +12,10 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { MarkdownRenderer } from '@/components/agent/MarkdownRenderer'
+
 import type {
+  AskOption,
   AskPayload,
   AskQuestion,
   DecisionPayload,
@@ -181,15 +184,18 @@ function AskContextBlock({ text, questions }: { text: string; questions: AskQues
       <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
         背景
       </p>
-      <p
+      {/* 背景正文走 markdown 渲染：发问方写的是 markdown（**加粗**、列表、代码），
+          按纯文本渲染会把 ** 原样显示出来（2026-11-11 用户反馈）。
+          ref 挂在外层 div 上，line-clamp 折叠与 overflow 检测都还在。 */}
+      <div
         ref={ref}
         data-testid="ask-user-context-text"
-        className={`whitespace-pre-wrap break-words text-[13px] leading-relaxed text-slate-700 dark:text-slate-200 ${
+        className={`break-words text-[13px] leading-relaxed text-slate-700 dark:text-slate-200 ${
           expanded ? '' : 'line-clamp-6'
         }`}
       >
-        {body}
-      </p>
+        <MarkdownRenderer content={body} noDebounce />
+      </div>
       {overflowing || expanded ? (
         <button
           type="button"
@@ -207,14 +213,27 @@ function AskContextBlock({ text, questions }: { text: string; questions: AskQues
 export function LongText({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false)
   if (!text) return null
+  // 短文本：直接按 Markdown 渲染（表格/列表/代码块/加粗都能显示）。
+  // 2026-11-04 用户要求：结构化消息正文必须是 Markdown —— 首辅的汇报里带
+  // 表格、代码块、三级标题，按纯文本渲染全成了乱码般的符号堆。
   if (text.length <= FOLD_LIMIT) {
-    return <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{text}</p>
+    return (
+      <div data-testid="structured-longtext">
+        <MarkdownRenderer content={text} />
+      </div>
+    )
   }
+  // 长文本：折叠态只给纯文本切片（截断的 Markdown 会渲染出破损结构），
+  // 展开后走完整 Markdown。
   return (
-    <div>
-      <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-        {expanded ? text : `${text.slice(0, FOLD_LIMIT)}…`}
-      </p>
+    <div data-testid="structured-longtext">
+      {expanded ? (
+        <MarkdownRenderer content={text} />
+      ) : (
+        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+          {`${text.slice(0, FOLD_LIMIT)}…`}
+        </p>
+      )}
       <button
         type="button"
         className="mt-1 text-[13px] text-sky-600 hover:underline dark:text-sky-400"
@@ -384,7 +403,22 @@ export function AskUserCard({
             <div key={q.id} className="mb-3 last:mb-0">
               <p className="mb-1.5 text-sm font-medium">{q.question}</p>
               <div className="flex flex-col gap-1.5">
-                {(q.options ?? []).map((opt) => {
+                {(q.options ?? []).map((raw, optIdx) => {
+                  // 兼容两种 payload 形态：
+                  //   {id,label,description} —— 前端规范（types.ts 的 AskOption）
+                  //   "纯字符串"             —— protocol/events.go 的
+                  //                             AskUserQuestion.Options []string
+                  // 2026-11-11 实测：agent 按 protocol 传字符串数组时 opt.label 为
+                  // undefined，卡片只渲染出空复选框（用户报告的「选项全是空的」）。
+                  // 服务端已同步归一化，这里再兜一层以防库里已有的历史行。
+                  const opt: AskOption =
+                    typeof raw === 'string'
+                      ? { id: raw, label: raw }
+                      : {
+                          ...raw,
+                          id: raw?.id ?? `opt-${optIdx}`,
+                          label: raw?.label ?? raw?.id ?? `选项 ${optIdx + 1}`,
+                        }
                   const active = chosen.includes(opt.id)
                   return (
                     <label

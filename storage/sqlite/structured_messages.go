@@ -25,6 +25,14 @@ import (
 
 func structuredRole(m StructuredMessage) string { return common.StructuredRole(m) }
 
+// structuredRecordType 归一化 RecordType（空串 = message）。
+func structuredRecordType(m StructuredMessage) string {
+	if m.RecordType == "" {
+		return string(HistoryRecordMessage)
+	}
+	return string(m.RecordType)
+}
+
 func (s *SessionService) AppendStructuredMessage(tenantID int64, m StructuredMessage) (id int64, created bool, err error) {
 	if m.Kind == "" {
 		m.Kind = StructuredKindText
@@ -66,9 +74,9 @@ func (s *SessionService) AppendStructuredMessage(tenantID int64, m StructuredMes
 			(tenant_id, role, content, display_only, record_type, created_at, turn_id,
 			 chat_id, kind, correlation_id, reply_to, idempotency_key, structured_json,
 			 direction, answered, cancelled, sender_type, sender_id, sender_name)
-			VALUES (?, ?, ?, 0, 'message', ?, 0,
+			VALUES (?, ?, ?, 0, ?, ?, 0,
 			        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			tenantID, structuredRole(m), m.Content, canonicalTimestamp(m.CreatedAt),
+			tenantID, structuredRole(m), m.Content, structuredRecordType(m), canonicalTimestamp(m.CreatedAt),
 			m.ChatID, m.Kind, m.CorrelationID, m.ReplyTo, m.IdempotencyKey, m.StructuredJSON,
 			m.Direction, boolInt(m.Answered), boolInt(m.Cancelled),
 			m.SenderType, m.SenderID, m.SenderName)
@@ -371,11 +379,13 @@ func (s *SessionService) AnswerAskUser(tenantID int64, chatID, correlationID, an
 
 // MarkAskUserCancelled 取消一条未回答的 ask_user（写 kind=answer, cancelled=1）。
 func (s *SessionService) MarkAskUserCancelled(tenantID int64, chatID, correlationID, reason, idempotencyKey, senderID string) (int64, int64, bool, error) {
+	// 键名统一为 cancel_reason（D-03 契约）：此前是 "reason"，与
+	// protocol.AskUserResolvedEvent 的 cancel_reason 不一致，前端/日志要按两套键取。
 	payload, _ := json.Marshal(map[string]any{
-		"answers":     []any{},
-		"cancelled":   true,
-		"answered_by": senderID,
-		"reason":      reason,
+		"answers":       []any{},
+		"cancelled":     true,
+		"answered_by":   senderID,
+		"cancel_reason": reason,
 	})
 	return s.AnswerAskUser(tenantID, chatID, correlationID, "已取消", string(payload), idempotencyKey, senderID, senderID, true)
 }
@@ -642,4 +652,42 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// maxStructuredDeleteIDs 单次批量删除的上限（收件箱「一键删除」最多一次清这么多行）。
+const maxStructuredDeleteIDs = 500
+
+// DeleteStructuredMessages 见 common.StructuredStore 的契约。
+//
+// 只删 kind != ” 的结构化行：清收件箱绝不该顺手删掉普通聊天消息。
+// 与其它写路径一致，先拿 tenant 的 historyLock，避免与回放/压缩并发。
+func (s *SessionService) DeleteStructuredMessages(tenantID int64, ids []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if len(ids) > maxStructuredDeleteIDs {
+		return 0, fmt.Errorf("too many ids (%d > %d)", len(ids), maxStructuredDeleteIDs)
+	}
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, tenantID)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	res, err := conn.ExecContext(context.Background(),
+		fmt.Sprintf(`DELETE FROM session_messages WHERE tenant_id = ? AND kind != '' AND id IN (%s)`, ph),
+		args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete structured messages: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }

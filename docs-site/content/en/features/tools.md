@@ -172,7 +172,6 @@ Tools available depend on the memory provider. See [Memory System](../memory/) f
 
 | Tool | Description |
 |------|-------------|
-| `Worktree` | Git worktree-based multi-agent workspace isolation. Supports `init`, `cleanup`, `status`. |
 | `JoinGroup` | Join a peer group for async broadcast communication. |
 | `LeaveGroup` | Leave a peer group. |
 | `ListGroupMembers` | List members of a peer group. |

@@ -347,9 +347,15 @@ const iterationInsertSQL = `INSERT INTO iteration_history
 	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`
 
 // queueIterationInsert appends one row to the batch, in the column order above.
+//
+// 存储原版（2026-11-10 用户裁定）：content / reasoning / tools 一律按原样落库，
+// 写入层不做脱敏 —— 回放时模型必须看到调用方实际写入的内容。掩码只允许出现在
+// 出站（飞书）渲染路径上，见 channel/feishu 的 RedactFixedFormats 调用点。
 func queueIterationInsert(b *pgx.Batch, tenantID, msgID int64, turnID uint64, rec sqlite.IterationRecord) {
 	b.Queue(iterationInsertSQL,
-		msgID, tenantID, turnID, rec.Iteration, sanitizeText(rec.Content), sanitizeText(rec.Reasoning), sanitizeText(rec.Tools),
+		msgID, tenantID, turnID, rec.Iteration,
+		sanitizeText(rec.Content), sanitizeText(rec.Reasoning), // 存储原版
+		sanitizeText(rec.Tools),
 		rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs,
 		rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)
 }
@@ -400,7 +406,8 @@ func (s *sessionStore) AppendIterationHistories(tenantID int64, recs []sqlite.It
 
 func (s *sessionStore) AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error) {
 	ctx := context.Background()
-	tag, err := s.pool.Exec(ctx, `UPDATE iteration_history SET tools = $1 WHERE tenant_id = $2 AND turn_id = $3 AND iteration = $4`, sanitizeText(toolJSON), tenantID, turnID, iteration)
+	tag, err := s.pool.Exec(ctx, `UPDATE iteration_history SET tools = $1 WHERE tenant_id = $2 AND turn_id = $3 AND iteration = $4`,
+		sanitizeText(toolJSON), tenantID, turnID, iteration)
 	if err != nil {
 		return false, err
 	}

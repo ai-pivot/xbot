@@ -85,8 +85,8 @@ func TestMigrationV79CreatesActivityIndex(t *testing.T) {
 	if err := db.Conn().QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 79 {
-		t.Fatalf("schema version = %d, want 79", version)
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
 	}
 	if ok, err := tableExists(db.Conn(), "activity_index"); err != nil || !ok {
 		t.Fatalf("activity_index missing after migration (err=%v)", err)

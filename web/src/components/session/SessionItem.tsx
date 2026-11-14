@@ -49,6 +49,12 @@ interface SessionItemProps {
   onExportOptions?: (session: SessionInfo) => void
   /** Multi-select mode: show checkbox, click toggles selection. */
   multiSelectMode?: boolean
+  /**
+   * D-04：该会话是否有一条**待答提问**（可能来自别的会话 —— 用户此刻不在它上面）。
+   * 由侧栏从 store 的 askUserPrompts 派生后传下来；为 true 时渲染角标，
+   * 否则「切走之后有提问等我处理」这件事在界面上完全不可见。
+   */
+  pendingAsk?: boolean
   /** Whether this item is currently selected in multi-select mode. */
   selected?: boolean
   /** Toggle selection (key, shiftKey) — shiftKey enables range select. */
@@ -83,6 +89,7 @@ export function SessionItem({
   onExportOptions,
   multiSelectMode = false,
   selected = false,
+  pendingAsk = false,
   onToggleSelect,
   onDragStartItem,
   onDropItem,
@@ -280,6 +287,22 @@ export function SessionItem({
       >
         {title}
       </span>
+
+      {/* D-04：跨会话待处理角标 —— 会话 A 有提问等你答、你却停在 B 时，
+          这是界面上唯一的提示（此前 askUserPrompts 只在当前会话的面板里用，
+          切走之后就彻底不可见）。 */}
+      {pendingAsk && !isSubAgent && !session.synthetic && (
+        <span
+          data-testid="session-pending-badge"
+          role="status"
+          aria-label={`有待处理提问：${title}`}
+          title={t('session.pendingAskBadge')}
+          className="shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold tabular-nums"
+          style={{ backgroundColor: 'var(--status-waiting)', color: 'var(--bg-primary)' }}
+        >
+          ?
+        </span>
+      )}
 
       {/* Relative time — hidden for SubAgents */}
       {!isSubAgent && !session.synthetic && (

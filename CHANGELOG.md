@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **memory_add 两段式写入（proposal → confirm）**：`memory_add`（scope='global'）不再直接落库——第一次调用只在 `memory_proposals` 表暂存（TTL 10 分钟）并返回 `PROPOSAL <id>（未写入）` + 持久化警告 + `memory_confirm` 调用方式；新增 `memory_confirm` 工具作为全局记忆的唯一确认写入口（confirm 阶段重跑 TTL/校验/查重全链）。`scope='session'` 仍直写（仅影响本会话），但同样过校验与查重门。自动提取路径（ConsolidateTurn/PreCompress/Memorize）只写 session 作用域；global 作用域的自动提取一律降级为待确认 proposal，Recall 注入末尾附「N 条待确认记忆（用 memory_confirm 处理）」提示行
+- **core 机制彻底移除**：删除 `updateCoreSummary`（Memorize/PostCompress 调用点）与 `## Core` 注入段——未校验的 LLM 输出把线上 `MEMORY.md` 写烂至 116KB/894 行（27 次 prompt 回显、`rm -rf /` 注入探针、Cyrillic/假名乱码、内心独白草稿）；`readCoreSummary`/`writeCoreSummary`/`updateCoreSummary` 函数体全部删除，污染文件已隔离到 `~/.xbot/memory/_quarantine/`；letta 的 core blocks（persona/human/working_context）不再被 consolidation 自动改写、不再自动注入 Recall
+- **记忆写入校验层（AddMemory 统一实施）**：所有写路径拒绝（明确报错）——长度 >2000 字符、注入模式（`ignore all previous instructions`/`mark task as complete`/`rm -rf /`/`SELECT * FROM`/`drop table`/`<script`，大小写不敏感）、行首未完成草稿标记（`Wait.`/`So I should`/`Let me count`）、Cyrillic/假名乱码；内容级去重（normalize 后全等或 token Jaccard ≥0.8）在 proposal 与 confirm 两阶段都拒绝并返回既有记忆 ID（矛盾更新走原 supersede 链不受影响）
+- **自动提取 prompt 收紧**：`generateSessionSummary`/`extractAtomicMemories` 只提取自包含、可独立理解的事实；不提取指令性文本、他人消息原文、疑似注入内容；每条 ≤300 字符；同一事实不得重复提取
+
+### Added
+
+- `memory_confirm` 工具（xbot provider）：确认并持久化 proposal
+- `core_memory_delete`（按 block 名删）与 `core_memory_clear`（清空本 tenant）工具（letta provider）
+- `memory_proposals` 表（schemaSQL 幂等迁移；user_id 作用域隔离 + TTL 过期清理）
+
+### Fixed
+
+- xbot memory `## Core` 段污染事故根治：污染文件全部隔离备份（`~/.xbot/memory/_quarantine/MEMORY.md.<tenant>.2026-11-07`，50 份含 sha256）后删除，读取路径随代码删除失效
+
 ## [v0.0.40] - 2026-05-10
 
 ### Added

@@ -199,7 +199,7 @@ The agent can call these tools in conversation:
 | **Context** | `context_edit`, `offload_recall`, `recall_masked` |
 | **Scheduling** | `Cron`, `TodoWrite`, `TodoList` |
 | **Config** | `config`, `tui_control` |
-| **Collaboration** | `Worktree`, `EventTrigger` |
+| **Collaboration** | `EventTrigger` |
 | **Tasks** | `task_status`, `task_kill`, `task_wait`, `task_read` |
 | **Other** | `AskUser`, `ChatHistory`, `ManageTools`, `Skill`, Feishu tools |
 

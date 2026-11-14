@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/bus"
 	"xbot/channel"
@@ -65,7 +66,7 @@ func (a *Agent) handleBangCommand(ctx context.Context, msg bus.InboundMessage, c
 		"command":      tools.Truncate(command, 80),
 	}).Info("Bang command")
 
-	sessionKey := msg.Channel + ":" + msg.ChatID
+	sessionKey := sessionaddr.Key(msg.Channel, msg.ChatID)
 	workspaceRoot := a.sandboxWorkspace(sessionKey)
 	if err := a.ensureWorkspace(ctx, workspaceRoot, sessionKey); err != nil {
 		return nil, fmt.Errorf("create user workspace: %w", err)
