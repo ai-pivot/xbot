@@ -32,6 +32,32 @@ func (t *SendMessageTool) Description() string {
 - Peer Group: "peer:<group_id>" (e.g., "peer:dev-team") — async broadcast to independent agent sessions
 - Session: "session:<session_key>" (e.g., "session:cli:session-abc") — async message to a specific agent session
 - IM user (Feishu): "feishu:<open_id>" (e.g., "feishu:ou_xxx")
+- **Parent agent: "parent"** — the agent/session that spawned you (sub-agents only; see below)
+
+## Messaging your parent agent — to="parent"
+
+A sub-agent may (and often should) message the agent that spawned it: interim findings, a
+blocking question, or a decision you cannot make alone. Use the reserved alias
+**to="parent"** — the platform derives the real address from your own session key, so you
+never have to guess a role/instance:
+
+- parent is another agent → delivered as agent:<parent-role>/<parent-instance>
+- parent is the user session → delivered as session:<channel>:<chatID>
+
+Examples:
+- SendMessage(to="parent", message="Stage 1 done: build green, smoke 12/12. Continuing to stage 2.")
+  → parent agent receives it in its own loop (busy: injected into its current iteration; idle: starts a turn).
+- SendMessage(to="parent", message="Blocked: need approval to reboot b300-6. Options A/B/C — which?")
+  → escalate a decision instead of guessing.
+- SendMessage(to="parent", kind="ask_user", message="...")  → only if YOU are the top-level agent
+  (nested sub-agents must escalate to their parent and let it decide about interrupting the user).
+
+Notes:
+- Turn-completion reports are already sent to the parent automatically — use to="parent" for
+  information a human/agent must act on BEFORE your turn ends, not for "I finished" echoes.
+- to="parent" outside a sub-agent session errors instead of falling back to any other target.
+- Addresses are literal: "agent:<role>/<instance>" (no channel prefix), session:<channel>:<chatID>
+  (never "session:agent:...").
 
 ## Agent target
 Blocks until reply (RPC), returns the agent's response.
@@ -83,7 +109,7 @@ in this session (repeated clicks never re-deliver).
 }
 
 type SendMessageParams struct {
-	To      string `json:"to" jsonschema:"required,description=Target address (agent:xxx, group:xxx, feishu:xxx)"`
+	To      string `json:"to" jsonschema:"required,description=Target address: agent:<role>/<instance>, parent (your spawning agent/session), user (top-level only), group:/peer:/session:/feishu:"`
 	Message string `json:"message" jsonschema:"required,description=Message content to send"`
 
 	// 结构化消息（可选）。kind 缺省即普通文本，行为与旧版完全一致。
@@ -96,7 +122,7 @@ type SendMessageParams struct {
 
 func (t *SendMessageTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "to", Type: "string", Description: "Target address (agent:xxx, group:xxx, peer:xxx, session:xxx, feishu:xxx)", Required: true},
+		{Name: "to", Type: "string", Description: "Target address: agent:<role>/<instance>, \"parent\" (your spawning agent), user (top-level only), group:/peer:/session:/feishu:", Required: true},
 		{Name: "message", Type: "string", Description: "Message content to send. For groups, use @agent:role/instance to trigger specific agents.", Required: true},
 		{Name: "kind", Type: "string", Description: "Optional structured kind: report | ask_user | answer | decision. Omit or 'text' for a plain message. Use kind=decision to approve/reject (批复) an existing report/ask_user — then payload must contain {\"verdict\":\"approve|reject|modify\"} and reply_to must be the target message_id. " +
 			"When kind=ask_user, the `message` field MUST carry the FULL context the user needs to decide — the user sees ONLY this message and the questions, nothing else (no chat history, no tool output). Write it as a self-contained briefing: (a) what triggered this question, (b) the concrete facts/numbers/paths involved, (c) what each option will cause, (d) what happens if the user picks nothing. Example: 'backend盘库发现 b300-9 根盘 97%（剩 6.6G），/tmp 下有 4 个 9 月实验副本共 77G 已导出 patch。A=立即删实验副本释放 77G；B=等今晚低峰再做。不做则明早可能写满触发告警。' A bare question without this context is a defect — the user will not be able to answer it."},
@@ -120,6 +146,17 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 	addr := params.To
 	if addr == "" {
 		return nil, fmt.Errorf("invalid address format: empty")
+	}
+
+	// to="parent" 特殊路由：子代理主动给**父代理/父会话**发消息。
+	// 必须在 kind 分支与地址 switch 之前解析（它本身不是任何前缀），解析结果再走
+	// 常规 agent:/session: 路径 —— 不新造投递通道。
+	if strings.EqualFold(strings.TrimSpace(addr), "parent") {
+		resolved, err := resolveParentAddress(ctx)
+		if err != nil {
+			return nil, err
+		}
+		addr = resolved
 	}
 
 	// to="user" 特殊路由：落到**用户可见的会话**（用户看板），不是聊天流。
@@ -185,6 +222,51 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 // isUserTarget 判断地址是否命中 to="user" 特殊路由（"user" 或 "user:<owner>"）。
 func isUserTarget(addr string) bool {
 	return addr == "user" || strings.HasPrefix(addr, "user:")
+}
+
+// resolveParentAddress 把 to="parent" 解析成父代理/父会话的真实地址。
+//
+// 为什么需要它：子代理想把中途结论、提问或「需要父级拍板」的事上报，原先必须自己
+// 拼 `agent:<role>/<instance>`（或 `session:<channel>:<chatID>`）。拼错就是一个静默
+// 失败/投错人。`parent` 由平台从**本会话自己的 key** 推导，不依赖模型记忆。
+//
+// 规则（只做结构推导，不猜）：
+//   - 本会话 key 形如 `channel:chat/role:instance`（interactive map key；可能带一层
+//     `agent:` 前缀，先剥掉）；
+//   - 去掉最后一段 `/role:instance` 得到父 key；
+//   - 父 key 仍是 `channel:chat/role:instance` ⇒ 父是 agent ⇒ `agent:<role>/<instance>`；
+//   - 父 key 是 `channel:chat`（主会话）⇒ `session:<channel>:<chatID>`。
+func resolveParentAddress(ctx *ToolContext) (string, error) {
+	key := strings.TrimSpace(ctx.CallerSessionKey)
+	if key == "" {
+		key = strings.TrimSpace(ctx.SessionKey)
+	}
+	// 只剥一层 agent: —— 嵌套会话的 map key 可能本身就以 agent: 作为 channel 名，
+	// 连剥会把它解析到错误的父级。
+	if rest, ok := strings.CutPrefix(key, "agent:"); ok && !strings.HasPrefix(rest, "agent:") {
+		key = rest
+	}
+	if key == "" {
+		return "", fmt.Errorf(`to="parent" is only available inside a sub-agent session (no session key)`)
+	}
+	slash := strings.LastIndex(key, "/")
+	if slash <= 0 || slash == len(key)-1 {
+		return "", fmt.Errorf(`to="parent" is only available inside a sub-agent session; %q has no parent`, key)
+	}
+	parent := key[:slash]
+	channel, rest, ok := strings.Cut(parent, ":")
+	if !ok || channel == "" || rest == "" {
+		return "", fmt.Errorf(`to="parent": cannot parse parent session from %q`, key)
+	}
+	// 父仍是 agent：`channel:chat/role:instance` ⇒ 取最后一段角色地址。
+	if j := strings.LastIndex(rest, "/"); j > 0 {
+		role, instance, ok := strings.Cut(rest[j+1:], ":")
+		if !ok || role == "" || instance == "" {
+			return "", fmt.Errorf(`to="parent": parent agent key %q is malformed`, parent)
+		}
+		return "agent:" + role + "/" + instance, nil
+	}
+	return "session:" + channel + ":" + rest, nil
 }
 
 // userBoardTarget 是 to="user" 的解析结果。
