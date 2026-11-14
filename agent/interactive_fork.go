@@ -66,7 +66,7 @@ func (a *Agent) resolveForkSourceSession(ctx context.Context, originChannel, ori
 	}
 
 	// 2. "agent:" prefix — full interactive key, or SendMessage address style.
-	if rest, ok := strings.CutPrefix(fork, "agent:"); ok {
+	if rest := sessionaddr.TrimAgentLayers(fork); rest != fork {
 		// 2a. Full interactive key: interactive sessions live under channel
 		// "agent" with the interactiveKey as chatID.
 		if sess, found := a.multiSession.GetSession("agent", rest); found {

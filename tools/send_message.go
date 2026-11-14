@@ -243,9 +243,7 @@ func resolveParentAddress(ctx *ToolContext) (string, error) {
 	}
 	// 只剥一层 agent: —— 嵌套会话的 map key 可能本身就以 agent: 作为 channel 名，
 	// 连剥会把它解析到错误的父级。
-	if rest, ok := strings.CutPrefix(key, "agent:"); ok && !strings.HasPrefix(rest, "agent:") {
-		key = rest
-	}
+	key = sessionaddr.TrimAgentLayers(key)
 	if key == "" {
 		return "", fmt.Errorf(`to="parent" is only available inside a sub-agent session (no session key)`)
 	}
@@ -382,14 +380,8 @@ func resolveUserBoardTarget(ctx *ToolContext, addr string) (userBoardTarget, err
 	}
 	originAgent := ""
 	if ctx.AgentDepth >= 1 {
-		name := firstNonEmptyString(ctx.AgentID, ctx.SessionKey)
-		if name != "" {
-			if strings.HasPrefix(name, "agent:") {
-				originAgent = name
-			} else {
-				originAgent = "agent:" + name
-			}
-		}
+		// AgentAddress 统一处理"带/不带 agent: 前缀"，避免双重前缀。
+		originAgent = sessionaddr.AgentAddress(firstNonEmptyString(ctx.AgentID, ctx.SessionKey))
 	}
 	return userBoardTarget{
 		Channel:       rootChannel,
@@ -469,17 +461,23 @@ func interactiveOriginSession(ctx *ToolContext) string {
 	if ctx == nil {
 		return ""
 	}
-	// ② 的 SessionKey 形态：agent:<origin>/<role>:<instance>
-	if sk := strings.TrimSpace(ctx.SessionKey); strings.HasPrefix(sk, "agent:") {
-		if rest, ok := strings.CutPrefix(sk, "agent:"); ok && strings.Contains(rest, "/") {
-			return rest
-		}
+	// ① 精确 owner key（spawn/restore/one-shot 三条路径都写 CallerSessionKey）——
+	// 这是唯一权威来源。历史实现只认 SessionKey 的 `agent:<origin>/<role>:<instance>`
+	// 旧形态；后来 SessionKey 变成调用链 ID（`main/taizi`，无 origin、无 agent:），
+	// 两个分支全部落空 ⇒ 卡片 origin.session 回落到根会话 ⇒ 用户批复被投给主代理。
+	if k := sessionaddr.Normalize(ctx.CallerSessionKey); k != "" && strings.Contains(k, "/") {
+		return k
 	}
-	// ② 的兜底：agent 通道上 ctx.ChatID 本身就是 interactive key。
-	// 只在 channel=="agent" 时启用 —— CLI 会话的 chatID 是文件路径（含 "/"），
-	// 无脑按 "/" 判断会把 "cli:/home/smith/src" 误认成子代理。
-	if strings.TrimSpace(ctx.Channel) == "agent" {
-		if cid := strings.TrimSpace(ctx.ChatID); strings.Contains(cid, "/") {
+	// ② 退路：SessionKey 仍是全键形态时用它（旧数据/外部构造的上下文）。
+	if k := sessionaddr.Normalize(ctx.SessionKey); k != "" && strings.Contains(k, "/") &&
+		strings.Contains(k, ":") && !strings.HasPrefix(k, "main/") {
+		return k
+	}
+	// ③ agent 通道上 ctx.ChatID 本身就是交互 key（队列/外部构造上下文）。
+	//    只在 channel=="agent" 时启用 —— CLI 会话的 chatID 是文件路径（含 "/"），
+	//    无脑按 "/" 判断会把 "cli:/home/smith/src" 误认成子代理。
+	if strings.TrimSpace(ctx.Channel) == sessionaddr.AgentChannel {
+		if cid := sessionaddr.Normalize(ctx.ChatID); strings.Contains(cid, "/") {
 			return cid
 		}
 	}
@@ -574,8 +572,8 @@ func (t *SendMessageTool) sendStructured(ctx *ToolContext, addr, kind string, p 
 func structuredTarget(addr string) (channel, chatID string, err error) {
 	switch {
 	case strings.HasPrefix(addr, "agent:"):
-		rest := strings.TrimPrefix(addr, "agent:")
-		if rest == "" {
+		rest := sessionaddr.TrimAgentLayers(addr)
+		if rest == "" || rest == addr {
 			return "", "", fmt.Errorf("invalid address %q: missing role/instance", addr)
 		}
 		return "agent", rest, nil
@@ -687,8 +685,8 @@ func isUnknownAgentChannelErr(err error) bool {
 // a role. Returns "" when the address is not a two-segment `agent:` address
 // (nothing to swap) or the segments are identical.
 func swapAgentAddress(addr string) string {
-	rest, ok := strings.CutPrefix(addr, "agent:")
-	if !ok {
+	rest := sessionaddr.TrimAgentLayers(addr)
+	if rest == addr {
 		return ""
 	}
 	role, instance, ok := strings.Cut(rest, "/")

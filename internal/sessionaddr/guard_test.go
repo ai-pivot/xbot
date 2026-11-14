@@ -15,7 +15,7 @@ import (
 // channel/chat concatenation must not silently reappear in a later patch.
 func TestRoutingConstructionGuard(t *testing.T) {
 	root := filepath.Join("..", "..")
-	for _, dir := range []string{"agent", "tools", "serverapp", "channel/web", "channel/cli"} {
+	for _, dir := range []string{"agent", "tools", "serverapp", "channel/web", "channel/cli", "storage", "storage/sqlite", "storage/internal/pg"} {
 		entries, err := os.ReadDir(filepath.Join(root, dir))
 		if err != nil {
 			t.Fatal(err)
@@ -41,6 +41,14 @@ func TestRoutingConstructionGuard(t *testing.T) {
 								}
 								return true
 							})
+						}
+					}
+				}
+				// 禁止各包自行剥 `agent:` 投递层前缀 —— 唯一实现是 sessionaddr.TrimAgentLayers。
+				if call, ok := n.(*ast.CallExpr); ok {
+					if fun, ok := call.Fun.(*ast.SelectorExpr); ok && (fun.Sel.Name == "TrimPrefix" || fun.Sel.Name == "CutPrefix") && len(call.Args) == 2 {
+						if lit, ok := call.Args[1].(*ast.BasicLit); ok && lit.Value == `"agent:"` {
+							t.Errorf("%s: use sessionaddr.TrimAgentLayers instead of hand-stripping agent: (one implementation only)", fs.Position(call.Pos()))
 						}
 					}
 				}

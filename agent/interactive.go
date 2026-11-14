@@ -3563,7 +3563,8 @@ func agentContextMirrorTarget(chatID string) (string, bool) {
 // 会话的嵌套子代理）不会再剥，于是 parentKey 被写成 "agent:<key>"。裸 Load
 // 这种形态必然 miss，进而把父会话认错（行掉进 orphan，前端不渲染）。
 func canonicalAgentChatID(s string) string {
-	return strings.TrimPrefix(s, "agent:")
+	// 唯一实现：sessionaddr（重复 agent: 层一律剥掉，见 internal/sessionaddr/address.go）。
+	return sessionaddr.TrimAgentLayers(s)
 }
 
 // normalizeStoredParentKey 剥掉**存量** parentKey 上的执行上下文镜像层：
@@ -3657,8 +3658,8 @@ func splitSessionAddress(addr string) (channel, chatID string, ok bool) {
 // （"agent:web:web-4/role:inst"，首个 "/" 前 chatID 非空）不算镜像，
 // 而 cli 路径父 "agent:cli:/home/smith/repo"（首个 "/" 前是 "cli:"）算镜像。
 func isMirrorSessionAddress(addr string) bool {
-	rest, ok := strings.CutPrefix(addr, "agent:")
-	if !ok {
+	rest := sessionaddr.TrimAgentLayers(addr)
+	if rest == addr {
 		return false
 	}
 	_, mirror := agentContextMirrorTarget(rest)

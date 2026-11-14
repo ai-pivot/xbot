@@ -55,3 +55,39 @@ func FuzzAddressRoundTrip(f *testing.F) {
 		}
 	})
 }
+
+func TestNormalizeAndPhysical(t *testing.T) {
+	cases := []struct{ in, wantNorm, wantCh, wantChat string }{
+		{"web:web-4", "web:web-4", "web", "web-4"},
+		{"agent:web:web-4", "web:web-4", "agent", "web:web-4"},
+		{"agent:agent:web:web-4", "web:web-4", "agent", "web:web-4"},
+		{"web:chat_9C/taizi:x", "web:chat_9C/taizi:x", "agent", "web:chat_9C/taizi:x"},
+		{"agent:web:chat_9C/taizi:x", "web:chat_9C/taizi:x", "agent", "web:chat_9C/taizi:x"},
+		{"  web:web-4  ", "web:web-4", "web", "web-4"},
+	}
+	for _, c := range cases {
+		if got := Normalize(c.in); got != c.wantNorm {
+			t.Errorf("Normalize(%q)=%q want %q", c.in, got, c.wantNorm)
+		}
+		ch, chat, ok := Physical(c.in)
+		if !ok || ch != c.wantCh || chat != c.wantChat {
+			t.Errorf("Physical(%q)=(%q,%q,%v) want (%q,%q,true)", c.in, ch, chat, ok, c.wantCh, c.wantChat)
+		}
+	}
+	for _, bad := range []string{"", "   ", "agent:", "agent:agent:"} {
+		if _, _, ok := Physical(bad); ok {
+			t.Errorf("Physical(%q) accepted an empty address", bad)
+		}
+	}
+}
+
+func TestAgentAddressNeverDoublePrefixed(t *testing.T) {
+	for _, in := range []string{"main/taizi", "agent:main/taizi", "agent:agent:main/taizi"} {
+		if got := AgentAddress(in); got != "agent:main/taizi" {
+			t.Errorf("AgentAddress(%q)=%q, want agent:main/taizi", in, got)
+		}
+	}
+	if got := AgentAddress(""); got != "" {
+		t.Errorf("AgentAddress(\"\")=%q, want empty", got)
+	}
+}

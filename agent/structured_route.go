@@ -56,7 +56,7 @@ func scopeForms(channel, chatID string) map[string]struct{} {
 	switch ch := strings.TrimSpace(channel); ch {
 	case "", "agent":
 		base = id
-		if rest, ok := strings.CutPrefix(id, "agent:"); ok && strings.Contains(rest, "/") {
+		if rest := sessionaddr.TrimAgentLayers(id); rest != id && strings.Contains(rest, "/") {
 			base = rest
 		}
 	default:
@@ -151,7 +151,7 @@ func matchesSubtreePrefix(forms map[string]struct{}, prefixes []string) bool {
 	}
 	for f := range forms {
 		bases := []string{f}
-		if rest, ok := strings.CutPrefix(f, "agent:"); ok && strings.Contains(rest, "/") {
+		if rest := sessionaddr.TrimAgentLayers(f); rest != f && strings.Contains(rest, "/") {
 			bases = append(bases, rest)
 		}
 		for _, b := range bases {

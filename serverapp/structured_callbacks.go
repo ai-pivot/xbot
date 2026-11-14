@@ -845,20 +845,12 @@ func userNoticeResolutionText(messageID int64, kind, status, comment string) str
 //
 // interactive 子代理的会话在存储层是 channel="agent"、chatID=key
 // （形如 "web:web-4/court.shoufu:main"）；主会话是 "web:web-4"。
+// splitPhysicalSessionKey 把回流 key 拆成投递用的 (channel, chatID)。
+// 唯一实现见 sessionaddr.Physical —— 历史版本用 "第一个冒号是否在斜杠前" 猜是不是
+// agent 会话，遇到 `agent:web:chat/p:1` 会把整串（含 agent:）当 chatID 投出去。
 func splitPhysicalSessionKey(key string) (channel, chatID string) {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return "", ""
-	}
-	slash := strings.LastIndex(key, "/")
-	colon := strings.Index(key, ":")
-	if slash > 0 && colon > 0 && colon < slash {
-		return "agent", key
-	}
-	if colon <= 0 || colon == len(key)-1 {
-		return "", ""
-	}
-	return key[:colon], key[colon+1:]
+	channel, chatID, _ = sessionaddr.Physical(key)
+	return channel, chatID
 }
 
 // persistUserNoticeFeedback 在**发起方会话**里留一行 decision/answer 回流记录。

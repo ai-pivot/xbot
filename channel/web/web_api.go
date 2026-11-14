@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	log "github.com/sirupsen/logrus"
 
@@ -75,25 +76,19 @@ func (wc *WebChannel) isUnknownSession(senderID, channelName, chatID string) boo
 // 无条件剥）。全部都不存在时返回最后一层，让 isUnknownSession 走 404 —— 绝不让
 // 非法 key 变成"空历史"。
 func (wc *WebChannel) canonicalAgentChatID(chatID string) string {
-	chatID = strings.TrimSpace(chatID)
-	if chatID == "" {
-		return chatID
+	raw := strings.TrimSpace(chatID)
+	if raw == "" || wc.callbacks.SessionExists == nil {
+		return raw
 	}
-	if wc.callbacks.SessionExists == nil {
-		return chatID
+	// 嵌套子代理的 map key 可能**本身**以 agent: 开头 ⇒ 精确匹配优先。
+	if wc.callbacks.SessionExists("agent", raw) {
+		return raw
 	}
-	cur := chatID
-	for i := 0; i < 3; i++ {
-		if wc.callbacks.SessionExists("agent", cur) {
-			return cur
-		}
-		next, ok := strings.CutPrefix(cur, "agent:")
-		if !ok || next == "" {
-			break
-		}
-		cur = next
+	norm := sessionaddr.Normalize(raw)
+	if norm != raw && wc.callbacks.SessionExists("agent", norm) {
+		return norm
 	}
-	return cur
+	return norm
 }
 
 func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, senderID, channelName, chatID string) (SessionSelector, bool) {

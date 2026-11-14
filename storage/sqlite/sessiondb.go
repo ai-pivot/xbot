@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	log "xbot/logger"
 )
@@ -499,7 +500,7 @@ func (db *DB) initSessionSchema() error {
 // 绝对路径由调用方 Join(主库目录, relPath)。tenants.db_path 存这个相对路径
 // （注册表是唯一权威——不做路径反推，重命名/迁移只改注册表）。
 func SessionDBRelPath(channel, chatID string) string {
-	sum := sha256.Sum256([]byte(channel + ":" + chatID))
+	sum := sha256.Sum256([]byte(sessionaddr.Key(channel, chatID)))
 	bucket := fmt.Sprintf("%02x", sum[0])
 	name := sanitizePathSegment(chatID, 64) + "-" + fmt.Sprintf("%x", sum[:6]) + ".db"
 	return filepath.Join("sessions", sanitizePathSegment(channel, 32), bucket, name)

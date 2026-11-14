@@ -82,6 +82,42 @@ key 不存在才逐层剥 `agent:`，因为嵌套子代理的 map key 本身可�
 
 
 
+## session key 只有一个实现：`internal/sessionaddr`（2026-11-14 架构收敛）
+
+**背景**：同一天连续踩到三次同类 P0 —— 子代理后台任务投给父会话、卡片答复回给主代理、
+history 用错形态静默返回空。根因都是「key 的构造/解析散落在各包，各自猜」。
+
+**唯一合法形态**（只有两种）：
+
+1. 物理地址 `<channel>:<chatID>` —— `web:web-4`、`cli:/home/smith/src/repo`
+2. 交互子代理 key `<channel>:<chatID>/<role>:<instance>` —— `web:web-4/court.shoufu:main`
+
+`agent:` **只是投递层前缀，不是 key 的一部分**；重复层（`agent:agent:…`）属历史脏数据。
+子代理投递时 channel=`agent`、chatID=完整交互 key。
+
+**唯一实现**（`internal/sessionaddr`）：
+
+| 函数 | 用途 |
+|---|---|
+| `Key(channel, chatID)` | 唯一序列化入口（拼 `channel:chatID`） |
+| `Parse(key)` | 唯一解析入口（首个冒号切分，chatID 可含 `:` 与 `/`） |
+| `Agent(mapKey)` | 交互 key → 投递地址（加一层 `agent:`） |
+| `Child/SplitChild` | 交互 key 的构造/反解 |
+| `TrimAgentLayers/Normalize` | 剥投递前缀（最多 3 层），得到 map key |
+| `Physical(key)` | 投递用 `(channel, chatID)`：交互 key → `agent` 通道 |
+| `AgentAddress(name)` | 逻辑地址 `agent:<role>/<instance>`，**永不多重前缀** |
+| `Scope(...)` | 后台任务/TODO 的 owner key：owner key 优先，标签不参与 |
+
+**硬约束**（由 `internal/sessionaddr/guard_test.go` 的 AST 扫描强制，CI 会红）：
+
+- 禁止 `x + ":" + y` 手拼会话地址（含 `storage/`）；
+- 禁止自行 `strings.TrimPrefix/CutPrefix(..., "agent:")`；
+- 禁止用 `strings.Contains(AgentID, "/")` 推断主/子代理身份（用 `IsSubAgent`）。
+
+**已知会骗人的写法**：拿 `strings.Contains(chatID, ":")` 当"这是个已知会话"——
+agent key 全部含冒号，于是拼错/带前缀的 key 不再 404，而是 `200 + 0 条`（history 空）。
+必须真正探测 `SessionExists`。
+
 ## 身份标签绝不能压过 owner key（2026-11-13 P0，第二次）
 
 现象（用户实测，只有老的恢复子代理 `taizi:dpsk-perf-1` 中招，新建子代理正常）：
