@@ -64,6 +64,24 @@ CLI/Web 旧镜像只在兼容边界归一化，已存在子会话/真实根会�
 守护：`agent/notification_owner_isolation_test.go::TestBackgroundTaskTurnStillNotifiesParent`
 （background_task turn 必须投递；cron turn 必须抑制）。
 
+## agent 会话的 history key 不能"含冒号就当已知"（2026-11-14）
+
+`isUnknownSession` 曾在 `strings.Contains(chatID, ":")` 处短路，把**任何**带冒号的 key 都当成
+已知会话。agent 会话的 key 天生含冒号与斜杠（`web:chat/role:inst`），于是拼错、或多了一层
+路由前缀（`agent:web:chat/role:inst`）的 key **不再 404，而是返回 200 + 0 条消息**——前端
+看到的是"这个子代理没有历史"，而不是错误。
+
+修法（读路径）：`channel=="agent"` 先走 `canonicalAgentChatID`（**精确匹配优先**，只有精确
+key 不存在才逐层剥 `agent:`，因为嵌套子代理的 map key 本身可能以 `agent:` 开头），再由
+`isUnknownSession` 真正探测 `SessionExists("agent", chatID)`；探测不到就是 404。非法 key
+不得再退化成"空历史"。
+
+守护：`channel/web/history_agent_key_test.go` 三条 —— 未知 key 必须 404、`agent:` 前缀必须
+解析到同一会话、嵌套 key 必须精确优先。变异（删掉 agent 探测分支）→ 未知 key 测试立刻红
+（`want 404 — an empty 200 masks real errors`）。
+
+
+
 ## 身份标签绝不能压过 owner key（2026-11-13 P0，第二次）
 
 现象（用户实测，只有老的恢复子代理 `taizi:dpsk-perf-1` 中招，新建子代理正常）：

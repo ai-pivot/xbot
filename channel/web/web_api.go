@@ -53,10 +53,47 @@ func (wc *WebChannel) isUnknownSession(senderID, channelName, chatID string) boo
 	if chatID == senderID {
 		return false
 	}
+	// ⛔ agent 会话的 key 天然含冒号（`web:chat/role:inst`）与斜杠，必须**先**探测再走
+	// 下面的 "含冒号即视为已知" 快捷路径。旧实现在这里被 `strings.Contains(chatID, ":")`
+	// 短路 ⇒ 任何拼错/带 `agent:` 前缀的 key 都被当成「已知会话」，history 返回
+	// **200 + 0 条消息**（前端看起来"这个子代理没有历史"，而不是报错）——2026-11-14
+	// 用户报「子代理 history 接口有问题」的根因。
+	if channelName == "agent" {
+		return !wc.callbacks.SessionExists("agent", chatID)
+	}
 	if strings.Contains(chatID, ":") || webChatIDLooksLikeSubAgent(chatID) {
 		return false
 	}
 	return !wc.callbacks.SessionExists(channelName, chatID)
+}
+
+// canonicalAgentChatID 把外部可能传来的 agent 会话 key 归一到 interactive map key。
+//
+// 前端/旧缓存在不同路径上会写成 `agent:web:chat/role:inst`（多一层路由前缀），而
+// 真实 map key 是 `web:chat/role:inst`。**优先精确匹配**，只有精确 key 不存在时才
+// 逐层剥 `agent:`（嵌套子代理的 map key 自身可能以 agent: 开头，所以必须探测而不是
+// 无条件剥）。全部都不存在时返回最后一层，让 isUnknownSession 走 404 —— 绝不让
+// 非法 key 变成"空历史"。
+func (wc *WebChannel) canonicalAgentChatID(chatID string) string {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return chatID
+	}
+	if wc.callbacks.SessionExists == nil {
+		return chatID
+	}
+	cur := chatID
+	for i := 0; i < 3; i++ {
+		if wc.callbacks.SessionExists("agent", cur) {
+			return cur
+		}
+		next, ok := strings.CutPrefix(cur, "agent:")
+		if !ok || next == "" {
+			break
+		}
+		cur = next
+	}
+	return cur
 }
 
 func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, senderID, channelName, chatID string) (SessionSelector, bool) {
@@ -69,6 +106,9 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 	// ⛔ 读路径同样规范化：客户端缓存的旧 chatID 可能是全键（`web:chat_X`）⇒
 	//    不剥前缀会查/建 `web:web:chat_X` 幽灵会话（DELETE/status/history 全中招）。
 	chatID = canonicalChatID(channelName, chatID)
+	if channelName == "agent" {
+		chatID = wc.canonicalAgentChatID(chatID)
+	}
 	if chatID == "" {
 		chatID = senderID
 	}
