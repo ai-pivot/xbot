@@ -186,6 +186,14 @@ func (t *SendMessageTool) Execute(ctx *ToolContext, raw string) (*ToolResult, er
 		return t.sendToSession(ctx, addr[len("session:"):], params.Message)
 	}
 
+	// 裸会话地址 `<channel>:<chatID>`（web:chat_x / cli:/path）。
+	// ⛔ 不能落进下面的 IM 分支：WebChannel.Send 只往前端推一条 WS 消息，
+	// **不注入目标会话、不落库、不起 turn** —— 于是"发送成功"但对方永远收不到
+	// （2026-11-14 用户实测：子代理发给 web:chat_9C218CD94A75 全部丢失）。
+	if a, ok := sessionaddr.Parse(addr); ok && isAgentSessionChannel(a.Channel) {
+		return t.sendToSession(ctx, a.String(), params.Message)
+	}
+
 	// IM addresses go through Dispatcher — parse known IM prefixes
 	channelName, chatID := parseAddress(addr)
 	if ctx.MessageSender == nil {
@@ -851,25 +859,42 @@ func (t *SendMessageTool) sendToSession(ctx *ToolContext, targetSessionKey, mess
 		return NewResult(fmt.Sprintf("Message delivered to session %s: %s", targetSessionKey, result)), nil
 	}
 
-	// ⛔ 回退：交互子代理没有 PeerMessageFn（它只给 CLI 会话装），但**一定**有
-	// Dispatcher（MessageSender）。旧实现在这里直接报
-	// "session messaging not available in this context" —— 于是 `to="parent"`
-	// 在顶层子代理（父是用户会话）必然失败。走 dispatcher 的 session 投递即可。
-	if ctx.MessageSender == nil {
-		return nil, fmt.Errorf("session messaging not available in this context (no dispatcher wired)")
-	}
 	addr, ok := sessionaddr.Parse(sessionaddr.Normalize(targetSessionKey))
 	if !ok {
 		return nil, fmt.Errorf("invalid session key %q: want <channel>:<chatID>", targetSessionKey)
 	}
-	result, err := sendMessageWithCtx(ctx, addr.Channel, addr.ChatID, message)
-	if err != nil {
+
+	// ⛔ 回退：交互子代理没有 PeerMessageFn（它只给 CLI 会话装）。旧实现在这里
+	// 直接报 "session messaging not available in this context"，于是 `to="parent"`
+	// 在顶层子代理（父是用户会话）必然失败。
+	//
+	// 正确原语是 **InjectInbound**：把消息作为入站事件注入目标会话，走完整的
+	// Agent 处理循环（落库 + 起 turn + 回复回流）。
+	// 绝不能用 dispatcher（WebChannel.Send 只是往前端推 WS，不注入、不落库）——
+	// 那会造成"工具报成功、对方从未收到"的静默丢失。
+	if ctx.InjectInbound != nil {
+		sender := firstNonEmptyString(ctx.OriginUserID, ctx.SenderID, "agent")
+		ctx.InjectInbound(addr.Channel, addr.ChatID, sender, message)
+		return NewResult(fmt.Sprintf("Message delivered to session %s (injected as an inbound user message; the target agent will process it in its own loop)", targetSessionKey)), nil
+	}
+	if ctx.MessageSender == nil {
+		return nil, fmt.Errorf("session messaging not available in this context (neither InjectInbound nor a dispatcher is wired)")
+	}
+	// 最后的兜底：只能做 UI 推送。明确告知调用方"未注入"，避免误以为已送达。
+	if _, err := sendMessageWithCtx(ctx, addr.Channel, addr.ChatID, message); err != nil {
 		return nil, fmt.Errorf("send to session %s failed: %w", targetSessionKey, err)
 	}
-	if result == "" {
-		return NewResult(fmt.Sprintf("Message delivered to session %s", targetSessionKey)), nil
+	return NewResult(fmt.Sprintf("Message pushed to the UI of session %s only (NOT injected into the agent loop — no InjectInbound in this context)", targetSessionKey)), nil
+}
+
+// isAgentSessionChannel 报告该 channel 名是否是可注入的会话渠道（web/cli）。
+// IM 渠道（feishu 等）必须继续走 dispatcher，不能当作会话注入。
+func isAgentSessionChannel(name string) bool {
+	switch name {
+	case "web", "cli":
+		return true
 	}
-	return NewResult(fmt.Sprintf("Message delivered to session %s: %s", targetSessionKey, result)), nil
+	return false
 }
 
 // sendToPeerGroup sends a message to all members of a peer group (except the sender).
