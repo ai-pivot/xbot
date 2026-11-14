@@ -834,20 +834,41 @@ func (t *SendMessageTool) sendToGroup(ctx *ToolContext, groupName, message strin
 // Uses PeerMessageFn (injectPeerMessage) — same mechanism as bgtask:
 // busy→fake tool result, idle→user message.
 func (t *SendMessageTool) sendToSession(ctx *ToolContext, targetSessionKey, message string) (*ToolResult, error) {
-	if ctx.PeerMessageFn == nil {
-		return nil, fmt.Errorf("session messaging not available in this context")
-	}
 	if targetSessionKey == "" {
 		return nil, fmt.Errorf("session key is empty")
 	}
-
-	// Don't allow sending to self
-	selfKey := qualifySessionKey(ctx)
-	if targetSessionKey == selfKey {
+	// 自身判定必须用**本会话自己的 key**，而不是 ctx.Channel/ChatID。
+	// 子代理的 Channel/ChatID 指向的是父会话（日志/落库用它），拿它比会把
+	// "给父会话发消息" 误判成 "给自己发消息" 而拒掉。
+	selfKey := sessionaddr.Normalize(firstNonEmptyString(ctx.CallerSessionKey, ctx.BgSessionKey, qualifySessionKey(ctx)))
+	if k := sessionaddr.Normalize(targetSessionKey); selfKey != "" && k == selfKey {
 		return nil, fmt.Errorf("cannot send message to yourself")
 	}
 
-	result := ctx.PeerMessageFn(targetSessionKey, message)
+	// CLI 会话间的 peer 注入（fake tool result / 排队）优先。
+	if ctx.PeerMessageFn != nil {
+		result := ctx.PeerMessageFn(targetSessionKey, message)
+		return NewResult(fmt.Sprintf("Message delivered to session %s: %s", targetSessionKey, result)), nil
+	}
+
+	// ⛔ 回退：交互子代理没有 PeerMessageFn（它只给 CLI 会话装），但**一定**有
+	// Dispatcher（MessageSender）。旧实现在这里直接报
+	// "session messaging not available in this context" —— 于是 `to="parent"`
+	// 在顶层子代理（父是用户会话）必然失败。走 dispatcher 的 session 投递即可。
+	if ctx.MessageSender == nil {
+		return nil, fmt.Errorf("session messaging not available in this context (no dispatcher wired)")
+	}
+	addr, ok := sessionaddr.Parse(sessionaddr.Normalize(targetSessionKey))
+	if !ok {
+		return nil, fmt.Errorf("invalid session key %q: want <channel>:<chatID>", targetSessionKey)
+	}
+	result, err := sendMessageWithCtx(ctx, addr.Channel, addr.ChatID, message)
+	if err != nil {
+		return nil, fmt.Errorf("send to session %s failed: %w", targetSessionKey, err)
+	}
+	if result == "" {
+		return NewResult(fmt.Sprintf("Message delivered to session %s", targetSessionKey)), nil
+	}
 	return NewResult(fmt.Sprintf("Message delivered to session %s: %s", targetSessionKey, result)), nil
 }
 
