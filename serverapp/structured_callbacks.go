@@ -502,17 +502,9 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 					}
 				}
 				content := userNoticeResolutionText(card, cardID, cardKind, status, strings.TrimSpace(input.Text))
-				// busy 时只走 structured 队列（notice 自带内容），落库会与它重复。
-				perr := error(nil)
-				if !noticeOriginBusy(ag, originSession) {
-					perr = persistUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation)
-				}
-				if perr != nil {
-					log.WithError(perr).WithFields(log.Fields{
-						"card_id": cardID, "origin_session": originSession,
-					}).Warn("decision: failed to persist feedback into the originating session")
-				}
-				if !deliverUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation) {
+				if !deliverUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation, func() error {
+					return persistUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation)
+				}) {
 					log.WithFields(log.Fields{
 						"card_id": cardID, "origin_session": originSession,
 					}).Warn("decision: failed to deliver feedback to the originating agent")
@@ -664,17 +656,9 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			//  2. 唤醒该会话（busy → 优先队列 / idle → 新 turn）。
 			// 只投递不落行的话，agent 醒来看到的是一条空消息（DeliverStructuredMessage
 			// 的空 content 契约），用户说了什么全丢。
-			perr := error(nil)
-			// busy：队列 notice 已携带内容，不再落库（否则下一轮重复出现）。
-			if !noticeOriginBusy(ag, originSession) {
-				perr = persistUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID)
-			}
-			if perr != nil {
-				log.WithError(perr).WithFields(log.Fields{
-					"message_id": input.MessageID, "origin_session": originSession,
-				}).Warn("Failed to persist user notice feedback into the originating session")
-			}
-			if !deliverUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID) {
+			if !deliverUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID, func() error {
+				return persistUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID)
+			}) {
 				log.WithFields(log.Fields{
 					"message_id": input.MessageID, "origin_session": originSession,
 				}).Warn("Failed to deliver user notice feedback to the originating agent")
@@ -927,23 +911,6 @@ func splitPhysicalSessionKey(key string) (channel, chatID string) {
 	return channel, chatID
 }
 
-// noticeOriginBusy 报告回流目标会话当前是否 busy。
-//
-// ⛔ 重复投递根因（2026-11-15 用户实测）：同一批复在 busy 时会通过 structured queue
-// 注入一次（携带内容），而落库的 user 行又在下一轮历史回放里再出现一次 ⇒ 收到两遍。
-// 结论：**busy 时不落库**（队列里的 notice 就是那一份）；idle 时落库 + 空注入
-// （历史行就是那一份）。两条路径互斥，任一时刻只有一份可读副本。
-func noticeOriginBusy(ag *agent.Agent, originSession string) bool {
-	if ag == nil {
-		return false
-	}
-	channel, chatID := splitPhysicalSessionKey(originSession)
-	if channel == "" || chatID == "" {
-		return false
-	}
-	return ag.SessionBusy(channel, chatID)
-}
-
 // persistUserNoticeFeedback 在**发起方会话**里留一行 decision/answer 回流记录。
 //
 // 为什么要单独落行（而不是把内容塞进投递）：agent.DeliverStructuredMessage 对
@@ -1011,7 +978,7 @@ func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 //
 // 复用既有 kind=decision 的结构化回流通道（agent.DeliverStructuredMessage）：
 // 目标会话忙则进优先队列、空闲则起一轮 —— 不另造消息通道。
-func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, kind, status, content, senderID, cardCorrelationID string) bool {
+func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, kind, status, content, senderID, cardCorrelationID string, persist func() error) bool {
 	if ag == nil {
 		return false
 	}
@@ -1023,7 +990,10 @@ func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 	if correlationID == "" {
 		correlationID = fmt.Sprintf("notice-%d", messageID)
 	}
-	return ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
+	// ⛔ 统一入口：由它按 busy/idle 决定「入队」还是「先落库再空注入」。
+	// 调用方不再自行判断忙闲（旧写法就是在这里落库、在 Deliver 里投递，
+	// 两个分支条件不同步 ⇒ busy 时同一批复被表示两遍）。
+	return ag.DeliverStructuredMessagePersisting(&agent.StructuredQueueItem{
 		ID:            fmt.Sprintf("notice-resolve:%d", messageID),
 		Channel:       channel,
 		ChatID:        chatID,
@@ -1033,7 +1003,7 @@ func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 		Kind:          "decision",
 		CorrelationID: correlationID,
 		Priority:      agent.StructuredPriorityHigh,
-	})
+	}, persist)
 }
 
 // structuredFirstNonEmpty 返回第一个非空字符串（reply_to 与旧字段兼容用）。

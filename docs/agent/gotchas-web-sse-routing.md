@@ -129,10 +129,14 @@ agent key 全部含冒号，于是拼错/带前缀的 key 不再 404，而是 `2
 
 于是 busy 那一轮看到 notice，下一轮历史回放又读到那条 user 行。
 
-修法（互斥而非去重）：`noticeOriginBusy()` 用 `Agent.SessionBusy(channel, chatID)`
-判定目标会话状态，**busy 时不落库**（队列 notice 就是那一份），**idle 时落库 + 空注入**
-（历史行就是那一份，`structured_delivery` + 空 content 让 processMessage 跳过二次落库）。
-两条路径任一时刻只有一份可读副本。
+修法：**把落库收进统一投递入口**，而不是让调用方自己判断忙闲。
+`Agent.DeliverStructuredMessagePersisting(item, persist func() error)`：
+- busy → 只入队（notice 自带内容），**不调用 persist**；
+- idle → 先调用 persist 落库，再空 content 注入（历史行即唯一副本）；
+- idle 且 persist 失败 → 退化为携带内容投递，绝不丢消息。
+
+调用方只调这一个函数、把落库传成闭包 —— 分支条件与投递在**同一处**，天然不可能重复。
+（第一版修法是在 serverapp 里用 `SessionBusy` 手动互斥，属于把分支责任外置，已被取代。）
 
 守护：`agent/session_busy_test.go`（busy 位反映真实状态、空参不误判）；
 既有 `TestDecisionReroutesToOriginatingAgentSession` / `TestInboxResolve_QueuePath...`
