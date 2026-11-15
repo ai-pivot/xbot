@@ -118,6 +118,27 @@ history 用错形态静默返回空。根因都是「key 的构造/解析散落�
 agent key 全部含冒号，于是拼错/带前缀的 key 不再 404，而是 `200 + 0 条`（history 空）。
 必须真正探测 `SessionExists`。
 
+## 卡片回流只投一次：busy 与 idle 必须互斥（2026-11-15）
+
+用户实测：会话 busy 时先收到一条 structured notice，idle 之后又收到一模一样的 user 消息。
+
+根因：同一批复被表示了**两遍**——
+1. `persistUserNoticeFeedback` 在发起方会话落一行普通 `user` 消息（进历史回放）；
+2. `DeliverStructuredMessage` 在 busy 时把内容推进 structured queue，在 iteration 边界
+   注入一次（`StructuredNotice` 自带 content）。
+
+于是 busy 那一轮看到 notice，下一轮历史回放又读到那条 user 行。
+
+修法（互斥而非去重）：`noticeOriginBusy()` 用 `Agent.SessionBusy(channel, chatID)`
+判定目标会话状态，**busy 时不落库**（队列 notice 就是那一份），**idle 时落库 + 空注入**
+（历史行就是那一份，`structured_delivery` + 空 content 让 processMessage 跳过二次落库）。
+两条路径任一时刻只有一份可读副本。
+
+守护：`agent/session_busy_test.go`（busy 位反映真实状态、空参不误判）；
+既有 `TestDecisionReroutesToOriginatingAgentSession` / `TestInboxResolve_QueuePath...`
+继续覆盖 idle 落库契约。✗ 不要用 `record_type=notice` 落库 + 空注入 —— 那样 idle 的
+agent 会读到空消息（库里那份被回放跳过）。
+
 ## 身份标签绝不能压过 owner key（2026-11-13 P0，第二次）
 
 现象（用户实测，只有老的恢复子代理 `taizi:dpsk-perf-1` 中招，新建子代理正常）：

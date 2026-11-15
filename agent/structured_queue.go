@@ -165,6 +165,23 @@ func (a *Agent) StructuredQueueLen(channelName, chatID string) int {
 //   - 空闲 → 作为普通入站消息开启新 turn（历史里已有结构化行，不会丢）。
 //
 // 返回是否已受理（false = 会话不存在/参数非法）。
+// SessionBusy 报告该物理会话当前是否有 Run 在执行。
+//
+// 用途：结构化回流（卡片批复）在 busy 与 idle 两种状态下**只能有一种表示**——
+// busy 走 structured queue（notice 携带内容），idle 走「落库 + 空注入」。
+// 两者同时发生就会出现用户实测的重复投递（2026-11-15）。
+func (a *Agent) SessionBusy(channelName, chatID string) bool {
+	if channelName == "" || chatID == "" {
+		return false
+	}
+	if st, ok := a.bgSessionStates.Load(qualifyChatID(channelName, chatID)); ok {
+		if ss, ok := st.(*bgSessionState); ok && ss != nil {
+			return ss.busy.Load()
+		}
+	}
+	return false
+}
+
 func (a *Agent) DeliverStructuredMessage(item *StructuredQueueItem) bool {
 	if item == nil || item.Channel == "" || item.ChatID == "" {
 		return false
@@ -191,6 +208,8 @@ func (a *Agent) DeliverStructuredMessage(item *StructuredQueueItem) bool {
 	}
 	// 结构化行已经在会话库中（API 先落库再投递）——空 content + structured_delivery
 	// 让 processMessage 跳过再次落 user 行，避免同一答案出现两条用户消息。
+	// 注意：这只在**会话 idle** 时成立（历史行就是那一份）；busy 时同一事件会被
+	// drain 成 structured notice，所以调用方在 busy 情况下不再落库（见 noticeOriginBusy）。
 	a.injectInboundWithMetadata(item.Channel, item.ChatID, item.SenderID, "", metadata)
 	return true
 }
