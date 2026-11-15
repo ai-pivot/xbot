@@ -501,7 +501,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 						cardCorrelation = c
 					}
 				}
-				content := userNoticeResolutionText(cardID, cardKind, status, strings.TrimSpace(input.Text))
+				content := userNoticeResolutionText(card, cardID, cardKind, status, strings.TrimSpace(input.Text))
 				if perr := persistUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation); perr != nil {
 					log.WithError(perr).WithFields(log.Fields{
 						"card_id": cardID, "origin_session": originSession,
@@ -628,7 +628,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		}
 		originSession, originAgent := userNoticeOrigin(row)
 		comment := strings.TrimSpace(input.Comment)
-		content := userNoticeResolutionText(row.ID, row.Kind, status, comment)
+		content := userNoticeResolutionText(row, row.ID, row.Kind, status, comment)
 		resolutionJSON, _ := json.Marshal(map[string]any{
 			"status":         status,
 			"action":         action,
@@ -824,21 +824,85 @@ func decisionVerdictStatus(verdict string) string {
 	return "approved"
 }
 
-func userNoticeResolutionText(messageID int64, kind, status, comment string) string {
+// userNoticeResolutionText 生成回流给发起 agent 的文本。
+//
+// ⛔ 必须内嵌**卡片原文**：用户在面板上「取消 / 忽略 / 回答」时，旧实现只回一句
+// 「用户处理了卡片 #N：已取消」。发起 agent 拿不到卡片内容，只能凭对话记忆去猜
+// 是哪张卡、问的是什么 —— 2026-11-15 用户实测：这是幻觉的高发点。所以回流文本
+// 固定带一段“卡片原文引用”，并要求模型以此为准。
+func userNoticeResolutionText(card *common.StructuredMessage, messageID int64, kind, status, comment string) string {
 	label := map[string]string{
 		"approved":  "已批准",
 		"rejected":  "已否决",
 		"answered":  "已回答",
 		"dismissed": "已忽略",
+		"cancelled": "已取消",
 	}[status]
 	if label == "" {
 		label = status
 	}
-	out := fmt.Sprintf("用户处理了卡片 #%d（kind=%s）：%s", messageID, kind, label)
+	var b strings.Builder
+	fmt.Fprintf(&b, "用户处理了卡片 #%d（kind=%s）：%s", messageID, kind, label)
 	if comment != "" {
-		out += "。" + comment
+		b.WriteString("。" + comment)
 	}
-	return out
+	if card == nil {
+		return b.String()
+	}
+
+	body := strings.TrimSpace(card.Content)
+	var questions []string
+	if card.StructuredJSON != "" {
+		var env struct {
+			Text    string `json:"text"`
+			Payload struct {
+				Questions []struct {
+					Question string `json:"question"`
+					Options  []struct {
+						Label string `json:"label"`
+					} `json:"options"`
+				} `json:"questions"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(card.StructuredJSON), &env); err == nil {
+			if body == "" {
+				body = strings.TrimSpace(env.Text)
+			}
+			for _, q := range env.Payload.Questions {
+				line := "- " + strings.TrimSpace(q.Question)
+				if line == "- " {
+					continue
+				}
+				var opts []string
+				for _, o := range q.Options {
+					if l := strings.TrimSpace(o.Label); l != "" {
+						opts = append(opts, l)
+					}
+				}
+				if len(opts) > 0 {
+					line += "（选项：" + strings.Join(opts, " / ") + "）"
+				}
+				questions = append(questions, line)
+			}
+		}
+	}
+	b.WriteString("\n\n【卡片原文引用·以此为准，不要凭记忆推断卡片内容】")
+	if body != "" {
+		b.WriteString("\n> " + strings.ReplaceAll(noticeTruncate(body, 800), "\n", "\n> "))
+	}
+	if len(questions) > 0 {
+		b.WriteString("\n问题：\n" + strings.Join(questions, "\n"))
+	}
+	return b.String()
+}
+
+// noticeTruncate 按 rune 截断（CJK 内容不能按 byte 切）。
+func noticeTruncate(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + " …（截断）"
 }
 
 // splitPhysicalSessionKey 把物理会话 key 还原成存储层的 (channel, chatID)。
