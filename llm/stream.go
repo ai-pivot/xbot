@@ -288,7 +288,11 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 				if ev.ToolCall.Name != "" {
 					tc.Name = ev.ToolCall.Name
 				}
-				tc.Arguments += ev.ToolCall.Arguments
+				if ev.ToolCall.ArgumentsComplete {
+					tc.Arguments = ev.ToolCall.Arguments
+				} else {
+					tc.Arguments += ev.ToolCall.Arguments
+				}
 				// Fire callback on every tool call event (name arrival + argument
 				// progress). Originally fired only on name arrival for early tool
 				// detection. Now also fires on argument deltas so the UI can show

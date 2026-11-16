@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent"
 	"xbot/llm"
@@ -32,6 +33,25 @@ import (
 )
 
 // newGroupUUID 生成群组 id 的随机部分（grp_<12 hex>）。
+// groupMessageStore 是本分支新增的「群组消息信封」能力（主库 v74 / 会话库 v5）。
+//
+// master #444 把会话存储抽象成 storage.SessionStore，但该接口没有群组消息方法
+// （PG 后端未实现该特性 ⇒ **未覆盖项**）。这里按能力取用，拿不到就明确报错，
+// 绝不静默降级 —— 静默降级会让群发写进不存在的表，消息凭空蒸发。
+type groupMessageStore interface {
+	AppendGroupMessage(tenantID int64, msg llm.ChatMessage, env common.GroupMessageEnvelope) (int64, error)
+	ListGroupMessages(tenantID int64, groupID string, beforeID int64, limit int) ([]common.GroupMessageRow, bool, int64, error)
+}
+
+// groupMessagesOf 取出群组消息能力；后端不支持时返回可读错误。
+func groupMessagesOf(sess *session.TenantSession) (groupMessageStore, error) {
+	gm, ok := sess.SessionService().(groupMessageStore)
+	if !ok {
+		return nil, fmt.Errorf("group messages are not supported by this storage backend")
+	}
+	return gm, nil
+}
+
 func newGroupUUID() string { return uuid.NewString() }
 
 // runnerCallbacks builds the shared Runner callback closures.
@@ -42,15 +62,15 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			return tools.ListAllRunners()
 		},
 		RunnerCreate: func(name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error) {
-			store := tools.GetRunnerStore()
-			if store == nil {
+			db := tools.GetRunnerTokenDB()
+			if db == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
 			// Make sure the WebSocket listener is up before the machine dials in.
 			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 				router.EnsureRemote()
 			}
-			token, err := store.Create(name, mode, dockerImage, workspace, llm)
+			token, err := tools.NewRunnerStore(db).Create(name, mode, dockerImage, workspace, llm)
 			if err != nil {
 				return "", err
 			}
@@ -72,27 +92,28 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			return buildRunnerConnectCmd(cfg, name, token, mode, dockerImage, workspace, llm), nil
 		},
 		RunnerDelete: func(name string) error {
-			store := tools.GetRunnerStore()
-			if store == nil {
+			db := tools.GetRunnerTokenDB()
+			if db == nil {
 				return fmt.Errorf("runner management not configured")
 			}
 			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
 				router.DisconnectRunner(name)
 			}
-			return store.Delete(name)
+			return tools.NewRunnerStore(db).Delete(name)
 		},
 		RunnerRename: func(oldName, newName string) error {
-			store := tools.GetRunnerStore()
-			if store == nil {
+			db := tools.GetRunnerTokenDB()
+			if db == nil {
 				return fmt.Errorf("runner management not configured")
 			}
-			return store.Rename(oldName, newName)
+			return tools.NewRunnerStore(db).Rename(oldName, newName)
 		},
 		RunnerConnectCmd: func(name string) (string, error) {
-			store := tools.GetRunnerStore()
-			if store == nil {
+			db := tools.GetRunnerTokenDB()
+			if db == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
+			store := tools.NewRunnerStore(db)
 			info, err := store.Get(name)
 			if err != nil {
 				return "", err
@@ -108,7 +129,7 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			if !ok || router == nil || chatID == "" {
 				return "", false
 			}
-			name := router.GetSessionRunner(channelName + ":" + chatID)
+			name := router.GetSessionRunner(sessionaddr.Key(channelName, chatID))
 			return name, name != "" && router.IsRunnerOnline(name)
 		},
 		RunnerSessionSet: func(channelName, chatID, name string) error {
@@ -119,7 +140,7 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			if chatID == "" {
 				return fmt.Errorf("chat_id is required")
 			}
-			return router.SetSessionRunner(channelName+":"+chatID, name)
+			return router.SetSessionRunner(sessionaddr.Key(channelName, chatID), name)
 		},
 	}
 }
@@ -291,8 +312,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	}
 
 	// ─── Agent 通信指挥室（群组可视化）────────────────────────────────────
-	// 群元数据在 groups/group_members（storage.GroupStore，SQLite/PG 同接口）；
-	// 消息仍读调用者自己的会话库（不跨库聚合）。
+	// 群元数据在主库两张小表；消息仍读调用者自己的会话库（不跨库聚合）。
 	if store != nil && store.Groups() != nil {
 		groupSvc := store.Groups()
 		callbacks.GroupList = func(memberAddr string) ([]protocol.Group, error) {
@@ -341,7 +361,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			if err != nil {
 				return nil, 0, false, err
 			}
-			gm := sess.SessionService()
+			gm, gerr := groupMessagesOf(sess)
+			if gerr != nil {
+				return nil, 0, false, gerr
+			}
 			rows, hasMore, next, err := gm.ListGroupMessages(sess.TenantID(), groupID, cursor, limit)
 			if err != nil {
 				return nil, 0, false, err
@@ -402,7 +425,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				To: input.To, Payload: input.Payload,
 				SenderType: input.SenderType, SenderID: input.SenderID, SenderName: input.SenderName,
 			}
-			gm := sess.SessionService()
+			gm, gerr := groupMessagesOf(sess)
+			if gerr != nil {
+				return nil, gerr
+			}
 			id, err := gm.AppendGroupMessage(sess.TenantID(), llm.ChatMessage{
 				Role: role, Content: input.Content, SenderType: input.SenderType,
 				SenderID: input.SenderID, SenderName: input.SenderName, Timestamp: now,
@@ -646,7 +672,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// "bg task 要会话维度展示，active session 哪个就展示哪个 session 的别混一起").
 		// Admin sees the CURRENT session's tasks too — not a cross-session dump.
 		// Multi-user removal: one operator owns every session — no ownership check.
-		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
+		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sessionaddr.Key(sel.Channel, sel.ChatID))), nil
 	}
 	callbacks.CronRemove = func(channel, chatID, jobID string) (bool, error) {
 		if ag.MultiSession() == nil || ag.MultiSession().Store() == nil {
@@ -809,60 +835,44 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 					SortOrder:  c.SortOrder,
 				}
 			}
-			applyWebRunningStatuses(ag, chats)
+			applyWebRunningStatusesFast(ag, chats)
 			return chats, err
 		}
 		if webSQL == nil {
-			// PG / backend-agnostic fallback: browse tenants through TenantStore.
-			if channel == "cli" {
-				tenants, terr := listTenantsViaStore(store.Tenant(), "cli", currentChatID)
-				if terr != nil {
-					return nil, terr
-				}
-				rows, lerr := mergeCLISessionRows(currentChatID, tenants)
-				applyWebRunningStatuses(ag, rows)
-				return rows, lerr
-			}
-			rows, lerr := listTenantsViaStore(store.Tenant(), channel, currentChatID)
-			applyWebRunningStatuses(ag, rows)
-			return rows, lerr
+			return nil, nil
 		}
 		// For non-web channels (admin only): list all tenants in that channel.
 		if channel == "cli" {
 			rows, err := listCLIChatSessions(webSQL, currentChatID)
-			applyWebRunningStatuses(ag, rows)
+			applyWebRunningStatusesFast(ag, rows)
 			return rows, err
 		}
 		rows, err := listTenantsByChannel(webSQL, channel, currentChatID)
-		applyWebRunningStatuses(ag, rows)
+		applyWebRunningStatusesFast(ag, rows)
 		return rows, err
 	}
 	callbacks.SubAgentList = func(senderID string, admin bool) ([]web.UserChatWithPreview, error) {
-		// v63 single-operator: always use the full unfiltered view.
-		var rows []web.UserChatWithPreview
-		var err error
-		if webSQL != nil {
-			rows, err = listTenantsByChannel(webSQL, "agent", "")
-		} else {
-			rows, err = listTenantsViaStore(store.Tenant(), "agent", "")
+		if webSQL == nil {
+			return nil, nil
 		}
+		// v63 single-operator: always use the full unfiltered view.
+		rows, err := listTenantsByChannel(webSQL, "agent", "")
 		if err != nil {
 			return nil, err
 		}
-		seen := make(map[string]bool, len(rows))
-		for _, row := range rows {
-			seen[subAgentRowKey(row)] = true
+		index := make(map[string]int, len(rows)+64)
+		for i, row := range rows {
+			index[subAgentRowKey(row)] = i
 		}
-		for _, s := range ag.ListInteractiveSessions("web", "") {
-			rows = upsertSubAgentRow(rows, seen, "web", s)
+		// 一次遍历拿到全部 channel（旧路径三次 ListInteractiveSessions ⇒ 三次
+		// cleanupExpiredSessions + 三次全量 Range，2026-11-09 合并）。
+		byChannel := ag.ListAllInteractiveSessions()
+		for _, ch := range []string{"web", "cli", "agent"} {
+			for _, s := range byChannel[ch] {
+				rows = upsertSubAgentRow(rows, index, ch, s)
+			}
 		}
-		for _, s := range ag.ListInteractiveSessions("cli", "") {
-			rows = upsertSubAgentRow(rows, seen, "cli", s)
-		}
-		for _, s := range ag.ListInteractiveSessions("agent", "") {
-			rows = upsertSubAgentRow(rows, seen, "agent", s)
-		}
-		applyWebRunningStatuses(ag, rows)
+		applyWebRunningStatusesFast(ag, rows)
 		return rows, nil
 	}
 	callbacks.SessionTree = func(senderID string, current web.SessionSelector, admin bool, offset, limit int) (web.SessionTreeResult, error) {
@@ -874,55 +884,90 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		// v63 single-operator: always use the full cross-channel view.
 		// (The non-admin per-sender pagination path was removed — there is
 		// no non-admin user in single-operator mode.)
+		// 分段计时（2026-11-09）：/api/session-tree 曾出现 1.6-3.5s，而 SQL 层实测仅
+		// ~14ms —— 必须用数据定位而不是猜。超过 300ms 打印各段耗时，永久保留为可观测性。
+		treeStart := time.Now()
 		channels, err := store.Tenant().ListDistinctChannels()
+		tChannels := time.Since(treeStart)
 		if err != nil {
 			return web.SessionTreeResult{}, err
 		}
+		// Split channels: cli rows come from the chat-session reader (different
+		// row source), everything else is a tenants query.
+		var tenantChannels []string
+		hasCLI := false
 		for _, ch := range channels {
-			if ch == "agent" {
-				continue
+			switch ch {
+			case "agent":
+				// Sub-agent tenants are surfaced through the subagent list.
+			case "cli":
+				hasCLI = true
+			default:
+				tenantChannels = append(tenantChannels, ch)
 			}
-			if ch == "cli" {
-				cliCurrent := ""
-				if current.Channel == "cli" {
-					cliCurrent = current.ChatID
-				}
-				var cliChats []web.UserChatWithPreview
-				if webSQL != nil {
-					cliChats, err = listCLIChatSessions(webSQL, cliCurrent)
-				} else {
-					tenants, terr := listTenantsViaStore(store.Tenant(), "cli", cliCurrent)
-					if terr != nil {
-						return web.SessionTreeResult{}, terr
-					}
-					cliChats, err = mergeCLISessionRows(cliCurrent, tenants)
-				}
-				if err != nil {
-					return web.SessionTreeResult{}, err
-				}
-				applyWebRunningStatuses(ag, cliChats)
-				mains = appendMissingSessionRows(mains, cliChats)
-				continue
-			}
-			chCurrent := ""
-			if current.Channel == ch {
-				chCurrent = current.ChatID
-			}
-			var tenants []web.UserChatWithPreview
-			if webSQL != nil {
-				tenants, err = listTenantsByChannel(webSQL, ch, chCurrent)
-			} else {
-				tenants, err = listTenantsViaStore(store.Tenant(), ch, chCurrent)
-			}
-			if err != nil {
-				log.WithError(err).WithField("channel", ch).Warn("Failed to list tenants for channel")
-				continue
-			}
-			applyWebRunningStatuses(ag, tenants)
-			mains = appendMissingSessionRows(mains, tenants)
 		}
 
+		tCLI := time.Duration(0)
+		if hasCLI && webSQL != nil {
+			cliStart := time.Now()
+			cliChats, err := listCLIChatSessions(webSQL, "")
+			tCLI = time.Since(cliStart)
+			if err != nil {
+				return web.SessionTreeResult{}, err
+			}
+			mains = appendMissingSessionRows(mains, cliChats)
+		}
+
+		// ONE query for every remaining channel instead of one per channel.
+		tTenants := time.Duration(0)
+		if len(tenantChannels) > 0 {
+			var tenants []web.UserChatWithPreview
+			if webSQL != nil {
+				tenantsStart := time.Now()
+				tenants, err = listTenantsByChannels(webSQL, tenantChannels)
+				tTenants = time.Since(tenantsStart)
+			} else {
+				// PG path: use TenantStore (already a single full read).
+				allTenants, tErr := store.Tenant().ListTenants()
+				if tErr != nil {
+					log.WithError(tErr).Warn("Failed to list tenants")
+				} else {
+					want := make(map[string]bool, len(tenantChannels))
+					for _, ch := range tenantChannels {
+						want[ch] = true
+					}
+					for _, t := range allTenants {
+						if !want[t.Channel] {
+							continue
+						}
+						tenants = append(tenants, web.UserChatWithPreview{
+							ChatID:     t.ChatID,
+							Channel:    t.Channel,
+							Label:      t.Label,
+							LastActive: t.LastActiveAt.Format(time.RFC3339),
+							Preview:    "",
+						})
+					}
+				}
+			}
+			if err != nil {
+				log.WithError(err).Warn("Failed to list tenants")
+			} else {
+				mains = appendMissingSessionRows(mains, tenants)
+			}
+		}
+
+		// Sort + paginate BEFORE probing per-row runtime state.
+		// sortSessionTreeMains only needs LastActive/SortOrder/CreatedAt, and
+		// appendMissingSessionRows only reads Channel/ChatID — neither depends on
+		// Running/Status/WorkDir. Probing all ~1300 tenant rows (3 map lookups +
+		// a session cache lookup each) cost 400–700ms per request and made
+		// /api/session-tree the slowest endpoint in the log; only the rows that
+		// are actually returned need it.
+		var tSort time.Duration
+		sortStart := time.Now()
 		sortSessionTreeMains(mains)
+		tSort = time.Since(sortStart)
 		total := len(mains)
 		if limit < 0 {
 			limit = total
@@ -938,14 +983,58 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		hasMore = end < total
 		nextOffset = end
 
+		// IsCurrent MUST be set here, once, for the rows we return.
+		//
+		// 2026-10-27 回归：IsCurrent 原先由 listTenantsByChannel 逐 channel 设置，
+		// 改成统一的 listTenantsByChannels（不再接收 currentChatID）后，这个赋值
+		// 就没人做了 —— 全 false。前端 useSessionStore.ts:947 靠它恢复当前会话，
+		// 于是冷启动退化成"选中第一行"。门下省探针实测：
+		//   HEAD 82794d3b      → IsCurrent 全 false → FAIL
+		//   对照 d932b2e0      → PASS
+		// 一次性统一赋值比每条来源各自设置更可靠：行可能来自 tenants 查询，也可能
+		// 来自 listCLIChatSessions，还有 PG 路径，任何一条漏设都会重现这个 bug。
+		markCurrentSession(mains, current)
+
+		// Runtime state is only needed for the page we return, and it is
+		// classified from one in-memory snapshot rather than a DB probe per row.
+		runStart := time.Now()
+		applyWebRunningStatusesFast(ag, mains)
+		tRun := time.Since(runStart)
+
+		subStart := time.Now()
 		subagents, err := callbacks.SubAgentList(senderID, admin)
+		tSub := time.Since(subStart)
 		if err != nil {
 			return web.SessionTreeResult{}, err
 		}
-		applyWebRunningStatuses(ag, subagents)
+		// 同样走快照版：旧版逐行调 HasPendingAskUserFast，内存 miss 时会打库
+		// （GetTenantIDByChannelChatID + LatestAskControlRecord），而后者经
+		// SessionServiceFor 打开该会话的库。子代理有上百个，每次 session-tree
+		// 请求就要开上百个会话库 —— 生产实测 7 分钟内累积 620 个打开的库。
+		applyWebRunningStatusesFast(ag, subagents)
+		buildStart := time.Now()
 		result := buildSessionTree(mains, subagents)
+		tBuild := time.Since(buildStart)
 		result.HasMore = hasMore
 		result.NextOffset = nextOffset
+
+		if tot := time.Since(treeStart); tot > 300*time.Millisecond {
+			log.WithFields(log.Fields{
+				"total_ms":     tot.Milliseconds(),
+				"channels_ms":  tChannels.Milliseconds(),
+				"cli_ms":       tCLI.Milliseconds(),
+				"tenants_ms":   tTenants.Milliseconds(),
+				"sort_ms":      tSort.Milliseconds(),
+				"running_ms":   tRun.Milliseconds(),
+				"subagents_ms": tSub.Milliseconds(),
+				"build_ms":     tBuild.Milliseconds(),
+				"mains":        len(mains),
+				"subagents":    len(subagents),
+				"total_mains":  total,
+				"limit":        limit,
+				"offset":       offset,
+			}).Warn("session-tree slow — segment breakdown")
+		}
 		return result, nil
 	}
 	callbacks.ChatCreate = func(senderID, label string, subscriptionID, model string) (string, error) {
@@ -1000,7 +1089,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 			}
 		}
 		ag.CleanupSessionFiles(channel, chatID)
-		tools.GlobalWorktreeRegistry.CleanupSession(channel + ":" + chatID)
 		session.DeletePersistedCWD(channel, chatID)
 		_ = ag.MultiSession().DestroySession(channel, chatID)
 		return nil
@@ -1117,42 +1205,21 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	}
 
 	// ─── 结构化消息（sendmessage-structured）───
-	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList := structuredCallbacks(ag)
+	structuredAppend, structuredAnswer, structuredInbox, structuredCount, structuredList, structuredResolve, structuredDelete := structuredCallbacks(ag)
 	callbacks.StructuredAppend = structuredAppend
 	callbacks.StructuredAnswer = structuredAnswer
 	callbacks.StructuredInbox = structuredInbox
 	callbacks.StructuredCount = structuredCount
 	callbacks.StructuredMessages = structuredList
+	callbacks.StructuredResolve = structuredResolve
+	callbacks.StructuredDelete = structuredDelete
 
 	// ─── 跨会话活动流（通信视图性能重构）───
-	// AgentActivityList 走后端无关的 InteractiveAgents store（SQLite / PG 均可）。
-	// ActivityList 仍依赖 activity_index（结构化消息的 SQLite 派生索引）——
-	// PG 没有该表 ⇒ 回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
-	if store != nil {
-		if agentSvc := store.InteractiveAgents(); agentSvc != nil {
-			callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
-				cutoff := time.Now().Add(-common.NormalizeActivityWindow(within))
-				rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
-				if err != nil {
-					return nil, err
-				}
-				out := make([]web.AgentActivityEntry, 0, len(rows))
-				for _, r := range rows {
-					out = append(out, web.AgentActivityEntry{
-						AgentKey:    r.AgentKey,
-						RoleName:    r.RoleName,
-						Instance:    r.Instance,
-						Status:      r.Status,
-						UpdatedAt:   r.UpdatedAt,
-						LastReplyAt: r.LastReplyAt,
-					})
-				}
-				return out, nil
-			}
-		}
-	}
-	if store != nil && store.Activity() != nil {
+	// 只绑主库连接（webSQL）。PG 后端没有 activity_index/interactive_agents 的
+	// 兼容实现 ⇒ 两个回调保持 nil，web 层回 503（显式不可用，不静默给空列表）。
+	if store != nil && store.Activity() != nil && store.InteractiveAgents() != nil {
 		activityIdx := store.Activity()
+		agentSvc := store.InteractiveAgents()
 		callbacks.ActivityList = func(limit int, within time.Duration, kinds []string) ([]web.ActivityEntry, bool, error) {
 			rows, hasMore, err := activityIdx.List(limit, within, kinds)
 			if err != nil {
@@ -1171,6 +1238,25 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 				})
 			}
 			return out, hasMore, nil
+		}
+		callbacks.AgentActivityList = func(within time.Duration, includeUnloaded bool) ([]web.AgentActivityEntry, error) {
+			cutoff := time.Now().Add(-common.NormalizeActivityWindow(within))
+			rows, err := agentSvc.ListActive(cutoff, includeUnloaded)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]web.AgentActivityEntry, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, web.AgentActivityEntry{
+					AgentKey:    r.AgentKey,
+					RoleName:    r.RoleName,
+					Instance:    r.Instance,
+					Status:      r.Status,
+					UpdatedAt:   r.UpdatedAt,
+					LastReplyAt: r.LastReplyAt,
+				})
+			}
+			return out, nil
 		}
 	}
 
@@ -1208,12 +1294,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 	return callbacks
 }
 
-func applyWebRunningStatuses(ag *agent.Agent, rows []web.UserChatWithPreview) {
-	for i := range rows {
-		applyWebRunningStatus(ag, &rows[i])
-	}
-}
-
+// applyWebRunningStatus sets one row's running status from the agent's live
+// state. 注：曾有一个批量版 applyWebRunningStatuses(rows) 包装（a089a9359 加入），
+// 自 82794d3b/07bde7cd 起所有列表接口改用 applyWebRunningStatusesFast（预计算快照），
+// 该包装已无调用方 → 2026-10-29 依 golangci-lint unused 删除（纯死代码，无行为变化）。
 func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 	if row == nil {
 		return
@@ -1247,6 +1331,68 @@ func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 	}
 	for i := range row.Children {
 		applyWebRunningStatus(ag, &row.Children[i])
+	}
+}
+
+// applyWebRunningStatusesFast classifies rows using a precomputed in-memory
+// snapshot instead of probing per row.
+//
+// The original per-row path calls HasPendingAskUserFast, which on a memory miss
+// hits the database (tenant lookup + LatestAskControlRecord). With 705 rows
+// that is >1000 round-trips per request — measured p50 639ms and 33s under six
+// concurrent polls.
+//
+// Behaviour difference on purpose: this uses the in-memory waiting set only.
+// A prompt that exists solely in the DB reads as idle here; the authoritative
+// check still runs when the session is opened. For a listing endpoint that is
+// the correct trade — the alternative is a database round-trip per row.
+func applyWebRunningStatusesFast(ag *agent.Agent, rows []web.UserChatWithPreview) {
+	if ag == nil {
+		for i := range rows {
+			applyWebRunningStatus(ag, &rows[i])
+		}
+		return
+	}
+	running, waiting := ag.RuntimeStateSnapshot()
+	var walk func(row *web.UserChatWithPreview)
+	walk = func(row *web.UserChatWithPreview) {
+		if row == nil {
+			return
+		}
+		ch := row.Channel
+		if ch == "" {
+			ch = "web"
+		}
+		chatID := row.ChatID
+		if row.FullKey != "" && (ch == "agent" || row.Type == "agent") {
+			chatID = row.FullKey
+		}
+		if ch != "agent" && row.Type != "agent" {
+			row.WorkDir = webSessionCWD(ag, ch, chatID)
+		}
+		key := sessionaddr.Key(ch, chatID)
+		if ch == "agent" || row.Type == "agent" {
+			// Sub-agents do not register chatCancelCh; their running flag lives
+			// on the interactive session. Row counts here are small.
+			row.Running = ag.InteractiveSubAgentRunning(chatID)
+		} else {
+			row.Running = running[key]
+		}
+		switch {
+		case row.Running:
+			row.Status = "running"
+		case waiting[key]:
+			// Paused for an AskUser answer: NOT running (busy ⇔ iterating).
+			row.Status = "waiting_input"
+		case row.Status == "":
+			row.Status = "idle"
+		}
+		for i := range row.Children {
+			walk(&row.Children[i])
+		}
+	}
+	for i := range rows {
+		walk(&rows[i])
 	}
 }
 
@@ -1324,54 +1470,6 @@ func appendMissingSessionRows(base, extra []web.UserChatWithPreview) []web.UserC
 	return base
 }
 
-// listTenantsViaStore is the backend-agnostic equivalent of listTenantsByChannel.
-// It uses storage.TenantStore.ListTenants (SQLite adapter or PG) instead of a raw
-// *sql.DB, so session browsing works on the PG backend too.
-func listTenantsViaStore(ts storage.TenantStore, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
-	if ts == nil {
-		return nil, fmt.Errorf("tenant store is unavailable")
-	}
-	all, err := ts.ListTenants()
-	if err != nil {
-		return nil, fmt.Errorf("list tenants: %w", err)
-	}
-	var result []web.UserChatWithPreview
-	for _, t := range all {
-		if t.Channel != channel || t.ChatID == "_shared" {
-			continue
-		}
-		preview := t.Preview
-		if runes := []rune(preview); len(runes) > 80 {
-			preview = string(runes[:80])
-		}
-		createdAt := t.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = t.LastActiveAt
-		}
-		chat := web.UserChatWithPreview{
-			ChatID:     t.ChatID,
-			Channel:    t.Channel,
-			Label:      displayLabelForTenant(t.Channel, t.ChatID, t.Label),
-			LastActive: t.LastActiveAt.Format(time.RFC3339),
-			CreatedAt:  createdAt.Format(time.RFC3339),
-			SortOrder:  t.SortOrder,
-			Preview:    preview,
-			IsCurrent:  t.ChatID == currentChatID,
-		}
-		if channel == "agent" {
-			normalized, ok := normalizeSubAgentRow(chat, preview)
-			if !ok {
-				continue
-			}
-			chat = normalized
-		} else if isInteractiveSubAgentTenant(channel, t.ChatID) {
-			continue
-		}
-		result = append(result, chat)
-	}
-	return result, nil
-}
-
 func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, error) {
 	result := map[string]bool{senderID: true}
 	rows, err := db.Query("SELECT chat_id FROM user_chats WHERE channel = 'web' AND sender_id = ?", senderID)
@@ -1392,6 +1490,83 @@ func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, erro
 	return result, nil
 }
 
+// userChatsLatestCTE 一次预取 user_chats 里「每个 (channel, chat_id) 的最新一行」
+// 与「每个 chat_id 的最新非空 label 行」。
+//
+// 改造前这两件事由 3 条【逐租户行执行】的相关子查询完成：EXPLAIN QUERY PLAN 里
+// 每条 tenants 行都要把每条子查询跑一遍（其中跨 channel 的 label 兜底退化成
+// SCAN uc）。现在压成两次 GROUP BY（各走一次索引），再 LEFT JOIN 回 tenants：
+// 一次查询里 user_chats 的扫描次数从 O(租户行数) 降到 O(1)。
+//
+// 语义与旧的 COALESCE 链逐字等价：
+//
+//	label      = (channel, chat_id) 匹配的最新【非空】label
+//	             → 退化为该 chat_id 跨 channel 的最新非空 label → 再退化为 ''
+//	sort_order = (channel, chat_id) 匹配的最新一行（不筛 label）的 sort_order → 0
+//
+// 「最新」= id 最大。SQLite 的 id 是 INTEGER PRIMARY KEY（rowid 别名），与旧的
+// ORDER BY rowid DESC 同序；用 id 而非 rowid 还能让同一段 SQL 在 PG 上执行
+// （PG 没有 rowid）。
+//
+// ⛔ 别名不要用 uc：测试用「plan 里不得出现 SCAN uc」钉住「不再逐行全扫」。
+const userChatsLatestCTE = `
+WITH latest_by_chat AS (
+    SELECT chat_rows.channel, chat_rows.chat_id,
+           MAX(chat_rows.id) AS latest_id,
+           MAX(CASE WHEN chat_rows.label != '' THEN chat_rows.id END) AS latest_label_id
+    FROM user_chats chat_rows
+    GROUP BY chat_rows.channel, chat_rows.chat_id
+),
+latest_any_channel AS (
+    SELECT chat_rows.chat_id, MAX(chat_rows.id) AS latest_label_id
+    FROM user_chats chat_rows
+    WHERE chat_rows.label != ''
+    GROUP BY chat_rows.chat_id
+)`
+
+// userChatsJoinCTE 把 userChatsLatestCTE 的预取结果接回 tenants（别名 t）。
+// 三次 user_chats 自连接都落在主键上（id = ...），是 O(1) 的点查。
+const userChatsJoinCTE = `
+LEFT JOIN latest_by_chat lbc ON lbc.channel = t.channel AND lbc.chat_id = t.chat_id
+LEFT JOIN user_chats lbl ON lbl.id = lbc.latest_label_id
+LEFT JOIN user_chats srt ON srt.id = lbc.latest_id
+LEFT JOIN latest_any_channel lac ON lac.chat_id = t.chat_id
+LEFT JOIN user_chats albl ON albl.id = lac.latest_label_id`
+
+// userChatsLabelColumns 是 label/sort_order 两列的取值表达式（见 CTE 注释）。
+const userChatsLabelColumns = `
+       COALESCE(lbl.label, albl.label, '') AS label,
+       COALESCE(srt.sort_order, 0) AS sort_order`
+
+// listTenantsByChannelSQL 供 listTenantsByChannel 使用；测试直接拿它跑
+// EXPLAIN QUERY PLAN，断言计划里不再出现逐行全扫。
+const listTenantsByChannelSQL = userChatsLatestCTE + `
+SELECT t.id, t.chat_id, t.created_at, t.last_active_at,` + userChatsLabelColumns + `,
+       COALESCE(t.preview, '') AS preview
+FROM tenants t` + userChatsJoinCTE + `
+WHERE t.channel = ? AND t.chat_id != '_shared'
+ORDER BY t.last_active_at DESC`
+
+// listTenantsByChannelsSQLTemplate 是 listTenantsByChannels 的多 channel 形式，
+// %s 处填 IN 列表的占位符。
+const listTenantsByChannelsSQLTemplate = userChatsLatestCTE + `
+SELECT t.channel, t.id, t.chat_id, t.created_at, t.last_active_at,` + userChatsLabelColumns + `,
+       COALESCE(t.preview, '') AS preview
+FROM tenants t` + userChatsJoinCTE + `
+WHERE t.channel IN (%s) AND t.chat_id != '_shared'
+ORDER BY t.last_active_at DESC`
+
+// listTenantsByChannelsQuery 渲染 n 个 channel 的 IN 列表查询及其参数。
+func listTenantsByChannelsQuery(channels []string) (string, []any) {
+	placeholders := make([]string, len(channels))
+	args := make([]any, len(channels))
+	for i, ch := range channels {
+		placeholders[i] = "?"
+		args[i] = ch
+	}
+	return fmt.Sprintf(listTenantsByChannelsSQLTemplate, strings.Join(placeholders, ",")), args
+}
+
 // listTenantsByChannel lists all tenants for a given channel (e.g. "cli", "feishu").
 // Used by admin to browse sessions from other channels in the Web UI.
 // Returns the last user/assistant message as preview.
@@ -1400,22 +1575,7 @@ func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, erro
 // 旧子查询 JOIN session_messages（拆库后主库没有消息数据 —— 消息在每会话
 // 独立库里，跨库 JOIN 不可能）。
 func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
-	// Single query with correlated subquery for preview — avoids N+1 pattern.
-	rows, err := db.Query(`
-  SELECT t.id, t.chat_id, t.created_at, t.last_active_at,
-          COALESCE((SELECT uc.label FROM user_chats uc
-           WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
-           ORDER BY uc.rowid DESC LIMIT 1),
-           (SELECT uc.label FROM user_chats uc
-           WHERE uc.chat_id = t.chat_id AND uc.label != ''
-           ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
-         COALESCE((SELECT uc.sort_order FROM user_chats uc
-                  WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
-                  ORDER BY uc.rowid DESC LIMIT 1), 0) AS sort_order,
-         COALESCE(t.preview, '') AS preview
-  FROM tenants t
-  WHERE t.channel = ? AND t.chat_id != '_shared'
-  ORDER BY t.last_active_at DESC`, channel)
+	rows, err := db.Query(listTenantsByChannelSQL, channel)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants by channel: %w", err)
 	}
@@ -1462,6 +1622,63 @@ func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.User
 			continue
 		}
 		result = append(result, chat)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tenants: %w", err)
+	}
+	return result, nil
+}
+
+// listTenantsByChannels is the multi-channel form of listTenantsByChannel.
+//
+// /api/session-tree used to call listTenantsByChannel once per distinct channel
+// (9 on the production DB: cli, web, github, feishu, qq, gitlab, chat, echo, tg)
+// — the same row shape queried in a loop over the same table, costing ~9x the
+// necessary round-trips. One IN-list query returns the identical rows; channel
+// ordering is irrelevant because the caller sorts by last_active_at afterwards.
+func listTenantsByChannels(db *sql.DB, channels []string) ([]web.UserChatWithPreview, error) {
+	if len(channels) == 0 {
+		return nil, nil
+	}
+	query, args := listTenantsByChannelsQuery(channels)
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list tenants by channels: %w", err)
+	}
+	defer rows.Close()
+
+	var result []web.UserChatWithPreview
+	for rows.Next() {
+		var tenantID int64
+		var channel, chatID, createdAtStr, lastActiveStr, label string
+		var sortOrder int
+		var preview sql.NullString
+		if err := rows.Scan(&channel, &tenantID, &chatID, &createdAtStr, &lastActiveStr, &label, &sortOrder, &preview); err != nil {
+			log.WithError(err).Warn("Failed to scan tenant row in listTenantsByChannels")
+			continue
+		}
+		previewStr := preview.String
+		if runes := []rune(previewStr); len(runes) > 80 {
+			previewStr = string(runes[:80])
+		}
+		lastActive := parseTenantTime(lastActiveStr)
+		createdAt := parseTenantTime(createdAtStr)
+		if createdAt.IsZero() {
+			createdAt = lastActive
+		}
+		// Sub-agent tenant rows are surfaced through the subagent list instead.
+		if isInteractiveSubAgentTenant(channel, chatID) {
+			continue
+		}
+		result = append(result, web.UserChatWithPreview{
+			ChatID:     chatID,
+			Channel:    channel,
+			Label:      displayLabelForTenant(channel, chatID, label),
+			LastActive: lastActive.Format(time.RFC3339),
+			CreatedAt:  createdAt.Format(time.RFC3339),
+			SortOrder:  sortOrder,
+			Preview:    previewStr,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate tenants: %w", err)
@@ -1558,13 +1775,6 @@ func listCLIChatSessions(db *sql.DB, currentChatID string) ([]web.UserChatWithPr
 	if err != nil {
 		return nil, err
 	}
-	return mergeCLISessionRows(currentChatID, tenantRows)
-}
-
-// mergeCLISessionRows merges the local CLI session files into the tenant rows
-// (which may come from SQLite's raw browse query or the backend-agnostic
-// TenantStore). Extracted so the PG fallback gets the same CLI session list.
-func mergeCLISessionRows(currentChatID string, tenantRows []web.UserChatWithPreview) ([]web.UserChatWithPreview, error) {
 	tenantByChatID := make(map[string]web.UserChatWithPreview, len(tenantRows))
 	for _, row := range tenantRows {
 		tenantByChatID[row.ChatID] = row
@@ -1704,10 +1914,49 @@ func sortUserChats(rows []web.UserChatWithPreview) {
 // (CLI-local "+08:00" vs server "Z") — lexicographic comparison mis-orders
 // across offsets (see sortUserChats). Compare parsed time.Time values; equal
 // instants expressed with different offsets tiebreak on SortOrder/CreatedAt.
+// markCurrentSession sets IsCurrent on exactly the row the caller currently has
+// selected. IsCurrent is a per-caller flag, so it can never be baked into a
+// shared row set — it must be applied to the rows being returned.
+//
+// Regression this fixes (2026-10-27): row construction moved to a single
+// listTenantsByChannels call that no longer receives currentChatID, so the flag
+// silently became false everywhere. The web frontend (useSessionStore.ts:947)
+// restores the active session from it, so cold start degraded to "select the
+// first row". Menxia's probe: HEAD 82794d3b FAIL / d932b2e0 PASS.
+func markCurrentSession(rows []web.UserChatWithPreview, current web.SessionSelector) {
+	for i := range rows {
+		rows[i].IsCurrent = rows[i].Channel == current.Channel && rows[i].ChatID == current.ChatID
+	}
+}
+
 func sortSessionTreeMains(rows []web.UserChatWithPreview) {
-	sort.SliceStable(rows, func(i, j int) bool {
+	if len(rows) == 0 {
+		return
+	}
+	// Pre-parse the timestamps ONCE.
+	//
+	// The comparator used to call parseTenantTime twice per comparison, and
+	// parseTenantTime tries up to four layouts with time.Parse. Sorting 705 rows
+	// is ~6,700 comparisons ⇒ ~13,400 parse calls ⇒ tens of thousands of
+	// time.Parse attempts. That was a large share of the endpoint's 639ms p50.
+	// Parsing once per row drops it to 1,410.
+	type sortKey struct{ last, created time.Time }
+	keys := make([]sortKey, len(rows))
+	for i := range rows {
+		keys[i] = sortKey{
+			last:    parseTenantTime(rows[i].LastActive),
+			created: parseTenantTime(rows[i].CreatedAt),
+		}
+	}
+
+	idx := make([]int, len(rows))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		i, j := idx[a], idx[b]
 		// Primary: last_active desc (matches the frontend time buckets).
-		ti, tj := parseTenantTime(rows[i].LastActive), parseTenantTime(rows[j].LastActive)
+		ti, tj := keys[i].last, keys[j].last
 		if !ti.Equal(tj) {
 			return ti.After(tj)
 		}
@@ -1726,8 +1975,15 @@ func sortSessionTreeMains(rows []web.UserChatWithPreview) {
 		if oi != oj {
 			return oi < oj
 		}
-		return parseTenantTime(rows[i].CreatedAt).Before(parseTenantTime(rows[j].CreatedAt))
+		return keys[i].created.Before(keys[j].created)
 	})
+
+	// Apply the permutation in place using a scratch buffer.
+	sorted := make([]web.UserChatWithPreview, len(rows))
+	for i, j := range idx {
+		sorted[i] = rows[j]
+	}
+	copy(rows, sorted)
 }
 
 func parseTenantTime(raw string) time.Time {
@@ -1768,9 +2024,24 @@ func buildSessionTree(mains, subagents []web.UserChatWithPreview) web.SessionTre
 		}
 		normalized = append(normalized, row)
 	}
-	sort.SliceStable(normalized, func(i, j int) bool {
-		return agentTreeDepth(normalized[i]) < agentTreeDepth(normalized[j])
+	// 2026-11-09：agentTreeDepth 每次都循环解析 key（最多 32 层），在比较器里调用
+	// 等于 O(n log n) 次重复解析。改为排序前算一次、用下标排序。
+	depths := make([]int, len(normalized))
+	for i := range normalized {
+		depths[i] = agentTreeDepth(normalized[i])
+	}
+	order := make([]int, len(normalized))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return depths[order[a]] < depths[order[b]]
 	})
+	sortedAgents := make([]web.UserChatWithPreview, len(normalized))
+	for i, j := range order {
+		sortedAgents[i] = normalized[j]
+	}
+	normalized = sortedAgents
 	var orphans []web.UserChatWithPreview
 	for _, sa := range normalized {
 		sa.Channel = "agent"
@@ -1945,6 +2216,24 @@ func (b *sessionTreeBuilder) setAlias(key string, ref sessionTreeNodeRef) {
 }
 
 func (b *sessionTreeBuilder) resolveParent(agent web.UserChatWithPreview) (sessionTreeNodeRef, bool) {
+	// An existing or structurally parsed child is authoritative. In particular
+	// CLI child keys start with '/' too; never strip them as root mirrors.
+	if agent.ParentChannel == "agent" {
+		if address, ok := sessionaddr.Parse(agent.ParentChatID); ok {
+			if root, exists := b.lookupMainParent(address.Channel, address.ChatID); exists {
+				return root, true
+			}
+		}
+	}
+	_, childAddress := parseAgentTenantChatID(agent.ParentChatID)
+	_, liveAlias := b.lookupAgent(agent.ParentChatID)
+	if agent.ParentChannel == "agent" && !childAddress && !liveAlias {
+		parent := sessionaddr.NormalizeStoredParent(sessionaddr.Key(agent.ParentChannel, agent.ParentChatID))
+		if address, ok := sessionaddr.Parse(parent); ok {
+			agent.ParentChannel, agent.ParentChatID = address.Channel, address.ChatID
+		}
+	}
+
 	if agent.ParentChannel == "agent" {
 		return b.resolveAgentParent(agent.ParentChatID, agent.LastActive)
 	}
@@ -1954,8 +2243,8 @@ func (b *sessionTreeBuilder) resolveParent(agent web.UserChatWithPreview) (sessi
 	if !canSynthesizeSessionTreeParent(agent) {
 		return sessionTreeNodeRef{}, false
 	}
-	parent := b.addMain(synthesizedParentRow(agent))
-	return sessionTreeNodeRef{channel: parent.Channel, chatID: parent.ChatID, mainIndex: len(b.nodes) - 1}, true
+	node := b.addMain(synthesizedParentRow(agent))
+	return sessionTreeNodeRef{channel: node.Channel, chatID: node.ChatID, mainIndex: len(b.nodes) - 1}, true
 }
 
 func (b *sessionTreeBuilder) resolveAgentParent(agentChatID, lastActive string) (sessionTreeNodeRef, bool) {
@@ -2093,7 +2382,7 @@ func sessionTreeKey(channel, chatID string) string {
 	if channel == "" {
 		channel = "web"
 	}
-	return channel + ":" + chatID
+	return sessionaddr.Key(channel, chatID)
 }
 
 type agentTenantInfo struct {
@@ -2138,21 +2427,23 @@ func subAgentRowKey(row web.UserChatWithPreview) string {
 	return row.ChatID
 }
 
-func upsertSubAgentRow(rows []web.UserChatWithPreview, seen map[string]bool, parentChannel string, s agent.InteractiveSessionInfo) []web.UserChatWithPreview {
+// upsertSubAgentRow 在 rows 里插入/更新一行子代理记录。
+//
+// 2026-11-09 性能修复：旧实现用 `seen map[string]bool` + **线性扫描 rows** 找命中行，
+// 并且每次比较都重算 subAgentRowKey（字符串）。471 个子代理 × 数百行 = 十几万次
+// 字符串操作，是 /api/session-tree 1-3s 的主要来源之一。改为 `index map[string]int`
+// （key → 行下标），命中即 O(1) 原地更新，缺失则 append 并登记新下标。
+// 注意：index 存的是下标而非指针，append 触发的底层数组扩容不会让它失效。
+func upsertSubAgentRow(rows []web.UserChatWithPreview, index map[string]int, parentChannel string, s agent.InteractiveSessionInfo) []web.UserChatWithPreview {
 	row := subAgentRowFromInteractiveSession(parentChannel, s)
 	key := subAgentRowKey(row)
-	if seen[key] {
-		for i := range rows {
-			if subAgentRowKey(rows[i]) == key {
-				lastActive := rows[i].LastActive
-				rows[i] = row
-				rows[i].LastActive = lastActive
-				break
-			}
-		}
+	if i, ok := index[key]; ok && i < len(rows) {
+		lastActive := rows[i].LastActive
+		rows[i] = row
+		rows[i].LastActive = lastActive
 		return rows
 	}
-	seen[key] = true
+	index[key] = len(rows)
 	return append(rows, row)
 }
 

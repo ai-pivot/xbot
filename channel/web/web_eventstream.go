@@ -26,7 +26,7 @@ func sessionRouteKey(channel, chatID string) string {
 
 // canonicalChatID strips repeated channel prefixes from an inbound chat id.
 //
-// The session key is `channel + ":" + chatID`; a client that sends a *full key*
+// The session key is `sessionaddr.Key(channel, chatID)`; a client that sends a *full key*
 // (`web:chat_X`) in `chat_id` would otherwise create the ghost session
 // `web:web:chat_X`. This was the root cause of "send and cancel hit different
 // sessions" (2026-10-17): some client paths canonicalized, others did not.

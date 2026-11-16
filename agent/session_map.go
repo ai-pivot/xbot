@@ -1,6 +1,9 @@
 package agent
 
-import "sync"
+import (
+	"sync"
+	"xbot/internal/sessionaddr"
+)
 
 // SessionMap is a type-safe, concurrency-safe map keyed by "channel:chatID".
 // It eliminates the type-assertion risk of bare sync.Map fields on Agent.
@@ -9,7 +12,7 @@ type SessionMap[T any] struct {
 }
 
 func (sm *SessionMap[T]) Load(channel, chatID string) (T, bool) {
-	v, ok := sm.m.Load(channel + ":" + chatID)
+	v, ok := sm.m.Load(sessionaddr.Key(channel, chatID))
 	if !ok {
 		var zero T
 		return zero, false
@@ -18,15 +21,15 @@ func (sm *SessionMap[T]) Load(channel, chatID string) (T, bool) {
 }
 
 func (sm *SessionMap[T]) Store(channel, chatID string, val T) {
-	sm.m.Store(channel+":"+chatID, val)
+	sm.m.Store(sessionaddr.Key(channel, chatID), val)
 }
 
 func (sm *SessionMap[T]) Delete(channel, chatID string) {
-	sm.m.Delete(channel + ":" + chatID)
+	sm.m.Delete(sessionaddr.Key(channel, chatID))
 }
 
 func (sm *SessionMap[T]) LoadAndDelete(channel, chatID string) (T, bool) {
-	v, loaded := sm.m.LoadAndDelete(channel + ":" + chatID)
+	v, loaded := sm.m.LoadAndDelete(sessionaddr.Key(channel, chatID))
 	if !loaded {
 		var zero T
 		return zero, false

@@ -148,6 +148,9 @@ type WSMessage struct {
 	// type — the front-end reads msg.reason / msg.chat_id directly).
 	AskUserResolvedRequestID string `json:"request_id,omitempty"`
 	AskUserResolvedReason    string `json:"reason,omitempty"`
+	// AskUserResolvedCancelReason is only meaningful when Reason=="cancelled":
+	// it says WHY (e.g. "ttl_expired"). Absent = user-initiated cancel.
+	AskUserResolvedCancelReason string `json:"cancel_reason,omitempty"`
 	// Structured carries a structured-message event (kind=ask_user/answer/...)
 	// when Type == MsgTypeStructuredMessage. Clients dedupe by MessageID.
 	Structured *StructuredMessage `json:"structured,omitempty"`

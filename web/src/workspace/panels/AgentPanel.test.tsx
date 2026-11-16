@@ -88,6 +88,11 @@ vi.mock('@/chat/useAgentChatState', () => ({
   }),
 }))
 vi.mock('@/hooks/useTodos', () => ({ useTodos: () => ({ total: 0 }) }))
+// AgentPanel 读 store 的 historyEpoch 传给 useChatMessages（收件箱处置后重拉历史）。
+// 单测没有 SessionStoreProvider，给最小 stub。
+vi.mock('@/hooks/useSessionStore', () => ({
+  useSessionStore: () => ({ historyEpoch: 0, bumpHistoryEpoch: vi.fn() }),
+}))
 vi.mock('@/hooks/useActiveSSESubscription', () => ({ useActiveSSESubscription: vi.fn() }))
 vi.mock('@/hooks/useSessionContext', () => ({
   useSessionContext: () => ({

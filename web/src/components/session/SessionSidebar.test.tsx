@@ -67,6 +67,8 @@ vi.mock('@/hooks/useSessionStore', () => ({
     error: null,
     subAgents: [review],
     askUserPrompts: new Map(),
+    historyEpoch: 0,
+    bumpHistoryEpoch: () => {},
     setCategory: vi.fn(),
     collapsedGroups: new Set<string>(),
     toggleGroupCollapsed: vi.fn(),

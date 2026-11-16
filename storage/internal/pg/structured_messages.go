@@ -47,6 +47,17 @@ type structuredScanner interface {
 	Scan(dest ...any) error
 }
 
+// recordTypeOrDefault 归一化 RecordType（空串 = 'message'）。
+//
+// 与 sqlite 侧的 structuredRecordType 同一语义：notice（to="user" 卡片）必须带
+// record_type='notice' 落库，否则两套回放都会把卡片当普通消息塞进聊天流。
+func recordTypeOrDefault(m common.StructuredMessage) string {
+	if m.RecordType == "" {
+		return string(common.HistoryRecordMessage)
+	}
+	return string(m.RecordType)
+}
+
 func scanPGStructuredRow(sc structuredScanner) (common.StructuredMessage, error) {
 	var m common.StructuredMessage
 	var createdAt time.Time
@@ -120,14 +131,14 @@ func (s *sessionStore) AppendStructuredMessage(tenantID int64, m common.Structur
 		(tenant_id, role, content, display_only, record_type, created_at, turn_id,
 		 chat_id, kind, correlation_id, reply_to, idempotency_key, structured_json,
 		 direction, answered, cancelled, sender_type, sender_id, sender_name)
-		VALUES ($1, $2, $3, false, 'message', $4, 0,
+		VALUES ($1, $2, $3, false, $17, $4, 0,
 		        $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING id`,
 		tenantID, sanitizeText(common.StructuredRole(m)), sanitizeText(m.Content), m.CreatedAt,
 		sanitizeText(m.ChatID), m.Kind, sanitizeText(m.CorrelationID), sanitizeText(m.ReplyTo),
 		sanitizeText(m.IdempotencyKey), sanitizeText(m.StructuredJSON), m.Direction,
 		m.Answered, m.Cancelled, sanitizeText(m.SenderType), sanitizeText(m.SenderID),
-		sanitizeText(m.SenderName)).Scan(&id)
+		sanitizeText(m.SenderName), recordTypeOrDefault(m)).Scan(&id)
 	if err != nil {
 		// Concurrent duplicate: the unique index rejected the second writer.
 		// Read the winner back so the call stays idempotent.
@@ -597,4 +608,21 @@ func (s *sessionStore) GetStructuredMessageByID(tenantID, id int64) (*common.Str
 		return nil, err
 	}
 	return &m, nil
+}
+
+// DeleteStructuredMessages 见 common.StructuredStore 的契约（只删 kind != ” 的结构化行）。
+func (s *sessionStore) DeleteStructuredMessages(tenantID int64, ids []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if len(ids) > 500 {
+		return 0, fmt.Errorf("too many ids (%d > 500)", len(ids))
+	}
+	tag, err := s.pool.Exec(context.Background(),
+		`DELETE FROM session_messages WHERE tenant_id = $1 AND kind != '' AND id = ANY($2)`,
+		tenantID, ids)
+	if err != nil {
+		return 0, fmt.Errorf("delete structured messages: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }

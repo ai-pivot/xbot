@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"xbot/internal/sessionaddr"
 	"xbot/llm"
 
 	log "xbot/logger"
@@ -229,7 +230,7 @@ func (t *ShellTool) executeBackground(
 
 	sessionKey := toolCtx.BgSessionKey
 	if sessionKey == "" {
-		sessionKey = toolCtx.Channel + ":" + toolCtx.ChatID
+		sessionKey = sessionaddr.Key(toolCtx.Channel, toolCtx.ChatID)
 	}
 	senderID := toolCtx.OriginUserID
 
@@ -354,7 +355,7 @@ func (t *ShellTool) executeForeground(
 		mgr = toolCtx.BgTaskManager
 		sessionKey = toolCtx.BgSessionKey
 		if sessionKey == "" {
-			sessionKey = toolCtx.Channel + ":" + toolCtx.ChatID
+			sessionKey = sessionaddr.Key(toolCtx.Channel, toolCtx.ChatID)
 		}
 		senderID = toolCtx.OriginUserID
 	}

@@ -3,13 +3,13 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"xbot/internal/sessionaddr"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	log "xbot/logger"
 	"xbot/session"
-	"xbot/tools"
 )
 
 func (m *cliModel) openSessionsPanel() {
@@ -146,7 +146,7 @@ func (m *cliModel) updateSessionsPanel(msg tea.KeyPressMsg) (bool, *cliModel, te
 					}
 					// Update background task session key for isolation
 					if m.channel != nil {
-						m.channel.bgSessionKey = "agent:" + agentChatID
+						m.channel.bgSessionKey = sessionaddr.Agent(agentChatID)
 						m.channel.updateBgTaskCountFn()
 					}
 					m.messages = nil
@@ -437,15 +437,11 @@ func (m *cliModel) showSessionCreateDialog() tea.Cmd {
 	if m.channel != nil && m.channel.config.SessionsDeleteFn != nil {
 		_ = m.channel.config.SessionsDeleteFn("cli", chatID)
 	}
-	// 2. Clean up any leftover worktree registration + physical git worktree.
-	// This handles the case where a previous session with the same chatID had
-	// auto_worktree enabled and left a worktree behind.
-	tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
-	// 3. Nuke persisted CWD — prevent inheriting a stale worktree directory.
+	// 2. Nuke persisted CWD — prevent inheriting a stale directory.
 	session.DeletePersistedCWD("cli", chatID)
-	// 4. Nuke saved session state from memory.
+	// 3. Nuke saved session state from memory.
 	delete(m.savedSessions, sessionKey)
-	// 5. Nuke persisted todo data.
+	// 4. Nuke persisted todo data.
 	if m.todoManager != nil {
 		m.todoManager.SetTodos(sessionKey, nil)
 		_ = m.todoManager.SaveToFile(sessionKey)
@@ -522,13 +518,11 @@ func (m *cliModel) deleteLocalSession(entry SessionPanelEntry) tea.Cmd {
 			log.WithError(err).WithField("chatID", entry.ID).Warn("Local session remove failed")
 		}
 	}
-	// 3. Clean up worktree / peer registration for this session.
-	sessionKey := "cli:" + entry.ID
-	tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
-	// 3b. Clean up persisted CWD so a future session with the same chatID
+	// 3. Clean up persisted CWD so a future session with the same chatID
 	// (e.g. the default workDir-based session) does not inherit a stale CWD.
+	sessionKey := "cli:" + entry.ID
 	session.DeletePersistedCWD("cli", entry.ID)
-	// 3c. Remove saved session state from memory to prevent stale state leaks.
+	// 3b. Remove saved session state from memory to prevent stale state leaks.
 	delete(m.savedSessions, sessionKey)
 	if m.todoManager != nil {
 		m.todoManager.SetTodos(sessionKey, nil)
@@ -639,7 +633,7 @@ func (m *cliModel) switchToSession(entry SessionPanelEntry) (bool, tea.Cmd) {
 			}
 			// Update background task session key for isolation
 			if m.channel != nil {
-				m.channel.bgSessionKey = "agent:" + agentChatID
+				m.channel.bgSessionKey = sessionaddr.Agent(agentChatID)
 				m.channel.updateBgTaskCountFn()
 			}
 			m.messages = nil

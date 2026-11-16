@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"xbot/internal/sessionaddr"
 )
 
 // structured_route.go —— 结构化消息的**地址解析**（逻辑地址 → 物理会话 key）。
@@ -55,15 +56,15 @@ func scopeForms(channel, chatID string) map[string]struct{} {
 	switch ch := strings.TrimSpace(channel); ch {
 	case "", "agent":
 		base = id
-		if rest, ok := strings.CutPrefix(id, "agent:"); ok && strings.Contains(rest, "/") {
+		if rest := sessionaddr.TrimAgentLayers(id); rest != id && strings.Contains(rest, "/") {
 			base = rest
 		}
 	default:
-		base = ch + ":" + id
+		base = sessionaddr.Key(ch, id)
 	}
 	forms[base] = struct{}{}
 	if strings.Contains(base, "/") {
-		forms["agent:"+base] = struct{}{}
+		forms[sessionaddr.Agent(base)] = struct{}{}
 	}
 	return forms
 }
@@ -139,7 +140,7 @@ func subtreePrefixes(channel, chatID string) []string {
 	if id == "" || ch == "" || ch == "agent" {
 		return nil
 	}
-	return []string{ch + ":" + id + "/"}
+	return []string{sessionaddr.Key(ch, id) + "/"}
 }
 
 // matchesSubtreePrefix 判断候选作用域形态是否落在调用方的子树前缀内。
@@ -150,7 +151,7 @@ func matchesSubtreePrefix(forms map[string]struct{}, prefixes []string) bool {
 	}
 	for f := range forms {
 		bases := []string{f}
-		if rest, ok := strings.CutPrefix(f, "agent:"); ok && strings.Contains(rest, "/") {
+		if rest := sessionaddr.TrimAgentLayers(f); rest != f && strings.Contains(rest, "/") {
 			bases = append(bases, rest)
 		}
 		for _, b := range bases {

@@ -37,6 +37,7 @@ import {
   sameSession,
   sortSessions,
 } from '@/lib/session-grouping'
+import { MemoryPanel } from '@/memory/MemoryPanel'
 import { useI18n } from '@/providers/i18n'
 import type { SessionInfo, SessionSelector } from '@/types/shared'
 import type { ExportFormat } from '@/components/agent/api'
@@ -317,6 +318,17 @@ const BUILTIN_PANELS: PanelDefinition[] = [
     defaultSlot: 'left',
     defaultMode: 'docked',
     render: (ctx) => <SessionInfoPanel tabManager={ctx.tabManager} />,
+    source: 'core',
+  },
+  {
+    id: 'core.memory',
+    // 长期记忆面板：之前只能靠 memory_* 工具从对话里看，UI 上看不到注入到上下文
+    // 的内容，也删不掉垃圾行（实测有 importance=24440 的乱码条目霸榜）。
+    title: '记忆',
+    icon: 'info',
+    defaultSlot: 'left',
+    defaultMode: 'docked',
+    render: () => <MemoryPanel />,
     source: 'core',
   },
   {

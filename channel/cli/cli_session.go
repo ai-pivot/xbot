@@ -151,7 +151,7 @@ type dirSession struct {
 	Name           string   `json:"name"`
 	ChatID         string   `json:"chat_id"`
 	CreatedAt      flexTime `json:"created_at"`
-	CWD            string   `json:"cwd,omitempty"`             // per-session working directory (worktree path, etc.)
+	CWD            string   `json:"cwd,omitempty"`             // per-session working directory
 	SubscriptionID string   `json:"subscription_id,omitempty"` // per-session subscription override
 	Model          string   `json:"model,omitempty"`           // per-session model override (within subscription)
 }

@@ -44,6 +44,8 @@ func formatToolProgress(name string, args string) string {
 
 	// Letta memory tools
 	switch name {
+	case "core_memory_delete", "core_memory_clear":
+		return truncate(fmt.Sprintf("%s: %s", name, get(m, "block")), maxLen)
 	case "core_memory_append":
 		block := get(m, "block")
 		return truncate(fmt.Sprintf("core_memory_append: %s", block), maxLen)

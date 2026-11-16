@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 )
 
 // ErrGroupNotFound / ErrGroupExists / ErrNotGroupMember 是群组服务的领域错误，
@@ -190,7 +191,7 @@ func (s *GroupService) IsAliveMember(ctx context.Context, groupID, addr string) 
 func enrichMember(m *GroupMemberRow) {
 	addr := m.MemberAddr
 	if strings.HasPrefix(addr, "agent:") {
-		rest := strings.TrimPrefix(addr, "agent:")
+		rest := sessionaddr.TrimAgentLayers(addr)
 		if i := strings.Index(rest, ":"); i >= 0 {
 			rest = rest[:i]
 		}

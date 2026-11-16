@@ -7,11 +7,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"os/exec"
 	ch "xbot/channel"
 	"xbot/protocol"
-	"xbot/tools"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -21,7 +21,7 @@ import (
 // qualifyChatID combines channel name and chatID into the "channel:chatID" format
 // used throughout the codebase as the canonical session key.
 func qualifyChatID(channel, chatID string) string {
-	return channel + ":" + chatID
+	return sessionaddr.Key(channel, chatID)
 }
 
 // ParseSettingBool parses a boolean setting value.
@@ -879,9 +879,6 @@ func (m *cliModel) handleSessionControlMsg(sc cliSessionControlMsg) tea.Cmd {
 						return nil
 					}
 				}
-				// Clean up worktree / peer registration for closed session.
-				sessionKey := "cli:" + entry.ID
-				tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
 				sc.result <- &cliSessionResult{ok: true}
 				return nil
 			}

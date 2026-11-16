@@ -408,6 +408,9 @@ type ToolCallDelta struct {
 	ID        string `json:"id,omitempty"`        // 工具调用 ID（首次出现）
 	Name      string `json:"name,omitempty"`      // 工具名称（首次出现）
 	Arguments string `json:"arguments,omitempty"` // 参数增量
+	// ArgumentsComplete marks an authoritative full argument snapshot (Responses
+	// *.done events), rather than an append-only delta.
+	ArgumentsComplete bool `json:"arguments_complete,omitempty"`
 }
 
 // StreamEvent 流式事件

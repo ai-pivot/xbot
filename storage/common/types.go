@@ -35,6 +35,13 @@ const (
 	HistoryRecordAskQuestion HistoryRecordType = "ask_question"
 	HistoryRecordAskAnswer   HistoryRecordType = "ask_answer"
 	HistoryRecordMask        HistoryRecordType = "mask"
+	// HistoryRecordNotice = 用户看板卡片（`SendMessage(to="user")` 发出的待办）。
+	//
+	// **出流**是它的存在意义：卡片只在看板（/api/inbox）里出现，不进聊天流、
+	// 不进 LLM 上下文 —— 展示回放（replayDisplayRecords）与 LLM 回放（replayWith）
+	// 都显式跳过它。存储仍是同一张 session_messages（结构化行），不新造第二套存储；
+	// 用 record_type 区分"是消息"还是"是控制记录"，与 command/mask 同一套机制。
+	HistoryRecordNotice HistoryRecordType = "notice"
 )
 
 type HistoryRecord struct {

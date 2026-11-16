@@ -20,6 +20,13 @@ type StructuredStore interface {
 	ListInbox(tenantID int64, cursor int64, limit int) ([]StructuredMessage, bool, int64, error)
 	CountInbox(tenantID int64) (int, error)
 	GetStructuredMessageByID(tenantID, id int64) (*StructuredMessage, error)
+
+	// DeleteStructuredMessages 按 id 列表删除本 tenant 的结构化消息行，
+	// 返回实际删除行数。用于收件箱的「单条删除 / 一键删除」。
+	//
+	// 只删 kind 非空的结构化行（ask_user/report/decision/answer/event/command），
+	// 普通聊天消息不可经此路径删除 —— 避免把清收件箱做成"删聊天记录"。
+	DeleteStructuredMessages(tenantID int64, ids []int64) (int, error)
 }
 
 // GroupMessageStore is the session-scoped group-message capability.

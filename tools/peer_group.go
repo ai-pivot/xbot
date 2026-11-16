@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	"xbot/internal/sessionaddr"
 
 	"xbot/llm"
 )
@@ -203,7 +204,7 @@ func generatePeerGroupID() string {
 // Format: "channel:chatID" — matches the key used by injectPeerMessage.
 func qualifySessionKey(ctx *ToolContext) string {
 	if ctx.Channel != "" && ctx.ChatID != "" {
-		return ctx.Channel + ":" + ctx.ChatID
+		return sessionaddr.Key(ctx.Channel, ctx.ChatID)
 	}
 	if ctx.BgSessionKey != "" {
 		return ctx.BgSessionKey

@@ -49,6 +49,7 @@ const (
 	HistoryRecordAskQuestion = common.HistoryRecordAskQuestion
 	HistoryRecordAskAnswer   = common.HistoryRecordAskAnswer
 	HistoryRecordMask        = common.HistoryRecordMask
+	HistoryRecordNotice      = common.HistoryRecordNotice
 )
 
 type HistoryRecord = common.HistoryRecord

@@ -16,11 +16,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"xbot/bus"
 	ch "xbot/channel"
+	"xbot/internal/sessionaddr"
 	log "xbot/logger"
 	"xbot/plugin"
 	"xbot/protocol"
@@ -86,6 +88,22 @@ type WebChannelConfig struct {
 
 // WebCallbacks holds callback functions for Web channel API endpoints.
 // Injected from main to decouple channel from agent/tools packages.
+// MemoryItem 是记忆面板展示的一条长期记忆。
+//
+// 只暴露面板需要的字段：importance 已在写入侧被钳到 [0,1]（见 memory/xbot 的
+// clampImportance），读侧也钳过，所以这里拿到的一定是合法值 —— 历史脏数据
+// （曾出现过 importance=24440 把正常记忆全挤出列表）不会再污染排序。
+type MemoryItem struct {
+	ID         int64   `json:"id"`
+	Type       string  `json:"type"`
+	Content    string  `json:"content"`
+	Keywords   string  `json:"keywords"`
+	Tags       string  `json:"tags"`
+	Importance float64 `json:"importance"`
+	Scope      string  `json:"scope"`
+	CreatedAt  string  `json:"created_at"`
+}
+
 type WebCallbacks struct {
 	// RunnerList lists every managed machine (no credentials).
 	RunnerList func() ([]tools.RunnerInfo, error)
@@ -316,6 +334,19 @@ type WebCallbacks struct {
 	StructuredCount func(sel SessionSelector) (int, error)
 	// StructuredMessages lists structured messages filtered by kind.
 	StructuredMessages func(sel SessionSelector, kind string, cursor, afterID int64, limit int) ([]protocol.StructuredMessage, bool, int64, error)
+	// StructuredResolve 处理用户看板卡片（approve/reject/dismiss）：CAS 推进状态，
+	// 首次处理时把回流消息投给发起 agent。幂等（重复处理 Duplicate=true，不再回流）。
+	StructuredResolve func(senderID string, sel SessionSelector, input protocol.StructuredResolveInput) (*protocol.StructuredResolveResult, error)
+
+	// StructuredDelete 删除收件箱里的结构化消息（单条或批量，ids 上限 500）。
+	// 只删 kind != '' 的结构化行，不会误删普通聊天消息。nil ⇒ 路由回 503。
+	StructuredDelete func(sel SessionSelector, ids []int64) (int, error)
+
+	// ── 长期记忆面板（/api/memory）──
+	// 三个回调都是 nil 时路由回 503（显式不可用，不静默成功）。
+	MemoryList   func(sel SessionSelector, memType string, limit int) ([]MemoryItem, error)
+	MemoryUpdate func(sel SessionSelector, id int64, content, keywords, tags string, importance float64) error
+	MemoryDelete func(sel SessionSelector, id int64) error
 
 	// ── 跨会话活动流（通信视图性能重构）────────────────────────────────────
 	//
@@ -530,6 +561,14 @@ type WebChannel struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+
+	// rpcObs 是 /api/rpc 的按 method 延迟观测（见 web_rpc_stats.go）。
+	// 零值可用，不需要在构造函数里初始化。
+	rpcObs rpcObservability
+
+	// reqTiming 是 HTTP 中间件的慢请求分档计数（见 requestTimingBuckets）。
+	// 零值可用。
+	reqTiming requestTimingBuckets
 
 	// cancelWait overrides the POST /api/cancel blocking bound (0 = the
 	// production default cancelWaitTimeout). Tests shrink it so the timeout
@@ -834,12 +873,13 @@ func askUserResolvedMessage(ev protocol.AskUserResolvedEvent) protocol.WSMessage
 		ev.Channel = "web"
 	}
 	return protocol.WSMessage{
-		Type:                     protocol.MsgTypeAskUserResolved,
-		TS:                       time.Now().Unix(),
-		Channel:                  ev.Channel,
-		ChatID:                   ev.ChatID,
-		AskUserResolvedRequestID: ev.RequestID,
-		AskUserResolvedReason:    ev.Reason,
+		Type:                        protocol.MsgTypeAskUserResolved,
+		TS:                          time.Now().Unix(),
+		Channel:                     ev.Channel,
+		ChatID:                      ev.ChatID,
+		AskUserResolvedRequestID:    ev.RequestID,
+		AskUserResolvedReason:       ev.Reason,
+		AskUserResolvedCancelReason: ev.CancelReason,
 	}
 }
 
@@ -1038,6 +1078,12 @@ func (wc *WebChannel) Start() error {
 	wc.wg.Add(1)
 	go wc.sessionCleanup()
 
+	// Start the per-method /api/rpc latency reporter (see web_rpc_stats.go).
+	// reportCh 必须在这里创建（reporter 启动前），阈值信号才有落点。
+	wc.rpcObs.reportCh = make(chan struct{}, 1)
+	wc.wg.Add(1)
+	go wc.rpcStatsReporter()
+
 	// Start PTY manager (idle reaper)
 	wc.ptyMgr.Start()
 
@@ -1072,6 +1118,12 @@ func (wc *WebChannel) newServeMux() http.Handler {
 	// 分支由 handleMessage 转发）；这里补回答、收件箱、按 kind 查询。
 	mux.HandleFunc("/api/answer", wc.authenticatedPOST(wc.handleStructuredAnswer))
 	mux.HandleFunc("/api/inbox", wc.authMiddleware(wc.handleInbox))
+	// 用户看板卡片处理（to="user" 闭环）：approve / reject / dismiss。
+	mux.HandleFunc("/api/inbox/resolve", wc.authenticatedPOST(wc.handleInboxResolve))
+	mux.HandleFunc("/api/inbox/delete", wc.authenticatedPOST(wc.handleInboxDelete))
+	mux.HandleFunc("/api/memory", wc.authMiddleware(wc.handleMemoryList))
+	mux.HandleFunc("/api/memory/update", wc.authenticatedPOST(wc.handleMemoryUpdate))
+	mux.HandleFunc("/api/memory/delete", wc.authenticatedPOST(wc.handleMemoryDelete))
 	// 跨会话活动流（通信视图性能重构）：只读主库索引表，绝不打开会话分库。
 	//   /api/activity —— 最近的 report/decision/answer/... 摘要流
 	//   /api/agents   —— 活跃子代理（默认不含 unloaded）
@@ -1079,6 +1131,8 @@ func (wc *WebChannel) newServeMux() http.Handler {
 	mux.HandleFunc("/api/agents", wc.authMiddleware(wc.handleAgentActivity))
 	mux.HandleFunc("/api/messages", wc.authMiddleware(wc.handleStructuredMessages))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
+	// Per-method /api/rpc latency snapshot (n / p50 / p95 / p99), see web_rpc_stats.go.
+	mux.HandleFunc("/api/rpc-stats", wc.authMiddleware(wc.handleRPCStats))
 	// Unified push (system notifications): one generic surface for every
 	// provider (FCM / WebPush / APNs / Feishu).
 	mux.HandleFunc("/api/push/register", wc.authenticatedPOST(wc.handlePushRegister))
@@ -1387,8 +1441,8 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 	}
 
 	routeChannel := "web"
-	if channelName, qualifiedChatID, ok := strings.Cut(payload.ChatID, ":"); ok && qualifiedChatID == chatID {
-		routeChannel = channelName
+	if address, ok := sessionaddr.Parse(payload.ChatID); ok && address.ChatID == chatID {
+		routeChannel = address.Channel
 	}
 	if !wc.hub.sendToSession(routeChannel, chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
@@ -1990,6 +2044,11 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 		case protocol.MsgTypeRPC:
 			// CLI RemoteBackend RPC request — dispatch to server-side handler.
 			//
+			// 注意（观测范围）：本通道**没有** G-17 的 per-method 打点。
+			// G-17 判据范围仅限 POST /api/rpc（见 web_rpc_stats.go 文件头），
+			// 这里不走 handleRPC，因此它的耗时不会出现在 /api/rpc-stats。
+			// 需要覆盖 WS 通道时另立条目。
+			//
 			// RPC processing runs in a goroutine so readPump can continue
 			// reading the next WebSocket message. Without this, a long-running
 			// RPC (e.g. refresh_model_entries, which fetches /models from every
@@ -2259,8 +2318,35 @@ func (wc *WebChannel) clientRouteAccessChannel(client *Client, routeChannel, cha
 // Security headers middleware
 // ---------------------------------------------------------------------------
 
-// securityHeadersMiddleware wraps an http.Handler with security response headers.
-// requestTimingMiddleware logs slow API requests (>200ms) for diagnostics.
+// requestTimingBuckets 是按档位计数的慢请求统计（100ms / 200ms / 1s）。
+//
+// 背景：历史上只记 >200ms 一条 Warn，导致 100–200ms 的请求在日志里**完全没有样本**
+// ——「慢但没到 200ms」这条区间是盲的，没法判断长尾是从哪一档开始变坏的。
+//
+// 设计约束：100ms 档的样本量比 200ms 档大一到两个数量级，逐条打日志会把日志
+// 刷成不可用，因此 100ms 档**必须节流**：全局最多每 requestTimingThrottle 打一行，
+// 且行内带上「自上次打印以来被折叠掉多少条」的计数，信息不丢、日志不炸。
+type requestTimingBuckets struct {
+	over100ms atomic.Uint64
+	over200ms atomic.Uint64
+	over1s    atomic.Uint64
+
+	// pending100 是「100ms 档自上次打印以来新增加、但被节流折叠掉」的条数。
+	pending100 atomic.Uint64
+	// lastLog100 是上次 100ms 档日志的 unix 纳秒时间戳，用于无锁节流。
+	lastLog100 atomic.Int64
+}
+
+// requestTimingThrottle 是 100ms 档日志的最小间隔。
+//
+// 用 var 而非 const 只为测试可注入一个远超测试时长的窗口，使「N 次调用是否
+// 落在同一节流窗口内」成为确定事实而不是墙钟假设（机器繁忙时 3×130ms 可能
+// 跨过 1s 边界）。生产代码不修改它。
+var requestTimingThrottle = time.Second
+
+// requestTimingMiddleware buckets slow API requests (100ms / 200ms / 1s) for
+// diagnostics. The 100ms tier is count-only + throttled logging (see
+// requestTimingBuckets) so that a 100–200ms tail does not flood the log.
 func (wc *WebChannel) requestTimingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip SSE (long-lived) and static files
@@ -2273,15 +2359,70 @@ func (wc *WebChannel) requestTimingMiddleware(next http.Handler) http.Handler {
 		rw := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rw, r)
 		elapsed := time.Since(start)
-		if elapsed > 200*time.Millisecond {
+
+		// 每一档都包含更高档，计数因此单调可比（over100ms ≥ over200ms ≥ over1s）。
+		switch {
+		case elapsed >= time.Second:
+			wc.reqTiming.over1s.Add(1)
+			wc.reqTiming.over200ms.Add(1)
+			wc.reqTiming.over100ms.Add(1)
 			log.WithFields(log.Fields{
 				"method":  r.Method,
 				"path":    path,
 				"status":  rw.status,
 				"elapsed": elapsed.String(),
+				"tier":    "1s",
 			}).Warn("Slow API request")
+		case elapsed >= 200*time.Millisecond:
+			wc.reqTiming.over200ms.Add(1)
+			wc.reqTiming.over100ms.Add(1)
+			log.WithFields(log.Fields{
+				"method":  r.Method,
+				"path":    path,
+				"status":  rw.status,
+				"elapsed": elapsed.String(),
+				"tier":    "200ms",
+			}).Warn("Slow API request")
+		case elapsed >= 100*time.Millisecond:
+			// 100–200ms 档：只计数，日志按 requestTimingThrottle 节流。
+			wc.reqTiming.over100ms.Add(1)
+			wc.reqTiming.pending100.Add(1)
+			if !wc.reqTiming.throttleMidTierLog() {
+				return
+			}
+			// 本次自己算一条，其余是本窗口内被折叠掉的（Swap 后需防下溢）。
+			folded := wc.reqTiming.pending100.Swap(0)
+			if folded > 0 {
+				folded--
+			}
+			// count_ge_100ms 是「≥100ms 累计」计数（含 200ms / 1s 档），
+			// 因此会大于本行代表的 100–200ms 档样本数。曾用名 count_100ms：
+			// 旧名字把档位写成单一数字，容易被误读成「恰好 100ms 档」，
+			// 2026-10-30 更名；查历史日志请按旧名 grep
+			// （新旧对照见 docs/observability-rpc-latency.md）。
+			log.WithFields(log.Fields{
+				"method":         r.Method,
+				"path":           path,
+				"status":         rw.status,
+				"elapsed":        elapsed.String(),
+				"tier":           "100ms",
+				"throttled":      true,
+				"folded":         folded,
+				"count_ge_100ms": wc.reqTiming.over100ms.Load(),
+			}).Info("API request over 100ms")
 		}
 	})
+}
+
+// throttleMidTierLog 以无锁 CAS 实现「每 requestTimingThrottle 最多一次」。
+// 返回 true 表示本次允许打印。
+func (b *requestTimingBuckets) throttleMidTierLog() bool {
+	now := time.Now().UnixNano()
+	last := b.lastLog100.Load()
+	if now-last < int64(requestTimingThrottle) {
+		return false
+	}
+	return b.lastLog100.CompareAndSwap(last, now)
 }
 
 type statusRecorder struct {
@@ -2294,6 +2435,8 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// securityHeadersMiddleware wraps an http.Handler with security response headers
+// (nosniff / X-Frame-Options / Referrer-Policy / CSP).
 func (wc *WebChannel) securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")

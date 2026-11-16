@@ -163,6 +163,18 @@ func TestMarkOrphanedIdleUnloaded(t *testing.T) {
 	if err := svc.Upsert(rec("agent:explore/live-1", "chat_1", "explore", "live-1", InteractiveAgentIdle)); err != nil {
 		t.Fatalf("upsert live: %v", err)
 	}
+	// F：**孙代理**（depth≥1）—— parent_chat_id 形如 "chat_1/team.ops:main"，
+	// 会话 key 用的是 parent_chat_id 的**第一段**（origin chatID）作为 origin：
+	//   web:chat_1/court.gongbu:grand-1
+	// 旧 SQL 用全串拼成 web:chat_1/team.ops:main/court.gongbu:grand-1（不存在）
+	// ⇒ 每次启动都把活着的孙代理判死（2026-11-04 线上实证：mixed-lora-upstream /
+	// mixed-lora-ourown 被误标 unloaded，会话库与 tenants 行都完好）。
+	if err := svc.Upsert(rec("agent:court.gongbu/grand-1", "chat_1/team.ops:main", "court.gongbu", "grand-1", InteractiveAgentIdle)); err != nil {
+		t.Fatalf("upsert grandchild: %v", err)
+	}
+	if _, err := tenants.GetOrCreateTenantID("agent", "web:chat_1/court.gongbu:grand-1"); err != nil {
+		t.Fatalf("create tenant for grandchild: %v", err)
+	}
 
 	// 启动瞬间：运行时 map 为空，E 还没起 —— 应当只有 A 被清掉。
 	n, err := svc.MarkOrphanedIdleUnloaded(nil)
@@ -174,11 +186,12 @@ func TestMarkOrphanedIdleUnloaded(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"agent:explore/zombie-1":   InteractiveAgentUnloaded,
-		"agent:team.ops/main":      InteractiveAgentIdle, // 会话还在：必须保留
-		"agent:explore/legacy-run": InteractiveAgentRunning,
-		"agent:simple/":            InteractiveAgentIdle, // 会话还在：必须保留
-		"agent:explore/live-1":     InteractiveAgentUnloaded,
+		"agent:explore/zombie-1":     InteractiveAgentUnloaded,
+		"agent:team.ops/main":        InteractiveAgentIdle, // 会话还在：必须保留
+		"agent:explore/legacy-run":   InteractiveAgentRunning,
+		"agent:simple/":              InteractiveAgentIdle, // 会话还在：必须保留
+		"agent:explore/live-1":       InteractiveAgentUnloaded,
+		"agent:court.gongbu/grand-1": InteractiveAgentIdle, // 孙代理：会话还在，绝不许判死
 	}
 	for key, status := range want {
 		got, gerr := svc.Get(key)

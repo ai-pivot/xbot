@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent/hooks"
 	"xbot/bus"
@@ -111,6 +112,8 @@ func (a *Agent) buildBaseRunConfig(
 	subAgentSem := userCtx.SubAgentSem
 
 	return RunConfig{
+		// 对话轮：保留 system_reminder（显式声明；构造点守卫见 run_config_literal_guard_test.go）
+		DisableSystemReminder: false,
 		// 必需
 		LLMClient:    llmClient,
 		Model:        model,
@@ -163,10 +166,6 @@ func (a *Agent) buildBaseRunConfig(
 
 		// 循环控制
 		MaxOutputTokens: maxOutputTokens,
-
-		// Auto worktree: read via GetEffectiveSetting — the single correct
-		// read path for user-scoped settings. Same source as /settings panel.
-		AutoWorktreeEnabled: userCtx.GetSettingBool("auto_worktree"),
 
 		// Iteration-loop breaker: experimental, default off — must be enabled
 		// via config.Agent.Experimental.IterationLoopDetection.
@@ -258,6 +257,12 @@ func (a *Agent) buildMainRunConfig(
 
 	cfg, userMaxCtx := a.buildBaseRunConfig(ctx, channel, chatID, senderID, messages, senderName, sandboxUserID)
 
+	// turn 级触发来源：主 Agent 的 cron 回落路径（drainAndProcessNotifications →
+	// injectBgUserMessageWithTriggerSource）会把它写进入站 metadata。
+	// 主会话 turn 没有父会话，抑制不作用于这里；但字段必须说真话（可观测性 +
+	// 避免未来读到假的 ""）。
+	cfg.TriggerSource = msg.Metadata[triggerSourceMetadataKey]
+
 	// TurnID is assigned by chatProcessLoop (per-session monotonic counter) and
 	// carried via msg.Metadata. Propagate to RunConfig so every progress event
 	// and the final reply carry it for frontend association.
@@ -346,7 +351,7 @@ func (a *Agent) buildMainRunConfig(
 	if physicalChannel != "" && physicalChannel != channel {
 		// Override SessionKey so AsDefinitionsForSession/GetForSession find
 		// channel-scoped tools registered under the physical channel.
-		sessionKey = physicalChannel + ":" + chatID
+		sessionKey = sessionaddr.Key(physicalChannel, chatID)
 		cfg.SessionKey = sessionKey
 		// RootSessionKey must use the CANONICAL session key (origin channel),
 		// NOT the physical channel. Offload data is session-scoped — it must
@@ -375,8 +380,7 @@ func (a *Agent) buildMainRunConfig(
 	// 从 tenant session 获取租户 ID，用于 per-tenant 工具可见性
 	cfg.TenantID = tenantSession.TenantID()
 
-	// Use session CWD for InitialCWD (may differ from a.workDir for worktree sessions).
-	// AutoDetectAndInit in buildPrompt already set the correct CWD on tenantSession.
+	// Use session CWD for InitialCWD (may differ from a.workDir when the user Cd'd).
 	if cwd := tenantSession.GetCurrentDir(); cwd != "" {
 		cfg.InitialCWD = cwd
 	}
@@ -593,18 +597,11 @@ func filterSubAgentTools(subTools *tools.Registry, allowedTools []string, caps t
 }
 
 // resolveSubAgentCWD 解析子 Agent 的当前工作目录。
-// 继承父 Agent 的 CWD，无则默认 workDir。同时检测 worktree 隔离。
-func resolveSubAgentCWD(parentCtx *tools.ToolContext, workDir string) (cwd string, newWorkDir string, isWorktreeIsolated bool) {
+// 继承父 Agent 的 CWD，无则默认 workDir。
+func resolveSubAgentCWD(parentCtx *tools.ToolContext, workDir string) (cwd string) {
 	cwd = parentCtx.CurrentDir
 	if cwd == "" {
 		cwd = workDir
-	}
-	isWorktreeIsolated = parentCtx.IsWorktreeIsolated
-	if strings.Contains(cwd, ".xbot-worktrees") {
-		newWorkDir = cwd
-		isWorktreeIsolated = true
-	} else {
-		newWorkDir = workDir
 	}
 	return
 }
@@ -710,7 +707,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	now := time.Now().Format("2006-01-02 15:04:05 MST")
 
 	// CWD 继承父 Agent 的当前目录，无则默认 workDir
-	cwd, workDir, isWorktreeIsolated := resolveSubAgentCWD(parentCtx, workDir)
+	cwd := resolveSubAgentCWD(parentCtx, workDir)
 	cwdPart := "\n- 当前目录：" + cwd
 
 	// role.SystemPrompt 作为角色专有能力描述（非通用 prompt）。
@@ -799,7 +796,19 @@ func (a *Agent) buildSubAgentRunConfig(
 		llm.NewUserMessage(task),
 	}
 
-	subAgentID := parentAgentID + "/" + roleName
+	// ⛔ 2026-11-13 P0（用户报「子代理会话在 Web 上收不到任何 SSE / busy 不对」）：
+	// `parentAgentID` 是**父 agent 的 AgentID 路径**，由主会话（用户直接对话）直接
+	// spawn 子代理时它是**空的**（主会话没有 agent 路径根）。旧实现无条件拼接
+	// `parentAgentID + "/" + roleName` ⇒ subAgentID 变成 `"/taizi"` —— 一个既不是
+	// 会话 key（无冒号）也不是合法 AgentID 路径的畸形值。后果链（线上实证 32 条）：
+	//   drainAndProcessNotifications 看到「无冒号」⇒ 走 deliverNotificationsByAgentPath
+	//   兜底 ⇒ Trim("/taizi","/") 后按 "/" 切只剩一段 ⇒ 取不到父 role ⇒
+	//   ERROR "bg notification key unresolvable and no matching parent session;
+	//   keeping for main session" ⇒ 子代理的完成/状态通知**全部落进主会话**，
+	//   子代理会话永远收不到 idle ⇒ 面板卡 busy、SSE 静默。
+	// 修法：没有父路径根时退化为单段 roleName（语义 = 顶层子代理，父就是主会话），
+	// 不再产出以 "/" 开头的畸形 ID。
+	subAgentID := subAgentPath(parentAgentID, roleName)
 
 	// SubAgent LLM resolution — via UserContext, no direct LLMFactory access.
 	llmClient, subModel, userMaxCtx, thinkingMode, maxOutputTokens, subID := userCtx.ResolveLLMForModelWithFallback(model)
@@ -808,19 +817,21 @@ func (a *Agent) buildSubAgentRunConfig(
 	stream := userCtx.GetSetting("enable_stream") != "false"
 
 	cfg := RunConfig{
-		LLMClient:       llmClient,
-		Model:           subModel,
-		SubID:           subID,
-		ThinkingMode:    thinkingMode,
-		Stream:          stream,
-		MaxOutputTokens: maxOutputTokens,
-		Tools:           subTools,
-		Messages:        messages,
-		AgentID:         subAgentID,
-		Channel:         parentCtx.Channel,
-		ChatID:          parentCtx.ChatID,
-		SenderID:        parentAgentID, // SubAgent: 直接调用者 = 父 Agent
-		OriginUserID:    originUserID,  // SubAgent: 继承原始用户 ID
+		// 对话轮：保留 system_reminder（显式声明；构造点守卫见 run_config_literal_guard_test.go）
+		DisableSystemReminder: false,
+		LLMClient:             llmClient,
+		Model:                 subModel,
+		SubID:                 subID,
+		ThinkingMode:          thinkingMode,
+		Stream:                stream,
+		MaxOutputTokens:       maxOutputTokens,
+		Tools:                 subTools,
+		Messages:              messages,
+		AgentID:               subAgentID,
+		Channel:               parentCtx.Channel,
+		ChatID:                parentCtx.ChatID,
+		SenderID:              parentAgentID, // SubAgent: 直接调用者 = 父 Agent
+		OriginUserID:          originUserID,  // SubAgent: 继承原始用户 ID
 		// SubAgent inherits the parent's precomputed admin decision — spawned
 		// tools run with the same admin rights as the parent run.
 		OriginUserIsAdmin: parentCtx.OriginUserIsAdmin,
@@ -837,8 +848,8 @@ func (a *Agent) buildSubAgentRunConfig(
 		// tc.BgTaskManager，缺它 → SubAgent 的 Shell 一旦超时/显式后台运行就报
 		// "background tasks not supported (BgTaskManager not configured)"
 		// （用户实测：SubAgent 里跑 cargo check 被 auto-promote 后直接失败）。
-		// buildToolContext 已按 AgentID 含 "/" 判定 SubAgent → BgSessionKey 用
-		// SubAgent 自己的 sessionKey（隔离，不污染主会话的后台任务归属）。
+		// buildToolContext 使用精确的 main AgentID 判定主会话 → BgSessionKey 用
+		// 本 SubAgent 的 SessionKey（隔离，不污染主会话的后台任务归属）。
 		BgTaskManager: a.bgTaskMgr.Load(),
 		// 明确不接的（有意为之，勿"顺手补上"）：
 		//   - InjectInbound：只有主 Agent 注入入站消息（channel plugin / agent loop
@@ -846,7 +857,6 @@ func (a *Agent) buildSubAgentRunConfig(
 		//   - RefreshPluginWorkDir：按 (channel, chatID) 刷新插件 workdir —— SubAgent
 		//     的 CWD 与父会话不同，接上会把父会话的插件窗口刷成 SubAgent 的目录
 		//     （跨会话污染，AGENTS.md 的 workdir race 同类问题）。
-		//   - AutoWorktreeEnabled：只被主 Agent 的 buildPrompt 使用，SubAgent 不走。
 		//   - FeishuUserID：仅用于 buildToolContext 里的 sandbox 解析，而 SubAgent
 		//     继承的是已经解析好的 parentCtx.Sandbox。
 
@@ -880,11 +890,6 @@ func (a *Agent) buildSubAgentRunConfig(
 		InitialGroupID:      parentCtx.GroupID,
 		InitialGroupMembers: parentCtx.GroupMembers,
 
-		// Worktree isolation: if the parent is in a worktree, rewrite
-		// WorkspaceRoot to the worktree path and enable isolation.
-		// (Already computed above before system prompt construction.)
-		IsWorktreeIsolated: isWorktreeIsolated,
-
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
 		// Agent-lifecycle background tasks (async Pre/Post compress memory hooks
@@ -906,13 +911,6 @@ func (a *Agent) buildSubAgentRunConfig(
 		// ToolExecutor = nil → 使用 defaultToolExecutor（统一 buildToolContext）
 	}
 
-	// If the SubAgent's CWD is inside a worktree directory,
-	// rewrite WorkspaceRoot to the worktree path for path isolation.
-	// (workDir was already rewritten above before system prompt construction.)
-	if isWorktreeIsolated {
-		cfg.WorkspaceRoot = workDir
-	}
-
 	// Per-user token usage tracking：SubAgent 的 token 消耗归属原始用户
 	cfg.RecordUserTokenUsage = func(senderID, model string, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount int) {
 		if err := a.multiSession.RecordUserTokenUsage(originUserID, model, inputTokens, outputTokens, cachedTokens, conversationCount, llmCallCount); err != nil {
@@ -923,6 +921,18 @@ func (a *Agent) buildSubAgentRunConfig(
 		}
 	}
 
+	// TodoManager — TODO 状态查询（**必须与主 Agent 同一个实例**，
+	// 与 buildMainRunConfig 的 wiring 对齐）。
+	//
+	// N2a-B 根因：只有 buildMainRunConfig 接了 TodoManager，SubAgent 的 run 里
+	// cfg.TodoManager==nil ⇒ buildSystemReminder 拿不到任何 todo ⇒ 每轮注入
+	// 假的 `<todos status="empty">`（实测：SubAgent 的 TodoWrite 明明写进
+	// 自己的 sessionKey，注入块却恒为空）。key 规则不动 —— 读写两侧本来就都是
+	// cfg.SessionKey（= 本函数的 subAgentID），这里只补 instance wiring。
+	if a.todoManager != nil {
+		cfg.TodoManager = &todoManagerAdapter{mgr: a.todoManager}
+	}
+
 	// 独立 sessionKey：使用 subAgentID 确保与父 Agent 隔离，
 	// 避免工具激活、OffloadStore、MaskStore 等按 sessionKey 索引的数据污染。
 	cfg.SessionKey = subAgentID
@@ -931,7 +941,7 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 用于 offload_recall 等需要访问父 session 数据的场景（如 SubAgent 回忆父 Agent 的 offload 数据）。
 	rootKey := parentCtx.RootSessionKey
 	if rootKey == "" {
-		rootKey = parentCtx.Channel + ":" + parentCtx.ChatID
+		rootKey = sessionaddr.Key(parentCtx.Channel, parentCtx.ChatID)
 	}
 	cfg.RootSessionKey = rootKey
 
@@ -1015,6 +1025,9 @@ func (a *Agent) buildSubAgentRunConfig(
 		subTools.Unregister("recall_memory_search")
 		subTools.Unregister("memory_search")
 		subTools.Unregister("memory_add")
+		subTools.Unregister("memory_confirm")
+		subTools.Unregister("core_memory_delete")
+		subTools.Unregister("core_memory_clear")
 		subTools.Unregister("memory_manage")
 	}
 
@@ -1108,7 +1121,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 	// channel-scoped tool resolution. Otherwise fall back to the session's origin channel.
 	sessionKey := qualifyChatID(channel, chatID)
 	if physicalChannel != "" && physicalChannel != channel {
-		sessionKey = physicalChannel + ":" + chatID
+		sessionKey = sessionaddr.Key(physicalChannel, chatID)
 	}
 
 	// Pre-build RunConfig outside closure to avoid reallocating on every tool call.
@@ -1124,11 +1137,13 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 		workingDir = a.workDir
 	}
 	cfg := &RunConfig{
-		AgentID:      "main",
-		Channel:      channel,
-		ChatID:       chatID,
-		SenderID:     senderID,      // 主 Agent: 直接调用者（用于消息路由）
-		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
+		// 对话轮：保留 system_reminder（显式声明；构造点守卫见 run_config_literal_guard_test.go）
+		DisableSystemReminder: false,
+		AgentID:               "main",
+		Channel:               channel,
+		ChatID:                chatID,
+		SenderID:              senderID,      // 主 Agent: 直接调用者（用于消息路由）
+		OriginUserID:          sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
 		// Precomputed admin decision (agent.admins allowlist; cli/web trusted).
 		OriginUserIsAdmin: a.isAdminSender(channel, sandboxUserID),
 		SenderName:        senderName,
@@ -1216,6 +1231,13 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 			}
 		})
 
+		// ⛔ 历史伪工具名（system_reminder）不查注册表、直接判死：外部来源可能以该名
+		// 注册了真实工具，执行它会把整份上下文快照交回模型（prompt injection 面）。
+		// 见 perm_control_helpers.go 的 neverExposedToolNames。
+		if isNeverExposedToolName(tc.Name) {
+			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
+		}
+
 		// 1. 工具查找：session MCP 优先，然后全局注册表
 		var tool tools.Tool
 		ok := false
@@ -1258,7 +1280,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 
 		// Re-resolve sandbox per tool call — picks up runner switches immediately
 		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
-			cfg.Sandbox = router.SandboxForSession(cfg.Channel + ":" + cfg.ChatID)
+			cfg.Sandbox = router.SandboxForSession(sessionaddr.Key(cfg.Channel, cfg.ChatID))
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
@@ -1649,6 +1671,23 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		cfg.ProgressNotifier = func(lines []string, _ string) {}
 	}
 
+	// one-shot 子代理的物理会话 key（与 interactive 路径同一语义）：
+	// Cron 等"归属型"工具据此把产物归到自己会话（tools/cron.go 的
+	// cronOwnership），而不是继承来的父会话 origin。oneshotKey 由
+	// interactiveKey(...) 生成，形态与 interactive 会话一致
+	// （"web:web-4/<role>:<instance>"），与 interactive 子代理共用同一套
+	// 归属/反解格式。
+	//
+	// ⚠️ 这里**只**保证"归属 key 的格式与 interactive 一致"，**不**保证
+	// "到期时能以子代理身份触发"：one-shot 的 Run 一结束就
+	// destroyInteractiveSession（见本函数下方 Run 收尾的三条路径），cron 是
+	// 长期对象，到期时 interactiveSubAgents 里通常已无该 key ⇒
+	// deliverCronFiredToSubAgentSession 返回 false ⇒ **由主 Agent 执行**
+	// （回落点打 INFO 日志，含 session_key + reason）。持久 interactive
+	// 子代理的归属由 agent/interactive.go 的 spawn 处赋值（cfg.CallerSessionKey
+	// = key），那一类才是"按自身身份触发"。
+	cfg.CallerSessionKey = oneshotKey
+
 	// Register one-shot subagent in interactiveSubAgents so it's visible
 	// in the Ctrl+T panel. Kept after completion for history viewing; TTL cleans it up.
 	oneshotIA := &interactiveAgent{
@@ -1666,7 +1705,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	// callback the Run loop never drains between iterations and the sender
 	// blocks on replyCh until its timeout. Mirrors the three interactive Run
 	// call sites (SpawnInteractiveSession ×2 + SendToInteractiveSession).
-	cfg.DrainBgNotifications = oneshotIA.wirePendingMessageDrain(originChannel + ":" + originChatID)
+	cfg.DrainBgNotifications = oneshotIA.wirePendingMessageDrain(sessionaddr.Key(originChannel, originChatID))
 
 	// Create TenantSession for message persistence (same as interactive SubAgents).
 	agentTenantSession, err := a.multiSession.GetOrCreateSession("agent", oneshotKey)
@@ -1894,7 +1933,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		oneshotIA.cancelCurrent = bgCancel
 		oneshotIA.mu.Unlock()
 
-		sessionKey := originChannel + ":" + originChatID
+		sessionKey := sessionaddr.Key(originChannel, originChatID)
 		notifyMgr := a.bgTaskMgr.Load()
 		var bgTask *tools.SubAgentTask
 		if notifyMgr != nil {
@@ -2662,4 +2701,26 @@ func interactiveSessionsToStatuses(sessions []InteractiveSessionInfo) []SubAgent
 		}
 	}
 	return statuses
+}
+
+// subAgentPath 拼子代理的 AgentID 路径（根/父/子）。
+//
+// ⛔ 2026-11-13 P0（用户报「子代理会话在 Web 上收不到任何 SSE / busy 不对」）：
+// `parentAgentID` 是父 agent 的路径根，**主会话（用户直接对话）spawn 子代理时它是空的**
+// —— 主会话不是 agent，没有路径根。旧实现无条件拼 `parentAgentID + "/" + roleName`，
+// 于是 subAgentID 变成 `"/taizi"`：既不是会话 key（无冒号），也不是合法 AgentID 路径。
+// 后果链（线上实证 32 条）：
+//
+//	drainAndProcessNotifications 见「无冒号」⇒ deliverNotificationsByAgentPath 兜底
+//	⇒ Trim("/") + Split 只剩一段 ⇒ 取不到父 role ⇒ 通知全部落进主会话，
+//	子代理会话永远收不到 idle ⇒ 面板卡 busy、SSE 静默。
+//
+// 没有路径根时使用 main 作为内部路径根。这样顶层子代理仍是明确的
+// AgentID（含 slash），不会被 buildToolContext 误判为主 Agent；同时它不再
+// 以 slash 开头，因此不会触发旧的非法 key 解析路径。
+func subAgentPath(parentAgentID, roleName string) string {
+	if parentAgentID == "" {
+		return "main/" + roleName
+	}
+	return parentAgentID + "/" + roleName
 }

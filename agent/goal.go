@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent/hooks"
 	"xbot/protocol"
@@ -273,7 +274,7 @@ func (gm *GoalManager) PreTurnEndHook() *hooks.CallbackHook {
 			if !ok {
 				return nil, nil
 			}
-			sessionKey := e.Channel + ":" + e.ChatID
+			sessionKey := sessionaddr.Key(e.Channel, e.ChatID)
 			goal := gm.Get(sessionKey)
 			if goal == nil || goal.Status != GoalActive {
 				return nil, nil

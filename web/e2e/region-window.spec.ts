@@ -419,10 +419,37 @@ async function gestureExpectRegions(page: Page, c: Counters, expected: number, l
   return c.regions.slice(before)
 }
 
+/** 等某个选择器的元素数量在连续若干次采样间不再变化。
+ *
+ *  历史渲染是**分批补齐**的（先骨架、再逐 turn 补 iteration/tool）。固定
+ *  waitForTimeout(1200) 在慢 runner 上不够：实测出现过 pageA 只渲染出 1 个 pill
+ *  而 pageB 已渲染 4 个，把「A/B 等价」判成不等价（Expected 1 / Received 4）；
+ *  内容不足还会让上滚手势没有可加载的窗口，等不到 /api/regions。 */
+async function waitStableCount(
+  page: Page,
+  selector: string,
+  { gapMs = 200, rounds = 5, allowZero = false }: { gapMs?: number; rounds?: number; allowZero?: boolean } = {},
+): Promise<number> {
+  let prev = -1
+  let same = 0
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    const cur = await page.locator(selector).count()
+    same = cur === prev ? same + 1 : 0
+    prev = cur
+    if ((allowZero || cur > 0) && same >= rounds) return cur
+    await page.waitForTimeout(gapMs)
+  }
+  return prev
+}
+
 async function openSession(page: Page) {
   await page.goto(`${BASE}/`)
   await expect(page.locator('[data-message-list-content]')).toBeAttached({ timeout: 15_000 })
-  await page.waitForTimeout(1200)
+  // 先等迭代块数量稳定（每个用例都有 iteration），再等 pill 稳定
+  // （没有工具时 pill=0，allowZero 让这种情况立刻收敛，不白等）。
+  await waitStableCount(page, '[data-iter-id]')
+  await waitStableCount(page, '[data-testid="tool-pill"]', { allowZero: true })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

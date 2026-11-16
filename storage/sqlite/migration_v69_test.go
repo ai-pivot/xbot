@@ -85,7 +85,14 @@ func TestMigrateV68ToV69IsIdempotentWhenColumnExists(t *testing.T) {
 		t.Fatalf("create v68 fixture: %v", err)
 	}
 	db := &DB{conn: raw, path: dbPath}
-	defer db.Close()
+	// 手工构造的 DB 不在共享连接表里，Close() 走 releaseSharedConn 会直接返回、
+	// 不会真正关闭 raw。Windows 上残留的文件句柄会让 t.TempDir 的 RemoveAll 报
+	// "The process cannot access the file because it is being used by another
+	// process" —— 所以这里必须显式释放。
+	defer func() {
+		_ = db.Close()
+		_ = raw.Close()
+	}()
 
 	if err := migrateV68ToV69(db); err != nil {
 		t.Fatalf("migrateV68ToV69: %v", err)

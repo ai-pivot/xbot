@@ -67,6 +67,28 @@ export const UserMessage = memo(function UserMessage({
   const [copied, setCopied] = useState(false)
   const annotatedMessage = useMemo(() => isNotification ? null : parseResponseAnnotations(content), [content, isNotification])
 
+  // "已复制"提示 1200ms 后自动消失 —— 定时器必须由组件自己持有、卸载时清掉。
+  // 2026-10-30 回归：原先裸调 `window.setTimeout(() => setCopied(false), 1200)`，
+  // 组件在 1200ms 内卸载（虚拟滚动回收旧消息 / 切会话）后回调仍在跑；
+  // 测试环境 teardown 之后 jsdom 的 `window` 已销毁 ⇒ 回调里访问 window 抛
+  // `ReferenceError: window is not defined` 的**未捕获异常**：用例全过但 vitest
+  // 退出码非 0，把所有人的 pre-commit 一起拦下。
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 剪贴板 `writeText` 是 promise：组件可能在 resolve 之前就卸载了，
+  // 那种情况下不许再 setState、也不许再起 timer（否则等于把泄漏换个入口）。
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (copyResetTimer.current !== null) {
+        clearTimeout(copyResetTimer.current)
+        copyResetTimer.current = null
+      }
+    }
+  }, [])
+
   // 复制这条 user 消息（2026-09-16 用户报告：手机上没有任何复制 user msg 的入口）。
   // 触屏上"长按"会被原生文本选择抢走手势（同一版也修了 useLongPress 的抖动误判），
   // 但可靠的做法是给一个**看得见、点得到**的按钮：isTouch 时常显 + 44px 命中区。
@@ -76,8 +98,14 @@ export const UserMessage = memo(function UserMessage({
     if (!text || !clip?.writeText) return
     void clip.writeText(text).then(
       () => {
+        if (!mountedRef.current) return
         setCopied(true)
-        window.setTimeout(() => setCopied(false), 1200)
+        // 连点时先清旧 timer 再起新的：任何时刻最多只有一个待触发的复位定时器。
+        if (copyResetTimer.current !== null) clearTimeout(copyResetTimer.current)
+        copyResetTimer.current = setTimeout(() => {
+          copyResetTimer.current = null
+          setCopied(false)
+        }, 1200)
       },
       () => {
         /* 无剪贴板权限（非安全上下文）时静默 */

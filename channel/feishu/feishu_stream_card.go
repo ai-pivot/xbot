@@ -643,7 +643,7 @@ func toolChipPlain(t streamTool) string {
 		label = t.name
 	}
 	parts := []string{icon + " " + label}
-	if detail := redactSensitive(toolHeaderArg(t)); detail != "" {
+	if detail := toolHeaderArg(t); detail != "" {
 		parts = append(parts, detail)
 	}
 	parts = append(parts, state)
@@ -705,7 +705,7 @@ func toolDetailFull(t streamTool) string {
 // (measured 2026-09-14), so they are not used for visible content.
 func toolPanel(t streamTool) map[string]any {
 	// ⛔ 出口脱敏（同 CoT）：面板正文 = 完整参数 + 输出，常含凭据。
-	body := redactSensitive(toolDetailFull(t))
+	body := protocol.RedactFixedFormats(toolDetailFull(t))
 	if body == "" {
 		body = "_（无详情）_"
 	}

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -204,7 +205,7 @@ func (s *groupStore) IsAliveMember(ctx context.Context, groupID, addr string) (b
 func enrichMember(m *common.GroupMemberRow) {
 	addr := m.MemberAddr
 	if strings.HasPrefix(addr, "agent:") {
-		rest := strings.TrimPrefix(addr, "agent:")
+		rest := sessionaddr.TrimAgentLayers(addr)
 		if i := strings.Index(rest, ":"); i >= 0 {
 			rest = rest[:i]
 		}

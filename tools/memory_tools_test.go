@@ -223,9 +223,9 @@ func TestLettaMemoryTools_IncludesRecall(t *testing.T) {
 	if !slices.ContainsFunc(tools, func(tool Tool) bool { return tool.Name() == "recall_memory_search" }) {
 		t.Error("LettaMemoryTools should include recall_memory_search")
 	}
-	// Should have 6 tools total
-	if len(tools) != 6 {
-		t.Errorf("expected 6 Letta tools, got %d", len(tools))
+	// Should have 8 tools total (2026-11-07: + core_memory_delete, core_memory_clear)
+	if len(tools) != 8 {
+		t.Errorf("expected 8 Letta tools, got %d", len(tools))
 	}
 }
 

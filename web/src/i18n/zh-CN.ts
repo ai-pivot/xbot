@@ -137,6 +137,7 @@ const zhCN = {
     deleteConfirm: '确定删除会话「{{name}}」吗？此操作不可撤销。',
     clearSelection: "清空选择",
     markRead: "标为已读",
+    pendingAskBadge: "有提问等你处理",
     selectionVisibleOnly: "仅选择当前显示的主会话。切换筛选会清空选择。",
     selectionLoadedOnly: "仅选择当前已加载且显示的主会话，还有更多会话未加载。",
     batchWorking: "正在处理所选会话…",
@@ -238,6 +239,10 @@ const zhCN = {
     askUserMultiHint: '可多选',
     askUserFreeInput: '自由输入（可选）',
     askUserFreeInputPlaceholder: '直接输入，或补充说明…',
+    // ask_user_resolved 的两条收回文案：超时收回 ≠ 主动取消（两文案必须不同，
+    // 且只有超时那条提到「超时」）。见 lib/askUserResolved.ts。
+    askUserResolvedTtlExpired: '提问已超时收回 —— 超过等待时限无人回答，可重新发起。',
+    askUserResolvedCancelled: '提问已取消，本次未作答。',
     emptyAssistant: '（无文本输出）',
     emptyResponseWarning: 'LLM 本次没有返回文本内容，可能是模型输出异常或中途结束。',
     displayOnly: '仅展示',

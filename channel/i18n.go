@@ -631,7 +631,6 @@ func LocaleZH() *UILocale {
 				Key: "max_concurrency", Label: "最大并发数", Description: "同时处理的最大请求数（默认 3）",
 				Type: SettingTypeNumber, Category: "Agent 行为", DefaultValue: "3",
 			},
-			{Key: "auto_worktree", Label: "自动 Worktree 隔离", Description: "每个会话自动创建独立的 git worktree，避免多 agent 同时修改同一文件。需要 git 仓库。", Type: SettingTypeToggle, Category: "Agent 行为", DefaultValue: "false"},
 
 			// ── 外观（用户级）──
 			{
@@ -1069,7 +1068,6 @@ func localeEN() *UILocale {
 				Key: "max_concurrency", Label: "Max Concurrency", Description: "Max concurrent requests (default 3)",
 				Type: SettingTypeNumber, Category: "Agent behavior", DefaultValue: "3",
 			},
-			{Key: "auto_worktree", Label: "Auto Worktree Isolation", Description: "Automatically create an isolated git worktree for each session, preventing multi-agent file conflicts. Requires a git repository.", Type: SettingTypeToggle, Category: "Agent behavior", DefaultValue: "false"},
 
 			// ── Appearance (user-level) ──
 			{
@@ -1506,7 +1504,6 @@ func localeJA() *UILocale {
 				Key: "max_concurrency", Label: "最大同時実行数", Description: "同時に処理する最大リクエスト数（デフォルト 3）",
 				Type: SettingTypeNumber, Category: "Agent 動作", DefaultValue: "3",
 			},
-			{Key: "auto_worktree", Label: "自動 Worktree 分離", Description: "各セッションに独立した git worktree を自動作成し、マルチエージェントのファイル競合を防止します。git リポジトリが必要です。", Type: SettingTypeToggle, Category: "Agent 動作", DefaultValue: "false"},
 
 			// ── 外観（ユーザーレベル）──
 			{

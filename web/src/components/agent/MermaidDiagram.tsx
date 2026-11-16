@@ -259,11 +259,37 @@ export function MermaidSourceBlock({ source }: { source: string }) {
 function CopyButton({ getText }: { getText: () => string }) {
   const [copied, setCopied] = useState(false)
   const isTouch = useIsTouch()
+  // "已复制"复位定时器必须由组件自己持有、卸载时清掉（与 UserMessage 同一模式）。
+  // 裸 setTimeout 在 1200ms 内卸载（虚拟滚动回收 / 切会话 / 关掉全屏浮层）后
+  // 回调仍在跑：teardown 之后访问已销毁的 window 抛 `ReferenceError: window is
+  // not defined`，用例全过但 vitest 退出码非 0，拦掉所有人的 pre-commit。
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // clipboard.writeText 是 promise：卸载可能发生在它 resolve 之前，那种情况下
+  // 不许再 setState、也不许再起 timer（否则等于把泄漏换个入口）。
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (copyResetTimer.current !== null) {
+        clearTimeout(copyResetTimer.current)
+        copyResetTimer.current = null
+      }
+    }
+  }, [])
+
   const onClick = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(getText())
+      if (!mountedRef.current) return
       setCopied(true)
-      setTimeout(() => setCopied(false), 1200)
+      // 连点时先清旧 timer 再起新的：任何时刻最多只有一个待触发的复位定时器。
+      if (copyResetTimer.current !== null) clearTimeout(copyResetTimer.current)
+      copyResetTimer.current = setTimeout(() => {
+        copyResetTimer.current = null
+        setCopied(false)
+      }, 1200)
     } catch {
       /* clipboard unavailable — ignore */
     }

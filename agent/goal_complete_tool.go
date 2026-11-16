@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"xbot/internal/sessionaddr"
 
 	"xbot/llm"
 	"xbot/tools"
@@ -60,7 +61,7 @@ func (t *setGoalCompleteTool) Execute(ctx *tools.ToolContext, input string) (*to
 		return nil, fmt.Errorf("set_goal_complete: summary must not be empty")
 	}
 
-	sessionKey := ctx.Channel + ":" + ctx.ChatID
+	sessionKey := sessionaddr.Key(ctx.Channel, ctx.ChatID)
 	t.manager.Complete(sessionKey, a.Summary)
 
 	// Real-time frontend update: emit a progress event carrying the completed

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	log "xbot/logger"
 	"xbot/tools"
 )
 
@@ -165,6 +166,23 @@ func (a *Agent) StructuredQueueLen(channelName, chatID string) int {
 //   - 空闲 → 作为普通入站消息开启新 turn（历史里已有结构化行，不会丢）。
 //
 // 返回是否已受理（false = 会话不存在/参数非法）。
+// SessionBusy 报告该物理会话当前是否有 Run 在执行。
+//
+// 用途：结构化回流（卡片批复）在 busy 与 idle 两种状态下**只能有一种表示**——
+// busy 走 structured queue（notice 携带内容），idle 走「落库 + 空注入」。
+// 两者同时发生就会出现用户实测的重复投递（2026-11-15）。
+func (a *Agent) SessionBusy(channelName, chatID string) bool {
+	if channelName == "" || chatID == "" {
+		return false
+	}
+	if st, ok := a.bgSessionStates.Load(qualifyChatID(channelName, chatID)); ok {
+		if ss, ok := st.(*bgSessionState); ok && ss != nil {
+			return ss.busy.Load()
+		}
+	}
+	return false
+}
+
 func (a *Agent) DeliverStructuredMessage(item *StructuredQueueItem) bool {
 	if item == nil || item.Channel == "" || item.ChatID == "" {
 		return false
@@ -189,9 +207,57 @@ func (a *Agent) DeliverStructuredMessage(item *StructuredQueueItem) bool {
 	if item.CorrelationID != "" {
 		metadata["correlation_id"] = item.CorrelationID
 	}
-	// 结构化行已经在会话库中（API 先落库再投递）——空 content + structured_delivery
-	// 让 processMessage 跳过再次落 user 行，避免同一答案出现两条用户消息。
+	// 结构化行已经在会话库中（调用方通过 persist 先落库）——空 content +
+	// structured_delivery 让 processMessage 跳过再次落 user 行。
 	a.injectInboundWithMetadata(item.Channel, item.ChatID, item.SenderID, "", metadata)
+	return true
+}
+
+// DeliverStructuredMessagePersisting 是结构化回流（卡片批复/回答）的**唯一入口**。
+//
+// 为什么需要它：落库与投递本来是两步调用，而"要不要落库"取决于目标会话忙不忙。
+// 两步分离时，调用方无条件落库 + 投递在 busy 时又带内容 ⇒ 同一事件被表示两遍
+// （busy 那一轮看到 notice，idle 的下一轮从历史里再读一次；2026-11-15 用户实测）。
+//
+// 这里把"落库"作为回调收进来，由同一个 busy/idle 分支决定：
+//   - busy  → 只入队（notice 自带内容），**不落库**；
+//   - idle  → 先落库（历史行即唯一可读副本），再空内容注入；
+//   - idle 且落库失败 → 退化为"携带内容投递"，绝不丢消息。
+func (a *Agent) DeliverStructuredMessagePersisting(item *StructuredQueueItem, persist func() error) bool {
+	if item == nil || item.Channel == "" || item.ChatID == "" {
+		return false
+	}
+	key := qualifyChatID(item.Channel, item.ChatID)
+	if st, ok := a.bgSessionStates.Load(key); ok {
+		if ss, ok := st.(*bgSessionState); ok && ss != nil && ss.busy.Load() {
+			a.structuredQueue(key).Push(item)
+			select {
+			case ss.notifyCh <- struct{}{}:
+			default:
+			}
+			return true
+		}
+	}
+
+	content := item.Content // 仅在落库失败/未提供 persist 时内联
+	if persist != nil {
+		if err := persist(); err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"channel": item.Channel, "chat_id": item.ChatID, "correlation_id": item.CorrelationID,
+			}).Warn("structured notice persist failed; delivering content inline")
+		} else {
+			content = ""
+		}
+	}
+	metadata := map[string]string{
+		"structured_kind":     item.Kind,
+		"priority":            strconv.Itoa(item.Priority),
+		"structured_delivery": "true",
+	}
+	if item.CorrelationID != "" {
+		metadata["correlation_id"] = item.CorrelationID
+	}
+	a.injectInboundWithMetadata(item.Channel, item.ChatID, item.SenderID, content, metadata)
 	return true
 }
 

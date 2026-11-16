@@ -79,7 +79,7 @@ xbot/
 ├── storage/
 │   ├── sqlite/              # SQLite data service layer
 │   └── vectordb/            # Vector database (chromem-go)
-├── tools/                   # Tool system (including Worktree, config, tui_control)
+├── tools/                   # Tool system (including config, tui_control)
 ├── plugin/                  # Plugin system (RPC bridge, runtimes, extension points)
 ├── internal/
 │   ├── runnerclient/        # Runner client (runner-side)
@@ -430,7 +430,7 @@ Uses `chromem-go` embedded vector database, persisted to `.xbot/vectordb/`. Supp
 | **Search** | WebSearch, ChatHistory |
 | **Memory** | memory_write, memory_list (flat), core_memory_*, archival_memory_*, recall_memory_search (letta) |
 | **Context Management** | offload_recall, recall_masked, context_edit |
-| **SubAgent & Collaboration** | SubAgent (one-shot + Interactive), CreateChat, SendMessage, Worktree |
+| **SubAgent & Collaboration** | SubAgent (one-shot + Interactive), CreateChat, SendMessage |
 | **Skill/Agent** | Skill, ManageTools, search_tools |
 | **AI-Native Config** | config (AI reads/writes config), tui_control (AI operates TUI) |
 | **Cards** | card_create, card_add_content, card_add_interactive, card_add_container, card_preview, card_send |

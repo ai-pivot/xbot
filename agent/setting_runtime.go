@@ -2,7 +2,6 @@ package agent
 
 import (
 	"strconv"
-	"strings"
 
 	"xbot/channel"
 	"xbot/channel/cli"
@@ -70,12 +69,6 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 	// this key to its canonical row (channel.TavilyKeyChannel) so a value saved
 	// from the Web settings tab takes effect immediately for CLI/Feishu/Web
 	// sessions alike — no restart, no per-agent setter.
-
-	"auto_worktree": {
-		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.Agent.Experimental.AutoWorktree = strings.ToLower(value) == "true"
-		},
-	},
 
 	// allow_self_compact: registers/unregisters the compact_context tool LIVE
 	// (server_core.go registers it at boot from config.json — saveServerConfig

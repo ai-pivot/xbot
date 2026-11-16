@@ -964,6 +964,55 @@ export function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
   return out
 }
 
+/** 孤儿 reasoning 迭代（**无 content、无 tools、只有 reasoning**）并入下一个有内容的迭代。
+ *
+ *  ⛔ 2026-11-04（用户报「content 后面接 reasoning，刷新都不能恢复，究极无敌严重」）：
+ *  turn 边界没有用户消息时会连续出现两个 turn（后台任务完成通知自动续跑）——
+ *  上一轮最后一个迭代是**纯正文**（clen>0 rlen=0），下一轮第一个迭代是**纯 reasoning**
+ *  （clen=0 rlen>0）。DB `iteration_history` 顺序完全正确（逐条核对过），
+ *  但 `mergeToolRuns` 只合并「纯工具」迭代，纯 reasoning 被当独立块渲染 ⇒
+ *  视觉上就是「正文之后接思考」，看起来像正文和 reasoning 颠倒了。
+ *
+ *  正确语义：**思考必须在它所属的输出之前**。所以孤儿 reasoning 作为前缀并入
+ *  下一个有内容的迭代；后面再没有任何有内容迭代的尾部孤儿**保留独立块**
+ *  （那是正在进行的思考，不是错位）。
+ */
+export function mergeOrphanReasoning(iters: WebIteration[]): WebIteration[] {
+  if (iters.length === 0) return iters
+  // 预扫描：hasPayloadAfter[i] = 「第 i 个之后是否还有带 content/tools 的迭代」（O(n)）
+  const hasPayloadAfter = new Array<boolean>(iters.length).fill(false)
+  let seen = false
+  for (let i = iters.length - 1; i >= 0; i--) {
+    hasPayloadAfter[i] = seen
+    const it = iters[i]
+    if ((it.content && it.content.length > 0) || it.tools.length > 0) seen = true
+  }
+  const out: WebIteration[] = []
+  let pending = ''
+  for (let i = 0; i < iters.length; i++) {
+    const it = iters[i]
+    const orphan =
+      !it.content && it.tools.length === 0 && Boolean(it.reasoning) && hasPayloadAfter[i]
+    if (orphan) {
+      pending += it.reasoning ?? ''
+      continue
+    }
+    out.push(pending ? { ...it, reasoning: pending + (it.reasoning ?? '') } : it)
+    pending = ''
+  }
+  return out
+}
+
+/** 渲染前的迭代合并总入口：**所有**对 iteration 列表的跨块整理都必须在这里组合。
+ *
+ *  分开调（TurnBody 里只写 mergeToolRuns）会让孤儿 reasoning 的修复静默失效 ——
+ *  2026-11-04 的变异自证就是这么发现「测试只测函数、没测接入」的。
+ *  单测直接打这个入口，任何一个合并步骤被摘掉都会红。
+ */
+export function mergeIterationsForRender(iters: WebIteration[]): WebIteration[] {
+  return mergeOrphanReasoning(mergeToolRuns(iters))
+}
+
 export const TurnBody = memo(function TurnBody({
   iterations,
   compactions,
@@ -978,9 +1027,9 @@ export const TurnBody = memo(function TurnBody({
   const scan = extendContiguous(scanRef.current, iterations)
   scanRef.current = scan
   const contiguous = scan.out
-  // 跨迭代折叠（连续 tool-only 迭代共享一行）；`contiguous` 引用稳定 ⇒ 这个 memo 也稳定，
-  // 不会击穿 CommittedTurn 的 memo / 迭代级窗口化。
-  const merged = useMemo(() => mergeToolRuns(contiguous), [contiguous])
+  // 跨迭代折叠（连续 tool-only 迭代共享一行）+ 孤儿 reasoning 并入下一个块；
+  // `contiguous` 引用稳定 ⇒ 这个 memo 也稳定，不会击穿 CommittedTurn 的 memo。
+  const merged = useMemo(() => mergeIterationsForRender(contiguous), [contiguous])
   /**
    * 把每个压缩点解析到**实际渲染的迭代块**上：anchor = merged 中「迭代号 ≤
    * afterIteration 的最大迭代号」（0 = 第一个迭代之前）。折叠（tool-only run 合并

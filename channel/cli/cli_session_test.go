@@ -19,7 +19,7 @@ func TestRemoveStoredSessionByChatIDPreservesOtherSessionMetadata(t *testing.T) 
 		LastActive: target,
 		Sessions: []dirSession{
 			{Name: "remove-me", ChatID: target, CreatedAt: flexTime(time.Now())},
-			{Name: "keep-me", ChatID: keep, CreatedAt: flexTime(time.Now()), CWD: "/tmp/worktree", Model: "model-a"},
+			{Name: "keep-me", ChatID: keep, CreatedAt: flexTime(time.Now()), CWD: "/tmp/ws-fixture", Model: "model-a"},
 		},
 	}
 	if err := ds.save(); err != nil {
@@ -44,7 +44,7 @@ func TestRemoveStoredSessionByChatIDPreservesOtherSessionMetadata(t *testing.T) 
 	if stored.LastActive != "" || len(stored.Sessions) != 1 {
 		t.Fatalf("stored sessions = %#v", stored)
 	}
-	if got := stored.Sessions[0]; got.ChatID != keep || got.CWD != "/tmp/worktree" || got.Model != "model-a" {
+	if got := stored.Sessions[0]; got.ChatID != keep || got.CWD != "/tmp/ws-fixture" || got.Model != "model-a" {
 		t.Fatalf("retained session metadata = %#v", got)
 	}
 }

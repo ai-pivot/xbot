@@ -219,12 +219,28 @@ func TestRecallWithQuerySkipsShortTerm(t *testing.T) {
 func TestRecallCapsTotalRunes(t *testing.T) {
 	m, _ := newTestMemory(t)
 	// 大量长记忆塞满注入内容（远超 recallMaxRunes=3000）。
-	long := strings.Repeat("这是一个非常长的记忆内容用于测试注意力预算截断，反复出现以撑爆注入预算。", 100)
-	if _, err := m.AddMemory(t.Context(), LongTermMemory{
-		Type:    "fact",
-		Content: long,
-	}); err != nil {
-		t.Fatal(err)
+	// 单条上限 2000 runes（validateMemoryContent），所以用多条**彼此不同**的记忆
+	// 累加 —— 内容必须差异足够大，否则会被内容级去重（Jaccard ≥ 0.8）判成重复。
+	seeds := []string{
+		"甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉",
+		"春夏秋冬风花雪月山川江河湖海日月星辰雷电",
+		"东南西北上下左右前后内外表里虚实动静刚柔",
+		"金木水火土日月星辰云雨雷电霜雪雾露霞虹霓",
+	}
+	for i, seed := range seeds {
+		// 必须包含查询词「注意力预算」（Recall 靠内容匹配选中），同时其余正文
+		// 用互不相同的字符序列撑长度 —— 共同 token 只占极小比例，不会被去重拦。
+		// 每条约 970 runes（< 单条上限 2000），4 条合计约 3900 > recallMaxRunes(3000)。
+		content := fmt.Sprintf("记忆%d 注意力预算相关（%s）", i+1, strings.Repeat(seed, 48))
+		if n := len([]rune(content)); n > memoryContentMaxRunes {
+			t.Fatalf("fixture %d too long: %d runes", i, n)
+		}
+		if _, err := m.AddMemory(t.Context(), LongTermMemory{
+			Type:    "fact",
+			Content: content,
+		}); err != nil {
+			t.Fatalf("add fixture %d: %v", i, err)
+		}
 	}
 	out, err := m.Recall(t.Context(), "注意力预算", "")
 	if err != nil {

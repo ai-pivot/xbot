@@ -127,3 +127,29 @@ func TestCollectStreamWithCallback_NilToolCallCallback(t *testing.T) {
 		t.Errorf("tool name = %q, want Read", resp.ToolCalls[0].Name)
 	}
 }
+
+// An authoritative argument snapshot replaces partial/stale JSON only for its
+// own index. Plain delta events from every provider remain append-only.
+func TestCollectStream_ToolArgumentsCompleteReplacesOnlyTarget(t *testing.T) {
+	ch := make(chan StreamEvent, 8)
+	ch <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{Index: 0, ID: "call_a", Name: "alpha", Arguments: `{"a":"wrong"}`}}
+	ch <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{Index: 1, ID: "call_b", Name: "beta", Arguments: `{"b":`}}
+	ch <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{Index: 0, Arguments: `{"a":1}`, ArgumentsComplete: true}}
+	ch <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{Index: 1, Arguments: `2}`}}
+	ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonToolCalls}
+	close(ch)
+	var snapshots [][]ToolCallDelta
+	resp, err := CollectStreamWithCallback(context.Background(), ch, nil, nil, func(calls []ToolCallDelta) { snapshots = append(snapshots, calls) }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.ToolCalls) != 2 || resp.ToolCalls[0].Arguments != `{"a":1}` || resp.ToolCalls[1].Arguments != `{"b":2}` {
+		t.Fatalf("calls=%+v", resp.ToolCalls)
+	}
+	if len(snapshots) != 4 || snapshots[2][0].Arguments != `{"a":1}` || snapshots[2][1].Arguments != `{"b":` {
+		t.Fatalf("bad progress snapshots: %+v", snapshots)
+	}
+	if snapshots[0][0].Arguments != `{"a":"wrong"}` {
+		t.Fatal("earlier progress snapshot was mutated")
+	}
+}

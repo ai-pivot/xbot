@@ -12,7 +12,7 @@ import (
 )
 
 // TestNoneSandboxExec_MissingWorkingDir reproduces issue #457: when the session
-// working directory is deleted (dev machine migration, worktree cleanup, tmp
+// working directory is deleted (dev machine migration, tmp directory cleanup,
 // reclamation), every Shell call failed with
 //
 //	sandbox exec: fork/exec /usr/bin/zsh: no such file or directory

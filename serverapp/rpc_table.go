@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"xbot/internal/sessionaddr"
 
 	"xbot/agent"
 	"xbot/bus"
@@ -1420,11 +1421,8 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		// Clean up offload files for the deleted session.
 		h.Ag.CleanupSessionFiles(p.Channel, p.ChatID)
-		// Clean up worktree registration + physical git worktree.
-		sessionKey := p.Channel + ":" + p.ChatID
-		tools.GlobalWorktreeRegistry.CleanupSession(sessionKey)
 		// Clean up persisted CWD so a future session with the same chatID
-		// does not inherit a stale worktree directory.
+		// does not inherit a stale directory.
 		session.DeletePersistedCWD(p.Channel, p.ChatID)
 		// Destroy tenant session (closes MCP, removes from cache).
 		_ = h.Ag.MultiSession().DestroySession(p.Channel, p.ChatID)
@@ -2966,7 +2964,7 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			return nil, fmt.Errorf("chat_id is required")
 		}
-		name := router.GetSessionRunner(p.Channel + ":" + p.ChatID)
+		name := router.GetSessionRunner(sessionaddr.Key(p.Channel, p.ChatID))
 		return map[string]any{"name": name, "online": name != "" && router.IsRunnerOnline(name)}, nil
 	})
 
@@ -2983,7 +2981,7 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		if p.ChatID == "" {
 			return fmt.Errorf("chat_id is required")
 		}
-		return router.SetSessionRunner(p.Channel+":"+p.ChatID, p.Name)
+		return router.SetSessionRunner(sessionaddr.Key(p.Channel, p.ChatID), p.Name)
 	})
 
 }

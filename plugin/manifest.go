@@ -339,6 +339,18 @@ func IsValidHookEvent(name string) bool {
 func DiscoverPlugins(dirs []string) []*PluginManifest {
 	var manifests []*PluginManifest
 
+	// 哪些子目录**本身就是另一个搜索路径**。典型：DefaultPluginDirs 同时包含
+	// `<home>/plugins` 和 `<home>/plugins/builtin`，于是 `builtin` 会先被当成
+	// `plugins/` 的一个插件目录去 LoadManifest（它没有自己的 plugin.json，因为
+	// 它是内置插件的容器）→ 每次启动一条 "Skipping invalid plugin" warning。
+	// 它真正的内容会在下一轮以搜索路径的身份被正常扫到，所以这里直接跳过。
+	searchPath := make(map[string]bool, len(dirs))
+	for _, d := range dirs {
+		if abs, err := filepath.Abs(d); err == nil {
+			searchPath[filepath.Clean(abs)] = true
+		}
+	}
+
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -352,7 +364,31 @@ func DiscoverPlugins(dirs []string) []*PluginManifest {
 			if !entry.IsDir() {
 				continue
 			}
-			pluginDir := filepath.Join(dir, entry.Name())
+			// 跳过隐藏目录（`.` 开头）和下划线前缀目录（`_` 开头）。
+			// 运维把插件移走做备份时最常用的就是这两种命名；旧实现不跳过，
+			// 于是备份会被当成有效插件重新发现 —— 实测 2026-10-26：
+			// 把 xbot.qq 备份成 .backup-xbot.qq-<ts> 后，每次 `/plugin reload-all`
+			// 都会把旧 OneBot 插件扫回来，再因为 bin/qq-plugin 不存在而激活失败，
+			// 表现为「删掉了但面板里还在、且 reload 一直报错」。
+			name := entry.Name()
+			if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+				continue
+			}
+			pluginDir := filepath.Join(dir, name)
+			// 容器目录（本身就是搜索路径）交给它自己那一轮，不在这里当插件读。
+			if abs, err := filepath.Abs(pluginDir); err == nil && searchPath[filepath.Clean(abs)] {
+				continue
+			}
+			// 目录里压根没有 plugin.json ⇒ 它不是一个插件目录（生产实测：<home>/plugins/genui
+			// 与 <home>/plugins/qq 只剩 logs/ 子目录，各 20 条 warning）。旧实现直接
+			// LoadManifest 再把 "read manifest … no such file" 打成 warning，把「残留目录」
+			// 误报成「插件坏了」。有 plugin.json 但内容非法才是真问题，仍然 warning。
+			if _, statErr := os.Stat(filepath.Join(pluginDir, "plugin.json")); statErr != nil {
+				if !os.IsNotExist(statErr) {
+					log.WithField("dir", pluginDir).Warn("Failed to stat plugin manifest")
+				}
+				continue
+			}
 			manifest, err := LoadManifest(pluginDir)
 			if err != nil {
 				log.WithField("dir", pluginDir).Warn("Skipping invalid plugin: ", err)

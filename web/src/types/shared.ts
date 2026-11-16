@@ -178,6 +178,12 @@ export type WSClientMessageType =
   | 'ask_user_response'
   | 'tui_control_resp'
 
+/** Known `cancel_reason` values on an ask_user_resolved event.
+ *  Open set on purpose (`string & {}`): a newer server may send a reason this
+ *  bundle does not know yet — the UI must fall back to the generic
+ *  "cancelled" copy instead of rendering an empty tip. */
+export type AskUserCancelReason = 'ttl_expired' | (string & {})
+
 /** Generic server → client envelope. Fields are optional because different
  *  message types populate different subsets. */
 export interface WSMessage {
@@ -207,6 +213,20 @@ export interface WSMessage {
   /** ask_user_resolved: why the prompt stopped being pending —
    *  "answered" | "cancelled" | "rewound" | "cleared". */
   reason?: string
+  /** ask_user_resolved: the request id of the prompt that stopped being
+   *  pending — the client-side idempotency key (wire key of
+   *  protocol.AskUserResolvedEvent.RequestID). */
+  request_id?: string
+  /** ask_user_resolved: WHY it was cancelled, only meaningful when
+   *  `reason === 'cancelled'` (wire key of
+   *  protocol.AskUserResolvedEvent.CancelReason, see protocol/events.go).
+   *  - "ttl_expired" → the server reclaimed the prompt after the pending TTL
+   *    (nobody answered in time);
+   *  - absent       → the user cancelled it (/cancel, Stop) — the active path
+   *    never sets this field.
+   *  Unknown values (forward compat) must degrade to the "cancelled" copy,
+   *  never to a blank tip: see `askUserResolvedTipKey`. */
+  cancel_reason?: AskUserCancelReason
   /** Session queue snapshot (Staging Tray data source). Full-snapshot semantics —
    *  frontends replace, never merge. */
   queue_state?: QueueStatePayload | null

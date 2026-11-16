@@ -209,11 +209,26 @@ func (wc *WebChannel) resolveSSESession(w http.ResponseWriter, r *http.Request, 
 		sel = SessionSelector{Channel: channelName, ChatID: chatID}
 	} else {
 		sel = wc.GetCurrentSession(senderID)
-	}
-	if sel.ChatID != chatID {
-		sel = SessionSelector{Channel: "web", ChatID: chatID}
-		if webChatIDLooksLikeSubAgent(chatID) {
-			sel.Channel = "agent"
+		if sel.ChatID != chatID {
+			// ⛔ 2026-11-13（用户报「非 web channel 会话在 Web 上收不到 SSE」）：
+			// 这里原本**硬编码 `Channel: "web"`**，只有 agent 被 webChatIDLooksLikeSubAgent
+			// 单独救出。cli / feishu 会话因此被挂到 `web\x00chatID` 路由，而事件按真实
+			// channel 发往 `cli\x00chatID` ⇒ 一条都收不到；紧接着 isUnknownSession 用这个
+			// 猜出来的 channel 探测存在性，CLI 会话的 chatID 是文件路径、查 web 租户必为
+			// false ⇒ 直接 404，EventSource 连不上。
+			// 现在先按 chatID **反查真实 channel**（resolveChannelForChatID），
+			// 探测不到才走旧的兜底，并记 warn 方便定位残留。
+			if ch := wc.resolveChannelForChatID(senderID, chatID); ch != "" {
+				sel = SessionSelector{Channel: ch, ChatID: chatID}
+			} else {
+				sel = SessionSelector{Channel: "web", ChatID: chatID}
+				if webChatIDLooksLikeSubAgent(chatID) {
+					sel.Channel = "agent"
+				}
+				log.WithFields(log.Fields{
+					"chat_id": chatID, "sender_id": senderID, "picked": sel.Channel,
+				}).Warn("resolveSSESession: channel undetectable, falling back")
+			}
 		}
 	}
 	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, sel.Channel, sel.ChatID) {

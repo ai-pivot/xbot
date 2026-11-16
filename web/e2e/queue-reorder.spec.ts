@@ -85,16 +85,26 @@ async function visibleCardIDs(page: Page): Promise<string[]> {
 
 /** 在拖拽柄上按下（指针停在卡片处，**尚未进入**边缘热区）。 */
 async function pressHandle(page: Page, srcID: string) {
-  const list = page.getByTestId('staging-list')
-  const handle = page.locator(`[data-queue-id="${srcID}"] [data-testid="staging-drag-handle"]`)
-  const hb = await handle.boundingBox()
-  const lb = await list.boundingBox()
-  if (!hb || !lb) throw new Error('missing bounding box for the drag')
-  // 注意：不要用 locator.hover() —— 它内部做 scrollIntoViewIfNeeded，会先给列表
-  // 制造一段 ~11px 的杂散滚动，污染「拖拽期间 scrollTop 是否增长」的判据。
-  await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2)
-  await page.mouse.down()
+  // 走 beginDrag：按压前有 elementFromPoint 命中自检 + 幽灵确认 + 失败重试，
+  // 而不是"按下就祈祷 pointerdown 落在卡片上"。命中落空时后续 pointermove 会被
+  // handleDragMove 的 `if (!sessionRef.current) return` 丢掉，自动滚动根本不会
+  // 启动 —— CI 上那条 flaky（pointerup in edge hot zone）就是这个形态。
+  await beginDrag(page, srcID)
+  const lb = await page.getByTestId('staging-list').boundingBox()
+  if (!lb) throw new Error('missing bounding box for the staging list')
   return { lb }
+}
+
+/** 等到 scrollTop 连续两次采样相同（自动滚动/重排已落定）。 */
+async function waitScrollSettled(page: Page, rounds = 25): Promise<number> {
+  let prev = await listScrollTop(page)
+  for (let i = 0; i < rounds; i++) {
+    await page.waitForTimeout(200)
+    const cur = await listScrollTop(page)
+    if (cur === prev) return cur
+    prev = cur
+  }
+  return prev
 }
 
 /** 把指针移到容器的上沿/下沿热区（距内沿 8px ≤ 组件 EDGE_ZONE_PX=24）并保持。 */
@@ -149,19 +159,37 @@ async function sampleScrollAndIndex(page: Page, id: string, stop: (v: number) =>
 
 /** 按住 `srcID` 的拖拽柄，**分步**把指针移到 (toX,toY)，每一步后采样列表总高。
  *  返回采样序列 —— 用来证明"拖动全程列表总高稳定（≤1px）"。 */
-async function pressAndDragInSteps(page: Page, srcID: string, toX: number, toY: number, steps = 12) {
-  const handle = page.locator(`[data-queue-id="${srcID}"] [data-testid="staging-drag-handle"]`)
-  const hb = await handle.boundingBox()
-  if (!hb) throw new Error('missing bounding box for the drag handle')
-  const fromX = hb.x + hb.width / 2
-  const fromY = hb.y + hb.height / 2
-  // 不要用 hover()：它内部的 scrollIntoViewIfNeeded 会制造一段杂散滚动。
-  await page.mouse.move(fromX, fromY)
-  await page.mouse.down()
+async function pressAndDragInSteps(
+  page: Page,
+  srcID: string,
+  toX: number,
+  toY: number,
+  steps = 12,
+  settle?: { targetID: string; edge: 'before' | 'after'; want: string },
+) {
+  // 同 pressHandle：按压必须真的命中（含自检与重试），否则整段拖拽是空操作。
+  const { x: fromX, y: fromY } = await beginDrag(page, srcID)
   const heights = [await listScrollHeight(page)]
   for (let s = 1; s <= steps; s++) {
     await page.mouse.move(fromX + ((toX - fromX) * s) / steps, fromY + ((toY - fromY) * s) / steps)
     heights.push(await listScrollHeight(page))
+  }
+  if (settle) {
+    // 传入的 toX/toY 是**按下那一刻**的目标几何。拖动期间列表会按预览顺序重排
+    // （被拖卡片让位、目标卡片位移），固定落点可能已经指向别的卡片或空白 ——
+    // 那就白拖了（CI 上「reverse direction」实测过：顺序完全没变）。
+    // 这里用**当前**几何重取目标位置补移动，直到预览顺序真的等于 want。
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await waitForOrder(page, settle.want, 1200)) break
+      const tb = await page.locator(`[data-queue-id="${settle.targetID}"]`).boundingBox()
+      if (!tb) break
+      await page.mouse.move(
+        tb.x + tb.width / 2,
+        settle.edge === 'before' ? tb.y + 4 : tb.y + tb.height - 4,
+        { steps: 4 },
+      )
+      heights.push(await listScrollHeight(page))
+    }
   }
   return { heights }
 }
@@ -247,17 +275,101 @@ async function login(page: Page) {
   await page.waitForTimeout(1500)
 }
 
-/** Drag `srcID`'s handle onto `targetID`, landing on its top or bottom half. */
-async function dragCard(page: Page, srcID: string, targetID: string, edge: 'before' | 'after') {
+/** 把 srcID 插到 targetID 前/后得到的顺序（与组件里的 computeReorder 等价）。 */
+function withMoved(ids: string[], srcID: string, targetID: string, edge: 'before' | 'after'): string[] {
+  const without = ids.filter((x) => x !== srcID)
+  const at = without.indexOf(targetID)
+  if (at < 0) return ids
+  const insertAt = edge === 'before' ? at : at + 1
+  return [...without.slice(0, insertAt), srcID, ...without.slice(insertAt)]
+}
+
+/** 轮询直到 DOM 顺序等于 want（松手前必须成立，见 dragCard 注释）。 */
+async function waitForOrder(page: Page, want: string, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if ((await domOrder(page)).join(' ') === want) return true
+    await page.waitForTimeout(50)
+  }
+  return false
+}
+
+/** 按住 srcID 的拖拽柄，确认拖拽会话真的建立（幽灵出现）。失败会重来几次。
+ *
+ *  为什么需要自检 + 重来：`mouse.move(x,y)` 用的是**取坐标那一刻**的布局，
+ *  而 scrollIntoViewIfNeeded、队列快照重渲染、上一张卡出入场动画都会在取坐标
+ *  之后继续动 —— 按压落在别的元素上时 pointerdown 不会进 handleHandleDown，
+ *  幽灵永不出现，后续所有 move 都是空操作。2026-11-10 CI 上那条 flaky 就是
+ *  这个形态（等 ghost 10s 超时），不是落点算错。 */
+async function beginDrag(page: Page, srcID: string): Promise<{ x: number; y: number }> {
   const handle = page.locator(`[data-queue-id="${srcID}"] [data-testid="staging-drag-handle"]`)
-  await handle.hover()
-  const target = page.locator(`[data-queue-id="${targetID}"]`)
-  const hb = await handle.boundingBox()
-  const tb = await target.boundingBox()
-  if (!hb || !tb) throw new Error('missing bounding box for drag')
-  await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2)
-  await page.mouse.down()
-  await page.mouse.move(tb.x + tb.width / 2, edge === 'before' ? tb.y + 4 : tb.y + tb.height - 4, { steps: 10 })
+  const ghost = page.getByTestId('staging-drag-ghost')
+  let lastErr: unknown = null
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await handle.scrollIntoViewIfNeeded()
+    const hb = await handle.boundingBox()
+    if (!hb) {
+      lastErr = new Error(`no bounding box for the drag handle of ${srcID}`)
+      continue
+    }
+    const x = hb.x + hb.width / 2
+    const y = hb.y + hb.height / 2
+    await page.mouse.move(x, y)
+
+    // 命中自检：这个坐标必须真的落在这一行卡片上。
+    const hit = await page.evaluate(
+      ([px, py]) =>
+        document
+          .elementFromPoint(px, py)
+          ?.closest('[data-queue-id]')
+          ?.getAttribute('data-queue-id') ?? null,
+      [x, y] as [number, number],
+    )
+    if (hit !== srcID) {
+      lastErr = new Error(`press point hit ${hit ?? 'nothing'} instead of ${srcID}`)
+      continue
+    }
+
+    await page.mouse.down()
+    if (await ghost.isVisible({ timeout: 2000 }).catch(() => false)) {
+      return { x, y }
+    }
+    // pointerdown 没建立拖拽会话：松开再试。
+    await page.mouse.up()
+    lastErr = new Error('pointerdown did not start a drag session')
+  }
+  throw lastErr ?? new Error('drag did not start')
+}
+
+/** Drag `srcID`'s handle onto `targetID`, landing on its top or bottom half.
+ *
+ *  松手前必须确认预览顺序**已经**等于目标顺序：handleDragEnd 读的是拖拽中累积的
+ *  orderRef，落点没生效就松手 ⇒ 提交被判定为 no-op ⇒ 请求根本不发。
+ *
+ *  expectReorder=false 用于「拖回原位」的 no-op 用例：那时顺序本来就不该变。 */
+async function dragCard(
+  page: Page,
+  srcID: string,
+  targetID: string,
+  edge: 'before' | 'after',
+  expectReorder = true,
+) {
+  const want = withMoved(await domOrder(page), srcID, targetID, edge).join(' ')
+
+  await beginDrag(page, srcID)
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // 目标几何每次移动前重取：拖动期间列表按预览顺序重排，旧坐标会指向别的卡。
+    const tb = await page.locator(`[data-queue-id="${targetID}"]`).boundingBox()
+    if (!tb) throw new Error(`missing bounding box for ${targetID}`)
+    await page.mouse.move(tb.x + tb.width / 2, edge === 'before' ? tb.y + 4 : tb.y + tb.height - 4, {
+      steps: 8,
+    })
+    if (!expectReorder) break
+    if (await waitForOrder(page, want, 1500)) break
+  }
+
   await page.mouse.up()
 }
 
@@ -398,7 +510,7 @@ test.describe('staging tray drag-to-reorder', () => {
     await expect(page.locator('[data-queue-id]')).toHaveCount(3)
 
     // Drop m1 on its own lower half → no-op.
-    await dragCard(page, 'm1', 'm1', 'after')
+    await dragCard(page, 'm1', 'm1', 'after', false)
     await page.waitForTimeout(300)
     expect(calls).toHaveLength(0)
 
@@ -435,7 +547,11 @@ test.describe('staging tray drag-to-reorder — live preview while still holding
     const toX = targetBox.x + targetBox.width / 2
     const toY = targetBox.y + targetBox.height - 4
 
-    const { heights } = await pressAndDragInSteps(page, 'm1', toX, toY)
+    const { heights } = await pressAndDragInSteps(page, 'm1', toX, toY, 12, {
+      targetID: 'm4',
+      edge: 'after',
+      want: ['m2', 'm3', 'm4', 'm1', 'm5', 'm6'].join(' '),
+    })
 
     // ① **松手前** DOM 顺序 = 预览顺序：第 1 张已落到第 4 张之后（其它卡片让位）。
     await expect.poll(() => domOrder(page)).toEqual(['m2', 'm3', 'm4', 'm1', 'm5', 'm6'])
@@ -515,7 +631,11 @@ test.describe('staging tray drag-to-reorder — live preview while still holding
     const toX = targetBox.x + targetBox.width / 2
     const toY = targetBox.y + 4 // 第 1 张卡的**上半** → 插到最前
 
-    const { heights } = await pressAndDragInSteps(page, 'm6', toX, toY)
+    const { heights } = await pressAndDragInSteps(page, 'm6', toX, toY, 12, {
+      targetID: 'm1',
+      edge: 'before',
+      want: ['m6', 'm1', 'm2', 'm3', 'm4', 'm5'].join(' '),
+    })
 
     // 2026-10-22 CI：拖拽后的 DOM 重排可能慢于 poll 默认 5s（CI runner 慢 +
     // pointer 事件分步派发）。放宽等待，不断言放宽：顺序必须完全一致。
@@ -674,12 +794,12 @@ test.describe('staging tray drag-to-reorder — long queue edge auto-scroll', ()
     // 自动滚动确实起来了
     await expect.poll(() => listScrollTop(page), { timeout: 5000 }).toBeGreaterThan(100)
 
-    // 指针**仍停在热区内**直接松手 —— 循环必须停
+    // 指针**仍停在热区内**直接松手 —— 循环必须停。
     await page.mouse.up()
-    // 先让「落定后按新顺序重渲染」的那次重排稳定下来（它自己会让 scrollTop 小幅
-    // 移动，与 rAF 泄漏无关），再按判据要求观测「pointerup 后 300ms 不再变化」。
-    await page.waitForTimeout(300)
-    const settled = await listScrollTop(page)
+    // 落定后按新顺序重渲染会让 scrollTop 小幅移动（与 rAF 泄漏无关）。先等它
+    // 连续两次采样一致（慢机器上固定 300ms 可能不够 —— 这就是本用例在 CI 上
+    // flaky 的原因），再按判据观测「pointerup 后不再变化」。
+    const settled = await waitScrollSettled(page)
     expect(settled).toBeGreaterThan(0)
     await page.waitForTimeout(300)
     expect(await listScrollTop(page)).toBe(settled)

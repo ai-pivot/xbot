@@ -24,7 +24,9 @@ func (r *recordingLLM) Generate(_ context.Context, model string, messages []llm.
 
 func (r *recordingLLM) ListModels() []string { return nil }
 
-// coreUpdateCalls 统计 updateCoreSummary 的调用次数（以 system prompt 为特征）。
+// coreUpdateCalls 统计 core-summary 更新类调用的次数（以 system prompt 为特征）。
+// updateCoreSummary 调用点已于 2026-11-07 删除（未校验 LLM 输出把 MEMORY.md 写烂）；
+// 该计数现作为「绝不复活」的守卫——任何 provider 路径再发出这类调用即红。
 func (r *recordingLLM) coreUpdateCalls() int {
 	n := 0
 	for _, msgs := range r.calls {
@@ -35,8 +37,8 @@ func (r *recordingLLM) coreUpdateCalls() int {
 	return n
 }
 
-// seedHighImportanceMemory 种一条 importance >= 0.7 的长期记忆 —— updateCoreSummary
-// 只有在存在高重要性记忆时才会构建 prompt 并发起 LLM 调用（memSB 为空直接 return）。
+// seedHighImportanceMemory 种一条 importance >= 0.7 的长期记忆（历史：updateCoreSummary
+// 只在存在高重要性记忆时才发起 LLM 调用；该调用点已删除，种子保留供各测试对账）。
 func seedHighImportanceMemory(t *testing.T, m *XbotMemory) {
 	t.Helper()
 	if _, err := m.AddMemory(t.Context(), LongTermMemory{
@@ -53,10 +55,12 @@ func seedHighImportanceMemory(t *testing.T, m *XbotMemory) {
 //
 // XbotMemory 是单 operator 共享实例，m.llmClient 曾是跨会话共享可变字段：
 // 压缩管道 PreCompress(A) 设置的 client 会被并发会话的 ConsolidateTurn(B) 覆盖 →
-// PostCompress 的 updateCoreSummary 用 B 的模型/端点/max_output（事故现场：F64D 的
-// ConsolidateTurn 用了 feishu 的 deepseek 配置，feishu 用了 F64D 的 glm-5.3 ——
-// 两个会话的内存提取配置完美互换）。PostCompress 的 client 必须来自自己的 input
-// （压缩管道传入），不受共享字段影响。
+// PostCompress 的（现已删除的）core-summary 更新用 B 的模型/端点/max_output。
+// 该事故教出的「client 必须来自本次 input」规则由 ConsolidateTurn/PreCompress 段
+// 继续 guarding；PostCompress 自 2026-11-07 起不再发起任何 LLM 调用
+// （updateCoreSummary 调用点已删除——未校验 LLM 输出把 MEMORY.md 写烂，
+// 116KB/894 行污染事故）。本测试现守护：PostCompress 不发任何调用，且
+// core-update 类调用绝不在任何 client 上复活。
 func TestPostCompressUsesOwnLLMClient(t *testing.T) {
 	m, _ := newTestMemory(t)
 	seedHighImportanceMemory(t, m)
@@ -96,12 +100,29 @@ func TestPostCompressUsesOwnLLMClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// PostCompress 不再发起任何 LLM 调用（core-summary LLM leg 已删除）。
 	if got := clientB.coreUpdateCalls(); got != 0 {
 		t.Errorf("BUG REPRODUCED: PostCompress 的 core summary 更新打到了并发会话的 client 上（%d 次）"+
 			"——共享 m.llmClient 被 ConsolidateTurn 覆盖，2026-09-02 事故根因", got)
 	}
-	if got := clientA.coreUpdateCalls(); got == 0 {
-		t.Error("BUG REPRODUCED: PostCompress 没有用压缩管道自己的 client（input.LLMClient）更新 core summary")
+	if got := clientA.coreUpdateCalls(); got != 0 {
+		t.Errorf("BUG REPRODUCED: core-summary 更新调用在压缩管道自己的 client 上复活了（%d 次）"+
+			"——该调用点已于 2026-11-07 删除", got)
+	}
+	// 更强断言：PostCompress 之后 clientA 的调用总数与 PreCompress 之后完全一致
+	// （PostCompress 一步 LLM 调用都不发）。
+	postCompressCalls := len(clientA.calls)
+	if err := m.PostCompress(t.Context(), memory.PostCompressInput{
+		CompactionSummary: "压缩摘要 2",
+		SessionID:         "s-compress",
+		LLMClient:         clientA,
+		Model:             "model-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(clientA.calls) != postCompressCalls {
+		t.Errorf("BUG REPRODUCED: PostCompress 发起了 %d 次 LLM 调用（应为 0，core-summary leg 已删除）",
+			len(clientA.calls)-postCompressCalls)
 	}
 }
 
