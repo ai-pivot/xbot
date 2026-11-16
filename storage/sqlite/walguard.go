@@ -39,6 +39,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "xbot/logger"
@@ -72,42 +73,42 @@ const (
 )
 
 // walGuardEnabled 关闭时守卫整体停摆（连检测都不做）。默认 on，可由 XBOT_WAL_GUARD 覆盖。
-var walGuardEnabled = true
+var walGuardEnabled atomic.Bool // 默认 on（init 里 Store(true)）
 
 // walGuardHealEnabled=false 时守卫只**告警**不自愈（默认）。由 XBOT_WAL_GUARD_HEAL 覆盖。
-var walGuardHealEnabled = false
+var walGuardHealEnabled atomic.Bool // 默认 warn（只告警不自愈）
 
 func init() { applyWALGuardEnv(os.LookupEnv) }
 
 // applyWALGuardEnv 解析 kill switch（拆出来是为了可测）。先落默认值再覆盖。
 func applyWALGuardEnv(lookup func(string) (string, bool)) {
-	walGuardEnabled = true
-	walGuardHealEnabled = false // 默认 warn：见文件头并发压测结论
+	walGuardEnabled.Store(true)
+	walGuardHealEnabled.Store(false) // 默认 warn：见文件头并发压测结论
 	if raw, ok := lookup(envWALGuard); ok {
 		switch strings.ToLower(strings.TrimSpace(raw)) {
 		case "on", "1", "true", "yes":
-			walGuardEnabled = true
+			walGuardEnabled.Store(true)
 		case "off", "0", "false", "no":
-			walGuardEnabled = false
+			walGuardEnabled.Store(false)
 		default:
 			log.WithFields(log.Fields{"env": envWALGuard, "value": raw, "default": "on"}).
 				Warn("Unrecognized WAL guard kill switch value — falling back to the default")
-			walGuardEnabled = true
+			walGuardEnabled.Store(true)
 		}
 	}
 	if raw, ok := lookup(envWALGuardHeal); ok {
 		switch strings.ToLower(strings.TrimSpace(raw)) {
 		case "heal", "on", "true", "1":
-			walGuardHealEnabled = true
+			walGuardHealEnabled.Store(true)
 		case "warn", "off", "false", "0":
-			walGuardHealEnabled = false
+			walGuardHealEnabled.Store(false)
 		default:
 			log.WithFields(log.Fields{"env": envWALGuardHeal, "value": raw, "default": "warn"}).
 				Warn("Unrecognized WAL guard heal switch value — falling back to the default")
-			walGuardHealEnabled = false
+			walGuardHealEnabled.Store(false)
 		}
 	}
-	if !walGuardEnabled {
+	if !walGuardEnabled.Load() {
 		log.WithFields(log.Fields{envWALGuard: "off"}).
 			Warn("WAL guard is DISABLED by kill switch — a foreign process can unlink xbot.db-wal/-shm and this process will keep writing to an unreachable inode (no detection, no heal)")
 	}
@@ -233,9 +234,9 @@ func startWALGuard() {
 	walGuard.mu.Unlock()
 
 	log.WithFields(log.Fields{
-		"enabled": walGuardEnabled, "heal": walGuardHealEnabled,
+		"enabled": walGuardEnabled.Load(), "heal": walGuardHealEnabled.Load(),
 		"interval": walGuardInterval.String(),
-	}).Info("WAL guard started (kill switches: " + envWALGuard + "=" + onOff(walGuardEnabled) + ", " + envWALGuardHeal + "=" + healWarn(walGuardHealEnabled) + ")")
+	}).Info("WAL guard started (kill switches: " + envWALGuard + "=" + onOff(walGuardEnabled.Load()) + ", " + envWALGuardHeal + "=" + healWarn(walGuardHealEnabled.Load()) + ")")
 
 	go func() {
 		defer close(done)
@@ -261,7 +262,7 @@ func startWALGuard() {
 
 // walGuardTick 巡检一遍当前仍然被引用的所有路径，返回自愈次数（测试钩子）。
 func walGuardTick() int {
-	if !walGuardEnabled {
+	if !walGuardEnabled.Load() {
 		return 0
 	}
 	type entry struct {
@@ -281,7 +282,7 @@ func walGuardTick() int {
 		if anomaly == "" {
 			continue
 		}
-		if !walGuardHealEnabled {
+		if !walGuardHealEnabled.Load() {
 			log.WithFields(log.Fields{"path": en.path, "anomaly": anomaly}).
 				Error("WAL guard: a foreign process removed/replaced the live -wal; heal is disabled (walGuardHealEnabled=false) — writes from now on may be unreachable")
 			continue

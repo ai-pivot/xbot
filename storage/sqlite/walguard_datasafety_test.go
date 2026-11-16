@@ -88,9 +88,10 @@ func TestWALGuardDataSafetyAcrossForeignUnlink(t *testing.T) {
 	resumeGuard := pauseWALGuard()
 	defer resumeGuard()
 
-	oldEnabled, oldHeal := walGuardEnabled, walGuardHealEnabled
-	walGuardEnabled, walGuardHealEnabled = true, true // 静默期 opt-in 自愈
-	defer func() { walGuardEnabled, walGuardHealEnabled = oldEnabled, oldHeal }()
+	oldEnabled, oldHeal := walGuardEnabled.Load(), walGuardHealEnabled.Load()
+	walGuardEnabled.Store(true)
+	walGuardHealEnabled.Store(true) // 静默期 opt-in 自愈
+	defer func() { walGuardEnabled.Store(oldEnabled); walGuardHealEnabled.Store(oldHeal) }()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "xbot.db")
