@@ -22,9 +22,10 @@ import (
 
 func TestWALGuardWarnModeKeepsDBConsistentUnderConcurrentWrites(t *testing.T) {
 	requirePOSIXUnlink(t)
-	oldEnabled, oldHeal := walGuardEnabled, walGuardHealEnabled
-	walGuardEnabled, walGuardHealEnabled = true, false // 默认配置：on + warn
-	defer func() { walGuardEnabled, walGuardHealEnabled = oldEnabled, oldHeal }()
+	oldEnabled, oldHeal := walGuardEnabled.Load(), walGuardHealEnabled.Load()
+	walGuardEnabled.Store(true)
+	walGuardHealEnabled.Store(false) // 默认配置：on + warn
+	defer func() { walGuardEnabled.Store(oldEnabled); walGuardHealEnabled.Store(oldHeal) }()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "xbot.db")
@@ -121,9 +122,10 @@ func TestWALGuardHealOptInStillWorksWhenQuiescent(t *testing.T) {
 	resumeGuard := pauseWALGuard()
 	defer resumeGuard()
 
-	oldEnabled, oldHeal := walGuardEnabled, walGuardHealEnabled
-	walGuardEnabled, walGuardHealEnabled = true, true
-	defer func() { walGuardEnabled, walGuardHealEnabled = oldEnabled, oldHeal }()
+	oldEnabled, oldHeal := walGuardEnabled.Load(), walGuardHealEnabled.Load()
+	walGuardEnabled.Store(true)
+	walGuardHealEnabled.Store(true)
+	defer func() { walGuardEnabled.Store(oldEnabled); walGuardHealEnabled.Store(oldHeal) }()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "xbot.db")

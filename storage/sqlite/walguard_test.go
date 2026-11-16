@@ -47,9 +47,10 @@ func TestWALGuardHealsForeignWALRemoval(t *testing.T) {
 	resumeGuard := pauseWALGuard()
 	defer resumeGuard()
 
-	oldEnabled, oldHeal := walGuardEnabled, walGuardHealEnabled
-	walGuardEnabled, walGuardHealEnabled = true, true // 显式 opt-in 自愈（默认是 warn）
-	defer func() { walGuardEnabled, walGuardHealEnabled = oldEnabled, oldHeal }()
+	oldEnabled, oldHeal := walGuardEnabled.Load(), walGuardHealEnabled.Load()
+	walGuardEnabled.Store(true)
+	walGuardHealEnabled.Store(true) // 显式 opt-in 自愈（默认是 warn）
+	defer func() { walGuardEnabled.Store(oldEnabled); walGuardHealEnabled.Store(oldHeal) }()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "xbot.db")
@@ -134,9 +135,10 @@ func TestWALGuardHealsForeignWALRemoval(t *testing.T) {
 // 断言有判别力（mutation：把 walGuardTick 变成 no-op，本用例仍绿而上一条变红）。
 func TestWALGuardDisabledLeavesOrphanedWAL(t *testing.T) {
 	requirePOSIXUnlink(t)
-	oldEnabled, oldHeal := walGuardEnabled, walGuardHealEnabled
-	walGuardEnabled, walGuardHealEnabled = false, false
-	defer func() { walGuardEnabled, walGuardHealEnabled = oldEnabled, oldHeal }()
+	oldEnabled, oldHeal := walGuardEnabled.Load(), walGuardHealEnabled.Load()
+	walGuardEnabled.Store(false)
+	walGuardHealEnabled.Store(false)
+	defer func() { walGuardEnabled.Store(oldEnabled); walGuardHealEnabled.Store(oldHeal) }()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "xbot.db")

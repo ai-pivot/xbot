@@ -43,10 +43,11 @@ func TestWALGuardIgnoresOwnIdleClose(t *testing.T) {
 	resumeGuard := pauseWALGuard()
 	defer resumeGuard()
 
-	oldEnabled, oldHeal := walGuardEnabled, walGuardHealEnabled
+	oldEnabled, oldHeal := walGuardEnabled.Load(), walGuardHealEnabled.Load()
 	// heal=true 让「误报」表现为一次可数的换池（healed>=1），比只看日志更硬。
-	walGuardEnabled, walGuardHealEnabled = true, true
-	defer func() { walGuardEnabled, walGuardHealEnabled = oldEnabled, oldHeal }()
+	walGuardEnabled.Store(true)
+	walGuardHealEnabled.Store(true)
+	defer func() { walGuardEnabled.Store(oldEnabled); walGuardHealEnabled.Store(oldHeal) }()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.db")
@@ -118,9 +119,10 @@ func TestWALGuardStillAlarmsOnExternalUnlinkWithLiveHandle(t *testing.T) {
 	resumeGuard := pauseWALGuard()
 	defer resumeGuard()
 
-	oldEnabled, oldHeal := walGuardEnabled, walGuardHealEnabled
-	walGuardEnabled, walGuardHealEnabled = true, false // warn：只报警，不换池
-	defer func() { walGuardEnabled, walGuardHealEnabled = oldEnabled, oldHeal }()
+	oldEnabled, oldHeal := walGuardEnabled.Load(), walGuardHealEnabled.Load()
+	walGuardEnabled.Store(true)
+	walGuardHealEnabled.Store(false) // warn：只报警，不换池
+	defer func() { walGuardEnabled.Store(oldEnabled); walGuardHealEnabled.Store(oldHeal) }()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.db")

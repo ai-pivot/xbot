@@ -17,8 +17,8 @@ import (
 
 func withWALGuardGlobals(t *testing.T, fn func()) {
 	t.Helper()
-	en, he := walGuardEnabled, walGuardHealEnabled
-	defer func() { walGuardEnabled, walGuardHealEnabled = en, he }()
+	en, he := walGuardEnabled.Load(), walGuardHealEnabled.Load()
+	defer func() { walGuardEnabled.Store(en); walGuardHealEnabled.Store(he) }()
 	fn()
 }
 
@@ -31,12 +31,13 @@ func lookupFrom(m map[string]string) func(string) (string, bool) {
 
 func TestWALGuardKillSwitchDefaults(t *testing.T) {
 	withWALGuardGlobals(t, func() {
-		walGuardEnabled, walGuardHealEnabled = false, false
+		walGuardEnabled.Store(false)
+		walGuardHealEnabled.Store(false)
 		applyWALGuardEnv(lookupFrom(nil)) // 什么都没设
-		if !walGuardEnabled {
+		if !walGuardEnabled.Load() {
 			t.Fatalf("XBOT_WAL_GUARD unset must default to on")
 		}
-		if walGuardHealEnabled {
+		if walGuardHealEnabled.Load() {
 			t.Fatalf("XBOT_WAL_GUARD_HEAL unset must default to warn (alert-only) — heal reopens a live pool and is unsafe with concurrent writers")
 		}
 	})
@@ -44,14 +45,15 @@ func TestWALGuardKillSwitchDefaults(t *testing.T) {
 
 func TestWALGuardKillSwitchInvalidValueFallsBackToDefault(t *testing.T) {
 	withWALGuardGlobals(t, func() {
-		walGuardEnabled, walGuardHealEnabled = false, false
+		walGuardEnabled.Store(false)
+		walGuardHealEnabled.Store(false)
 		applyWALGuardEnv(lookupFrom(map[string]string{
 			envWALGuard:     "definitely-not-a-value",
 			envWALGuardHeal: "??",
 		}))
-		if !walGuardEnabled || walGuardHealEnabled {
+		if !walGuardEnabled.Load() || walGuardHealEnabled.Load() {
 			t.Fatalf("illegal values must fall back to defaults (on/warn), got enabled=%v heal=%v",
-				walGuardEnabled, walGuardHealEnabled)
+				walGuardEnabled.Load(), walGuardHealEnabled.Load())
 		}
 	})
 }
@@ -61,7 +63,7 @@ func TestWALGuardKillSwitchOffDisablesDetectionAndHeal(t *testing.T) {
 	withWALGuardGlobals(t, func() {
 		requirePOSIXUnlink(t)
 		applyWALGuardEnv(lookupFrom(map[string]string{envWALGuard: "off"}))
-		if walGuardEnabled {
+		if walGuardEnabled.Load() {
 			t.Fatalf("XBOT_WAL_GUARD=off must disable the guard")
 		}
 		dir := t.TempDir()
@@ -99,8 +101,8 @@ func TestWALGuardKillSwitchWarnDoesNotHeal(t *testing.T) {
 			envWALGuard:     "on",
 			envWALGuardHeal: "warn",
 		}))
-		if !walGuardEnabled || walGuardHealEnabled {
-			t.Fatalf("want enabled=true heal=false, got %v/%v", walGuardEnabled, walGuardHealEnabled)
+		if !walGuardEnabled.Load() || walGuardHealEnabled.Load() {
+			t.Fatalf("want enabled=true heal=false, got %v/%v", walGuardEnabled.Load(), walGuardHealEnabled.Load())
 		}
 		dir := t.TempDir()
 		path := filepath.Join(dir, "xbot.db")
@@ -133,11 +135,11 @@ func TestWALGuardKillSwitchWarnDoesNotHeal(t *testing.T) {
 func TestWALGuardKillSwitchHealRequiresOptIn(t *testing.T) {
 	withWALGuardGlobals(t, func() {
 		applyWALGuardEnv(lookupFrom(map[string]string{envWALGuardHeal: "heal"}))
-		if !walGuardHealEnabled {
+		if !walGuardHealEnabled.Load() {
 			t.Fatalf("XBOT_WAL_GUARD_HEAL=heal must enable the heal path")
 		}
 		applyWALGuardEnv(lookupFrom(map[string]string{envWALGuardHeal: "warn"}))
-		if walGuardHealEnabled {
+		if walGuardHealEnabled.Load() {
 			t.Fatalf("XBOT_WAL_GUARD_HEAL=warn must disable the heal path")
 		}
 	})
