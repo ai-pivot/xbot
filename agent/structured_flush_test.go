@@ -95,3 +95,32 @@ func containsAll(s string, subs ...string) bool {
 	}
 	return true
 }
+
+// flush 之后必须幂等：再调一次 idle drain 不能把同一条批复再投一遍。
+func TestFlushStructuredQueueIsIdempotent(t *testing.T) {
+	a := &Agent{bus: bus.NewMessageBus()}
+	const ch, chat = "web", "chat_idem"
+	key := qualifyChatID(ch, chat)
+	st := &bgSessionState{}
+	st.busy.Store(true)
+	a.bgSessionStates.Store(key, st)
+	a.DeliverStructuredMessagePersisting(&StructuredQueueItem{
+		Channel: ch, ChatID: chat, SenderID: "u1", Kind: "decision",
+		Content: "用户处理了卡片 #9：已批准", Priority: StructuredPriorityHigh,
+	}, nil)
+
+	st.busy.Store(false)
+	a.drainAndProcessNotifications(key)
+	select {
+	case <-a.bus.Inbound:
+	default:
+		t.Fatal("first idle drain should deliver")
+	}
+	// 第二次 idle drain：队列已空，不能再投。
+	a.drainAndProcessNotifications(key)
+	select {
+	case m := <-a.bus.Inbound:
+		t.Fatalf("duplicate delivery after flush: %+v", m)
+	default:
+	}
+}
