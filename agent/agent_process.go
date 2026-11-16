@@ -401,6 +401,16 @@ func firstNonEmptyLine(s string) string {
 // （用户截图：Next turn 83 + Turn 84–88，既不能立刻发出、也拿不到一次处理完）。
 // 批量成一条同时保证：一个 turn 处理完所有事件、不会挤爆队列。
 func (a *Agent) drainAndProcessNotifications(sessionKey string) {
+	// 会话已 idle：先把插队队列的残留转成普通 user 消息（否则要等下一次 busy 才投递）。
+	if st, ok := a.bgSessionStates.Load(sessionKey); ok {
+		if ss, ok := st.(*bgSessionState); ok && ss != nil && !ss.busy.Load() {
+			a.flushStructuredQueueAsUserMessage(sessionKey)
+		}
+	} else {
+		// 没有 bgSessionState 记录（例如从未跑过 chatWorker 的会话）：同样按 idle 处理。
+		a.flushStructuredQueueAsUserMessage(sessionKey)
+	}
+
 	ownerHandled := false
 	for _, n := range a.pendingBgNotifications(sessionKey) {
 		ownerHandled = a.routeBackgroundTaskToOwner(n) || ownerHandled

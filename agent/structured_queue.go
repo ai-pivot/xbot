@@ -3,6 +3,7 @@ package agent
 import (
 	"container/heap"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -152,6 +153,16 @@ func (a *Agent) structuredQueue(sessionKey string) *StructuredQueue {
 	return actual.(*StructuredQueue)
 }
 
+// peekStructuredQueue 只读地取某会话的插队队列；不存在返回 nil（不创建）。
+func (a *Agent) peekStructuredQueue(sessionKey string) *StructuredQueue {
+	v, ok := a.structuredQueues.Load(sessionKey)
+	if !ok {
+		return nil
+	}
+	q, _ := v.(*StructuredQueue)
+	return q
+}
+
 // StructuredQueueLen 返回某会话待注入的结构化消息数量（诊断/测试）。
 func (a *Agent) StructuredQueueLen(channelName, chatID string) int {
 	v, ok := a.structuredQueues.Load(qualifyChatID(channelName, chatID))
@@ -259,6 +270,49 @@ func (a *Agent) DeliverStructuredMessagePersisting(item *StructuredQueueItem, pe
 	}
 	a.injectInboundWithMetadata(item.Channel, item.ChatID, item.SenderID, content, metadata)
 	return true
+}
+
+// flushStructuredQueueAsUserMessage 把会话**已 idle** 时队列里的残留转成一条普通
+// user 消息，立即起一个 turn。
+//
+// 为什么必须要有这一步：插队队列只在 Run 的 iteration 边界（wireBgNotificationDrain）
+// 被消费。如果消息在 busy 期入队、而该 Run 在下一个边界之前就结束了，队列残留就
+// 没有任何人消费 —— 表现为「idle 时不投递，要等下一次 busy 才变成 user msg」
+// （2026-11-16 用户实测）。Run 结束后由 drainAndProcessNotifications 调用本函数兜底。
+//
+// 语义要点：这里**不带** structured_delivery（否则 processMessage 会跳过落 user 行），
+// 也不再加结构化元数据 —— 内容直接内联，按普通用户消息落库并触发新 turn。
+func (a *Agent) flushStructuredQueueAsUserMessage(sessionKey string) int {
+	q := a.peekStructuredQueue(sessionKey)
+	if q == nil || q.Len() == 0 {
+		return 0
+	}
+	var parts []string
+	var first *StructuredQueueItem
+	n := 0
+	for {
+		item := q.Pop()
+		if item == nil {
+			break
+		}
+		n++
+		if first == nil {
+			first = item
+		}
+		if c := strings.TrimSpace(item.Content); c != "" {
+			parts = append(parts, c)
+		}
+	}
+	if first == nil || len(parts) == 0 {
+		return n
+	}
+	content := strings.Join(parts, "\n\n---\n\n")
+	log.WithFields(log.Fields{
+		"channel": first.Channel, "chat_id": first.ChatID,
+		"count": n, "correlation_id": first.CorrelationID,
+	}).Info("flushing queued structured messages as a user message (session went idle before drain)")
+	a.injectInboundWithMetadata(first.Channel, first.ChatID, first.SenderID, content, nil)
+	return n
 }
 
 // drainStructuredQueue 在 iteration 边界把队列中的消息转换成注入通知。
