@@ -184,6 +184,26 @@ describe('MarkdownRenderer', () => {
     expect(code).toEqual(['ops/prd-console-20261107', 'main'])
   })
 
+  it('bolds Chinese emphasis that CommonMark rejects (CJK text glued to a quoted term)', () => {
+    // 2026-11-10 用户截图：`是** “每个 …” 的原子配额领取器**——` 渲染成字面 `**`。
+    // CommonMark 的 flanking 规则要求 `**` 不是「前面是文字、后面是标点/空白」；
+    // GitHub 同样渲染成字面，所以由渲染层做定向兼容（不改任何字符）。
+    const content =
+      '`reserve_sidecar_trace` 是** “每个 maintenance tick 最多把 N 个 sidecar delete RPC 挂回本 tick 的 trace” 的原子配额领取器**——它不控制请求是否执行、也不控制并发。'
+    const { container } = render(<MarkdownRenderer content={content} noDebounce />)
+
+    const strong = container.querySelector('strong')
+    expect(strong).not.toBeNull()
+    expect(strong).toHaveTextContent('“每个 maintenance tick')
+    expect(strong).toHaveTextContent('的原子配额领取器')
+    expect(container.textContent).not.toContain('**')
+
+    // 第二个方向：收尾 `**` 后面紧跟中文（`**“x”**的`）同样要加粗。
+    const second = render(<MarkdownRenderer content={'见**“引用”**的说明'} noDebounce />)
+    expect(second.container.querySelector('strong')).toHaveTextContent('“引用”')
+    expect(second.container.textContent).not.toContain('**')
+  })
+
   it('renders strikethrough via GFM', () => {
     const { container } = render(<MarkdownRenderer content={'~~deleted~~'} />)
     expect(container.querySelector('del')).not.toBeNull()
