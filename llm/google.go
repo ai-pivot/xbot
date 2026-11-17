@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // Gemini / Google Generative Language 原生协议客户端。
@@ -162,6 +164,23 @@ type geminiResponse struct {
 	PromptFeedback *struct {
 		BlockReason string `json:"blockReason"`
 	} `json:"promptFeedback"`
+	// Gemini 在流式中途出错时会在 SSE 里推 {"error":{...}}（而不是 HTTP 错误码）。
+	// 不解析它的话，这种帧会被当成"没有 candidates 的普通帧"忽略掉，
+	// 最终表现为"会话自己终止、前端没有任何报错"。
+	Error *geminiAPIError `json:"error,omitempty"`
+}
+
+type geminiAPIError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Status  string `json:"status"`
+}
+
+func (e *geminiAPIError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("gemini API error %d %s: %s", e.Code, e.Status, e.Message)
 }
 
 // ─── 请求构造 ─────────────────────────────────────────────
@@ -390,6 +409,11 @@ func (g *GoogleLLM) Generate(ctx context.Context, model string, messages []ChatM
 	if model == "" {
 		model = g.cfg.DefaultModel
 	}
+	log.WithFields(log.Fields{
+		"provider": "google", "model": model, "stream": false,
+		"msg_count": len(messages), "tools_count": len(tools),
+		"thinking_mode": thinkingMode,
+	}).Info("[LLM] Starting gemini request")
 	reqBody := g.toGeminiRequest(ctx, model, messages, tools, thinkingMode)
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
@@ -413,7 +437,11 @@ func (g *GoogleLLM) Generate(ctx context.Context, model string, messages []ChatM
 	if err := json.Unmarshal(body, &gr); err != nil {
 		return nil, fmt.Errorf("gemini decode: %w", err)
 	}
-	return convertGeminiResponse(&gr), nil
+	out, convErr := convertGeminiResponse(&gr)
+	if convErr != nil {
+		return nil, convErr
+	}
+	return out, nil
 }
 
 func (g *GoogleLLM) setHeaders(req *http.Request) {
@@ -424,7 +452,10 @@ func (g *GoogleLLM) setHeaders(req *http.Request) {
 }
 
 // convertGeminiResponse 把 Gemini candidates 转成业务响应（文本 / 工具调用 / 用量）。
-func convertGeminiResponse(gr *geminiResponse) *LLMResponse {
+func convertGeminiResponse(gr *geminiResponse) (*LLMResponse, error) {
+	if gr.Error != nil {
+		return nil, gr.Error
+	}
 	out := &LLMResponse{FinishReason: FinishReasonStop}
 	var texts, thoughts []string
 	idx := 0
@@ -467,7 +498,16 @@ func convertGeminiResponse(gr *geminiResponse) *LLMResponse {
 	if gr.PromptFeedback != nil && gr.PromptFeedback.BlockReason != "" && out.Content == "" && len(out.ToolCalls) == 0 {
 		out.FinishReason = FinishReasonContentFilter
 	}
-	return out
+	return out, nil
+}
+
+// geminiCallID 优先用上游给的工具调用 id（后续轮次回传时保持一致），
+// 缺失时才退化成 call_N。
+func geminiCallID(fc *geminiFuncCall, idx int) string {
+	if fc != nil && fc.ID != "" {
+		return fc.ID
+	}
+	return fmt.Sprintf("call_%d", idx)
 }
 
 // isToolResponseTurn 判断一个 content 是否是"纯工具响应" turn。
@@ -600,6 +640,11 @@ func (g *GoogleLLM) GenerateStream(ctx context.Context, model string, messages [
 	if err != nil {
 		return nil, err
 	}
+	log.WithFields(log.Fields{
+		"provider": "google", "model": model, "stream": true,
+		"msg_count": len(messages), "tools_count": len(tools),
+		"thinking_mode": thinkingMode,
+	}).Info("[LLM] Starting gemini stream request")
 	url := g.endpoint(model, "streamGenerateContent") + "?alt=sse"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
@@ -617,17 +662,18 @@ func (g *GoogleLLM) GenerateStream(ctx context.Context, model string, messages [
 		return nil, fmt.Errorf("gemini stream %s: HTTP %d: %s", model, resp.StatusCode, truncateForError(body))
 	}
 	ch := make(chan StreamEvent, 64)
-	go g.pumpStream(ctx, resp.Body, ch)
+	go g.pumpStream(ctx, model, resp.Body, ch)
 	return ch, nil
 }
 
-func (g *GoogleLLM) pumpStream(ctx context.Context, body io.ReadCloser, ch chan<- StreamEvent) {
+func (g *GoogleLLM) pumpStream(ctx context.Context, model string, body io.ReadCloser, ch chan<- StreamEvent) {
 	defer close(ch)
 	defer body.Close()
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	toolIdx := 0
 	sentDone := false
+	produced := false // 是否真的产出过内容/思考/工具调用
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, ":") {
@@ -645,6 +691,10 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, body io.ReadCloser, ch chan<
 			ch <- StreamEvent{Type: EventError, Error: "gemini stream decode: " + err.Error()}
 			return
 		}
+		if gr.Error != nil {
+			ch <- StreamEvent{Type: EventError, Error: gr.Error.Error()}
+			return
+		}
 		for _, cand := range gr.Candidates {
 			for _, part := range cand.Content.Parts {
 				switch {
@@ -653,16 +703,19 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, body io.ReadCloser, ch chan<
 					if len(part.FunctionCall.Args) > 0 {
 						args = string(part.FunctionCall.Args)
 					}
+					produced = true
 					ch <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{
-						Index: toolIdx, ID: fmt.Sprintf("call_%d", toolIdx),
+						Index: toolIdx, ID: geminiCallID(part.FunctionCall, toolIdx),
 						Name: part.FunctionCall.Name, Arguments: args, ArgumentsComplete: true,
 					}}
 					toolIdx++
 				case part.Thought:
 					if part.Text != "" {
+						produced = true
 						ch <- StreamEvent{Type: EventReasoningContent, ReasoningContent: part.Text}
 					}
 				case part.Text != "":
+					produced = true
 					ch <- StreamEvent{Type: EventContent, Content: part.Text}
 				}
 			}
@@ -692,6 +745,17 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, body io.ReadCloser, ch chan<
 		return
 	}
 	if !sentDone {
-		ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonStop}
+		// 上游没给 finishReason 就结束了。以前这里直接发 FinishReasonStop，
+		// 等于把"截断/空流"伪装成正常完成 —— 上层（CollectStream）看到
+		// EventDone 就不再报错，前端表现就是"会话自己终止、看不到任何报错"。
+		// 现在：产出了内容才降级为 Stop（并记一条 warn），完全空流必须报错，
+		// 让 retry 机制接手、最终把错误显示给用户。
+		if produced {
+			log.WithFields(log.Fields{"model": model, "tool_calls": toolIdx}).
+				Warn("[LLM] gemini stream ended without finishReason; treating partial output as complete")
+			ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonStop}
+		} else {
+			ch <- StreamEvent{Type: EventError, Error: "gemini stream returned no content and no finishReason (upstream closed the stream; possible quota/safety/network issue)"}
+		}
 	}
 }

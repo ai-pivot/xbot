@@ -32,6 +32,7 @@ const zhCN = {
     diff: '差异',
     config: '配置',
     info: '信息',
+    memory: '记忆',
     terminal: '终端',
     tasks: '任务',
     tasksCron: '定时任务',
