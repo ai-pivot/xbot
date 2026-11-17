@@ -5,7 +5,7 @@
  * DeleteMemory），所以写入闸门（长度 / 注入模式 / 协议控制标签 / importance
  * 钳制 / 去重）在面板里同样生效。
  */
-import { backendFetch, postAPI } from '@/lib/api'
+import { backendFetch, postAPI, readEnvelope } from '@/lib/api'
 
 export interface MemoryItem {
   id: number
@@ -35,13 +35,15 @@ export async function fetchMemories(
   q.set('type', opts.type ?? 'all')
   q.set('limit', String(opts.limit ?? 100))
   const res = await backendFetch(`/api/memory?${q.toString()}`, { signal: opts.signal })
-  const body = (await res.json().catch(() => null)) as
-    | { ok?: boolean; items?: MemoryItem[]; error?: { message?: string } }
-    | null
-  if (!res.ok || !body?.ok) {
-    throw new Error(body?.error?.message ?? `加载记忆失败 (HTTP ${res.status})`)
+  // 服务端统一用 {ok, data, error} 信封：列表在 data.items 里，不是顶层 items。
+  const env = await readEnvelope<{ items?: MemoryItem[] } | MemoryItem[]>(res)
+  if (!res.ok || !env.ok) {
+    throw new Error(env.error?.message ?? `加载记忆失败 (HTTP ${res.status})`)
   }
-  return body.items ?? []
+  const payload = env.data
+  // 兼容两种历史形态：{items:[...]} 与直接数组。
+  if (Array.isArray(payload)) return payload
+  return payload?.items ?? []
 }
 
 export async function updateMemoryItem(

@@ -177,7 +177,11 @@ export function unregisterWebPush(endpoint: string): Promise<unknown> {
   })
 }
 
-async function readEnvelope<T>(response: Response): Promise<APIResponse<T>> {
+/** Parse the canonical `{ok, data, error}` envelope. Exported so hand-written
+ * GET call sites parse the SAME shape as postAPI instead of guessing — the
+ * memory panel read a top-level `items` field while the server nested it under
+ * `data`, which made the list permanently empty (2026-11-17). */
+export async function readEnvelope<T>(response: Response): Promise<APIResponse<T>> {
   try {
     return await response.json() as APIResponse<T>
   } catch {
