@@ -54,6 +54,20 @@ const REVERSE_MAP: Record<string, string> = Object.fromEntries(
 /** Custom event dispatched after server→localStorage sync */
 export const SETTINGS_SYNCED_EVENT = 'xbot:settings-synced'
 
+/**
+ * True once the server→localStorage sync has finished (success or failure).
+ *
+ * Why this gate exists: component defaults (e.g. ThemeProvider's mdTheme
+ * fallback 'vscode-dark') run their init effects BEFORE
+ * syncAndMigrateSettings() resolves. Without the gate they called
+ * syncSettingToServer() with those defaults, which overwrote the user's real
+ * server-side value — that is exactly how the operator's markdown theme was
+ * silently reset from `xbot-aurora` to `vscode-dark` (2026-11-17 09:34:37).
+ * Writes are only allowed after the server value has been loaded, and they
+ * must come from a user action, not from initial state.
+ */
+let serverSynced = false
+
 // ── Server → localStorage (on app load) ──────────────────────────────────────
 
 /**
@@ -72,8 +86,13 @@ export async function syncAndMigrateSettings(): Promise<void> {
     const data = await postAPI<{ settings: Record<string, string> }>('/api/settings')
     serverSettings = data.settings ?? {}
   } catch (err) {
-    if (err instanceof APIError && err.status === 401) return // not logged in
+    if (err instanceof APIError && err.status === 401) {
+      // not logged in yet — keep the gate closed; nothing must be pushed.
+      return
+    }
     console.warn('[userSettings] syncAndMigrateSettings failed:', err)
+    // Server unreachable: opening the gate would let defaults overwrite the
+    // real settings on the next debounce, so leave it closed.
     return
   }
 
@@ -82,6 +101,7 @@ export async function syncAndMigrateSettings(): Promise<void> {
     ([k]) => k in REVERSE_MAP,
   )
 
+  serverSynced = true
   if (syncedSettings.length > 0) {
     // Server has synced settings → write to localStorage (server authoritative)
     const changedKeys: string[] = []
@@ -132,6 +152,7 @@ const pendingSettings: Record<string, string> = {}
 export function syncSettingToServer(lsKey: string, value: string): void {
   const serverKey = SETTING_MAP[lsKey]
   if (!serverKey) return // not a synced setting
+  if (!serverSynced) return // server value not loaded yet — never push defaults
   pendingSettings[serverKey] = value
   if (syncTimer) clearTimeout(syncTimer)
   syncTimer = setTimeout(async () => {
@@ -146,5 +167,8 @@ export function syncSettingToServer(lsKey: string, value: string): void {
 
 // ── Test helpers (exported for unit tests only) ─────────────────────────────
 
+export const __isServerSynced = () => serverSynced
+export const __resetServerSynced = () => { serverSynced = false }
+export const __markServerSynced = () => { serverSynced = true }
 export const __SETTING_MAP = SETTING_MAP
 export const __REVERSE_MAP = REVERSE_MAP
