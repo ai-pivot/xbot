@@ -29,6 +29,9 @@ export const LLM_PROVIDERS = [
 export const API_TYPES = [
   { k: 'chat_completions', label: 'Chat Completions', desc: 'POST /v1/chat/completions' },
   { k: 'responses', label: 'Responses', desc: 'POST /v1/responses' },
+  { k: 'anthropic', label: 'Anthropic', desc: 'POST /v1/messages' },
+  { k: 'google', label: 'Google Gemini', desc: 'POST /v1beta/…:generateContent' },
+  { k: 'jev', label: 'JEV', desc: '非对话协议（待实现）' },
 ] as const
 
 /** max_context 预设（完整 token 数）。0 = 跟随默认（系统默认 1M）。 */
@@ -211,7 +214,6 @@ export function EditModelModal(props: {
   })
   const { t } = useI18n()
   const cfg = cs[0], setCfg = cs[1]
-  const isOpenAI = props.provider !== 'anthropic'
   const set = function(patch: { ctx?: number; out?: number; api?: string; vision?: boolean; vd?: string }) { setCfg(Object.assign({}, cfg, patch)) }
   return (
     <ModalShell open onClose={props.onClose} maxWidth="28rem">
@@ -237,23 +239,29 @@ export function EditModelModal(props: {
             onChange={function(e) { set({ out: Math.max(0, Number(e.target.value) || 0) }) }}
             className={llmInputCls + ' mt-2 w-full px-3 py-2.5 text-sm'} />
         </LlmField>
-        {isOpenAI ? (
-          <LlmField label={t('settings.modelAPIType')} hint={t('settings.llmConsole.apiTypeHint')}>
-            <div className="flex gap-2">
-              {API_TYPES.map(function(at) {
-                const cur = (cfg.api || 'chat_completions') === at.k
-                return (
-                  <button key={at.k} type="button" onClick={function() { set({ api: at.k }) }}
-                    className="flex-1 rounded-xl border px-3 py-2 text-left transition-colors"
-                    style={{ borderColor: cur ? 'var(--accent)' : 'rgba(255,255,255,0.08)', background: cur ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent' }}>
-                    <div className="text-[12px] font-medium" style={{ color: cur ? 'var(--accent)' : 'var(--text-primary)' }}>{at.label}</div>
-                    <div className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{at.desc}</div>
-                  </button>
-                )
-              })}
-            </div>
-          </LlmField>
-        ) : null}
+        {/* 协议选择是**模型级**的：同一订阅下可以混 Anthropic / Gemini / OpenAI 系模型，
+            所以这里不再按订阅 provider 隐藏（2026-11-17 用户要求）。留空 = 跟随订阅。 */}
+        <LlmField label={t('settings.modelAPIType')} hint={t('settings.llmConsole.apiTypeHint')}>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={function() { set({ api: '' }) }}
+              className="rounded-xl border px-3 py-2 text-left transition-colors"
+              style={{ borderColor: !cfg.api ? 'var(--accent)' : 'rgba(255,255,255,0.08)', background: !cfg.api ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent' }}>
+              <div className="text-[12px] font-medium" style={{ color: !cfg.api ? 'var(--accent)' : 'var(--text-primary)' }}>{t('settings.llmConsole.presetDefault')}</div>
+              <div className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>inherit</div>
+            </button>
+            {API_TYPES.map(function(at) {
+              const cur = cfg.api === at.k
+              return (
+                <button key={at.k} type="button" onClick={function() { set({ api: at.k }) }}
+                  className="rounded-xl border px-3 py-2 text-left transition-colors"
+                  style={{ borderColor: cur ? 'var(--accent)' : 'rgba(255,255,255,0.08)', background: cur ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent' }}>
+                  <div className="text-[12px] font-medium" style={{ color: cur ? 'var(--accent)' : 'var(--text-primary)' }}>{at.label}</div>
+                  <div className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{at.desc}</div>
+                </button>
+              )
+            })}
+          </div>
+        </LlmField>
         <LlmField label={t('settings.llmConsole.visionLabel')} hint={t('settings.llmConsole.visionHint')}>
           <div className="flex items-center gap-2.5">
             <button type="button" role="switch" aria-checked={cfg.vision} onClick={function() { set({ vision: !cfg.vision, vd: !cfg.vision ? cfg.vd : '' }) }}
@@ -283,7 +291,7 @@ export function EditModelModal(props: {
         </LlmField>
       </div>
       <div className="shrink-0 border-t p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-        <button onClick={function() { props.onSave({ max_context: cfg.ctx, max_output_tokens: cfg.out, api_type: isOpenAI ? cfg.api : '', vision: cfg.vision, vision_detail: cfg.vision ? cfg.vd : '' }) }}
+        <button onClick={function() { props.onSave({ max_context: cfg.ctx, max_output_tokens: cfg.out, api_type: cfg.api || '', vision: cfg.vision, vision_detail: cfg.vision ? cfg.vd : '' }) }}
           disabled={props.saving}
           className="w-full rounded-xl py-2.5 text-sm font-semibold transition-opacity disabled:opacity-40" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>
           {props.saving ? t('settings.llmConsole.saving') : t('common.save')}
@@ -443,23 +451,22 @@ export function SubFormModal(props: {
             })}
           </div>
         </LlmField>
-        {form.provider === 'openai' ? (
-          <LlmField label={t('settings.modelAPIType')} hint={t('settings.llmConsole.apiTypeHintForm')}>
-            <div className="flex gap-2">
-              {API_TYPES.map(function(at) {
-                const cur = (form.api_type || 'chat_completions') === at.k
-                return (
-                  <button key={at.k} type="button" onClick={function() { set({ api_type: at.k }) }}
-                    className="flex-1 rounded-xl border px-3 py-2 text-left transition-colors"
-                    style={{ borderColor: cur ? 'var(--accent)' : 'rgba(255,255,255,0.08)', background: cur ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent' }}>
-                    <div className="text-[12px] font-medium" style={{ color: cur ? 'var(--accent)' : 'var(--text-primary)' }}>{at.label}</div>
-                    <div className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{at.desc}</div>
-                  </button>
-                )
-              })}
-            </div>
-          </LlmField>
-        ) : null}
+        {/* 订阅级默认协议：模型级留空时继承这里。 */}
+        <LlmField label={t('settings.modelAPIType')} hint={t('settings.llmConsole.apiTypeHintForm')}>
+          <div className="grid grid-cols-2 gap-2">
+            {API_TYPES.map(function(at) {
+              const cur = form.api_type === at.k || (!form.api_type && at.k === 'chat_completions')
+              return (
+                <button key={at.k} type="button" onClick={function() { set({ api_type: at.k }) }}
+                  className="rounded-xl border px-3 py-2 text-left transition-colors"
+                  style={{ borderColor: cur ? 'var(--accent)' : 'rgba(255,255,255,0.08)', background: cur ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent' }}>
+                  <div className="text-[12px] font-medium" style={{ color: cur ? 'var(--accent)' : 'var(--text-primary)' }}>{at.label}</div>
+                  <div className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{at.desc}</div>
+                </button>
+              )
+            })}
+          </div>
+        </LlmField>
         <LlmField label={t('settings.subscriptionName')}>
           <input value={form.name} onChange={function(e) { set({ name: e.target.value }) }} placeholder={t('settings.llmConsole.namePlaceholder')}
             className={llmInputCls + ' w-full px-3 py-2.5 text-sm'} />
@@ -482,7 +489,7 @@ export function SubFormModal(props: {
           props.onSave({
             name: form.name.trim(), provider: form.provider, base_url: form.base_url.trim(),
             api_key: form.api_key.trim(), model: form.model.trim(),
-            api_type: form.provider === 'openai' ? (form.api_type || 'chat_completions') : '',
+            api_type: form.api_type || '',
           })
         }} disabled={!valid || props.saving}
           className="w-full rounded-xl py-2.5 text-sm font-semibold transition-opacity disabled:opacity-40" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>
