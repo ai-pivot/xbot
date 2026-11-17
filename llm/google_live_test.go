@@ -356,3 +356,33 @@ func TestGoogleLiveReasoningTextVisible(t *testing.T) {
 		t.Fatalf("stream produced no content")
 	}
 }
+
+// 真实网关回归：并行工具调用（一个 model turn 里多个 functionCall）必须能被
+// 历史回放，否则用户会话会以
+// "number of function response parts is equal to the number of function call parts"
+// 连续 400。
+func TestGoogleLiveParallelToolHistory(t *testing.T) {
+	g := liveGoogleWithTokens(t, 512)
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+
+	toolDef := fakeTool{name: "get_weather"}
+	msgs := []ChatMessage{
+		{Role: "user", Content: "Compare weather in Beijing and Shanghai using the tool for both."},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "a", Name: "get_weather", Arguments: `{"city":"Beijing"}`},
+			{ID: "b", Name: "get_weather", Arguments: `{"city":"Shanghai"}`},
+		}},
+		{Role: "tool", ToolCallID: "a", ToolName: "get_weather", Content: `{"temp":"22C","sky":"sunny"}`},
+		{Role: "tool", ToolCallID: "b", ToolName: "get_weather", Content: `{"temp":"27C","sky":"rain"}`},
+		{Role: "user", Content: "In one short sentence: which is warmer?"},
+	}
+	resp, err := g.Generate(ctx, "gemini-4-argon", msgs, []ToolDefinition{toolDef}, "disabled")
+	if err != nil {
+		t.Fatalf("parallel tool history rejected by gateway: %v", err)
+	}
+	t.Logf("reply=%q usage=%+v", resp.Content, resp.Usage)
+	if strings.TrimSpace(resp.Content) == "" {
+		t.Fatal("empty reply")
+	}
+}

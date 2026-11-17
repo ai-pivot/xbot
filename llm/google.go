@@ -217,13 +217,25 @@ func (g *GoogleLLM) toGeminiRequest(ctx context.Context, model string, messages 
 			if name == "" {
 				name = "tool"
 			}
-			req.Contents = append(req.Contents, geminiContent{
-				Role: "user",
-				Parts: []geminiPart{{FunctionResponse: &geminiFuncResp{
-					Name:     name,
-					Response: json.RawMessage(fmt.Sprintf(`{"result":%s}`, jsonString(m.Content))),
-				}}},
-			})
+			fr := geminiPart{FunctionResponse: &geminiFuncResp{
+				Name:     name,
+				Response: json.RawMessage(fmt.Sprintf(`{"result":%s}`, jsonString(m.Content))),
+			}}
+			// Gemini 硬性要求：一个 model turn 里的 N 个 functionCall，必须由
+			// **紧接着的同一个 user turn** 里的 N 个 functionResponse 一一对应。
+			// 并行工具调用（xbot 很常见）会产生 N 条连续的 tool 消息，如果每条
+			// 都单独开一个 user turn，就会 400：
+			//   "Please ensure that the number of function response parts is equal
+			//    to the number of function call parts of the function call turn."
+			// 所以这里把连续的 tool 响应合并进同一个 user turn。
+			if n := len(req.Contents); n > 0 && isToolResponseTurn(req.Contents[n-1]) {
+				req.Contents[n-1].Parts = append(req.Contents[n-1].Parts, fr)
+			} else {
+				req.Contents = append(req.Contents, geminiContent{
+					Role:  "user",
+					Parts: []geminiPart{fr},
+				})
+			}
 		default: // user
 			// 复用与 OpenAI/Anthropic 同一套多模态拆解：parseMultimodalContent 负责
 			// 识别 markdown/legacy 图片引用、按预算裁剪、并在「视觉关闭 / 解析失败 /
@@ -258,6 +270,10 @@ func (g *GoogleLLM) toGeminiRequest(ctx context.Context, model string, messages 
 	if len(systems) > 0 {
 		req.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: strings.Join(systems, "\n\n")}}}
 	}
+	// 真实会话里 tool 结果可能缺失（取消、工具跳过）或多出（跨 provider 切换
+	// 带进来的历史）。Gemini 对此零容忍并直接 400，所以在发请求前把结构修齐。
+	req.Contents = normalizeFunctionCallPairs(req.Contents)
+
 	if len(tools) > 0 {
 		decls := make([]geminiFuncDecl, 0, len(tools))
 		for _, t := range tools {
@@ -450,6 +466,102 @@ func convertGeminiResponse(gr *geminiResponse) *LLMResponse {
 	}
 	if gr.PromptFeedback != nil && gr.PromptFeedback.BlockReason != "" && out.Content == "" && len(out.ToolCalls) == 0 {
 		out.FinishReason = FinishReasonContentFilter
+	}
+	return out
+}
+
+// isToolResponseTurn 判断一个 content 是否是"纯工具响应" turn。
+func isToolResponseTurn(c geminiContent) bool {
+	if c.Role != "user" || len(c.Parts) == 0 {
+		return false
+	}
+	for _, p := range c.Parts {
+		if p.FunctionResponse == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeFunctionCallPairs 修齐 Gemini 的 functionCall/functionResponse 配对：
+//
+//   - 含 N 个 functionCall 的 model turn，其后必须紧跟一个含 N 个
+//     functionResponse 的 user turn（不足补占位、超出截断、缺失补一个占位 turn）
+//   - 没有对应 functionCall 的孤儿 tool turn（跨 provider 历史、取消的调用）
+//     里的响应会被转成普通文本，避免 Gemini 以结构错误拒绝整个请求
+func normalizeFunctionCallPairs(contents []geminiContent) []geminiContent {
+	out := make([]geminiContent, 0, len(contents)+1)
+	for i := 0; i < len(contents); i++ {
+		c := contents[i]
+		calls := 0
+		for _, p := range c.Parts {
+			if p.FunctionCall != nil {
+				calls++
+			}
+		}
+		// 孤儿 tool turn：前面没有 functionCall，把结果降级成文本
+		if isToolResponseTurn(c) && calls == 0 {
+			texts := make([]geminiPart, 0, len(c.Parts))
+			for _, p := range c.Parts {
+				if p.FunctionResponse == nil {
+					continue
+				}
+				texts = append(texts, geminiPart{Text: fmt.Sprintf("[工具结果 %s] %s",
+					p.FunctionResponse.Name, string(p.FunctionResponse.Response))})
+			}
+			if len(texts) == 0 {
+				continue
+			}
+			if n := len(out); n > 0 && out[n-1].Role == "user" && !isToolResponseTurn(out[n-1]) {
+				out[n-1].Parts = append(out[n-1].Parts, texts...)
+			} else {
+				out = append(out, geminiContent{Role: "user", Parts: texts})
+			}
+			continue
+		}
+		out = append(out, c)
+		if calls == 0 {
+			continue
+		}
+		// 收集紧随的 tool 响应 turn（正常情况下已由 tool 分支合并成一个）
+		var resp *geminiContent
+		if i+1 < len(contents) && isToolResponseTurn(contents[i+1]) {
+			nxt := contents[i+1]
+			resp = &nxt
+			i++
+		}
+		if resp == nil {
+			resp = &geminiContent{Role: "user"}
+		}
+		have := 0
+		for _, p := range resp.Parts {
+			if p.FunctionResponse != nil {
+				have++
+			}
+		}
+		switch {
+		case have < calls:
+			// 缺失的响应用占位补足，宁可让模型看到"没有结果"也不要整个请求 400
+			for have < calls {
+				resp.Parts = append(resp.Parts, geminiPart{FunctionResponse: &geminiFuncResp{
+					Name:     "unknown",
+					Response: json.RawMessage(`{"result":"no result (tool call was not answered)"}`),
+				}})
+				have++
+			}
+		case have > calls:
+			kept := make([]geminiPart, 0, len(resp.Parts))
+			excess := have - calls
+			for _, p := range resp.Parts {
+				if p.FunctionResponse != nil && excess > 0 {
+					excess--
+					continue
+				}
+				kept = append(kept, p)
+			}
+			resp.Parts = kept
+		}
+		out = append(out, *resp)
 	}
 	return out
 }
