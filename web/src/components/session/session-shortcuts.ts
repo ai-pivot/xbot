@@ -72,8 +72,15 @@ export function parseShortcutBinding(input: string): string | null | undefined {
   return [...MODIFIERS.filter(part => tokens.includes(part)), key].join('+')
 }
 
+/** AltGraph 检测必须容错：移动端 WebView / IME 组合态下，React 传来的 nativeEvent
+ *  可能不是标准 KeyboardEvent（缺 getModifierState），直接调用会抛
+ *  `e.getModifierState is not a function`（2026-11-17 设置页实测）。 */
+function isAltGraphPressed(event: { getModifierState?: (key: string) => boolean }): boolean {
+  return typeof event.getModifierState === 'function' && event.getModifierState('AltGraph')
+}
+
 export function shortcutBindingFromEvent(event: KeyboardEvent): string | undefined {
-  if (event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState('AltGraph')) return
+  if (event.isComposing || event.keyCode === 229 || event.repeat || isAltGraphPressed(event)) return
   // Physical codes survive Option-generated symbols and shifted punctuation.
   const key = /^Key[A-Z]$/.test(event.code) ? event.code.slice(3)
     : /^Digit[0-9]$/.test(event.code) ? event.code.slice(5)
@@ -92,7 +99,7 @@ export function shortcutBindingsOverlap(a: string, b: string): boolean {
 }
 
 export function sessionShortcutAction(event: KeyboardEvent, bindings: SessionShortcutBindings = getSessionShortcutDefaults()): SessionShortcutAction | undefined {
-  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState('AltGraph')) return
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || isAltGraphPressed(event)) return
   if (event.target instanceof Element && event.target.closest(
     'input, textarea, select, [role="textbox"], [contenteditable]:not([contenteditable="false"]), .monaco-editor, .xterm, [data-testid="ask-user-panel"]',
   )) return
