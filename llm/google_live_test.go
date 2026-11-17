@@ -206,3 +206,112 @@ func TestGoogleLiveVisionStream(t *testing.T) {
 		t.Fatalf("stream did not carry the image: %q", sb.String())
 	}
 }
+
+// ─── 思考 / 缓存命中 真实网关验证（2026-11-17）───────────────────
+//
+// 三条实测事实驱动这些用例：
+//  1. 不传 thinkingConfig 时 gemini-4-argon 不思考（无 thoughtsTokenCount）；
+//     默认档必须显式发 thinkingLevel 才会思考。
+//  2. thinkingBudget 对该模型是 400，只有 thinkingLevel 可用。
+//  3. 相同前缀第 3 次起上游返回 cachedContentTokenCount（隐式缓存），
+//     必须映射到 TokenUsage.CacheHitTokens 才能算命中率。
+
+func liveGoogleWithTokens(t *testing.T, maxTokens int) *GoogleLLM {
+	t.Helper()
+	base := strings.TrimSpace(os.Getenv("MINT_BASE"))
+	key := strings.TrimSpace(os.Getenv("MINT_KEY"))
+	if base == "" || key == "" {
+		t.Skip("MINT_BASE/MINT_KEY not set")
+	}
+	return NewGoogleLLM(GoogleConfig{BaseURL: base, APIKey: key, DefaultModel: "gemini-4-argon", MaxTokens: maxTokens})
+}
+
+// 默认（thinkingMode 空串）必须真的思考：CompletionTokens 含 thoughts，
+// 应显著大于 disabled 同题的 CompletionTokens。
+func TestGoogleLiveThinkingOnByDefault(t *testing.T) {
+	g := liveGoogleWithTokens(t, 2048)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	msgs := []ChatMessage{{Role: "user", Content: "Prove: for every prime p > 3, p^2 - 1 is divisible by 24. End with DONE."}}
+
+	on, err := g.Generate(ctx, "gemini-4-argon", msgs, nil, "")
+	if err != nil {
+		t.Fatalf("Generate(thinking default): %v", err)
+	}
+	off, err := g.Generate(ctx, "gemini-4-argon", msgs, nil, "disabled")
+	if err != nil {
+		t.Fatalf("Generate(thinking disabled): %v", err)
+	}
+	t.Logf("default usage=%+v", on.Usage)
+	t.Logf("disabled usage=%+v", off.Usage)
+	if on.Usage.CompletionTokens <= off.Usage.CompletionTokens {
+		t.Fatalf("default thinking did not add reasoning tokens: on=%d off=%d",
+			on.Usage.CompletionTokens, off.Usage.CompletionTokens)
+	}
+}
+
+// 相同长前缀重复请求，隐式缓存命中后 CacheHitTokens 必须 > 0。
+func TestGoogleLiveCacheHitTokens(t *testing.T) {
+	g := liveGoogleWithTokens(t, 32)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	filler := strings.Repeat("The quick brown fox jumps over the lazy dog. Caching probes need a stable prefix. "+
+		"Alpha beta gamma delta epsilon zeta eta theta iota kappa. ", 120)
+	msgs := []ChatMessage{{Role: "user", Content: filler + "\nReply with the single word: pong"}}
+
+	var last TokenUsage
+	for i := 1; i <= 4; i++ {
+		resp, err := g.Generate(ctx, "gemini-4-argon", msgs, nil, "disabled")
+		if err != nil {
+			t.Fatalf("run#%d: %v", i, err)
+		}
+		last = resp.Usage
+		t.Logf("run#%d prompt=%d cached=%d completion=%d total=%d",
+			i, last.PromptTokens, last.CacheHitTokens, last.CompletionTokens, last.TotalTokens)
+		if last.CacheHitTokens > 0 {
+			if last.CacheHitTokens > last.PromptTokens {
+				t.Fatalf("cached (%d) > prompt (%d) — mapping is wrong", last.CacheHitTokens, last.PromptTokens)
+			}
+			return
+		}
+	}
+	t.Fatalf("cache never reported after 4 identical-prefix calls: %+v", last)
+}
+
+// 流式同样要带缓存命中字段（SSE 首个 chunk 的 usage 全零，不能被当成真实用量）。
+func TestGoogleLiveStreamUsageCache(t *testing.T) {
+	g := liveGoogleWithTokens(t, 32)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	filler := strings.Repeat("The quick brown fox jumps over the lazy dog. Streaming cache probe with a stable prefix. "+
+		"Alpha beta gamma delta epsilon zeta eta theta iota kappa. ", 120)
+	msgs := []ChatMessage{{Role: "user", Content: filler + "\nReply with the single word: pong"}}
+
+	var usage *TokenUsage
+	for i := 1; i <= 4; i++ {
+		ch, err := g.GenerateStream(ctx, "gemini-4-argon", msgs, nil, "disabled")
+		if err != nil {
+			t.Fatalf("run#%d: %v", i, err)
+		}
+		usage = nil
+		for ev := range ch {
+			switch ev.Type {
+			case EventUsage:
+				usage = ev.Usage
+			case EventError:
+				t.Fatalf("run#%d stream error: %s", i, ev.Error)
+			}
+		}
+		if usage == nil {
+			t.Fatalf("run#%d: stream produced no usage event", i)
+		}
+		if usage.PromptTokens == 0 {
+			t.Fatalf("run#%d: zero-valued usage leaked into the stream: %+v", i, usage)
+		}
+		t.Logf("stream run#%d prompt=%d cached=%d completion=%d", i, usage.PromptTokens, usage.CacheHitTokens, usage.CompletionTokens)
+		if usage.CacheHitTokens > 0 {
+			return
+		}
+	}
+	t.Fatalf("stream never reported cache hit: %+v", usage)
+}

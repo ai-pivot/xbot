@@ -63,6 +63,7 @@ type geminiPart struct {
 	FunctionCall     *geminiFuncCall   `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFuncResp   `json:"functionResponse,omitempty"`
 	Thought          bool              `json:"thought,omitempty"`
+	ThoughtSignature string            `json:"thoughtSignature,omitempty"`
 }
 
 type geminiInlineData struct {
@@ -71,6 +72,7 @@ type geminiInlineData struct {
 }
 
 type geminiFuncCall struct {
+	ID   string          `json:"id,omitempty"`
 	Name string          `json:"name"`
 	Args json.RawMessage `json:"args,omitempty"`
 }
@@ -96,11 +98,19 @@ type geminiTool struct {
 }
 
 type geminiGenConfig struct {
-	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
-	Temperature     *float64 `json:"temperature,omitempty"`
-	ThinkingConfig  *struct {
-		ThinkingBudget int `json:"thinkingBudget"`
-	} `json:"thinkingConfig,omitempty"`
+	MaxOutputTokens int                `json:"maxOutputTokens,omitempty"`
+	Temperature     *float64           `json:"temperature,omitempty"`
+	ThinkingConfig  *geminiThinkConfig `json:"thinkingConfig,omitempty"`
+}
+
+// geminiThinkConfig 覆盖两代模型的思考参数：
+//   - gemini-2.x：thinkingBudget（0 表示关闭）
+//   - gemini-3/4：thinkingLevel（LOW/MEDIUM/HIGH，MINIMAL 不支持；该模型不接受
+//     thinkingBudget，传了会 400 "Thinking budget is not supported for this model"）
+type geminiThinkConfig struct {
+	ThinkingBudget  *int   `json:"thinkingBudget,omitempty"`
+	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
+	IncludeThoughts bool   `json:"includeThoughts,omitempty"`
 }
 
 type geminiRequest struct {
@@ -114,6 +124,31 @@ type geminiUsage struct {
 	PromptTokenCount     int64 `json:"promptTokenCount"`
 	CandidatesTokenCount int64 `json:"candidatesTokenCount"`
 	TotalTokenCount      int64 `json:"totalTokenCount"`
+	// 隐式/显式缓存命中的输入 tokens（实测 gemini-4-argon 第 3 次相同前缀返回
+	// cachedContentTokenCount=1346 / promptTokenCount=3400）。不解析这一项，
+	// 上层 CacheHitTokens 恒为 0，缓存命中率就永远是 0%。
+	CachedContentTokenCount int64 `json:"cachedContentTokenCount"`
+	// 思考 tokens。注意 candidatesTokenCount **不含** thinking，上游
+	// totalTokenCount = prompt + candidates + thoughts。
+	ThoughtsTokenCount int64 `json:"thoughtsTokenCount"`
+}
+
+// toTokenUsage 把 Gemini usageMetadata 映射到业务 TokenUsage。
+// 口径与 OpenAI 对齐：completion 含 reasoning tokens（OpenAI 的
+// completion_tokens 同样含 reasoning_tokens），prompt 含 cached（OpenAI 的
+// prompt_tokens 同样含 cached_tokens），因此 cacheHit/prompt 就是命中率。
+func (u *geminiUsage) toTokenUsage() TokenUsage {
+	completion := u.CandidatesTokenCount + u.ThoughtsTokenCount
+	total := u.TotalTokenCount
+	if total == 0 {
+		total = u.PromptTokenCount + completion
+	}
+	return TokenUsage{
+		PromptTokens:     u.PromptTokenCount,
+		CompletionTokens: completion,
+		TotalTokens:      total,
+		CacheHitTokens:   u.CachedContentTokenCount,
+	}
 }
 
 type geminiCandidate struct {
@@ -239,13 +274,53 @@ func (g *GoogleLLM) toGeminiRequest(ctx context.Context, model string, messages 
 	if g.cfg.MaxTokens > 0 {
 		gc.MaxOutputTokens = g.cfg.MaxTokens
 	}
-	if thinkingMode == "disabled" {
-		gc.ThinkingConfig = &struct {
-			ThinkingBudget int `json:"thinkingBudget"`
-		}{ThinkingBudget: 0}
+	if tc := geminiThinkingFor(model, thinkingMode); tc != nil {
+		gc.ThinkingConfig = tc
 	}
 	req.GenerationConfig = gc
 	return req
+}
+
+// geminiThinkingFor 把 xbot 的 thinkingMode 映射成 Gemini 原生思考参数。
+//
+// 关键实测事实（mint 网关 / gemini-4-argon，2026-11-17）：
+//   - 不传 thinkingConfig → 上游默认**不思考**（usageMetadata 无 thoughtsTokenCount）
+//   - thinkingBudget 任何值（含 0）→ HTTP 400 "Thinking budget is not supported
+//     for this model. Use thinking level instead."
+//   - thinkingLevel=HIGH → thoughtsTokenCount≈784~886；LOW/MEDIUM 合法，
+//     MINIMAL 不支持（400 "Thinking level is unsupported: THINKING_LEVEL_MINIMAL"）
+//
+// 因此："默认/auto/enabled" 必须显式发 thinkingLevel 才会思考；"disabled"
+// 只能靠"不发"来等价关闭（该模型没有真正的 0 档）。
+func geminiThinkingFor(model, thinkingMode string) *geminiThinkConfig {
+	mode := strings.ToLower(strings.TrimSpace(thinkingMode))
+	legacy := strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gemini-2")
+	switch mode {
+	case "disabled", "none", "off":
+		if legacy {
+			zero := 0
+			return &geminiThinkConfig{ThinkingBudget: &zero}
+		}
+		return nil // 3/4 代无 0 档：不发即为服务端默认（不思考）
+	case "low", "minimal":
+		if legacy {
+			b := 1024
+			return &geminiThinkConfig{ThinkingBudget: &b}
+		}
+		return &geminiThinkConfig{ThinkingLevel: "LOW"}
+	case "medium", "mid":
+		if legacy {
+			b := 4096
+			return &geminiThinkConfig{ThinkingBudget: &b}
+		}
+		return &geminiThinkConfig{ThinkingLevel: "MEDIUM"}
+	default: // ""、"auto"、"enabled"、"think"、"high"、未识别的 JSON → 最高档
+		if legacy {
+			b := 8192
+			return &geminiThinkConfig{ThinkingBudget: &b}
+		}
+		return &geminiThinkConfig{ThinkingLevel: "HIGH"}
+	}
 }
 
 // toolParamsToSchema 把业务 ToolParam 列表合成 Gemini 要的 JSON Schema object。
@@ -337,8 +412,12 @@ func convertGeminiResponse(gr *geminiResponse) *LLMResponse {
 				if len(part.FunctionCall.Args) > 0 {
 					args = string(part.FunctionCall.Args)
 				}
+				id := part.FunctionCall.ID
+				if id == "" {
+					id = fmt.Sprintf("call_%d", idx)
+				}
 				out.ToolCalls = append(out.ToolCalls, ToolCall{
-					ID:        fmt.Sprintf("call_%d", idx),
+					ID:        id,
 					Name:      part.FunctionCall.Name,
 					Arguments: args,
 				})
@@ -359,11 +438,7 @@ func convertGeminiResponse(gr *geminiResponse) *LLMResponse {
 		out.FinishReason = FinishReasonToolCalls
 	}
 	if gr.UsageMetadata != nil {
-		out.Usage = TokenUsage{
-			PromptTokens:     gr.UsageMetadata.PromptTokenCount,
-			CompletionTokens: gr.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      gr.UsageMetadata.TotalTokenCount,
-		}
+		out.Usage = gr.UsageMetadata.toTokenUsage()
 	}
 	if gr.PromptFeedback != nil && gr.PromptFeedback.BlockReason != "" && out.Content == "" && len(out.ToolCalls) == 0 {
 		out.FinishReason = FinishReasonContentFilter
@@ -476,12 +551,11 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, body io.ReadCloser, ch chan<
 				if toolIdx > 0 {
 					fin = FinishReasonToolCalls
 				}
-				if gr.UsageMetadata != nil {
-					ch <- StreamEvent{Type: EventUsage, Usage: &TokenUsage{
-						PromptTokens:     gr.UsageMetadata.PromptTokenCount,
-						CompletionTokens: gr.UsageMetadata.CandidatesTokenCount,
-						TotalTokens:      gr.UsageMetadata.TotalTokenCount,
-					}}
+				// 只发一次、且只在有真实 token 数时发：SSE 首个 chunk 的
+				// usageMetadata 只有 trafficType（全零），零值会把上层计数清零。
+				if um := gr.UsageMetadata; um != nil && um.PromptTokenCount > 0 {
+					u := um.toTokenUsage()
+					ch <- StreamEvent{Type: EventUsage, Usage: &u}
 				}
 				ch <- StreamEvent{Type: EventDone, FinishReason: fin}
 				sentDone = true
