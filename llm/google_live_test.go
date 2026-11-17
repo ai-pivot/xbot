@@ -315,3 +315,44 @@ func TestGoogleLiveStreamUsageCache(t *testing.T) {
 	}
 	t.Fatalf("stream never reported cache hit: %+v", usage)
 }
+
+// 思考正文必须真的到达调用方（不只是 token 计数）：上游只有显式
+// includeThoughts=true 才回 thought=true 的 part，缺了它 UI 看不到思考过程。
+func TestGoogleLiveReasoningTextVisible(t *testing.T) {
+	g := liveGoogleWithTokens(t, 2048)
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Second)
+	defer cancel()
+	msgs := []ChatMessage{{Role: "user", Content: "Prove: for every prime p > 3, p^2 - 1 is divisible by 24. End with DONE."}}
+
+	resp, err := g.Generate(ctx, "gemini-4-argon", msgs, nil, "")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	t.Logf("non-stream reasoning_len=%d usage=%+v", len(resp.ReasoningContent), resp.Usage)
+	if strings.TrimSpace(resp.ReasoningContent) == "" {
+		t.Fatalf("ReasoningContent empty — includeThoughts not applied?")
+	}
+
+	ch, err := g.GenerateStream(ctx, "gemini-4-argon", msgs, nil, "")
+	if err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	var reasoning, content strings.Builder
+	for ev := range ch {
+		switch ev.Type {
+		case EventReasoningContent:
+			reasoning.WriteString(ev.ReasoningContent)
+		case EventContent:
+			content.WriteString(ev.Content)
+		case EventError:
+			t.Fatalf("stream error: %s", ev.Error)
+		}
+	}
+	t.Logf("stream reasoning_len=%d content_len=%d", reasoning.Len(), content.Len())
+	if reasoning.Len() == 0 {
+		t.Fatalf("stream produced no reasoning deltas — UI would show an empty thinking block")
+	}
+	if content.Len() == 0 {
+		t.Fatalf("stream produced no content")
+	}
+}

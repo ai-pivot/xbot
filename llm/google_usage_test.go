@@ -56,23 +56,24 @@ func TestGeminiUsageToTokenUsage(t *testing.T) {
 // "gemini 好像不会思考"的根因。
 func TestGeminiThinkingFor(t *testing.T) {
 	tests := []struct {
-		model, mode string
-		wantNil     bool
-		wantLevel   string
-		wantBudget  int
+		model, mode  string
+		wantNil      bool
+		wantLevel    string
+		wantBudget   int
+		wantThoughts bool
 	}{
-		{model: "gemini-4-argon", mode: "", wantLevel: "HIGH"},
-		{model: "gemini-4-argon", mode: "auto", wantLevel: "HIGH"},
-		{model: "gemini-4-argon", mode: "enabled", wantLevel: "HIGH"},
-		{model: "gemini-4-argon", mode: "think", wantLevel: "HIGH"},
-		{model: "gemini-4-argon", mode: "high", wantLevel: "HIGH"},
-		{model: "gemini-4-argon", mode: "medium", wantLevel: "MEDIUM"},
-		{model: "gemini-4-argon", mode: "low", wantLevel: "LOW"},
+		{model: "gemini-4-argon", mode: "", wantLevel: "HIGH", wantThoughts: true},
+		{model: "gemini-4-argon", mode: "auto", wantLevel: "HIGH", wantThoughts: true},
+		{model: "gemini-4-argon", mode: "enabled", wantLevel: "HIGH", wantThoughts: true},
+		{model: "gemini-4-argon", mode: "think", wantLevel: "HIGH", wantThoughts: true},
+		{model: "gemini-4-argon", mode: "high", wantLevel: "HIGH", wantThoughts: true},
+		{model: "gemini-4-argon", mode: "medium", wantLevel: "MEDIUM", wantThoughts: true},
+		{model: "gemini-4-argon", mode: "low", wantLevel: "LOW", wantThoughts: true},
 		{model: "gemini-4-argon", mode: "disabled", wantNil: true}, // 3/4 代无 0 档
 		{model: "gemini-4-argon", mode: "off", wantNil: true},
-		{model: "gemini-2.5-pro", mode: "", wantBudget: 8192},
-		{model: "gemini-2.5-pro", mode: "medium", wantBudget: 4096},
-		{model: "gemini-2.5-flash", mode: "low", wantBudget: 1024},
+		{model: "gemini-2.5-pro", mode: "", wantBudget: 8192, wantThoughts: true},
+		{model: "gemini-2.5-pro", mode: "medium", wantBudget: 4096, wantThoughts: true},
+		{model: "gemini-2.5-flash", mode: "low", wantBudget: 1024, wantThoughts: true},
 		{model: "gemini-2.5-flash", mode: "disabled", wantBudget: 0},
 	}
 	for _, tc := range tests {
@@ -95,6 +96,10 @@ func TestGeminiThinkingFor(t *testing.T) {
 			}
 			if got.ThinkingLevel != "" && got.ThinkingBudget != nil {
 				t.Fatalf("must not send both thinkingLevel and thinkingBudget: %+v", got)
+			}
+			// 没有 includeThoughts，上游只回 thoughtSignature，UI 就看不到思考过程。
+			if got.IncludeThoughts != tc.wantThoughts {
+				t.Fatalf("IncludeThoughts = %v, want %v", got.IncludeThoughts, tc.wantThoughts)
 			}
 		})
 	}

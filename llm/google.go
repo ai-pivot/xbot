@@ -284,11 +284,19 @@ func (g *GoogleLLM) toGeminiRequest(ctx context.Context, model string, messages 
 // geminiThinkingFor 把 xbot 的 thinkingMode 映射成 Gemini 原生思考参数。
 //
 // 关键实测事实（mint 网关 / gemini-4-argon，2026-11-17）：
+//
 //   - 不传 thinkingConfig → 上游默认**不思考**（usageMetadata 无 thoughtsTokenCount）
+//
 //   - thinkingBudget 任何值（含 0）→ HTTP 400 "Thinking budget is not supported
 //     for this model. Use thinking level instead."
+//
 //   - thinkingLevel=HIGH → thoughtsTokenCount≈784~886；LOW/MEDIUM 合法，
 //     MINIMAL 不支持（400 "Thinking level is unsupported: THINKING_LEVEL_MINIMAL"）
+//
+//   - includeThoughts 必须显式置 true 才会返回思考正文（thought=true 的 part）；
+//     缺了它上游只回 thoughtSignature，UI 里就"看不到在想什么"。
+//     实测 HIGH+includeThoughts：非流式 1 个 thought part（thoughtsTokenCount=1145），
+//     流式逐段推 2 个 thought part。
 //
 // 因此："默认/auto/enabled" 必须显式发 thinkingLevel 才会思考；"disabled"
 // 只能靠"不发"来等价关闭（该模型没有真正的 0 档）。
@@ -305,21 +313,21 @@ func geminiThinkingFor(model, thinkingMode string) *geminiThinkConfig {
 	case "low", "minimal":
 		if legacy {
 			b := 1024
-			return &geminiThinkConfig{ThinkingBudget: &b}
+			return &geminiThinkConfig{ThinkingBudget: &b, IncludeThoughts: true}
 		}
-		return &geminiThinkConfig{ThinkingLevel: "LOW"}
+		return &geminiThinkConfig{ThinkingLevel: "LOW", IncludeThoughts: true}
 	case "medium", "mid":
 		if legacy {
 			b := 4096
-			return &geminiThinkConfig{ThinkingBudget: &b}
+			return &geminiThinkConfig{ThinkingBudget: &b, IncludeThoughts: true}
 		}
-		return &geminiThinkConfig{ThinkingLevel: "MEDIUM"}
+		return &geminiThinkConfig{ThinkingLevel: "MEDIUM", IncludeThoughts: true}
 	default: // ""、"auto"、"enabled"、"think"、"high"、未识别的 JSON → 最高档
 		if legacy {
 			b := 8192
-			return &geminiThinkConfig{ThinkingBudget: &b}
+			return &geminiThinkConfig{ThinkingBudget: &b, IncludeThoughts: true}
 		}
-		return &geminiThinkConfig{ThinkingLevel: "HIGH"}
+		return &geminiThinkConfig{ThinkingLevel: "HIGH", IncludeThoughts: true}
 	}
 }
 
