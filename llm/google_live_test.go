@@ -3,7 +3,12 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"strings"
 	"testing"
@@ -117,4 +122,87 @@ func liveTruncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// ─── 多模态（Gemini 原生 inline_data）─────────────────────────────
+
+// 生成一张纯红色 PNG 的 data: URL，避免依赖外部图片文件。
+func redPNGDataURL(t *testing.T) string {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 48, 48))
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 48; x++ {
+			img.Set(x, y, color.RGBA{R: 220, G: 20, B: 20, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// 视觉必须真的把像素送进 Gemini（inline_data），而不是降级成文本占位。
+// 判据：模型能说出图片颜色（纯红），说明确实看到了像素。
+func TestGoogleLiveVisionInlineData(t *testing.T) {
+	g := liveGoogle(t)
+	g.cfg.Multimodal = &MultimodalConfig{VisionEnabled: true}
+	content := "![red-square](" + redPNGDataURL(t) + ")\nWhat is the dominant color of this image? Answer with ONE English word."
+	resp, err := g.Generate(context.Background(), "gemini-4-argon",
+		[]ChatMessage{{Role: "user", Content: content}}, nil, "")
+	if err != nil {
+		t.Fatalf("Generate with image: %v", err)
+	}
+	got := strings.ToLower(strings.TrimSpace(resp.Content))
+	t.Logf("vision reply=%q usage=%+v", resp.Content, resp.Usage)
+	if !strings.Contains(got, "red") && !strings.Contains(got, "红") {
+		t.Fatalf("model did not see the pixels (reply=%q)", resp.Content)
+	}
+	if resp.Usage.PromptTokens < 50 {
+		t.Fatalf("prompt tokens too low (%d) — image part likely dropped", resp.Usage.PromptTokens)
+	}
+}
+
+// 视觉关闭时必须降级成文本占位、且请求不失败（非视觉模型收到 image part 会 400）。
+func TestGoogleLiveVisionDisabledDegradesToText(t *testing.T) {
+	g := liveGoogle(t)
+	g.cfg.Multimodal = &MultimodalConfig{VisionEnabled: false}
+	content := "![red-square](" + redPNGDataURL(t) + ")\nCan you see this image?"
+	resp, err := g.Generate(context.Background(), "gemini-4-argon",
+		[]ChatMessage{{Role: "user", Content: content}}, nil, "")
+	if err != nil {
+		t.Fatalf("Generate with vision disabled: %v", err)
+	}
+	if strings.TrimSpace(resp.Content) == "" {
+		t.Fatal("empty reply with vision disabled")
+	}
+	t.Logf("vision-off reply=%q", resp.Content)
+}
+
+// 流式 + 图片：确认 SSE 路径同样携带 inline_data。
+func TestGoogleLiveVisionStream(t *testing.T) {
+	g := liveGoogle(t)
+	g.cfg.Multimodal = &MultimodalConfig{VisionEnabled: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	ch, err := g.GenerateStream(ctx, "gemini-4-argon", []ChatMessage{{
+		Role: "user", Content: "![red-square](" + redPNGDataURL(t) + ")\nName the color, one word.",
+	}}, nil, "")
+	if err != nil {
+		t.Fatalf("GenerateStream with image: %v", err)
+	}
+	var sb strings.Builder
+	for ev := range ch {
+		switch ev.Type {
+		case EventContent:
+			sb.WriteString(ev.Content)
+		case EventError:
+			t.Fatalf("stream error: %s", ev.Error)
+		}
+	}
+	got := strings.ToLower(sb.String())
+	t.Logf("vision stream reply=%q", sb.String())
+	if !strings.Contains(got, "red") && !strings.Contains(got, "红") {
+		t.Fatalf("stream did not carry the image: %q", sb.String())
+	}
 }

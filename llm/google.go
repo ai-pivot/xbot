@@ -147,7 +147,7 @@ func (g *GoogleLLM) endpoint(model, method string) string {
 //   - system 消息 → systemInstruction（不是 contents）
 //   - assistant → role="model"
 //   - tool 结果 → role="user" + functionResponse（Gemini 要求由 user 回合携带）
-func (g *GoogleLLM) toGeminiRequest(model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) *geminiRequest {
+func (g *GoogleLLM) toGeminiRequest(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) *geminiRequest {
 	req := &geminiRequest{}
 	var systems []string
 	toolNames := map[string]string{} // tool_call_id → function name
@@ -190,13 +190,29 @@ func (g *GoogleLLM) toGeminiRequest(model string, messages []ChatMessage, tools 
 				}}},
 			})
 		default: // user
+			// 复用与 OpenAI/Anthropic 同一套多模态拆解：parseMultimodalContent 负责
+			// 识别 markdown/legacy 图片引用、按预算裁剪、并在「视觉关闭 / 解析失败 /
+			// 超预算」时降级成文本占位（永不因为图片让请求 400）。
+			// Gemini 原生要求 inline_data{mimeType,data(base64)}，所以这里用
+			// splitDataURL 把 data: URL 精确切成 mime + payload。
 			parts := make([]geminiPart, 0, 2)
-			if c := m.Content; c != "" {
-				parts = append(parts, geminiPart{Text: c})
+			for _, item := range parseMultimodalContent(ctx, m.Content, g.cfg.Multimodal) {
+				switch item.Type {
+				case "image":
+					mimeType, b64, ok := splitDataURL(item.URL)
+					if !ok {
+						// parseMultimodalContent 已保证非 data: 的引用被降级；
+						// 走到这里说明 data: URL 本身畸形 —— 明确降级而不是塞坏数据。
+						parts = append(parts, geminiPart{Text: "[图片: 无法解析的 data URL]"})
+						continue
+					}
+					parts = append(parts, geminiPart{InlineData: &geminiInlineData{MIMEType: mimeType, Data: b64}})
+				default:
+					if t := item.Text; t != "" {
+						parts = append(parts, geminiPart{Text: t})
+					}
+				}
 			}
-			// 图片暂不注入：Gemini 原生需要 inline_data(base64)，而 MultimodalConfig
-			// 只提供 OpenAI 风格 image_url 解析。视觉开关打开时这里会退化为纯文本
-			// （不会 400），后续单独补 inline_data 支持。
 			if len(parts) == 0 {
 				continue
 			}
@@ -275,7 +291,7 @@ func (g *GoogleLLM) Generate(ctx context.Context, model string, messages []ChatM
 	if model == "" {
 		model = g.cfg.DefaultModel
 	}
-	reqBody := g.toGeminiRequest(model, messages, tools, thinkingMode)
+	reqBody := g.toGeminiRequest(ctx, model, messages, tools, thinkingMode)
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, err
@@ -384,7 +400,7 @@ func (g *GoogleLLM) GenerateStream(ctx context.Context, model string, messages [
 	if model == "" {
 		model = g.cfg.DefaultModel
 	}
-	reqBody := g.toGeminiRequest(model, messages, tools, thinkingMode)
+	reqBody := g.toGeminiRequest(ctx, model, messages, tools, thinkingMode)
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, err
