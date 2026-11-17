@@ -7,11 +7,30 @@
  *
  * 取数 scope 跟 activeSession 走（服务端按会话解析 tenant）。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 import { useSessionStore } from '@/hooks/useSessionStore'
 
 import { deleteMemoryItem, fetchMemories, updateMemoryItem, type MemoryItem } from './api'
+
+/**
+ * MemoryContent —— 记忆正文按 Markdown 渲染。
+ *
+ * 记忆内容是模型写出来的 Markdown（`**加粗**`、列表、代码块、表格），之前直接
+ * 当纯文本塞进 <p>，列表里满屏裸星号（用户 2026-11-17 反馈"为什么不渲染md"）。
+ * 这里只挂 remark-gfm：面板一次最多 200 条，KaTeX/Mermaid/代码高亮那套
+ * （MarkdownRenderer）成本太高，记忆里也基本用不到。
+ * memo 保证只在 content 变化时才重新解析。
+ */
+const MemoryContent = memo(function MemoryContent({ content }: { content: string }) {
+  return (
+    <div className="markdown-body mt-1 break-words text-[12px] leading-relaxed">
+      <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
+    </div>
+  )
+})
 
 const TYPES = ['all', 'fact', 'preference', 'decision', 'event', 'skill'] as const
 
@@ -226,9 +245,7 @@ export function MemoryPanel() {
                   </div>
                 </div>
               ) : (
-                <p className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed">
-                  {m.content}
-                </p>
+                <MemoryContent content={m.content} />
               )}
             </li>
           ))}
