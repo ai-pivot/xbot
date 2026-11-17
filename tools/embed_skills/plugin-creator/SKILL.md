@@ -69,14 +69,14 @@ Skill(name="plugin-creator", file="channel-tools.md")
 4. **Create plugin.json**: Ensure directory name matches plugin ID
 5. **Create entry point**: Script or compiled binary
 6. **Ensure executable**: `chmod +x` for scripts and binaries
-7. **Reload plugins**: Use `tui_control(action="reload_plugins")` to hot-reload
+7. **Reload plugins**: Use `config(action="reload_plugins", key="")` to hot-reload
 
 ## After Creating/Modifying Plugins
 
 **IMPORTANT**: Always reload plugins so changes take effect immediately:
 
 ```
-tui_control(action="reload_plugins")
+config(action="reload_plugins", key="")
 ```
 
 ## Available Permissions

@@ -39,7 +39,7 @@ make install
 # → ~/.xbot/plugins/xbot.genui/
 
 # 热重载
-tui_control(action="reload_plugins")
+config(action="reload_plugins")
 ```
 
 ## 协议

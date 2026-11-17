@@ -21,7 +21,9 @@ func (t *ConfigTool) Description() string {
 		"This is the PRIMARY tool for all configuration management — subscriptions, models, settings, plugins, hooks, and runners. " +
 		"Use this whenever the user wants to see available configs, check a setting, or change a setting " +
 		"like context_mode, compression_threshold, llm_model, llm_provider, or any other config key. " +
-		"For theme switching and TUI layout (sidebar_width, sidebar_position) — CLI sessions only — use tui_control. " +
+		"Switching the CURRENT session's model is a user action done here: action=model sub=switch sub_id=... model=... " +
+		"(no admin rights needed; only list/active/switch are open to non-admins). " +
+		"TUI theme/layout switching has NO tool — tell the user to use the UI. " +
 		"Actions: list, get, set, subscriptions, model, subscription, reload_plugins, reload_hooks, runner. " +
 		"To view token usage, tell the user to run /usage."
 }
@@ -110,11 +112,13 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 	log.WithFields(log.Fields{"action": params.Action, "key": params.Key}).Debug("config tool called")
 
 	// Admin gate: management actions mutate the operator's GLOBAL config
-	// (multi-user removal: subscriptions/models/runners/plugins are shared).
+	// (multi-user removal: subscriptions/runners/plugins are shared).
 	// Non-admin channel users (feishu group members not in agent.admins)
-	// may only use the read-only actions (list/get/subscriptions).
+	// may only use the read-only actions (list/get/subscriptions) plus
+	// `model switch` — switching the CURRENT session's model is a user action,
+	// while editing the global model catalogue still needs admin (see modelAction).
 	switch params.Action {
-	case "model", "subscription", "runner", "reload_plugins", "reload_hooks":
+	case "subscription", "runner", "reload_plugins", "reload_hooks":
 		if !ctx.OriginUserIsAdmin {
 			return nil, fmt.Errorf("config: %q is a management action and requires operator (admin) rights", params.Action)
 		}
@@ -227,6 +231,17 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 
 // modelAction handles LLM model management sub-actions.
 func (t *ConfigTool) modelAction(ctx *ToolContext, p configParams) (*ToolResult, error) {
+	// 非 admin 的渠道用户只开放"查询"和"切换本会话模型"——这是用户级动作。
+	// add/remove/refresh/enable/disable/set_context/set_output 会改写全局模型
+	// 目录（所有会话共享），仍然要求 admin。白名单式判定：未来新增 sub 默认受保护。
+	switch p.Sub {
+	case "list", "active", "switch":
+	default:
+		if !ctx.OriginUserIsAdmin {
+			return nil, fmt.Errorf("config model %q is a management action and requires operator (admin) rights (non-admins may use: list, active, switch)", p.Sub)
+		}
+	}
+
 	switch p.Sub {
 	case "list":
 		if ctx.ListModelsFn == nil {

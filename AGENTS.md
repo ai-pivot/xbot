@@ -66,7 +66,7 @@
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, model tiers (vanguard/balance/swift)
 - `docs/agent/subscription.md` — **subscription system 完整文档**: LLMFactory cache、GetLLM/GetLLMForChat/GetLLMForModel 解析链、max_context 优先级、所有切换场景（per-session/全局/settings/启动恢复）、会话隔离规则、Invalidate 速查表、TUI↔Backend 数据同步、**UserContext 统一解析（ResolveUserContext）**、**v63 多用户删除（单 operator + admin allowlist）**
-- `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, config, tui_control, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types, ChannelPluginTransport (stdio channel plugin transport)
+- `docs/agent/tools.md` — built-in tools: Shell, Read, Edit, Glob, Grep, Cd, Fetch, WebSearch, Cron, SubAgent, CreateChat, SendMessage, config, TodoWrite, context_edit, AskUser, DownloadFile, ChatHistory, ManageTools, Skill, EventTrigger, TaskManager, hooks system (agent/hooks/), sandbox types, ChannelPluginTransport (stdio channel plugin transport)
 - `docs/agent/settings.md` — settings system: single registry (agent/setting_runtime.go), cli_settings.go, UpdatePerModelConfig, subscription-scoped vs user-scoped, runtime apply chain
 - `docs/agent/conventions.md` — error handling, logging, testing, naming, build, **local/remote unification**
 - `docs/agent/hooks.md` — hooks lifecycle events, handler types, configuration, gotchas
@@ -126,7 +126,7 @@ The highest-priority rules, one line each. **Before changing the related code, R
 - ⛔ `docs/agent/gotchas-cli-tui.md` — 迭代边界必须保留已渲染的工具 —— 新状态机（`chat/reduce.ts`）曾漏掉旧 store 的同款守卫（2026-09-18 P0 渲染回归）。
 - ⛔ `docs/agent/gotchas-cli-tui.md` — 写事务边界由「跨 handle 原子性」决定，不能只看性能（2026-09-18 缩短写事务的教训）。
 - ⛔ `docs/agent/gotchas-cli-tui.md` — 读接口绝不允许改 `last_active_at`（2026-09-11 线上 bug：刷新页面把所有昨天的会话变成"今天 active"）。
-- ⛔ `docs/agent/gotchas-cli-tui.md` — `tui_control` 是 CLI 渠道专属工具（用户 2026-09-20 要求「应该只在 cli 注册」；
+- ⛔ `docs/agent/gotchas-cli-tui.md` — `tui_control` 已于 2026-11-17 按用户要求**整体移除**（模型侧无任何 TUI 操作工具，仅保留底层 WS 通道与 `config model switch` 的状态栏刷新回调）。历史记录：它曾是 CLI 渠道专属工具（用户 2026-09-20 要求「应该只在 cli 注册」；
 - ⛔ `docs/agent/gotchas-web-frontend.md` — 工具描述就是行为：提示里让模型「等」，它就会等——反向也要主动改写（2026-09-12 用户要求 6 项工具引导优化）。
 - ⛔ `docs/agent/gotchas-web-frontend.md` — **裸 URL 紧贴 Markdown 语法会被 GFM 字面 autolink 吞掉**（2026-11-09 用户截图：`` **https://…/92**（`branch` `` 渲染成字面 `**` + href 含 `` **（`branch` `` 的 404 链接）。GitHub 同样如此（不是能等上游修的 parser bug）⇒ 必须在**源级**用 `protectBareURLs`（`web/src/lib/markdownSource.ts`）把紧贴 greedy 分隔符（`*`/反引号/`__`/`~~`/全角标点）的裸 URL 转成硬 autolink `<…>`；**禁止**改为后处理 mdast（前面那个 `**` 仍是普通 text，强调永远回不来）。守护：`markdownSource.test.ts` + `MarkdownRenderer.test.tsx` + `e2e/markdown-autolink.spec.ts`。
 - ⛔ `docs/agent/gotchas-web-frontend.md` — `break-words`（`overflow-wrap: break-word`）不能阻止「超长不可断 token」把 shrink-to-fit 盒子顶宽 —— 必须用 `wrap-anywhere`（`overflow-wrap: anywhere`）。

@@ -90,7 +90,7 @@ Priority: `deny > defer > ask > allow`
 2. **Choose config layer**: User-level (`~/.xbot/hooks.json`) or project-level (`.xbot/hooks.json`)
 3. **Create/update config**: Use FileCreate or FileReplace to write hooks.json
 4. **Create handler script** (if command type): Write shell script, make executable
-5. **Reload hooks**: Use `tui_control` with action `reload_hooks` to apply changes immediately
+5. **Reload hooks**: Use `config` with action `reload_hooks` to apply changes immediately
 
 ## Critical Gotchas
 
@@ -148,7 +148,7 @@ Priority: `deny > defer > ask > allow`
 **IMPORTANT**: Always reload hooks configuration so changes take effect immediately:
 
 ```
-tui_control(action="reload_hooks")
+config(action="reload_hooks", key="")
 ```
 
 Without reload, changes to hooks.json only apply after CLI restart.
