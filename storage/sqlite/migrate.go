@@ -245,7 +245,15 @@ func MigrateMemoryToFiles(dbPath string) {
 		return
 	}
 	defer db.Close()
+	MigrateMemoryToFilesWithDB(db)
+}
 
+// MigrateMemoryToFilesWithDB reuses an already-open *DB handle instead of
+// opening and closing the database file a second time on startup.
+func MigrateMemoryToFilesWithDB(db *DB) {
+	if db == nil {
+		return
+	}
 	memorySvc := NewMemoryService(db)
 	ctx := context.Background()
 

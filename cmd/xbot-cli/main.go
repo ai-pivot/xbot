@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,9 +41,9 @@ import (
 	"xbot/plugin"
 	"xbot/pprof"
 
-	_ "modernc.org/sqlite"
 	"xbot/protocol"
 	"xbot/serverapp"
+	"xbot/storage"
 	"xbot/tools"
 	"xbot/version"
 
@@ -2329,13 +2328,13 @@ func seedThinkingModeToSettings(app *cliApp) {
 		log.Warn("seed thinking_mode: no disk DB path, skipping raw row (ephemeral)")
 		return
 	}
-	conn, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(10000)")
+	db, err := storage.OpenSQLite(dbPath)
 	if err != nil {
 		log.WithError(err).Warn("seed thinking_mode: open db failed")
 		return
 	}
-	defer conn.Close()
-	if _, err := conn.Exec(`INSERT INTO user_settings (channel, sender_id, key, value, updated_at)
+	defer db.Close()
+	if _, err := db.Conn().Exec(`INSERT INTO user_settings (channel, sender_id, key, value, updated_at)
 		VALUES ('cli','cli_user','thinking_mode',?,?)
 		ON CONFLICT(channel, sender_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
 		tm, time.Now().Unix()); err != nil {

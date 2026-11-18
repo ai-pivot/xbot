@@ -135,7 +135,11 @@ func MigrateFromFileStorage(workDir, dbPath string) error {
 func MigrateIfNeeded(ctx context.Context, workDir, dbPath string) error {
 	return sqlite.MigrateIfNeeded(ctx, workDir, dbPath)
 }
-func MigrateMemoryToFiles(dbPath string) { sqlite.MigrateMemoryToFiles(dbPath) }
+func MigrateMemoryToFiles(dbPath string)       { sqlite.MigrateMemoryToFiles(dbPath) }
+func MigrateMemoryToFilesWithDB(db *sqlite.DB) { sqlite.MigrateMemoryToFilesWithDB(db) }
+func OpenSQLite(dbPath string) (*sqlite.DB, error) {
+	return sqlite.Open(dbPath)
+}
 
 // ─── PostgreSQL convenience constructors ───
 

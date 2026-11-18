@@ -175,7 +175,17 @@ func Open(path string) (*DB, error) {
 	//   ② 文件存在且非空但不是 SQLite → 只 WARN，绝不改写/截断该文件；是不是数据库交给
 	//      驱动判定（驱动自己会报错，不需要我们额外制造一条启动失败路径）。
 	//   ③ 文件不存在但同目录有备份 → 只 WARN 并列出备份路径（不自动恢复、不阻塞启动）。
-	if path != ":memory:" {
+	//
+	// ⛔ 严禁在 sharedConnRefs(path) > 0 时调用 verifySQLiteHeader(path)！
+	// Linux 的 POSIX fcntl 字节锁是进程级（process-wide）而非 fd 级的：只要本进程对
+	// 同一个 inode 打开任意 fd 再 close(fd)（正是 verifySQLiteHeader 里的
+	// os.Open + defer f.Close），内核就会无条件释放本进程在该 inode 上持有的**全部**
+	// POSIX 锁 —— 包括 openPinnedGuard 为防止外部进程 unlink WAL 而持有的
+	// SQLITE_LOCK_SHARED 读锁！这正是 2026-11-18 主库脑裂损坏的真凶：启动时第二次
+	// sqlite.Open(xbot.db)（MigrateMemoryToFiles）调了 verifySQLiteHeader，一关 fd
+	// 就把第一次 Open 建立的 SQLite POSIX 锁全清光了，导致后续外部 python3 连接退出时
+	// 误判「无其它连接」而 unlink 掉活体 xbot.db-wal。
+	if path != ":memory:" && sharedConnRefs(path) == 0 {
 		if fi, statErr := os.Stat(path); statErr == nil {
 			if fi.Size() == 0 {
 				if baks := siblingDBBackups(path); len(baks) > 0 {

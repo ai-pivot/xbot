@@ -13,6 +13,8 @@ import (
 	"xbot/internal/sessionaddr"
 
 	log "xbot/logger"
+
+	moderncsqlite "modernc.org/sqlite"
 )
 
 // sessiondb.go — 每会话一个 SQLite 库（one session, one DB）。
@@ -357,7 +359,25 @@ func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, 
 // 注：这是 per-connection 的 file control（不是 pragma，DSN 传不进去），所以必须
 // 对池里的每个物理连接各设一次；连接池随后的复用会让设置一直有效（主库
 // MaxIdleConns(4)+MaxConnLifetime(0) 常驻，不会回收重建）。
+var persistWALHookOnce sync.Once
+
+// registerPersistWALHook 在 modernc.org/sqlite 驱动上注册全局连接钩子，确保本进程中
+// 打开的**每一条**物理连接（不仅是建池最初那 4 条，还包括高并发扩容的第 5..64 条、
+// 会话库 5min 过期后重建的连接、以及 openPinnedConn）在建立时 100% 自动启用
+// SQLITE_FCNTL_PERSIST_WAL。
+func registerPersistWALHook() {
+	persistWALHookOnce.Do(func() {
+		moderncsqlite.RegisterConnectionHook(func(conn moderncsqlite.ExecQuerierContext, dsn string) error {
+			if fc, ok := conn.(moderncsqlite.FileControl); ok {
+				_, _ = fc.FileControlPersistWAL("main", 1)
+			}
+			return nil
+		})
+	})
+}
+
 func enablePersistWAL(conn *sql.DB) {
+	registerPersistWALHook()
 	if conn == nil {
 		return
 	}
