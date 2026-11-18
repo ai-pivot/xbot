@@ -183,7 +183,95 @@ func (e *geminiAPIError) Error() string {
 	return fmt.Sprintf("gemini API error %d %s: %s", e.Code, e.Status, e.Message)
 }
 
-// ─── 请求构造 ─────────────────────────────────────────────
+const (
+	// geminiSigPrefix 标记 ReasoningItem.ID 是由 Google Gemini 原生客户端生成的签名条目，
+	// 从而与 OpenAI Responses API 的 "rs_..." 条目严格区分（跨模型切换时绝不混用）。
+	geminiSigPrefix    = "gemini:sig:"
+	geminiTextSigID    = "gemini:sig:text"
+	geminiThoughtSigID = "gemini:sig:thought"
+)
+
+func geminiToolSigID(callID string) string {
+	return geminiSigPrefix + "call:" + callID
+}
+
+// buildGeminiAssistantParts 还原历史 assistant 消息的 Gemini parts（含 thought 与 thoughtSignature）。
+//
+// 为什么必须回传 thoughtSignature：
+//   - Gemini 2.5/3/4 思考模型会在输出 part（首个 functionCall 或最终 text part）上附带
+//     不透明加密签名 thoughtSignature，用于在多轮工具调用/对话中恢复内部推理状态。
+//   - 若历史消息带有 Gemini 自身的签名（ReasoningItems 中含 gemini:sig:*），则按原序还原
+//     thought part（Thought: true）并在对应 functionCall / text part 上挂回签名与 call ID；
+//   - 若历史消息来自其他协议（如 OpenAI rs_* 或纯 ReasoningContent 无 Gemini 签名），
+//     绝不伪造 thought part，避免触发上游签名校验 400。
+func buildGeminiAssistantParts(m ChatMessage, toolNames map[string]string) []geminiPart {
+	sigByID := make(map[string]ReasoningItem, len(m.ReasoningItems))
+	hasGeminiSig := false
+	for _, ri := range m.ReasoningItems {
+		if strings.HasPrefix(ri.ID, geminiSigPrefix) && (ri.EncryptedContent != "" || ri.Content != "") {
+			sigByID[ri.ID] = ri
+			hasGeminiSig = true
+		}
+	}
+
+	parts := make([]geminiPart, 0, 2+len(m.ToolCalls))
+
+	// 1. 仅当存在 Gemini 原生思考签名记录时，还原前置的 thought:true part
+	if hasGeminiSig {
+		thoughtText := m.ReasoningContent
+		if ri, ok := sigByID[geminiThoughtSigID]; ok && thoughtText == "" {
+			thoughtText = ri.Content
+		}
+		var thoughtSig string
+		if ri, ok := sigByID[geminiThoughtSigID]; ok {
+			thoughtSig = ri.EncryptedContent
+		}
+		if thoughtText != "" || thoughtSig != "" {
+			parts = append(parts, geminiPart{
+				Text:             thoughtText,
+				Thought:          true,
+				ThoughtSignature: thoughtSig,
+			})
+		}
+	}
+
+	// 2. 还原普通文本 part（若存在关联在 text 上的 thoughtSignature 一并挂回）
+	textSig := ""
+	if ri, ok := sigByID[geminiTextSigID]; ok {
+		textSig = ri.EncryptedContent
+	}
+	if m.Content != "" || (textSig != "" && len(m.ToolCalls) == 0) {
+		parts = append(parts, geminiPart{
+			Text:             m.Content,
+			ThoughtSignature: textSig,
+		})
+	}
+
+	// 3. 还原工具调用 parts（保留原始 ID，并在对应 functionCall part 上挂回 thoughtSignature）
+	for i, tc := range m.ToolCalls {
+		args := json.RawMessage(tc.Arguments)
+		if len(args) == 0 || !json.Valid(args) {
+			args = json.RawMessage(`{}`)
+		}
+		toolNames[tc.ID] = tc.Name
+		var callSig string
+		if ri, ok := sigByID[geminiToolSigID(tc.ID)]; ok {
+			callSig = ri.EncryptedContent
+		} else if i == 0 && textSig != "" && m.Content == "" {
+			// 兜底：若签名记在了 text 槽位但本轮实际是纯工具调用，挂在首个 functionCall 上
+			callSig = textSig
+		}
+		parts = append(parts, geminiPart{
+			FunctionCall: &geminiFuncCall{
+				ID:   tc.ID,
+				Name: tc.Name,
+				Args: args,
+			},
+			ThoughtSignature: callSig,
+		})
+	}
+	return parts
+}
 
 func (g *GoogleLLM) endpoint(model, method string) string {
 	base := strings.TrimSpace(g.cfg.BaseURL)
@@ -213,18 +301,7 @@ func (g *GoogleLLM) toGeminiRequest(ctx context.Context, model string, messages 
 				systems = append(systems, c)
 			}
 		case "assistant":
-			parts := make([]geminiPart, 0, 1+len(m.ToolCalls))
-			if c := m.Content; c != "" {
-				parts = append(parts, geminiPart{Text: c})
-			}
-			for _, tc := range m.ToolCalls {
-				args := json.RawMessage(tc.Arguments)
-				if len(args) == 0 || !json.Valid(args) {
-					args = json.RawMessage(`{}`)
-				}
-				toolNames[tc.ID] = tc.Name
-				parts = append(parts, geminiPart{FunctionCall: &geminiFuncCall{Name: tc.Name, Args: args}})
-			}
+			parts := buildGeminiAssistantParts(m, toolNames)
 			if len(parts) > 0 {
 				req.Contents = append(req.Contents, geminiContent{Role: "model", Parts: parts})
 			}
@@ -451,13 +528,14 @@ func (g *GoogleLLM) setHeaders(req *http.Request) {
 	}
 }
 
-// convertGeminiResponse 把 Gemini candidates 转成业务响应（文本 / 工具调用 / 用量）。
+// convertGeminiResponse 把 Gemini candidates 转成业务响应（文本 / 工具调用 / 思考签名 / 用量）。
 func convertGeminiResponse(gr *geminiResponse) (*LLMResponse, error) {
 	if gr.Error != nil {
 		return nil, gr.Error
 	}
 	out := &LLMResponse{FinishReason: FinishReasonStop}
 	var texts, thoughts []string
+	var thoughtSig string
 	idx := 0
 	for _, cand := range gr.Candidates {
 		for _, part := range cand.Content.Parts {
@@ -467,28 +545,53 @@ func convertGeminiResponse(gr *geminiResponse) (*LLMResponse, error) {
 				if len(part.FunctionCall.Args) > 0 {
 					args = string(part.FunctionCall.Args)
 				}
-				id := part.FunctionCall.ID
-				if id == "" {
-					id = fmt.Sprintf("call_%d", idx)
-				}
+				id := geminiCallID(part.FunctionCall, idx)
 				out.ToolCalls = append(out.ToolCalls, ToolCall{
 					ID:        id,
 					Name:      part.FunctionCall.Name,
 					Arguments: args,
 				})
+				if part.ThoughtSignature != "" {
+					out.ReasoningItems = append(out.ReasoningItems, ReasoningItem{
+						ID:               geminiToolSigID(id),
+						EncryptedContent: part.ThoughtSignature,
+					})
+				}
 				idx++
 			case part.Thought:
 				if part.Text != "" {
 					thoughts = append(thoughts, part.Text)
 				}
-			case part.Text != "":
-				texts = append(texts, part.Text)
+				if part.ThoughtSignature != "" {
+					thoughtSig = part.ThoughtSignature
+				}
+			default:
+				if part.Text != "" {
+					texts = append(texts, part.Text)
+				}
+				if part.ThoughtSignature != "" {
+					out.ReasoningItems = append(out.ReasoningItems, ReasoningItem{
+						ID:               geminiTextSigID,
+						EncryptedContent: part.ThoughtSignature,
+					})
+				}
 			}
 		}
 		out.FinishReason = mapGeminiFinish(cand.FinishReason)
 	}
 	out.Content = strings.Join(texts, "")
 	out.ReasoningContent = strings.Join(thoughts, "")
+	// 若本轮产出了 Gemini 思考正文或 thought part 专属签名，补一条 gemini:sig:thought 记录，
+	// 使得 buildGeminiAssistantParts 能识别这是 Gemini 原生思考并在下一轮原样回传。
+	if out.ReasoningContent != "" || thoughtSig != "" || len(out.ReasoningItems) > 0 {
+		if out.ReasoningContent != "" || thoughtSig != "" {
+			out.ReasoningItems = append(out.ReasoningItems, ReasoningItem{
+				ID:               geminiThoughtSigID,
+				EncryptedContent: thoughtSig,
+				Content:          out.ReasoningContent,
+			})
+		}
+	}
 	if len(out.ToolCalls) > 0 {
 		out.FinishReason = FinishReasonToolCalls
 	}
@@ -674,6 +777,8 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, model string, body io.ReadCl
 	toolIdx := 0
 	sentDone := false
 	produced := false // 是否真的产出过内容/思考/工具调用
+	var thoughts []string
+	var thoughtSig string
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, ":") {
@@ -704,22 +809,52 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, model string, body io.ReadCl
 						args = string(part.FunctionCall.Args)
 					}
 					produced = true
+					callID := geminiCallID(part.FunctionCall, toolIdx)
 					ch <- StreamEvent{Type: EventToolCall, ToolCall: &ToolCallDelta{
-						Index: toolIdx, ID: geminiCallID(part.FunctionCall, toolIdx),
+						Index: toolIdx, ID: callID,
 						Name: part.FunctionCall.Name, Arguments: args, ArgumentsComplete: true,
 					}}
+					if part.ThoughtSignature != "" {
+						ch <- StreamEvent{Type: EventReasoningItem, ReasoningItem: &ReasoningItem{
+							ID:               geminiToolSigID(callID),
+							EncryptedContent: part.ThoughtSignature,
+						}}
+					}
 					toolIdx++
 				case part.Thought:
 					if part.Text != "" {
 						produced = true
+						thoughts = append(thoughts, part.Text)
 						ch <- StreamEvent{Type: EventReasoningContent, ReasoningContent: part.Text}
 					}
-				case part.Text != "":
-					produced = true
-					ch <- StreamEvent{Type: EventContent, Content: part.Text}
+					if part.ThoughtSignature != "" {
+						produced = true
+						thoughtSig = part.ThoughtSignature
+					}
+				default:
+					if part.Text != "" {
+						produced = true
+						ch <- StreamEvent{Type: EventContent, Content: part.Text}
+					}
+					if part.ThoughtSignature != "" {
+						produced = true
+						ch <- StreamEvent{Type: EventReasoningItem, ReasoningItem: &ReasoningItem{
+							ID:               geminiTextSigID,
+							EncryptedContent: part.ThoughtSignature,
+						}}
+					}
 				}
 			}
 			if cand.FinishReason != "" {
+				if len(thoughts) > 0 || thoughtSig != "" {
+					ch <- StreamEvent{Type: EventReasoningItem, ReasoningItem: &ReasoningItem{
+						ID:               geminiThoughtSigID,
+						EncryptedContent: thoughtSig,
+						Content:          strings.Join(thoughts, ""),
+					}}
+					thoughts = nil
+					thoughtSig = ""
+				}
 				fin := mapGeminiFinish(cand.FinishReason)
 				if toolIdx > 0 {
 					fin = FinishReasonToolCalls
@@ -751,6 +886,13 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, model string, body io.ReadCl
 		// 现在：产出了内容才降级为 Stop（并记一条 warn），完全空流必须报错，
 		// 让 retry 机制接手、最终把错误显示给用户。
 		if produced {
+			if len(thoughts) > 0 || thoughtSig != "" {
+				ch <- StreamEvent{Type: EventReasoningItem, ReasoningItem: &ReasoningItem{
+					ID:               geminiThoughtSigID,
+					EncryptedContent: thoughtSig,
+					Content:          strings.Join(thoughts, ""),
+				}}
+			}
 			log.WithFields(log.Fields{"model": model, "tool_calls": toolIdx}).
 				Warn("[LLM] gemini stream ended without finishReason; treating partial output as complete")
 			ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonStop}

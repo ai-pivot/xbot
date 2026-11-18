@@ -386,3 +386,86 @@ func TestGoogleLiveParallelToolHistory(t *testing.T) {
 		t.Fatal("empty reply")
 	}
 }
+
+// 真实网关多轮带签名 Tool Call 闭环：
+//   - 第 1 轮（流式）：让模型思考并发起工具调用，通过 CollectStream 收集
+//     ReasoningContent、ToolCalls 与 ReasoningItems（含 thoughtSignature）；
+//   - 第 2 轮（流式）：把第 1 轮产出的 assistant 消息（含 ReasoningItems）与
+//     tool 结果一起发回网关，验证 thought:true part + thoughtSignature 原样回传成功。
+func TestGoogleLiveThoughtSignatureMultiTurnStream(t *testing.T) {
+	g := liveGoogleWithTokens(t, 1024)
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+
+	toolDef := fakeTool{name: "get_weather"}
+	msgs := []ChatMessage{
+		{Role: "user", Content: "Think briefly about why Beijing and Shanghai have different climates, then call get_weather for BOTH Beijing and Shanghai in parallel."},
+	}
+
+	ch1, err := g.GenerateStream(ctx, "gemini-4-argon", msgs, []ToolDefinition{toolDef}, "high")
+	if err != nil {
+		t.Fatalf("turn 1 GenerateStream: %v", err)
+	}
+	r1, err := CollectStream(ctx, ch1)
+	if err != nil {
+		t.Fatalf("turn 1 CollectStream: %v", err)
+	}
+	t.Logf("turn 1: tool_calls=%d reasoning_len=%d reasoning_items=%d",
+		len(r1.ToolCalls), len(r1.ReasoningContent), len(r1.ReasoningItems))
+	if len(r1.ToolCalls) == 0 {
+		t.Fatalf("turn 1 did not call tool: content=%q", r1.Content)
+	}
+	hasSig := false
+	for _, ri := range r1.ReasoningItems {
+		if strings.HasPrefix(ri.ID, geminiSigPrefix) && ri.EncryptedContent != "" {
+			hasSig = true
+			break
+		}
+	}
+	if !hasSig {
+		t.Fatalf("turn 1 did not capture any Gemini thoughtSignature in ReasoningItems: %+v", r1.ReasoningItems)
+	}
+
+	msgs = append(msgs, ChatMessage{
+		Role:             "assistant",
+		Content:          r1.Content,
+		ReasoningContent: r1.ReasoningContent,
+		ReasoningItems:   r1.ReasoningItems,
+		ToolCalls:        r1.ToolCalls,
+	})
+	for _, tc := range r1.ToolCalls {
+		msgs = append(msgs, ChatMessage{
+			Role:       "tool",
+			ToolCallID: tc.ID,
+			ToolName:   tc.Name,
+			Content:    `{"temp":"22C","sky":"sunny"}`,
+		})
+	}
+
+	// 确认 toGeminiRequest 确实把 thoughtSignature 挂回了第 2 轮请求
+	req2 := g.toGeminiRequest(ctx, "gemini-4-argon", msgs, []ToolDefinition{toolDef}, "low")
+	sigCount := 0
+	for _, c := range req2.Contents {
+		for _, p := range c.Parts {
+			if p.ThoughtSignature != "" {
+				sigCount++
+			}
+		}
+	}
+	if sigCount == 0 {
+		t.Fatalf("turn 2 request did not carry any thoughtSignature back: %+v", req2.Contents)
+	}
+
+	ch2, err := g.GenerateStream(ctx, "gemini-4-argon", msgs, []ToolDefinition{toolDef}, "low")
+	if err != nil {
+		t.Fatalf("turn 2 GenerateStream: %v", err)
+	}
+	r2, err := CollectStream(ctx, ch2)
+	if err != nil {
+		t.Fatalf("turn 2 CollectStream: %v", err)
+	}
+	t.Logf("turn 2 reply=%q reasoning_items=%d usage=%+v", r2.Content, len(r2.ReasoningItems), r2.Usage)
+	if strings.TrimSpace(r2.Content) == "" {
+		t.Fatal("turn 2 empty reply")
+	}
+}
