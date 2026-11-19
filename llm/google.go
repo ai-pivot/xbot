@@ -776,7 +776,11 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, model string, body io.ReadCl
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	toolIdx := 0
 	sentDone := false
-	produced := false // 是否真的产出过内容/思考/工具调用
+	// produced 仅在真正产出过可见正文（非 thought 的 text）或工具调用（functionCall）时置 true。
+	// 若上游只推了 thought:true 思考片段就在生成 functionCall/正文前断流（无 finishReason），
+	// 此时既无 Content 也无 ToolCalls，绝不能当成正常 Stop 完成（否则 Agent 会拿到空响应静默终止回合），
+	// 必须走 EventError 触发外层 RetryLLM 重试。
+	produced := false
 	var thoughts []string
 	var thoughtSig string
 	for sc.Scan() {
@@ -823,12 +827,10 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, model string, body io.ReadCl
 					toolIdx++
 				case part.Thought:
 					if part.Text != "" {
-						produced = true
 						thoughts = append(thoughts, part.Text)
 						ch <- StreamEvent{Type: EventReasoningContent, ReasoningContent: part.Text}
 					}
 					if part.ThoughtSignature != "" {
-						produced = true
 						thoughtSig = part.ThoughtSignature
 					}
 				default:
@@ -837,7 +839,6 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, model string, body io.ReadCl
 						ch <- StreamEvent{Type: EventContent, Content: part.Text}
 					}
 					if part.ThoughtSignature != "" {
-						produced = true
 						ch <- StreamEvent{Type: EventReasoningItem, ReasoningItem: &ReasoningItem{
 							ID:               geminiTextSigID,
 							EncryptedContent: part.ThoughtSignature,
@@ -875,7 +876,11 @@ func (g *GoogleLLM) pumpStream(ctx context.Context, model string, body io.ReadCl
 		default:
 		}
 	}
-	if err := sc.Err(); err != nil && ctx.Err() == nil {
+	// 若外层因超时或取消主动关闭了 attemptCtx，直接退出，不再误报"ended without finishReason"。
+	if ctx.Err() != nil {
+		return
+	}
+	if err := sc.Err(); err != nil {
 		ch <- StreamEvent{Type: EventError, Error: "gemini stream read: " + err.Error()}
 		return
 	}

@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// streamIdleTimeout is the maximum silence allowed between SSE chunks before
+// a stream is considered hung. Set to 300s (5 min) because Gemini native SSE
+// buffers the entire functionCall.args JSON object server-side before emitting
+// the functionCall chunk.
+var streamIdleTimeout = 300 * time.Second
+
 // snapshotToolCalls returns an ordered copy of the accumulated tool call deltas.
 // Used by the onToolCall streaming callback to notify UI of tool names as
 // soon as they arrive (before arguments finish streaming).
@@ -158,8 +164,15 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 	// hung and we return an error. This replaces the old approach of using ctx deadline
 	// as a total stream timeout, which incorrectly killed actively-streaming responses
 	// that simply took longer than the deadline to generate all output.
-	const streamIdleTimeout = 120 * time.Second
-	idleTimer := time.NewTimer(streamIdleTimeout)
+	//
+	// Why 300s (5 min) instead of 120s:
+	// Google Gemini native SSE does NOT stream functionCall.args incrementally — the
+	// server buffers the entire JSON arguments object (e.g., a 40KB+ HTML/code file in
+	// FileCreate/FileReplace) and emits a single functionCall chunk only after all
+	// argument tokens are generated. A 120s idle cutoff prematurely kills large tool
+	// calls after the initial thought chunk and triggers 5 futile retries.
+	idleTimeout := streamIdleTimeout
+	idleTimer := time.NewTimer(idleTimeout)
 	defer idleTimer.Stop()
 
 	for {

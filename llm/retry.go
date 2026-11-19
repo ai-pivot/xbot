@@ -188,6 +188,10 @@ func isRateLimitError(err error) bool {
 	if strings.Contains(msg, "status=429") {
 		return true
 	}
+	// Google Gemini: `gemini stream ...: HTTP 429: ... RESOURCE_EXHAUSTED`
+	if strings.Contains(msg, "HTTP 429") || strings.Contains(msg, "RESOURCE_EXHAUSTED") {
+		return true
+	}
 	return false
 }
 
@@ -347,9 +351,16 @@ func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, m
 		// tool generation finished" bug: live frames reported the full window,
 		// the committed/DB value reported ~0-5ms local latency).
 		t0 := time.Now()
+		// 为单次 attempt 创建独立可取消的上下文：当 CollectStreamWithCallbackFrom
+		// 因 idleTimer 超时、流中途报错或正常结束返回时，defer cancelAttempt() 会立即
+		// 关闭本次 attempt 的底层 HTTP 连接与后台读取协程（如 GoogleLLM.pumpStream），
+		// 杜绝重试期间旧流泄漏在后台继续占用连接与网关并发配额。
+		attemptCtx, cancelAttempt := context.WithCancel(ctx)
+		defer cancelAttempt()
+
 		resultCh := make(chan genResult, 1)
 		go func() {
-			ch, err2 := streaming.GenerateStream(ctx, model, messages, tools, thinkingMode)
+			ch, err2 := streaming.GenerateStream(attemptCtx, model, messages, tools, thinkingMode)
 			resultCh <- genResult{ch, err2}
 		}()
 
@@ -365,8 +376,8 @@ func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, m
 		}
 
 		if streamContentFn != nil || streamReasoningFn != nil || streamToolCallFn != nil || streamUsageFn != nil {
-			return CollectStreamWithCallbackFrom(ctx, eventCh, t0, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
+			return CollectStreamWithCallbackFrom(attemptCtx, eventCh, t0, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
 		}
-		return CollectStreamWithCallbackFrom(ctx, eventCh, t0, nil, nil, nil, nil)
+		return CollectStreamWithCallbackFrom(attemptCtx, eventCh, t0, nil, nil, nil, nil)
 	})
 }
