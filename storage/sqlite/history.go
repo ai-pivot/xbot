@@ -1469,13 +1469,14 @@ func ApplyHistoryRecords(records []HistoryRecord, hasCheckpoint bool) (*ReplayRe
 			if len(mutations.Mutations) == 0 {
 				return nil, fmt.Errorf("history_id %d: mask has no mutations", record.HistoryID)
 			}
-			for _, mutation := range mutations.Mutations {
-				idx := msgIdx.occurrence(mutation.TargetHistoryID, mutation.TargetOccurrence)
-				if idx < 0 {
-					return nil, fmt.Errorf("history_id %d: mask target %d is not active", record.HistoryID, mutation.TargetHistoryID)
-				}
-				result.Messages[idx].Content = mutation.Content
-			}
+			// Observation masking 已于 2026-11-20 永久下线：历史里遗留的 mask 记录
+			// 只做解码校验，**不再应用**到消息内容上。
+			//
+			// 保留这段解码是为了让旧会话仍能 replay（否则老库里已有的
+			// HistoryRecordMask 会让 replay 直接报错），但内容一律保持原始
+			// tool result，不再替换成 `📂 [masked:...]` 或 `📂 [batch: N tool
+			// calls folded] ...`——那是不可逆的历史改写，也是训练数据被污染的源头。
+			_ = mutations
 		case HistoryRecordAskQuestion:
 			var question AskQuestionRecord
 			if err := decodeHistoryData(record, &question); err != nil {

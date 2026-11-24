@@ -2379,9 +2379,9 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	}
 
 	// 注册 recall_masked 工具（需要 MaskStore 依赖注入）。
-	// tenantMaskRouter 按执行时 ToolContext.TenantID 路由到 per-tenant 实例，
-	// 多租户 server 下并发会话互不可见。
-	registry.RegisterCore(&tools.RecallMaskedTool{Store: &tenantMaskRouter{a: a}})
+	// recall_masked 工具已随 observation masking 一起下线（2026-11-20）：
+	// 不再有内容会被遮蔽，保留该工具只会诱导模型调用一个永远返回空结果的工具。
+	// （tools.RecallMaskedTool 类型暂时保留，仅为避免大面积删除引发编译面变化。）
 
 	// 初始化 ContextEditor（Context Editing 工具 — 精确编辑上下文）
 	editStore := NewContextEditStore(100)

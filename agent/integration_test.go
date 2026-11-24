@@ -194,6 +194,7 @@ func (mc *mockCompressor) SessionHook() SessionCompressHook { return nil }
 // ============================================================================
 
 func TestIntegration_Masking_TriggeredAtThreshold(t *testing.T) {
+	t.Skip("observation masking retired 2026-11-20: MaskStore is always nil (see engine_wire.go), so the 60% masking threshold can never fire")
 	env := newIntegrationTestEnv(t)
 	// 160 groups × ~601 tokens each ≈ 96000 total.
 	// maxTokens=150000 → ratio≈0.64 → keepGroups=100, mask 60 groups (≥30 threshold ✓).
@@ -869,6 +870,7 @@ func TestIntegration_Compress_NotTriggeredBelowThreshold(t *testing.T) {
 // ============================================================================
 
 func TestIntegration_MaxContext_CustomThreshold(t *testing.T) {
+	t.Skip("observation masking retired 2026-11-20: MaskStore is always nil (see engine_wire.go); the sub-tests below assert masked-content placeholders that can no longer appear")
 	// Test A: MaxContextTokens set so tokens are between masking (60%) and
 	// compaction (75%) thresholds, with enough tool groups to exceed keepGroups.
 	// 120 groups × ~50 tokens each ≈ 6000 total. maxTokens=9000:

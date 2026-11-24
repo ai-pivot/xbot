@@ -646,86 +646,15 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	}
 }
 
-// maybeMaskObservations applies lightweight observation masking when context
-// exceeds 60% of max tokens but hasn't reached compression threshold.
-// The minimum maskable-message threshold (30) lives inside MaskOldToolResults —
-// it checks the count of messages that would actually be masked, not total messages.
+// maybeMaskObservations 已于 2026-11-20 永久下线（保留函数只为维持调用点）。
+//
+// 它会把旧 tool result 的 Content 换成 `📂 [masked:mk_xxx]`、把纯工具组的
+// assistant.Content 折叠成 `📂 [batch: N tool calls folded] Shell({...})`，
+// 并通过 Session.AppendMasks 写进数据库（replay 时再应用）——即不可逆改写历史。
+// 训练数据导出因此混入折叠摘要与文本形式工具调用，教出"想调工具但不调用"的行为。
+// 上下文压力只走 OffloadStore + compaction 两条路。
 func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64, maxTokens int) {
-	if s.cfg.MaskStore == nil {
-		return
-	}
-	if totalTokens <= 0 {
-		return
-	}
-	maskingThreshold := float64(maxTokens) * 0.6
-	if float64(totalTokens) <= maskingThreshold {
-		return
-	}
-	keepGroups := calculateKeepGroups(int(totalTokens), maxTokens)
-	// Minimum maskable-message threshold (user request 2026-08-31): skip masking
-	// entirely when fewer than 30 tool results would actually be masked — the
-	// readability cost (replacing readable output with placeholders) outweighs
-	// the negligible context savings. Passed to MaskOldToolResults which counts
-	// actual maskable messages (excluding already-masked, short, active-file).
-	const minMaskableMessages = 30
-	masked, count, maskedEntries := MaskOldToolResults(s.messages, s.cfg.MaskStore, keepGroups, minMaskableMessages)
-	if count == 0 {
-		return
-	}
-	// Diagnostic: log which groups were masked and which were kept
-	{
-		var groups []int
-		for i := range s.messages {
-			if s.messages[i].Role == "assistant" && len(s.messages[i].ToolCalls) > 0 {
-				groups = append(groups, i)
-			}
-		}
-		firstMasked := -1
-		if len(maskedEntries) > 0 {
-			firstMasked = maskedEntries[0].MessageIndex
-		}
-		log.Ctx(ctx).WithFields(log.Fields{
-			"keep_groups":  keepGroups,
-			"total_groups": len(groups),
-			"masked_count": count,
-			"first_masked": firstMasked,
-			"msg_count":    len(s.messages),
-			"token_ratio":  fmt.Sprintf("%.2f", float64(totalTokens)/float64(maxTokens)),
-		}).Info("Observation masking applied")
-	}
-	// Append mask controls before installing the in-memory view. Original tool
-	// results remain immutable message rows and replay applies only placeholders.
-	if s.cfg.Session != nil {
-		mutations := make([]common.MaskMutation, 0, len(maskedEntries))
-		for _, entry := range maskedEntries {
-			if entry.MessageIndex < 0 || entry.MessageIndex >= len(s.messages) || s.messages[entry.MessageIndex].ID == 0 {
-				log.Ctx(ctx).WithField("raw_idx", entry.MessageIndex).Warn("Mask skipped: target has no persisted history_id")
-				continue
-			}
-			occurrence := 0
-			for i := 0; i < entry.MessageIndex; i++ {
-				if s.messages[i].ID == s.messages[entry.MessageIndex].ID {
-					occurrence++
-				}
-			}
-			mutations = append(mutations, common.MaskMutation{TargetHistoryID: s.messages[entry.MessageIndex].ID, TargetOccurrence: occurrence, Content: entry.Content})
-		}
-		if len(mutations) > 0 {
-			if err := s.cfg.Session.AppendMasks(mutations); err != nil {
-				log.Ctx(ctx).WithError(err).Error("Failed to append mask history; keeping original context")
-				return
-			}
-		}
-	}
-	s.messages = s.syncMessages(masked)
-	GlobalMetrics.MaskingEvents.Add(1)
-	GlobalMetrics.MaskedItems.Add(int64(count))
-
-	if s.autoNotify {
-		s.progressLines = append(s.progressLines, fmt.Sprintf("> 🎭 上下文较大 (%d tokens)，已遮蔽 %d 条旧工具结果", totalTokens, count))
-		s.notifyProgress("")
-	}
-	log.Ctx(ctx).WithField("masked_count", count).Info("Observation masking triggered")
+	// 已于 2026-11-20 永久下线，见函数上方注释。
 }
 
 // setWaitingUser sets the waiting user state from a tool result.

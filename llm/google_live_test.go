@@ -19,7 +19,7 @@ import (
 //
 // 需要环境变量：
 //
-//	MINT_BASE=https://pi-api-cn.macaron.xin   (不带 /v1)
+//	MINT_BASE=https://<your-gemini-gateway>   (不带 /v1)
 //	MINT_KEY=<key>
 //
 // 目的：用真实网关注入 Gemini 原生协议（/v1beta/models/{m}:generateContent），
