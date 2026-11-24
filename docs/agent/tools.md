@@ -22,7 +22,6 @@
 | `none_sandbox.go` | None sandbox (local execution). Uses platform helpers from shell_unix/shell_windows.go |
 | `mcp_common.go` | MCP protocol definitions |
 | `mcp_remote_transport.go` | MCP HTTP transport |
-| `tui_control.go` | **TuiControlTool** — AI operates TUI sidebar/layout/theme via asyncCh |
 | `config_tool.go` | **ConfigTool** — AI reads/modifies config via SettingsSvc auto-injection |
 | `memory_tools.go` | Core memory tools (append/replace/rethink/search/recall) — letta only |
 | `knowledge_tools.go` | Shared file-write helper (writeFileSandboxAware) — knowledge tools removed, project knowledge via AGENTS.md + docs/agent/ |
@@ -121,31 +120,26 @@ Routes by address prefix:
 - Platform helpers in `shell_unix.go` / `shell_windows.go`: `setProcessAttrs`, `killProcessTree`, `isProcessAlive`, `defaultShell`, `loginShellArgs`
 - `cmdbuilder` uses `defaultShell`/`defaultShellFlag` constants from `shell_default.go` / `shell_windows.go`
 
-## TUI Control & Config Tools (AI-Native)
+## Config Tool (AI-Native)
 
-### tui_control (`tools/tui_control.go`)
+### tui_control — 已移除（2026-11-17）
 
-**CLI 渠道专属工具**（`agent/agent.go` 用 `registry.RegisterForChannel("cli", …)`）—— AI 操作 TUI 侧边栏、布局与主题。
+用户要求把 `tui_control` **整体删除**：`tools/tui_control.go`、CLI 渠道注册、子代理的
+`UnregisterChannelTool("cli", "tui_control")` 补丁、以及系统提示里的 "TUI operations"
+一行全部删除。模型侧不再有任何操作 TUI（切会话 / 主题 / 布局 / send_slash）的工具；
+这些只能由用户自己在界面里做。
 
-TUI 只存在于 CLI：本地与远程 CLI 的 sessionKey 都是 `cli:...`，都命中该渠道；web/feishu 等渠道既**看不到**（`AsDefinitionsForSession` 按 sessionKey 的 channel 前缀过滤）也**执行不了**（`GetForSession` 回落全局查找 ⇒ 不存在）。⚠️ web 端浏览 CLI 会话时 `physical_channel` override 把 sessionKey 换成 `web:...`（`agent/engine_wire.go`），同样过滤掉 —— 与"web 里没有 TUI"一致（历史 bug：全局注册导致 web 模型能看到并调用它，必然报 "only available in local CLI mode"）。
-
-**SubAgent 不继承**：channel 工具会随 `Registry.Clone()` 进入子代理注册表，而 `filterSubAgentTools` 只遍历全局工具 ⇒ `buildSubAgentRunConfig` 显式 `UnregisterChannelTool("cli", "tui_control")`（子代理绝不能切换/关闭用户正在看的会话）。
-
-**Actions**: `switch_session`, `close_session`, `set_layout`, `set_theme`, `send_slash`, `reload_plugins`, `reload_hooks`
-
-**send_slash**: Executes TUI-only slash commands (`/palette`, `/settings`, `/rewind`, `/tasks`, `/clear`, etc.). Do NOT use `send_slash` for agent-level commands like `/set-llm`, `/unset-llm`, `/set-model`, `/models`, `/new`, `/compress`, `/usage`, `/context` — those are handled natively by the agent command registry. `send_slash` goes through BubbleTea's event loop (synchronous RPC); commands that call back into the agent (like `/usage` did via `usageQueryFn` → agent RPC) will deadlock.
-
-**Flow**: `Execute()` → `ctx.TUIControl(action, params)` → `CLIChannel.SendTUIControl()` → `asyncCh` → `handleAsyncDrain` → `program.Send` → event loop → `handleSessionControlMsg`
-
-**Remote mode**: Server `RemoteTUICtrlFn` → `RemoteCLIChannel.SendTUIControlRequest()` → WS `tui_control_req` → client `readPump` → goroutine → `SendTUIControl` → asyncCh. ReadPump stays responsive (goroutine wrapper), allowing RPC calls within handlers.
-
-**Persistence**: `handleSessionControlMsg` calls `persistCLISettingsValues` after applying changes. Layout keys (sidebar_width etc.) are written directly to `config.json` via `saveLayoutToConfig()` (they're not in `Config` struct).
+**仍然存在的底层通道**（有意保留，不是工具）：`protocol.TUIControlEvent`、
+WS `tui_control_req`/`tui_control_resp`、`ToolContext.TUIControl` 回调 —— 后者被
+`config action=model sub=switch` 用来通知 CLI 刷新状态栏（`reload_settings`）。
+CLI 客户端自身的 layout 事件流（`handleSessionControlMsg` / `saveLayoutToConfig`）
+也不受影响，只是不再有"模型发起"的入口。
 
 ### config (`tools/config_tool.go`)
 
 Core tool (always loaded). AI reads/modifies xbot configuration.
 
-**Actions**: `list`, `get`, `set`, `subscriptions`, `reload_plugins`, `reload_hooks`, `runner`
+**Actions**: `list`, `get`, `set`, `subscriptions`, `model`, `subscription`, `reload_plugins`, `reload_hooks`, `runner`
 
 **Runner action**: `config action=runner` with sub-actions:
 - `sub=create name=NAME mode=native|docker workspace=PATH [llm_provider=... llm_model=...]` — create a new runner (auto-starts remote sandbox server if needed)
@@ -157,7 +151,10 @@ Core tool (always loaded). AI reads/modifies xbot configuration.
 
 **Runner routing**: Session-level binding via `SandboxRouter.sessionRunners` sync.Map. `config switch` writes `"channel:chatID" → runnerName`. Per-tool-call sandbox re-resolution in `buildToolExecutor` (engine_wire.go) and `defaultToolExecutor` (engine.go) ensures all tools (Shell, Read, Grep, Glob, FileReplace...) immediately use the new runner after switch. CWD auto-resets to runner's live workspace from `GetConnectionInfo`.
 
-**LLM model operations**: To switch model → tell user to run `/set-model <subscription> <model>`. To configure custom LLM → tell user to run `/set-llm <name> provider=<provider> base_url=<url> api_key=<key>`. To view usage → tell user to run `/usage`. All these are agent-level commands handled natively. Do NOT use `send_slash` or `config set` for these — they have dedicated paths.
+**LLM model operations** (`action=model`):
+- `sub=list` / `sub=active` / `sub=switch sub_id=… model=…` — **open to non-admin users**; `switch` changes only the **current session's** model, so a user can say "switch this session to gemini" in any channel.
+- `sub=add|remove|refresh|enable|disable|set_context|set_output` — mutate the **global** model catalogue, still admin-only (`OriginUserIsAdmin`).
+- Tell the user `/usage` for token usage; `/set-llm` for creating a subscription.
 
 **Injection**: `buildToolContext` auto-injects `ConfigGet`/`ConfigSet` from `cfg.SettingsSvc`, and `RunnerCreate`/`RunnerList`/`RunnerDelete`/`RunnerGetActive`/`RunnerSetActive` from `tools.RunnerTokenStore` via `tools.GetRunnerTokenDB()`. Works in ALL modes (local + remote via RPC). Does NOT rely on Agent `SetTUICallbacks`.
 

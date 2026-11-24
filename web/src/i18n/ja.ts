@@ -35,6 +35,7 @@ const ja: Translations = {
     diff: '差分',
     config: '設定',
     info: '情報',
+    memory: 'メモリ',
     terminal: 'ターミナル',
     tasks: 'タスク',
     tasksCron: 'スケジュールタスク',

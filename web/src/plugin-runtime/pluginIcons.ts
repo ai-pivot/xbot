@@ -9,6 +9,7 @@
 import {
   Activity,
   Blocks,
+  Brain,
   Boxes,
   ChartColumn,
   FileCode2,
@@ -50,6 +51,8 @@ const ICON_MAP: Record<string, LucideIcon> = {
   files: Files,
   search: Search,
   info: Info,
+  brain: Brain,
+  memory: Brain,
   tasks: ListTodo,
   terminal: Terminal,
 

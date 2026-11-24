@@ -6,5 +6,4 @@
   - `memory_add` — Stage a memory: scope='global' creates a PROPOSAL (nothing persisted); scope='session' writes directly (this session only). Duplicates/injection/garbage are rejected
   - `memory_confirm` — Persist a proposal created by memory_add (call only after verifying content is correct, non-duplicate, not outdated)
   - `memory_manage` — List, update, or delete memories
-- **TUI operations** (switch sessions, sidebar, themes): use `tui_control`
-- **Configuration changes** (compression_threshold, context_mode, etc.): use `config`
+- **Configuration changes** (compression_threshold, context_mode, etc.) and **switching the session model**: use `config`

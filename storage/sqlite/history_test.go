@@ -600,8 +600,10 @@ func TestReplayPreservesRawToolResultAcrossMaskAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := replayed.Messages[0].Content; got != "[masked]" {
-		t.Fatalf("active content=%q", got)
+	// Observation masking 已于 2026-11-20 永久下线：历史里遗留的 mask 记录
+	// 不再被应用到消息内容上，replay 必须保持原始 tool result。
+	if got := replayed.Messages[0].Content; got != "raw secret output" {
+		t.Fatalf("mask must no longer rewrite replay content; got %q", got)
 	}
 	records, err := svc.GetFullHistory(tenantID)
 	if err != nil {
@@ -624,8 +626,8 @@ func TestReplayPreservesRawToolResultAcrossMaskAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := replayed.Messages[0].Content; got != "[masked]" {
-		t.Fatalf("restart content=%q", got)
+	if got := replayed.Messages[0].Content; got != "raw secret output" {
+		t.Fatalf("restart must keep raw content too; got %q", got)
 	}
 }
 
@@ -1348,8 +1350,10 @@ func TestReplayMaskPerformance(t *testing.T) {
 		t.Fatalf("replayed %d messages, want %d", len(replayed.Messages), n)
 	}
 	for _, m := range replayed.Messages {
-		if m.Content != "[masked]" {
-			t.Fatalf("mask not applied: %q", m.Content)
+		// Observation masking 已于 2026-11-20 下线：历史里的 mask 记录不再改写内容，
+		// 但 Replay 仍必须线性时间地忽略它们（这条性能门槛继续有效）。
+		if m.Content != "msg" {
+			t.Fatalf("mask must not rewrite replay content; got %q", m.Content)
 		}
 	}
 	// O(N) 修复后 3000 条 < 1s；O(N²) 需要 ~分钟级

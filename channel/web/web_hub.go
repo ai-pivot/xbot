@@ -278,7 +278,19 @@ func (h *Hub) deliverToSubscribersFiltered(
 			case c.sendCh <- deliveryMsg:
 				sent = true
 			default:
-				log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.sendToClient: sendCh full, dropping message (will be recovered via snapshot pull)")
+				// Sidebar session-state frames (busy/idle/created/deleted) are
+				// idempotent state snapshots. Dropping one leaves the sidebar
+				// stuck on a stale state until a manual tree refresh, so a
+				// saturated sendCh degrades them to the stateless last-wins
+				// slot (newest state survives) instead of discarding them.
+				// See court/evidence/gongbu/web-idle-busy-race/sendch-drop-analysis.md.
+				if isSessionStateFrame(deliveryMsg) {
+					m := deliveryMsg
+					c.storeStateless(&m)
+					sent = true
+				} else {
+					log.WithFields(log.Fields{"client_id": cid, "chat_id": chatID, "msg_type": msg.Type}).Warn("Hub.sendToClient: sendCh full, dropping message (will be recovered via snapshot pull)")
+				}
 			}
 		}
 	}
@@ -421,10 +433,15 @@ func (c *Client) storeStateless(msg *protocol.WSMessage) {
 
 // statelessSlotKey returns a unique key per message source. For progress/stream
 // messages it uses the type + Progress.ChatID (which carries the originating
-// SubAgent session key). Types without a Progress payload fall back to type only.
+// SubAgent session key). Session-state frames use type + route channel/chat so
+// two sessions' states never evict each other. Types without either payload
+// fall back to type only.
 func statelessSlotKey(msg *protocol.WSMessage) string {
 	if msg.Progress != nil && msg.Progress.ChatID != "" {
 		return msg.Type + "|" + msg.Progress.ChatID
+	}
+	if msg.Session != nil && msg.Session.ChatID != "" {
+		return msg.Type + "|" + msg.Session.Channel + "|" + msg.Session.ChatID
 	}
 	return msg.Type
 }
@@ -614,6 +631,13 @@ func (h *Hub) broadcastSessionStateToWebClients(msg protocol.WSMessage, excludeR
 		select {
 		case c.sendCh <- msg:
 		default:
+			// Same degradation as sendToClient: a full sendCh must not drop the
+			// sidebar state frame — park the newest one in the stateless slot.
+			if isSessionStateFrame(msg) {
+				m := msg
+				c.storeStateless(&m)
+				continue
+			}
 			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastSessionStateToWebClients: sendCh full, skipping")
 		}
 	}
@@ -730,6 +754,15 @@ func newRingBuffer(size int) *ringBuffer {
 // must be delivered reliably and in order. Losing one means a permanently
 // missing iteration in the TUI. Stream-only progress events (just
 // StreamContent/ReasoningStreamContent) remain stateless.
+// isSessionStateFrame reports whether msg is a sidebar session-state control
+// frame (MsgTypeSession: busy/idle/created/deleted/renamed). These are
+// idempotent state snapshots, so a saturated sendCh may degrade them to the
+// stateless last-wins slot instead of dropping them — a dropped frame leaves
+// the sidebar stuck on a stale state until the user refreshes the tree.
+func isSessionStateFrame(msg protocol.WSMessage) bool {
+	return msg.Type == protocol.MsgTypeSession
+}
+
 func isStatefulMsg(msg protocol.WSMessage) bool {
 	switch msg.Type {
 	case protocol.MsgTypeStreamContent,

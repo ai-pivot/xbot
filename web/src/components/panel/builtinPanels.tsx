@@ -324,8 +324,10 @@ const BUILTIN_PANELS: PanelDefinition[] = [
     id: 'core.memory',
     // 长期记忆面板：之前只能靠 memory_* 工具从对话里看，UI 上看不到注入到上下文
     // 的内容，也删不掉垃圾行（实测有 importance=24440 的乱码条目霸榜）。
+    // 图标必须与「信息」面板区分（曾复用 info ⇒ 侧栏出现两个一样的 ⓘ）。
     title: '记忆',
-    icon: 'info',
+    labelKey: 'sidebar.memory',
+    icon: 'brain',
     defaultSlot: 'left',
     defaultMode: 'docked',
     render: () => <MemoryPanel />,

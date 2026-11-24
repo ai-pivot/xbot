@@ -135,7 +135,11 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// Skip for in-memory DB (ephemeral mode) — no legacy data to migrate.
 	// PG 后端无 SQLite 表 —— 跳过。
 	if !pgBackend && dbPath != ":memory:" {
-		storage.MigrateMemoryToFiles(dbPath)
+		if db := ag.MultiSession().DB(); db != nil {
+			storage.MigrateMemoryToFilesWithDB(db)
+		} else {
+			storage.MigrateMemoryToFiles(dbPath)
+		}
 	}
 
 	// 2c. Set runner token DB for per-user runner token persistence.

@@ -23,6 +23,8 @@ import {
   syncAndMigrateSettings,
   SETTINGS_SYNCED_EVENT,
   __SETTING_MAP,
+  __resetServerSynced,
+  __markServerSynced,
 } from './userSettings'
 
 describe('userSettings', () => {
@@ -38,6 +40,9 @@ describe('userSettings', () => {
       clear: () => store.clear(),
     })
     vi.useFakeTimers()
+    __resetServerSynced()
+    // 默认视为"服务端已同步完成"——只有专门验证 gate 的用例才 reset。
+    __markServerSynced()
     postAPIMock.mockReset()
     dispatchSpy = vi.spyOn(window, 'dispatchEvent')
   })
@@ -174,5 +179,41 @@ describe('userSettings', () => {
     const events = dispatchSpy.mock.calls.map((c: unknown[]) => c[0] as Event)
     const syncEvent = events.find((e: Event) => e instanceof CustomEvent && e.type === SETTINGS_SYNCED_EVENT)
     expect(syncEvent).toBeUndefined()
+  })
+
+  /**
+   * 2026-11-17 事故：组件默认值（ThemeProvider 的 'vscode-dark'）在
+   * syncAndMigrateSettings 之前就调 syncSettingToServer，把服务端真实值
+   * （xbot-aurora）覆盖掉了。同步完成前必须整批丢弃。
+   */
+  it('服务端同步完成前，任何写回都被丢弃（不用默认值覆盖真实设置）', async () => {
+    __resetServerSynced()
+    postAPIMock.mockClear()
+    syncSettingToServer('xbot-md-theme', 'vscode-dark')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(postAPIMock).not.toHaveBeenCalled()
+  })
+
+  it('服务端同步完成后，用户修改才允许写回', async () => {
+    postAPIMock.mockResolvedValue({ settings: { 'web:ui:md-theme': 'xbot-aurora' } })
+    await syncAndMigrateSettings()
+    postAPIMock.mockClear()
+
+    syncSettingToServer('xbot-md-theme', 'dracula')
+    await vi.advanceTimersByTimeAsync(2000)
+
+    expect(postAPIMock).toHaveBeenCalledTimes(1)
+    expect(postAPIMock.mock.calls[0][1]).toEqual({ settings: { 'web:ui:md-theme': 'dracula' } })
+  })
+
+  it('读取失败（服务端不可达）时不许开闸写回', async () => {
+    __resetServerSynced()
+    postAPIMock.mockRejectedValue(new Error('network down'))
+    await syncAndMigrateSettings()
+    postAPIMock.mockClear()
+
+    syncSettingToServer('xbot-md-theme', 'vscode-dark')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(postAPIMock).not.toHaveBeenCalled()
   })
 })

@@ -2379,9 +2379,9 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	}
 
 	// 注册 recall_masked 工具（需要 MaskStore 依赖注入）。
-	// tenantMaskRouter 按执行时 ToolContext.TenantID 路由到 per-tenant 实例，
-	// 多租户 server 下并发会话互不可见。
-	registry.RegisterCore(&tools.RecallMaskedTool{Store: &tenantMaskRouter{a: a}})
+	// recall_masked 工具已随 observation masking 一起下线（2026-11-20）：
+	// 不再有内容会被遮蔽，保留该工具只会诱导模型调用一个永远返回空结果的工具。
+	// （tools.RecallMaskedTool 类型暂时保留，仅为避免大面积删除引发编译面变化。）
 
 	// 初始化 ContextEditor（Context Editing 工具 — 精确编辑上下文）
 	editStore := NewContextEditStore(100)
@@ -2400,15 +2400,9 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	registry.RegisterCore(&setGoalCompleteTool{manager: a.goalManager, onComplete: a.emitGoalProgress})
 	a.hookManager.RegisterBuiltin(a.goalManager.PreTurnEndHook())
 
-	// Register AI-Native TUI & Config tools.
-	// tui_control 是 **CLI 渠道专属**工具：TUI 只存在于 CLI（本地/远程 CLI 的
-	// sessionKey 都是 "cli:..."），web/feishu 等渠道既没有 TUI，也没有
-	// TUIControl 回调 —— 在这些会话里它必须**不可见**（AsDefinitionsForSession
-	// 按 sessionKey 的 channel 前缀过滤）且**不可执行**（GetForSession 回落全局
-	// 查找 ⇒ 不存在）。⚠️ web 端浏览 CLI 会话时 `physical_channel` override 会把
-	// sessionKey 换成 "web:..."（engine_wire），此时同样不可见 —— 与"web 里没有
-	// TUI"一致（历史 bug：全局注册导致 web 模型能看到并调用一个必然报错的工具）。
-	registry.RegisterForChannel("cli", &tools.TuiControlTool{})
+	// Register the AI-native config tool.
+	// tui_control 已按用户要求整体移除（2026-11-17）：TUI 操作由用户自己点，
+	// 模型侧只保留 config（含模型切换 / reload_hooks / reload_plugins）。
 	registry.RegisterCore(&tools.ConfigTool{})
 
 	// Initialize RegistryManager

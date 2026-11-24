@@ -1992,14 +1992,20 @@ func (a *Agent) SpawnInteractiveSession(
 					newMsgs = append(newMsgs, finalMsg)
 				}
 			}
-			// Carry ReasoningContent to the in-memory message for subsequent turns
-			if out.Content != "" && out.ReasoningContent != "" && len(newMsgs) > 0 {
-				newMsgs[len(newMsgs)-1].ReasoningContent = out.ReasoningContent
+			// Carry ReasoningContent / ReasoningItems to the in-memory message for subsequent turns
+			if out.Content != "" && len(newMsgs) > 0 {
+				if out.ReasoningContent != "" {
+					newMsgs[len(newMsgs)-1].ReasoningContent = out.ReasoningContent
+				}
+				if len(out.ReasoningItems) > 0 {
+					newMsgs[len(newMsgs)-1].ReasoningItems = out.ReasoningItems
+				}
 			}
 			// Persist before publishing the final reply to in-memory session state.
 			if agentTenantSession != nil && out.Content != "" {
 				assistantMsg := llm.NewAssistantMessage(out.Content)
 				assistantMsg.ReasoningContent = out.ReasoningContent
+				assistantMsg.ReasoningItems = out.ReasoningItems
 				// TurnID stamp: the final reply must persist with this Run's turn
 				// (same as the Run's intermediate rows). Without it the row lands with
 				// turn_id=0 while the user message and iterations carry turn_id=N —
@@ -2169,6 +2175,7 @@ func (a *Agent) SpawnInteractiveSession(
 	if agentTenantSession != nil && out.Content != "" {
 		assistantMsg := llm.NewAssistantMessage(out.Content)
 		assistantMsg.ReasoningContent = out.ReasoningContent
+		assistantMsg.ReasoningItems = out.ReasoningItems
 		// TurnID stamp — same fix as the background path above (turn_id=0 rows
 		// render above the user message in the session view).
 		assistantMsg.TurnID = cfg.TurnID
@@ -2187,6 +2194,7 @@ func (a *Agent) SpawnInteractiveSession(
 	} else if out.Content != "" {
 		assistantMsg := llm.NewAssistantMessage(out.Content)
 		assistantMsg.ReasoningContent = out.ReasoningContent
+		assistantMsg.ReasoningItems = out.ReasoningItems
 		assistantMsg.TurnID = cfg.TurnID
 		ia.messages = append(ia.messages, assistantMsg)
 	}
@@ -2925,6 +2933,7 @@ func (a *Agent) SendToInteractiveSession(
 		if out.Error == nil && cfg.Session != nil && out.Content != "" {
 			assistantMsg := llm.NewAssistantMessage(out.Content)
 			assistantMsg.ReasoningContent = out.ReasoningContent
+			assistantMsg.ReasoningItems = out.ReasoningItems
 			// TurnID stamp — same fix as the spawn/send paths above (turn_id=0
 			// rows render above the user message in the session view).
 			assistantMsg.TurnID = cfg.TurnID
@@ -3002,8 +3011,13 @@ func (a *Agent) SendToInteractiveSession(
 					}
 				}
 			}
-			if out.Content != "" && out.ReasoningContent != "" && len(ia.messages) > 0 {
-				ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
+			if out.Content != "" && len(ia.messages) > 0 {
+				if out.ReasoningContent != "" {
+					ia.messages[len(ia.messages)-1].ReasoningContent = out.ReasoningContent
+				}
+				if len(out.ReasoningItems) > 0 {
+					ia.messages[len(ia.messages)-1].ReasoningItems = out.ReasoningItems
+				}
 			}
 			// For bg mode, iteration history was already incrementally updated via
 			// OnIterationSnapshot during Run() (line ~1321). out.IterationHistory

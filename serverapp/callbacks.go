@@ -25,6 +25,7 @@ import (
 	"xbot/channel/web"
 	"xbot/config"
 	log "xbot/logger"
+	xbotmemory "xbot/memory/xbot"
 	"xbot/push"
 	"xbot/session"
 	"xbot/storage"
@@ -1289,6 +1290,63 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, pushSvc *push.Servic
 		callbacks.PushConfig = pushSvc.PushConfig
 		callbacks.PushSettings = pushSvc.SettingsView
 		callbacks.PushSaveSettings = pushSvc.SaveSettingsJSON
+	}
+
+	// ── 长期记忆面板（/api/memory）──────────────────────────────────
+	// 这三个回调此前**从未接线**：handler 只判断 nil 并返回 503
+	// "memory panel unavailable"，所以前端「记忆」面板一直是报错状态
+	// （2026-11-17 用户实测）。这里按会话解析出 tenant session 的 memory
+	// provider —— 只有 xbot 提供者支持面板的列/改/删（flat/letta 是注入式
+	// 记忆，没有可编辑的行，明确报错而不是静默返回空）。
+	memoryForSession := func(sel web.SessionSelector) (*xbotmemory.XbotMemory, error) {
+		if ag.MultiSession() == nil {
+			return nil, fmt.Errorf("multiple sessions are not enabled")
+		}
+		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
+		if err != nil {
+			return nil, err
+		}
+		prov := sess.Memory()
+		if prov == nil {
+			return nil, fmt.Errorf("no memory provider for this session")
+		}
+		xm, ok := prov.(*xbotmemory.XbotMemory)
+		if !ok {
+			return nil, fmt.Errorf("memory panel needs the xbot memory provider (current: %s)", prov.Name())
+		}
+		return xm, nil
+	}
+	callbacks.MemoryList = func(sel web.SessionSelector, memType string, limit int) ([]web.MemoryItem, error) {
+		xm, err := memoryForSession(sel)
+		if err != nil {
+			return nil, err
+		}
+		entries, err := xm.ListMemories(context.Background(), memType, limit)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]web.MemoryItem, 0, len(entries))
+		for _, e := range entries {
+			items = append(items, web.MemoryItem{
+				ID: e.ID, Type: e.Type, Content: e.Content, Keywords: e.Keywords,
+				Tags: e.Tags, Importance: e.Importance, Scope: e.Scope, CreatedAt: e.CreatedAt,
+			})
+		}
+		return items, nil
+	}
+	callbacks.MemoryUpdate = func(sel web.SessionSelector, id int64, content, keywords, tags string, importance float64) error {
+		xm, err := memoryForSession(sel)
+		if err != nil {
+			return err
+		}
+		return xm.UpdateMemory(context.Background(), id, content, keywords, tags, importance)
+	}
+	callbacks.MemoryDelete = func(sel web.SessionSelector, id int64) error {
+		xm, err := memoryForSession(sel)
+		if err != nil {
+			return err
+		}
+		return xm.DeleteMemory(context.Background(), id)
 	}
 
 	return callbacks

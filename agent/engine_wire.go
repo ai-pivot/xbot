@@ -497,17 +497,20 @@ func (a *Agent) buildMainRunConfig(
 	// OffloadStore — Layer 1 offload
 	cfg.OffloadStore = a.offloadStore
 
-	// MaskStore — Observation Masking（默认开启，可通过 settings 的 enable_masking 关闭）。
-	// per-tenant 实例（maskStoreFor）：Run 内 mask 目录不可变，消除共享单例
-	// SetTenantID 切换的跨租户竞态。
-	cfg.MaskStore = a.maskStoreFor(cfg.TenantID)
-	streamDisabled := false
-	if userCtx.GetSetting("enable_masking") == "false" {
-		cfg.MaskStore = nil
-	}
-	if userCtx.GetSetting("enable_stream") == "false" {
-		streamDisabled = true
-	}
+	// MaskStore — Observation Masking 已于 2026-11-20 永久下线。
+	//
+	// 下线原因（实证，非推测）：mask 会把旧 tool result 的 Content 换成
+	// `📂 [masked:mk_xxx]`，并把"纯工具组"的 assistant.Content 折叠成
+	// `📂 [batch: N tool calls folded] Shell({...}), Read({...})`，然后通过
+	// Session.AppendMasks 作为不可变的历史记录**写进数据库**（replay 时再应用）。
+	// 后果有两条：
+	//   1. 训练数据导出会把折叠摘要和 placeholder 当成模型自己的正文，
+	//      导出 22 条 `📂 [batch: ...]` + 46 处文本形式的工具调用，
+	//      直接教坏模型"把工具调用写成文字而不真的调用"；
+	//   2. 历史被不可逆改写，真实工具输出只留在 mask store 里，context 重建不可能。
+	// 上下文压力现在只走 OffloadStore + compaction 两条路。
+	cfg.MaskStore = nil
+	streamDisabled := userCtx.GetSetting("enable_stream") == "false"
 
 	// Stream — default ON for all channels; wire callbacks per channel type.
 	if !streamDisabled {
@@ -683,13 +686,6 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 导致 SubAgent 静默挂起（空回复 + idle 状态，用户从未看到问题）。
 	// 无条件移除，避免静默失效。
 	subTools.Unregister("AskUser")
-
-	// tui_control 是 **CLI 渠道专属**工具（agent.go 用 RegisterForChannel("cli")），
-	// 而 SubAgent 的 sessionKey 形如 "cli:/path/repo/role:inst" —— channel 前缀仍是
-	// "cli"，且 channel 工具会随 Clone 复制到子代理注册表（filterSubAgentTools 只
-	// 遍历*全局*工具，删不掉它）⇒ 子代理会继承 tui_control。子代理**绝不能操作
-	// 父会话的 TUI**（切换/关闭用户正在看的会话是用户级动作），必须显式移除。
-	subTools.UnregisterChannelTool("cli", "tui_control")
 
 	// 如果指定了工具白名单，只保留白名单中的工具
 	filterSubAgentTools(subTools, allowedTools, caps, interactive)

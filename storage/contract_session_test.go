@@ -1210,7 +1210,7 @@ func testSessionStoreContract(t *testing.T, factory StorageFactory) {
 		}
 	})
 
-	t.Run("AppendMasks_RewritesReplayContentOnly", func(t *testing.T) {
+	t.Run("AppendMasks_NoLongerRewritesReplayContent", func(t *testing.T) {
 		ss := getSessionStore(t, s, tenantID)
 		if err := ss.Clear(tenantID); err != nil {
 			t.Fatalf("Clear: %v", err)
@@ -1223,28 +1223,30 @@ func testSessionStoreContract(t *testing.T, factory StorageFactory) {
 		if err := ss.AppendMasks(tenantID, nil); err != nil {
 			t.Errorf("AppendMasks(nil) = %v, want nil (no-op)", err)
 		}
-		// A mask targeting a non-active history_id must be rejected.
+		// A mask targeting a non-active history_id must still be rejected.
 		if err := ss.AppendMasks(tenantID, []sqlite.MaskMutation{{TargetHistoryID: 999999999, Content: "x"}}); err == nil {
 			t.Errorf("AppendMasks with an unknown target succeeded, want error")
 		}
 		if err := ss.AppendMasks(tenantID, []sqlite.MaskMutation{{TargetHistoryID: msgID, Content: "[REDACTED]"}}); err != nil {
 			t.Fatalf("AppendMasks: %v", err)
 		}
+		// Observation masking 已于 2026-11-20 永久下线：历史里的 mask 记录可以继续
+		// 追加（保持库结构与旧会话 replay 兼容），但**绝不再改写消息内容**。
 		replay, err := ss.Replay(tenantID)
 		if err != nil {
 			t.Fatalf("Replay: %v", err)
 		}
-		var masked bool
+		var found bool
 		for _, m := range replay.Messages {
 			if m.ID == msgID {
-				masked = true
-				if m.Content != "[REDACTED]" {
-					t.Errorf("replayed content = %q, want the masked %q", m.Content, "[REDACTED]")
+				found = true
+				if m.Content != "mask-original" {
+					t.Errorf("replayed content = %q, want the untouched original %q (mask retired 2026-11-20)", m.Content, "mask-original")
 				}
 			}
 		}
-		if !masked {
-			t.Fatalf("masked message %d missing from Replay: %+v", msgID, replay.Messages)
+		if !found {
+			t.Fatalf("message %d missing from Replay: %+v", msgID, replay.Messages)
 		}
 		// The mask is LLM-context only: the append-only/display history keeps
 		// the original content.
@@ -1294,15 +1296,15 @@ func testSessionStoreContract(t *testing.T, factory StorageFactory) {
 		if len(all) != 3 {
 			t.Fatalf("GetAllMessages after mask returned %d messages, want 3: %+v", len(all), all)
 		}
-		if got := contentOfMessage(all, toolID); got != "[masked]" {
-			t.Errorf("GetAllMessages tool content = %q, want the masked %q", got, "[masked]")
+		if got := contentOfMessage(all, toolID); got != toolOutput {
+			t.Errorf("GetAllMessages tool content = %q, want the untouched original (mask retired 2026-11-20)", got)
 		}
 		hist, err := ss.GetHistory(tenantID, 10)
 		if err != nil {
 			t.Fatalf("GetHistory after mask: %v", err)
 		}
-		if got := contentOfMessage(hist, toolID); got != "[masked]" {
-			t.Errorf("GetHistory tool content = %q, want the masked %q", got, "[masked]")
+		if got := contentOfMessage(hist, toolID); got != toolOutput {
+			t.Errorf("GetHistory tool content = %q, want the untouched original (mask retired 2026-11-20)", got)
 		}
 		display, _, err := ss.GetHistoryBeforeForDisplay(tenantID, 0, 10)
 		if err != nil {

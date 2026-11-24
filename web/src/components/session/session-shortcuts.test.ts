@@ -143,3 +143,23 @@ describe('Linux browser-safe defaults', () => {
     expect(sessionShortcutAction(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, altKey: true }))).toBe('star')
   })
 })
+
+// 2026-11-17 设置页实测：录制快捷键时 React 传来的 nativeEvent 在移动端/IME 组合态
+// 可能不是标准 KeyboardEvent（缺 getModifierState），旧实现直接调用会抛
+// `e.getModifierState is not a function`，把整个设置页打成 window.onerror。
+describe('shortcut events without getModifierState', () => {
+  const fake = {
+    isComposing: false, keyCode: 0, repeat: false, defaultPrevented: false,
+    code: 'KeyN', key: 'n', ctrlKey: true, metaKey: false, altKey: false, shiftKey: false,
+    target: null,
+  } as unknown as KeyboardEvent
+
+  it('shortcutBindingFromEvent tolerates it and still parses the binding', () => {
+    expect(() => shortcutBindingFromEvent(fake)).not.toThrow()
+    expect(shortcutBindingFromEvent(fake)).toBe('ctrl+n')
+  })
+
+  it('sessionShortcutAction tolerates it', () => {
+    expect(() => sessionShortcutAction(fake)).not.toThrow()
+  })
+})

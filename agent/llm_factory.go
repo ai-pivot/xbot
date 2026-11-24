@@ -536,14 +536,32 @@ func (f *LLMFactory) createClient(cfg *common.UserLLMConfig, mm *llm.MultimodalC
 		model = f.defaultModel
 	}
 
+	// 协议选择：**模型级 api_type 优先**，为空才回落到订阅的 provider。
+	//
+	// 历史实现只看 provider，于是"同一个订阅里混入 Anthropic 格式或 Gemini 原生格式
+	// 的模型"无法表达（用户 2026-11-17 明确要求：模型级 api_type 必须能选
+	// anthropic / google，而不是只有 OpenAI 的两种）。
+	proto := strings.ToLower(strings.TrimSpace(cfg.APIType))
+	if proto == "" {
+		proto = strings.ToLower(strings.TrimSpace(cfg.Provider))
+	}
 	var client llm.LLM
-	switch cfg.Provider {
+	switch proto {
 	case "anthropic":
 		client = llm.NewAnthropicLLM(llm.AnthropicConfig{
 			BaseURL: cfg.BaseURL, APIKey: cfg.APIKey,
 			DefaultModel: model, MaxTokens: cfg.MaxOutputTokens,
 			Multimodal: mm,
 		})
+	case "google", "gemini", "google_generate_content":
+		client = llm.NewGoogleLLM(llm.GoogleConfig{
+			BaseURL: cfg.BaseURL, APIKey: cfg.APIKey,
+			DefaultModel: model, MaxTokens: cfg.MaxOutputTokens,
+			Multimodal: mm,
+		})
+	case "jev":
+		// JEV 不是对话协议：占位客户端会在调用时明确报"未实现"，绝不静默走错协议。
+		client = llm.NewJEVLLM(model)
 	default:
 		client = llm.NewOpenAILLM(llm.OpenAIConfig{
 			BaseURL: cfg.BaseURL, APIKey: cfg.APIKey,

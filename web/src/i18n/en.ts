@@ -35,6 +35,7 @@ const en: Translations = {
     diff: 'Diff',
     config: 'Config',
     info: 'Info',
+    memory: 'Memory',
     terminal: 'Terminal',
     tasks: 'Tasks',
     tasksCron: 'Cron Jobs',

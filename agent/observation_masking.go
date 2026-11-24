@@ -512,21 +512,7 @@ func (s *ObservationMaskStore) ListMasked() []map[string]any {
 	return result
 }
 
-// calculateKeepGroups 根据 token 用量动态计算保留的 tool group 数量。
-// 上下文越充裕，保留越多；上下文紧张时才减少。
-func calculateKeepGroups(totalTokens, maxTokens int) int {
-	ratio := float64(totalTokens) / float64(maxTokens)
-	switch {
-	case ratio <= 0.70:
-		return 100
-	case ratio <= 0.80:
-		return 80
-	case ratio <= 0.90:
-		return 50
-	default:
-		return 30
-	}
-}
+// calculateKeepGroups 已随 observation masking 下线（2026-11-20）一并删除。
 
 // MaskedEntry 记录一条被 mask 的消息的位置和新内容，用于持久化回 Session。
 type MaskedEntry struct {
