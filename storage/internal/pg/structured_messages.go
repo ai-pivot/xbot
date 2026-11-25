@@ -610,6 +610,27 @@ func (s *sessionStore) GetStructuredMessageByID(tenantID, id int64) (*common.Str
 	return &m, nil
 }
 
+// GetAskUserByCorrelationID 按「回答钥匙」精确定位提问行（见 common.StructuredStore）。
+//
+// 定位判据与 AnswerAskUser 逐字一致（kind='ask_user' AND correlation_id，多行取最新）。
+func (s *sessionStore) GetAskUserByCorrelationID(tenantID int64, correlationID string) (*common.StructuredMessage, error) {
+	if strings.TrimSpace(correlationID) == "" {
+		return nil, common.ErrStructuredNotFound
+	}
+	var id int64
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT id FROM session_messages
+		  WHERE tenant_id = $1 AND kind = 'ask_user' AND (correlation_id)::text = $2
+		  ORDER BY id DESC LIMIT 1`, tenantID, correlationID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, common.ErrStructuredNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup ask_user by correlation: %w", err)
+	}
+	return s.GetStructuredMessageByID(tenantID, id)
+}
+
 // DeleteStructuredMessages 见 common.StructuredStore 的契约（只删 kind != ” 的结构化行）。
 func (s *sessionStore) DeleteStructuredMessages(tenantID int64, ids []int64) (int, error) {
 	if len(ids) == 0 {

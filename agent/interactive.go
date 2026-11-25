@@ -2303,6 +2303,13 @@ func (a *Agent) SendToInteractiveSession(
 	originChannel, originChatID, originSender := resolveOriginIDs(msg)
 	instance := msg.Metadata["instance_id"]
 
+	// structuredReceipt：这是「已落库的结构化回执」的空注入（卡片批复/回答回流）。
+	// 历史行本身就是唯一可读副本（本轮会从库重建 cfg.Messages），因此**不得**再
+	// 追加一条空 user 消息 —— 否则 prompt 里多一条空 user，且同一回执被表示两遍。
+	// 与主路径 processMessage 的 structured_delivery 契约逐条对齐。
+	structuredReceipt := strings.TrimSpace(msg.Content) == "" &&
+		msg.Metadata != nil && msg.Metadata["structured_delivery"] == "true"
+
 	// 唯一解析器（与 inspect/interrupt/unload 同一实现）：精确地址 → best-effort
 	// 匹配（漏传 role 也能命中）→ 0 个/多个才报错（列出 available/candidates）。
 	exact, _ := ctx.Value(exactInteractiveTarget{}).(string)
@@ -2310,7 +2317,10 @@ func (a *Agent) SendToInteractiveSession(
 	var resolveErr error
 	if exact != "" {
 		key = exact
-		if _, exists := a.interactiveSubAgents.Load(key); !exists {
+		// 精确地址同样必须**先复活再看**（唯一入口 ensureInteractiveSession）：
+		// 旧实现在内存 miss 就直接报 "no longer exists" —— 进程重启后内存本来就是空
+		// 的，于是所有精确投递（结构化回执、owner 路由）都会被判成"会话已死"。
+		if _, ok := a.ensureInteractiveSession(ctx, key, originSender); !ok {
 			resolveErr = fmt.Errorf("exact interactive target %q no longer exists", key)
 		}
 	} else {
@@ -2479,7 +2489,9 @@ func (a *Agent) SendToInteractiveSession(
 	var newMessages []llm.ChatMessage
 	newMessages = append(newMessages, ia.systemPrompt)
 	newMessages = append(newMessages, ia.messages...)
-	newMessages = append(newMessages, llm.NewUserMessage(msg.Content))
+	if !structuredReceipt {
+		newMessages = append(newMessages, llm.NewUserMessage(msg.Content))
+	}
 	cfg.Messages = newMessages
 	systemPrompt := ia.systemPrompt
 
@@ -2515,7 +2527,9 @@ func (a *Agent) SendToInteractiveSession(
 			cfg.LastCompletionTokens = 0
 		}
 		newMessages = append([]llm.ChatMessage{systemPrompt}, persisted...)
-		newMessages = append(newMessages, llm.NewUserMessage(msg.Content))
+		if !structuredReceipt {
+			newMessages = append(newMessages, llm.NewUserMessage(msg.Content))
+		}
 		cfg.Messages = newMessages
 		ia.mu.Lock()
 		ia.messages = append([]llm.ChatMessage(nil), persisted...)
@@ -2629,11 +2643,13 @@ func (a *Agent) SendToInteractiveSession(
 	// The old code only reset inside `if ia.background`, leaving foreground
 	// sessions (SubAgent spawned with explicit background=false) polluted
 	// across sends.
-	if ia.background {
+	if ia.background && !structuredReceipt {
 		// Background mode: the user message was NOT appended to ia.messages
 		// before Run (it was only in cfg.Messages). Add it here so the
 		// write-back's out.Messages[preLen:] slicing sees it. Foreground mode
 		// appends it during write-back instead.
+		//
+		// structuredReceipt 例外：没有 user 消息可加（历史行即唯一副本）。
 		ia.messages = append(ia.messages, newMessages[len(newMessages)-1])
 	}
 	ia.iterationHistory = nil
@@ -2992,7 +3008,7 @@ func (a *Agent) SendToInteractiveSession(
 				// ia.messages (it was only in cfg.Messages). We must add it
 				// here before appending engine output, otherwise the user
 				// message is lost from ia.messages.
-				if !ia.background {
+				if !ia.background && !structuredReceipt {
 					ia.messages = append(ia.messages, cfg.Messages[len(cfg.Messages)-1])
 				}
 				if len(out.Messages) > preLen {

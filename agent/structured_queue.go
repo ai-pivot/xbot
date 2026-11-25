@@ -2,11 +2,13 @@ package agent
 
 import (
 	"container/heap"
+	"context"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"xbot/internal/sessionaddr"
 	log "xbot/logger"
 	"xbot/tools"
 )
@@ -198,6 +200,9 @@ func (a *Agent) DeliverStructuredMessage(item *StructuredQueueItem) bool {
 	if item == nil || item.Channel == "" || item.ChatID == "" {
 		return false
 	}
+	if a.deliverStructuredToInteractiveSession(item, nil) {
+		return true
+	}
 	key := qualifyChatID(item.Channel, item.ChatID)
 	if st, ok := a.bgSessionStates.Load(key); ok {
 		if ss, ok := st.(*bgSessionState); ok && ss.busy.Load() {
@@ -238,6 +243,9 @@ func (a *Agent) DeliverStructuredMessagePersisting(item *StructuredQueueItem, pe
 	if item == nil || item.Channel == "" || item.ChatID == "" {
 		return false
 	}
+	if a.deliverStructuredToInteractiveSession(item, persist) {
+		return true
+	}
 	key := qualifyChatID(item.Channel, item.ChatID)
 	if st, ok := a.bgSessionStates.Load(key); ok {
 		if ss, ok := st.(*bgSessionState); ok && ss != nil && ss.busy.Load() {
@@ -270,6 +278,189 @@ func (a *Agent) DeliverStructuredMessagePersisting(item *StructuredQueueItem, pe
 	}
 	a.injectInboundWithMetadata(item.Channel, item.ChatID, item.SenderID, content, metadata)
 	return true
+}
+
+// deliverStructuredToInteractiveSession 把结构化回流（卡片批复/回答）投进**发起它
+// 的那个 interactive 子代理会话**，让这一轮以子代理身份执行。
+//
+// 为什么必须有这条分支（2026-11-25 用户报告「子代理发出的卡片，用户交互后通知发给
+// 主代理」）：
+//   - origin 是子代理 key 时，sessionaddr.Physical 会把它拆成 ("agent", "<childKey>")；
+//   - 旧实现只查 bgSessionStates（interactive 会话从不注册这张表）⇒ 恒判 idle ⇒
+//     injectInboundWithMetadata ⇒ bus.Inbound ⇒ chatWorker ⇒ **buildMainRunConfig
+//     （AgentID="main"、a.tools、无 CallerSessionKey）**。行落在子代理 tenant，
+//     执行者却是主 Agent：子代理的 system prompt / 工具白名单 / 身份全丢，而且它
+//     自己的 Run 只 drain ia.pendingMessages，永远读不到这条回执。
+//
+// 会话存活判定**只走唯一入口** `ensureInteractiveSession`：内存命中 → 直接用；
+// 否则按注册表（= 有 DB 记录就一定能复活）恢复；恢复不出来才说明它从未存在 /
+// 已被显式 unload —— 那时按用户口径**当无事发生**（落行、不投递、绝不回落主 Agent）。
+//
+// 返回 true 表示已由本函数接管（调用方不得再走通用投递）；false 表示目标不是
+// interactive 子代理会话，按既有语义继续。
+func (a *Agent) deliverStructuredToInteractiveSession(item *StructuredQueueItem, persist func() error) bool {
+	if a == nil || item == nil {
+		return false
+	}
+	if item.Channel != sessionaddr.AgentChannel || !sessionaddr.IsChildKey(item.ChatID) {
+		return false
+	}
+	key := item.ChatID
+	if _, ok := a.ensureInteractiveSession(context.Background(), key, item.SenderID); !ok {
+		// 真正不存在（注册表无记录 / 已显式 unload / role 定义已删）：当无事发生。
+		// 记录仍要落下 —— 不能让用户的处理凭空消失（它下次复活时能读到）。
+		if persist != nil {
+			if err := persist(); err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"session_key": key, "kind": item.Kind,
+				}).Warn("structured receipt: persist failed for a missing sub-agent session")
+			}
+		}
+		log.WithFields(log.Fields{
+			"session_key": key,
+			"kind":        item.Kind,
+			"reason":      "no interactive_agents record could be restored (never spawned / explicitly unloaded / role definition deleted)",
+			"executor":    "none (not forwarded to the main agent)",
+		}).Info("卡片交互回执未投递：子代理会话已不存在")
+		return true
+	}
+
+	// 表示唯一性（与主路径同一契约）：
+	//   - 子代理正在跑 → 内容**内联**投递（迭代边界注入），不落库；
+	//   - 空闲 → 先落库，再**空内容**起一轮（历史行即唯一可读副本）。
+	var content string
+	if a.interactiveSessionRunning(key) {
+		content = item.Content
+	} else if persist != nil {
+		if err := persist(); err != nil {
+			// 落库失败 ⇒ 退化为内联投递（与主路径一致，绝不丢消息）。
+			log.WithError(err).WithFields(log.Fields{
+				"session_key": key, "kind": item.Kind,
+			}).Warn("structured receipt: persist failed; delivering content inline")
+			content = item.Content
+		}
+	}
+	// 以子代理身份续跑：busy → 迭代边界注入；idle → 起一轮子代理 turn。
+	// 必须异步（subAgentSendAckWait ≤ 3s），不可阻塞投递方（可能是 HTTP handler）。
+	metadata := map[string]string{triggerSourceMetadataKey: triggerSourceStructured}
+	if content == "" {
+		// 空内容 = 「历史行即副本」的空注入：interactive send 不得再追加 user 消息
+		// （见 SendToInteractiveSession 的 structuredReceipt 判定）。
+		metadata["structured_delivery"] = "true"
+		metadata["structured_kind"] = item.Kind
+		if item.CorrelationID != "" {
+			metadata["correlation_id"] = item.CorrelationID
+		}
+	}
+	go func() {
+		out, err := a.sendToExactInteractiveSession(key, item.SenderID, content, metadata)
+		if interactiveDeliveryFailed(out, err) {
+			log.WithError(err).WithFields(log.Fields{
+				"session_key": key, "kind": item.Kind,
+			}).Warn("structured receipt: delivery to the sub-agent session failed")
+		}
+	}()
+	return true
+}
+
+// ensureInteractiveSession 是「按 interactive map key 取活会话」的**唯一入口**。
+//
+// 语义（2026-11-25 用户口径：**只要有 DB 记录就必须复活**）：
+//  1. 内存命中 → 直接返回；
+//  2. 否则按 `interactive_agents` 注册表恢复该 key 所在子树（父地址由 key 规范化
+//     推出，见 interactiveRegistryParent —— 绝不手拆字符串）；
+//  3. 恢复后仍没有 → (nil,false)：会话从未存在，或已被显式 unload，或 role 定义
+//     被删（真·不可复活）。
+//
+// 所有「按 key 投递/发送」的路径都必须走它，不要各自发明「在内存吗 → 不在就报错」
+// 的短路：那会把「进程重启后内存为空」误判成「会话已死」，直接把回执丢掉。
+func (a *Agent) ensureInteractiveSession(ctx context.Context, key, senderID string) (*interactiveAgent, bool) {
+	if a == nil || key == "" {
+		return nil, false
+	}
+	if ia, ok := a.loadInteractiveAgent(key); ok {
+		return ia, true
+	}
+	parentChannel, parentChatID, ok := interactiveRegistryParent(key)
+	if !ok {
+		return nil, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// ⛔ 恢复路径要求 ctx 带 UserContext（`buildSubAgentRunConfig` 靠它做等级查表与
+	// 主会话模型回落，见 engine_wire.go:661 的显式报错）。而结构化回执的投递来自
+	// HTTP handler / 后台 goroutine —— **没有** processMessage 注入的 UserContext。
+	// 旧实现直接 `restoreInteractiveTree(context.Background(), …)` ⇒ 每次都报
+	// "SubAgent spawn requires user context" ⇒ 「有 DB 也复活不了」（2026-11-25 用户
+	// 实测打回）。这里按**父会话身份**解析一次（唯一解析入口 ResolveUserContext），
+	// 让恢复与 spawn 走同一条 user-context 来源。
+	if UserContextFromContext(ctx) == nil {
+		if uc := a.ResolveUserContext(parentChannel, parentChatID, senderID, nil); uc != nil {
+			ctx = WithUserContext(ctx, uc)
+		} else {
+			log.WithFields(log.Fields{
+				"session_key": key, "parent": sessionaddr.Key(parentChannel, parentChatID), "sender": senderID,
+			}).Warn("ensureInteractiveSession: cannot resolve UserContext; registry restore will fail")
+		}
+	}
+	a.restoreInteractiveTree(ctx, parentChannel, parentChatID, 0)
+	return a.loadInteractiveAgent(key)
+}
+
+// loadInteractiveAgent 取内存里的 interactive 会话（类型安全）。
+func (a *Agent) loadInteractiveAgent(key string) (*interactiveAgent, bool) {
+	val, ok := a.interactiveSubAgents.Load(key)
+	if !ok {
+		return nil, false
+	}
+	ia, ok := val.(*interactiveAgent)
+	if !ok || ia == nil {
+		return nil, false
+	}
+	return ia, true
+}
+
+// interactiveRegistryParent 由子会话 map key 推出注册表里的父身份 (parent_channel,
+// parent_chat_id)。判据与写侧（interactive_persist 的 Upsert）逐字对齐：
+//
+//	key = "web:web-4"                          → ("web", "web-4")
+//	key = "web:web-4/court.shoufu:main"        → ("web", "web-4")
+//	key = "web:web-4/court.shoufu:main/x:y"    → ("web", "web-4/court.shoufu:main")
+//
+// 第三例即孙代理：注册表存的是「父节点自己的 chatID（含 /role:instance）」，
+// 不是根会话 —— 用 interactiveParentAddress 的 delivery 语义会取错。
+func interactiveRegistryParent(key string) (channel, chatID string, ok bool) {
+	i := strings.LastIndex(key, "/")
+	if i <= 0 {
+		return "", "", false
+	}
+	ch, chat, cut := strings.Cut(key[:i], ":")
+	if !cut || ch == "" || chat == "" {
+		return "", "", false
+	}
+	if ch == sessionaddr.AgentChannel {
+		// 存量镜像形态（历史 parentKey 曾写成 "agent:web:web-4"）：再剥一层，
+		// 否则会拿 ("agent","web:web-4") 去查注册表 ⇒ 恒 0 行。
+		if ch2, rest2, cut2 := strings.Cut(chat, ":"); cut2 && ch2 != "" && rest2 != "" {
+			return ch2, rest2, true
+		}
+	}
+	return ch, chat, true
+}
+
+// interactiveSessionRunning 报告某个 interactive 会话是否正在执行一轮 Run。
+//
+// 用途：结构化回执在 busy/idle 两种状态下只能有**一种**表示（busy 内联注入、
+// idle 落库 + 空注入），与主路径 DeliverStructuredMessagePersisting 同构。
+func (a *Agent) interactiveSessionRunning(key string) bool {
+	ia, ok := a.loadInteractiveAgent(key)
+	if !ok {
+		return false
+	}
+	ia.mu.Lock()
+	defer ia.mu.Unlock()
+	return ia.running
 }
 
 // flushStructuredQueueAsUserMessage 把会话**已 idle** 时队列里的残留转成一条普通

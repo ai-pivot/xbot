@@ -18,7 +18,7 @@ import (
 
 var (
 	flagServer      = flag.String("server", "", "WebSocket server URL (required)")
-	flagToken       = flag.String("token", "", "Auth token (required)")
+	flagToken       = flag.String("token", "", "Auth token (or set env XBOT_RUNNER_TOKEN; env keeps it out of argv)")
 	flagWorkspace   = flag.String("workspace", "", "Workspace root directory (default: the current dir — i.e. $HOME over SSH; docker mode defaults to /workspace)")
 	flagName        = flag.String("name", "", "Runner name reported to the server (default: hostname)")
 	flagFullControl = flag.Bool("full-control", false, "Disable path restrictions (allow access to any file)")
@@ -45,8 +45,14 @@ func main() {
 	if *flagServer == "" {
 		log.Fatal("--server is required")
 	}
+	// token 优先取 flag，其次取环境变量：SSH-pipe 部署下 token 由远端脚本从 **stdin**
+	// 读出后 export 成 XBOT_RUNNER_TOKEN（见 plugins/xbot-ssh-runner），这样 token
+	// 不出现在任何进程的 argv 里（`ps` 对本机所有用户可见）。
 	if *flagToken == "" {
-		log.Fatal("--token is required")
+		*flagToken = os.Getenv("XBOT_RUNNER_TOKEN")
+	}
+	if *flagToken == "" {
+		log.Fatal("--token (or env XBOT_RUNNER_TOKEN) is required")
 	}
 
 	runnerName := *flagName

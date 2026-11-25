@@ -3105,6 +3105,11 @@ func deliveredMessageContent(origin, body string) string {
 		return fmt.Sprintf("📬 [系统通知] 你创建的后台任务已完成（本会话自己的任务，不是父 agent 转发）：\n\n%s\n\n✅ 已送达，无需回复确认。", body)
 	case triggerSourceCron:
 		return fmt.Sprintf("📬 [系统通知] 你的定时任务已触发：\n\n%s\n\n✅ 已送达，无需回复确认。", body)
+	case triggerSourceStructured:
+		// 卡片交互回执：用户在看板上处理了**这张卡**（往往就是本会话发的）。
+		// 绝不能写成「来自主 agent 的消息」—— 那会让子代理以为是父级派单，
+		// 转而去复述/汇报，而不是按回执继续干活。
+		return fmt.Sprintf("📬 [卡片交互回执] 用户处理了你发出的卡片（本会话自己的回执，不是父 agent 转发）：\n\n%s\n\n✅ 已送达，无需回复确认。", body)
 	default:
 		return fmt.Sprintf("📬 [消息已送达确认] 你收到了一条来自主 agent 的消息：\n\n%s\n\n✅ 此消息已成功送达，无需回复确认。", body)
 	}

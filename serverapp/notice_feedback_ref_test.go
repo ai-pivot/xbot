@@ -19,7 +19,7 @@ func TestNoticeFeedbackEmbedsCardBody(t *testing.T) {
 			"options":[{"id":"alias208","label":"18.61.208.121（别名当前目标、rb54）"},{"id":"explicit184","label":"18.61.184.96"}]}]}}`,
 	}
 	for _, status := range []string{"cancelled", "dismissed", "answered", "approved"} {
-		got := userNoticeResolutionText(card, card.ID, card.Kind, status, "")
+		got := userNoticeResolutionText(card, card.ID, card.Kind, status, "", nil, nil)
 		if !strings.Contains(got, "卡片原文引用") {
 			t.Fatalf("%s: feedback lost the card-reference block:\n%s", status, got)
 		}
@@ -40,7 +40,7 @@ func TestNoticeFeedbackEmbedsCardBody(t *testing.T) {
 
 // 卡片行缺失时不能崩，也不能编造内容：只保留 id/kind/status 这一行。
 func TestNoticeFeedbackWithoutCardRowStaysMinimal(t *testing.T) {
-	got := userNoticeResolutionText(nil, 42, "report", "cancelled", "")
+	got := userNoticeResolutionText(nil, 42, "report", "cancelled", "", nil, nil)
 	if !strings.Contains(got, "#42") || strings.Contains(got, "卡片原文引用") {
 		t.Fatalf("nil card should yield the minimal line only, got: %s", got)
 	}
@@ -49,7 +49,7 @@ func TestNoticeFeedbackWithoutCardRowStaysMinimal(t *testing.T) {
 // 超长卡片正文按 rune 截断，且必须标注截断（CJK 不能被切成半个字）。
 func TestNoticeFeedbackTruncatesLongBodyByRune(t *testing.T) {
 	body := strings.Repeat("测", 1200)
-	got := userNoticeResolutionText(&common.StructuredMessage{ID: 1, Kind: "report", Content: body}, 1, "report", "dismissed", "")
+	got := userNoticeResolutionText(&common.StructuredMessage{ID: 1, Kind: "report", Content: body}, 1, "report", "dismissed", "", nil, nil)
 	if !strings.Contains(got, "截断") {
 		t.Fatalf("expected a truncation marker")
 	}

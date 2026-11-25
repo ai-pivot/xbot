@@ -21,6 +21,16 @@ type StructuredStore interface {
 	CountInbox(tenantID int64) (int, error)
 	GetStructuredMessageByID(tenantID, id int64) (*StructuredMessage, error)
 
+	// GetAskUserByCorrelationID 按「回答钥匙」精确定位提问行（与 AnswerAskUser
+	// 的定位判据逐字一致：kind='ask_user' AND correlation_id，多行取最新）。
+	//
+	// 为什么必须有它（不要再扫 ListStructuredMessages(…,200)）：
+	//   - 交互回执要把**卡片原文/问题/选项**写进正文，答/取消两条路径都需要提问行；
+	//   - 旧实现用「最近 200 条」窗口近似定位，超窗即静默丢上下文，实测把
+	//     option id（`smoke:yes`）当正文写进历史（2026-11-11 用户反馈）。
+	// 未命中返回 ErrStructuredNotFound（与 GetStructuredMessageByID 同语义）。
+	GetAskUserByCorrelationID(tenantID int64, correlationID string) (*StructuredMessage, error)
+
 	// DeleteStructuredMessages 按 id 列表删除本 tenant 的结构化消息行，
 	// 返回实际删除行数。用于收件箱的「单条删除 / 一键删除」。
 	//

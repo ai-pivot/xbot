@@ -610,6 +610,32 @@ func (s *SessionService) GetStructuredMessageByID(tenantID, id int64) (*Structur
 	return &m, nil
 }
 
+// GetAskUserByCorrelationID 按「回答钥匙」精确定位提问行（见 common.StructuredStore）。
+//
+// 定位判据与 AnswerAskUser 逐字一致（kind='ask_user' AND correlation_id，多行取最新），
+// 这样「回执正文里引用的卡片」与「CAS 真正推进的那一行」永远是同一张卡。
+func (s *SessionService) GetAskUserByCorrelationID(tenantID int64, correlationID string) (*StructuredMessage, error) {
+	if strings.TrimSpace(correlationID) == "" {
+		return nil, ErrStructuredNotFound
+	}
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	var id int64
+	qerr := conn.QueryRow(`
+		SELECT id FROM session_messages
+		 WHERE tenant_id = ? AND kind = 'ask_user' AND correlation_id = ?
+		 ORDER BY id DESC LIMIT 1`, tenantID, correlationID).Scan(&id)
+	if errors.Is(qerr, sql.ErrNoRows) {
+		return nil, ErrStructuredNotFound
+	}
+	if qerr != nil {
+		return nil, fmt.Errorf("lookup ask_user by correlation: %w", qerr)
+	}
+	return s.GetStructuredMessageByID(tenantID, id)
+}
+
 // structuredScanner 同时被 *sql.Rows 与 *sql.Row 满足。
 type structuredScanner interface {
 	Scan(dest ...any) error

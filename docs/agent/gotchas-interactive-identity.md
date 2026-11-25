@@ -74,6 +74,53 @@ parent_chat_id = "web-4/court.shoufu:main"        ← 孙代理的 parent 带 '/
 正解：只当 ① 卡片是 report/ask_user ② `env.origin.session` 非空 ③ 发起方 ≠ 当前会话 时才重定向；
 `sel` 仅作审计落行。
 
+## 5b. answer 回流同样必须按 `origin` 走，且回执要有上下文（2026-11-25）
+
+用户报告两条：① 交互后模型只收到一个裸词（`已取消`/`准`），根本不知道指的是哪张卡；
+② 子代理发的卡片，用户交互后"通知发给了主代理"。
+
+**缺陷 1（文本）**：`answerText()` 的 `cancelled` 分支 `return "已取消"`、空答案
+`return "已回答"`、`structuredContent` 的 decision 分支 `return "准"` —— 三条裸词路径。
+生产库实证：`session_messages.content IN ('已取消','准','smoke:yes')`（后者还是 option 的
+内部 id，因为 specs 靠 `ListStructuredMessages(…,200)` 窗口近似，超窗即丢）。
+**契约**：`serverapp/structured_callbacks.go` 的 `userNoticeResolutionText` 是**唯一**
+回执生成器（`answerSelections` 负责「问题 → 用户所选 label」）；取消只说「用户取消」
+（用户口径：不要多余的话），但必须带卡片 id + 原文 + 问题/选项。`answerText` 已删除。
+
+**缺陷 2（寻址）**：`applyStructuredAnswer` 用 `sel`（用户会话）投递，**全程不读
+`env.origin`** ⇒ 子代理的 ask_user 卡答复进主代理（子代理永远收不到）。与 decision
+路径的 `decisionRerouteTarget` 不对称。**契约**：answer 与 decision 用同一判据
+（`origin != "" && origin != sel` ⇒ 投 origin；`origin == sel` 保持投 sel）。
+
+**缺陷 3（执行身份）**：即使寻址对了（`sessionaddr.Physical` → `("agent", childKey)`），
+`DeliverStructuredMessage(Persisting)` 只查 `bgSessionStates` —— interactive 会话从不注册
+这张表 ⇒ 恒判 idle ⇒ `injectInboundWithMetadata` ⇒ chatWorker ⇒ `buildMainRunConfig`
+（`AgentID="main"`）。行落在子代理 tenant，**执行者却是主 Agent**，且子代理自己的 Run
+只 drain `ia.pendingMessages`，永远读不到。**契约**：`deliverStructuredToInteractiveSession`
+（`agent/structured_queue.go`）在投递入口分流：
+- 空闲 → 先落库 + **空注入**（interactive send 的 `structuredReceipt` 判定不再追加空
+  user 消息，历史行即唯一副本）；运行中 → 内容内联进 `pendingMessages`。
+
+**会话存活判定只走唯一入口 `ensureInteractiveSession(ctx, key, senderID)`**（用户口径
+2026-11-25：**只要有 `interactive_agents` 记录就必须复活**）：
+1. 内存命中 → 直接返回；
+2. 否则按注册表恢复该 key 所在子树；
+3. 恢复后仍没有 ⇒ 真·不存在（从未 spawn / 显式 unload / role 定义被删）⇒ **当无事发生**
+   （落行、不投递、**绝不回落主 Agent**，INFO `executor=none`）。
+
+这条接口踩过两个「有 DB 也复活不了」的坑，改它时必须同时守住：
+- **父身份不许手拆**：`web:web-4/court.shoufu:main` 的注册表父是 `("web","web-4")`；
+  用 `sessionaddr.SplitChild(sessionaddr.Agent(key))` 会拆成 `("agent","web:web-4")` ⇒
+  `ListChildAgents` 永远 0 行 ⇒ 明明有 DB 也判死。唯一实现 = `interactiveRegistryParent`
+  （与写侧 Upsert 的 parent_channel/parent_chat_id 规则逐字对齐，含孙代理
+  `…/court.shoufu:main` → `("web","web-4/court.shoufu:main")`）。
+- **恢复需要 UserContext**：`buildSubAgentRunConfig` 缺它直接报
+  "SubAgent spawn requires user context"（`engine_wire.go:661`）。而回执投递来自
+  HTTP handler / goroutine，**没有** `processMessage` 注入的 UserContext ⇒ 必须按父会话
+  身份 `ResolveUserContext` 现场补一次，否则 restore 恒失败。
+- 同理 `SendToInteractiveSession` 的 **exact** 分支：旧代码内存 miss 就报
+  "no longer exists"，重启后必红；现在也先 `ensureInteractiveSession` 再判。
+
 ## 6. 取消 ≠ 暂停（`waitingUser` 不复位）
 
 `agent/agent.go`（`isWaitingUserPause`）、`agent/engine_run.go`（`runState.runCancelled`）
@@ -104,6 +151,10 @@ parent_chat_id = "web-4/court.shoufu:main"        ← 孙代理的 parent 带 '/
 |---|---|
 | `agent/cancel_turn_end_test.go` | PhaseDone on cancel / suppress while waiting / isWaitingUserPause |
 | `serverapp/structured_decision_reroute_test.go` | decision 重定向 + 御前自发的卡不重定向 |
+| `serverapp/inbox_interaction_receipt_test.go` | answer 回执带卡片上下文 + answer 按 origin 回流 |
+| `serverapp/answer_text_test.go` | `answerSelections` label/问题/回退 + 取消回执不是裸词 |
+| `agent/structured_interactive_delivery_test.go` | 结构化回执以子代理身份执行 / 死会话不回落主 Agent |
+| `agent/structured_interactive_revive_test.go` | **有 DB 记录必须复活** + 父身份推导（含孙代理）+ 不回落主 Agent |
 | `tools/send_message_origin_fallback_test.go` | 队列路径 / CallerSessionKey / 主会话仍用 root / CLI 路径不误判 |
 | `storage/sqlite/interactive_agents_test.go` | 新增孙代理 case（会话还在 → 绝不判死） |
 | `web/src/chat/subagentProgressRouting.test.ts` | 逻辑↔物理双向匹配 + 跨会话仍丢弃（判别力） |
