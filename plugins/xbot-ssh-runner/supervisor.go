@@ -359,6 +359,17 @@ func (s *supervisor) runOnce(ctx context.Context) error {
 	}
 	sshFieldHints.Store(s.spec.Name, s.spec.SSHField)
 
+	// token 经 stdin 交给远端脚本（脚本首行 `read -r XBOT_RUNNER_TOKEN`，见
+	// buildRemoteScript）——**绝不进 argv**。必须赶在 pump 之前写：脚本先读 token、
+	// 后读隧道端口，写序必须与读序一致（端口只在 ssh 打出 `Allocated port` 后才写）。
+	if tok := connectCmdTokenValue(s.spec.ConnectCmd); tok != "" {
+		if _, werr := fmt.Fprintf(stdin, "%s\n", tok); werr != nil {
+			_ = stdin.Close()
+			_ = wait()
+			return fmt.Errorf("deliver runner token over stdin: %w", werr)
+		}
+	}
+
 	// 隧道端口握手（见 buildPipeCommand）：ssh 把 sshd 分配的端口打在输出里，
 	// pump 解析后经 **stdin** 交给远端脚本（脚本开头 `read` 的就是它）。
 	// 超时未拿到 ⇒ 关 stdin ⇒ 远端 read 失败 ⇒ 脚本退出 ⇒ 上层退避重连。
@@ -429,6 +440,11 @@ func parseAllocatedPort(line string) (int, bool) {
 // reverse-tunnel port into (passed over the session's stdin by runOnce).
 const tunnelPortVar = "__XBOT_TUNNEL_PORT"
 
+// runnerTokenEnvVar is the environment variable the remote xbot-runner reads its
+// auth token from when --token is absent. The value travels over the SSH
+// session's **stdin** (never argv) — see buildRemoteScript / runOnce.
+const runnerTokenEnvVar = "XBOT_RUNNER_TOKEN"
+
 // buildPipeCommand is the pure part of a (re)connect: it returns the ssh argv
 // and the remote script.
 //
@@ -489,6 +505,13 @@ func (s *supervisor) buildRemoteScript(serverArg string) string {
 	arg := stripLeadingProgram(strings.TrimSpace(s.spec.ConnectCmd))
 	// Replace the --server value with the (possibly tunnelled) endpoint.
 	arg = replaceConnectCmdServer(arg, serverArg)
+	// ⛔ 2026-11-25（首辅派单 · argv token）：**token 绝不进 argv**。
+	// 服务端铸出的命令形如 `xbot-runner --server … --token <值> --name …`，旧实现把整串
+	// 原样拼进 ssh 的**远程命令**参数 ⇒ 本机 ssh 进程的 argv 就带着 token
+	// （`ps -eo args` 对所有本机用户可见；兵部 2s×15 采样 8/15 命中 2 枚 token）。
+	// 这里把 `--token <值>`（或 `--token=<值>`）整对剥掉，改由远端脚本从 **stdin**
+	// 读出并 export 给 runner —— stdin 是数据通道，不进任何进程的 argv。
+	arg = stripConnectCmdToken(arg)
 	quotedBin := shellQuote(bin)
 	preflight := fmt.Sprintf(
 		`if [ ! -x %s ]; then echo "xbot-runner not found at %s — run provision first" >&2; exit 1; fi`,
@@ -497,11 +520,21 @@ func (s *supervisor) buildRemoteScript(serverArg string) string {
 	// 写给我们，这里先 `read` 到变量（脚本随后用 $VAR 展开进 runner 的 --server）。
 	// 若 runOnce 在超时内拿不到分配结果，它会关掉 stdin ⇒ read 失败 ⇒ 本脚本退出 ⇒
 	// 上层退避重连（不会永久挂住）。
+	//
+	// token 也走 stdin（见上），且**必须排在端口之前读**：runOnce 在 spawn 之后立刻写
+	// token，而端口要等 ssh 打出 `Allocated port` 才写，写序 = 读序。
+	tokenIn := ""
+	if connectCmdTokenValue(s.spec.ConnectCmd) != "" {
+		tokenIn = fmt.Sprintf(
+			"read -r %s || { echo 'runner token not provided on stdin' >&2; exit 1; }; export %s; ",
+			runnerTokenEnvVar, runnerTokenEnvVar)
+	}
 	preamble := ""
 	if s.spec.ConnMode == connModeTunnel {
 		preamble = fmt.Sprintf("read -r %s || { echo 'tunnel port not provided by the session' >&2; exit 1; }; ", tunnelPortVar)
 	}
-	return fmt.Sprintf("%s%s; %s; exec %s %s",
+	return fmt.Sprintf("%s%s%s; %s; exec %s %s",
+		tokenIn,
 		preamble,
 		preflight,
 		strings.TrimSuffix(killRunnerScript(s.spec.Name), "; exit 0"),
@@ -669,6 +702,43 @@ func connectCmdServerValue(connectCmd string) string {
 		}
 	}
 	return ""
+}
+
+// connectCmdTokenValue returns the raw value following --token (or after
+// `--token=`), or "" when the minted command carries no token.
+func connectCmdTokenValue(connectCmd string) string {
+	fields := strings.Fields(connectCmd)
+	for i := 0; i < len(fields); i++ {
+		switch {
+		case fields[i] == "--token" && i+1 < len(fields):
+			return fields[i+1]
+		case strings.HasPrefix(fields[i], "--token="):
+			return strings.TrimPrefix(fields[i], "--token=")
+		}
+	}
+	return ""
+}
+
+// stripConnectCmdToken removes the `--token <value>` / `--token=<value>` pair
+// from a minted runner command.
+//
+// 为什么不保留它：这段命令会被拼进 ssh 的**远程命令参数**，于是 token 落进本机 ssh
+// 进程的 argv（`ps -eo args` 对所有本机用户可见）。剥掉后 token 只走 stdin
+// （runOnce 写入，远端脚本 `read` 后 export 给 runner），argv 与进程表里都看不到值。
+func stripConnectCmdToken(connectCmd string) string {
+	fields := strings.Fields(connectCmd)
+	out := make([]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		switch {
+		case fields[i] == "--token":
+			i++ // drop the value too
+		case strings.HasPrefix(fields[i], "--token="):
+			// drop the whole --token=value token
+		default:
+			out = append(out, fields[i])
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // replaceConnectCmdServer swaps the --server value, preserving the rest.

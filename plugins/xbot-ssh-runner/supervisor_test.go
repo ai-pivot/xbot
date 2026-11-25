@@ -132,8 +132,22 @@ func TestBuildPipeCommand_TunnelForwardsAndRewritesServer(t *testing.T) {
 	if strings.Contains(script, "xbot.example:8082") {
 		t.Fatalf("the original server address must be replaced in tunnel mode: %s", script)
 	}
-	if !strings.Contains(script, "--token s3cr3t") {
-		t.Fatalf("token must be preserved verbatim: %s", script)
+	// ⛔ 2026-11-25 argv-token：token 值必须**既不在 argv、也不在远端脚本文本里**
+	// （脚本文本是 ssh 的一个参数 ⇒ 会进本机 ssh 进程 argv）。改由 stdin 交付。
+	if strings.Contains(script, "s3cr3t") || strings.Contains(script, "--token") {
+		t.Fatalf("token must never appear in the script/argv: %s", script)
+	}
+	if !strings.Contains(script, "read -r "+runnerTokenEnvVar) ||
+		!strings.Contains(script, "export "+runnerTokenEnvVar) {
+		t.Fatalf("script must read the token from stdin and export it: %s", script)
+	}
+	if strings.Index(script, "read -r "+runnerTokenEnvVar) > strings.Index(script, "read -r "+tunnelPortVar) {
+		t.Fatalf("token must be read BEFORE the tunnel port (write order = read order): %s", script)
+	}
+	for _, a := range argv {
+		if strings.Contains(a, "s3cr3t") {
+			t.Fatalf("ssh argv leaks the token: %q", a)
+		}
 	}
 	// The pipe must own the runner: foreground exec, no nohup/&.
 	if !strings.Contains(script, "exec ") || strings.Contains(script, "nohup") {
@@ -159,6 +173,94 @@ func TestBuildPipeCommand_DirectKeepsServerAddress(t *testing.T) {
 	if strings.Contains(script, "read -r "+tunnelPortVar) {
 		t.Fatalf("direct mode has no allocated port to read: %s", script)
 	}
+	// token 交付方式与模式无关：永远走 stdin，永远不进 argv。
+	if strings.Contains(script, "s3cr3t") || strings.Contains(script, "--token") {
+		t.Fatalf("direct mode must not leak the token into argv: %s", script)
+	}
+	if !strings.Contains(script, "read -r "+runnerTokenEnvVar) {
+		t.Fatalf("direct mode must still read the token from stdin: %s", script)
+	}
+	for _, a := range argv {
+		if strings.Contains(a, "s3cr3t") {
+			t.Fatalf("ssh argv leaks the token: %q", a)
+		}
+	}
+}
+
+// ⛔ 2026-11-25（首辅派单 · argv token）：判别力自证。
+//
+// 新实现的断言「脚本文本 / ssh argv 里没有 token」必须**在旧实现上变红**，否则是恒真
+// 判据。旧实现（HEAD）的形状就是把 server 铸出的 `--token <值>` 原样拼进远程命令，这里
+// 用同一份铸命令重建该形状作为对照，确保对比的两边只差「有没有剥 token」这一点。
+func TestBuildPipeCommand_LegacyShapeWouldLeakToken(t *testing.T) {
+	spec := tunnelSpec()
+	tok := connectCmdTokenValue(spec.ConnectCmd)
+	if tok != "s3cr3t" {
+		t.Fatalf("test fixture drifted: token = %q", tok)
+	}
+	// 旧实现（HEAD:plugins/xbot-ssh-runner/supervisor.go buildRemoteScript）：只剥程序名、
+	// 换 --server，`--token <值>` 原样留着。
+	legacyArg := stripLeadingProgram(spec.ConnectCmd)
+	legacyArg = replaceConnectCmdServer(legacyArg, "ws://127.0.0.1:$"+tunnelPortVar+"/ws")
+	legacyScript := "read -r " + tunnelPortVar + "; exec /home/dev/.local/bin/xbot-runner " + legacyArg
+	if !strings.Contains(legacyScript, "s3cr3t") || !strings.Contains(legacyScript, "--token") {
+		t.Fatalf("legacy shape must contain the token (else the probe has no discriminating power): %s", legacyScript)
+	}
+
+	// 新实现：同一条铸命令，token 必须消失。
+	s := &supervisor{spec: spec}
+	_, script, err := s.buildPipeCommand()
+	if err != nil {
+		t.Fatalf("buildPipeCommand: %v", err)
+	}
+	if strings.Contains(script, "s3cr3t") || strings.Contains(script, "--token") {
+		t.Fatalf("new implementation still leaks the token: %s", script)
+	}
+}
+
+// The token must be handed to the remote script over the SSH session's stdin,
+// before the tunnel port, so the remote `read` order matches the write order.
+func TestRunOnce_DeliversTokenOverStdinFirst(t *testing.T) {
+	remote := newFakeRemote(39042)
+	m := newSupervisorManager(remote.exec)
+	stdins := make(chan *recordingStdin, 4)
+	m.spawn = func(ctx context.Context, argv []string) (io.ReadCloser, io.WriteCloser, func() error, error) {
+		pr, pw := io.Pipe()
+		rs := &recordingStdin{}
+		select {
+		case stdins <- rs:
+		default:
+		}
+		go func() {
+			_, _ = pw.Write([]byte("Allocated port 39042 for remote forward to 127.0.0.1:8082\n"))
+			<-ctx.Done()
+			_ = pw.Close()
+		}()
+		return pr, rs, func() error { <-ctx.Done(); return ctx.Err() }, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := m.Connect(ctx, tunnelSpec()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	var rs *recordingStdin
+	select {
+	case rs = <-stdins:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no ssh session was spawned")
+	}
+	waitFor(t, func() bool { return strings.Contains(rs.String(), "s3cr3t") })
+	waitFor(t, func() bool { return strings.Contains(rs.String(), "39042") })
+
+	got := rs.String()
+	if !strings.HasPrefix(got, "s3cr3t\n") {
+		t.Fatalf("token must be the first stdin line, got %q", got)
+	}
+	if !strings.Contains(got, "39042") {
+		t.Fatalf("tunnel port must follow the token: %q", got)
+	}
+	m.Stop(ctx, "m1")
 }
 
 // Every (re)connect kills the previous runner BEFORE starting a new one.
