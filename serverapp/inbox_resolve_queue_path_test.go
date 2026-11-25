@@ -106,17 +106,16 @@ func TestInboxResolve_QueuePathSubAgentOrigin(t *testing.T) {
 		t.Fatalf("resolved origin = %q, want sub-agent session", res.Origin)
 	}
 
-	got := drainInbound(bs)
-	if len(got) != 1 {
-		t.Fatalf("feedback count = %d, want exactly 1", len(got))
+	// 2026-11-25 契约：子代理不在内存且无法复活 ⇒ 不投递（当无事发生），
+	// 但回流行必须落在**子代理 tenant**，绝不能落主会话。
+	if got := drainInbound(bs); len(got) != 0 {
+		t.Fatalf("dead sub-agent receipt must not be delivered (%d 条) —— 那会由主 Agent 执行", len(got))
 	}
-	fb := got[0]
-	if fb.Channel != "agent" || fb.ChatID != "web:web-4/court.shoufu:main" {
-		t.Fatalf("feedback went to %s:%s — want agent:web:web-4/court.shoufu:main.\n"+
-			"  web:web-4 = 主代理（御前）会话 = 本 P0 的症状", fb.Channel, fb.ChatID)
+	if rows := feedbackRows(t, ag, "web:web-4/court.shoufu:main"); len(rows) != 1 {
+		t.Fatalf("feedback rows in the sub-agent tenant = %d, want exactly 1", len(rows))
 	}
-	if fb.ChatID == "web-4" {
-		t.Fatalf("feedback landed in the MAIN session (web:web-4) instead of the sub-agent")
+	if rows := feedbackTexts(t, ag, "web:web-4"); containsLine(rows, "同意") {
+		t.Fatalf("feedback landed in the MAIN session tenant instead of the sub-agent: %v", rows)
 	}
 }
 
@@ -149,9 +148,11 @@ func TestInboxResolve_QueuePathWithoutSessionKeyStillWorks(t *testing.T) {
 	if _, err := cb.StructuredResolve("web-4", sel, resolveInput(items[0].MessageID, "approve", "ok")); err != nil {
 		t.Fatalf("StructuredResolve: %v", err)
 	}
-	got := drainInbound(bs)
-	if len(got) != 1 || got[0].ChatID != "web:web-4/court.shoufu:main" {
-		t.Fatalf("feedback = %+v, want exactly one to web:web-4/court.shoufu:main", got)
+	if got := drainInbound(bs); len(got) != 0 {
+		t.Fatalf("dead sub-agent receipt must not be delivered (%d 条)", len(got))
+	}
+	if rows := feedbackRows(t, ag, "web:web-4/court.shoufu:main"); len(rows) != 1 {
+		t.Fatalf("feedback rows = %d, want exactly one in the sub-agent tenant", len(rows))
 	}
 }
 

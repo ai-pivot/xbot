@@ -2,6 +2,7 @@ package serverapp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -428,6 +429,21 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			// 卡片是 agent 发给用户的：发起方不是"用户"，看板要能显示是谁发的。
 			senderType = "agent"
 		}
+		// 正文：kind=decision 时用「卡片上下文 + 结论」的**同一份回执**（不是裸词「准/驳/改」）。
+		// 目标卡片按 reply_to（兼容 payload.target_message_id）精确定位；取不到才退回
+		// structuredContent（老客户端/无卡片的自由批复）。
+		content := structuredContent(input.Kind, input.Payload, input.Text)
+		if input.Kind == "decision" {
+			targetID, perr := strconv.ParseInt(structuredFirstNonEmpty(input.ReplyTo,
+				structuredPayloadString(input.Payload, "target_message_id")), 10, 64)
+			if perr == nil && targetID > 0 {
+				if card, cerr := svc.GetStructuredMessageByID(tenantID, targetID); cerr == nil && card != nil {
+					content = userNoticeResolutionText(card, card.ID, card.Kind,
+						decisionVerdictStatus(structuredPayloadString(input.Payload, "verdict")),
+						decisionComment(input.Payload), nil, nil)
+				}
+			}
+		}
 		recordType := common.HistoryRecordType("")
 		if input.Silent {
 			// to="user" 卡片：**出流** —— 只进看板，不进聊天流/历史回放/LLM 上下文。
@@ -444,7 +460,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			StructuredJSON: string(raw),
 			Direction:      "in",
 			Role:           structuredRole(input.Kind),
-			Content:        structuredContent(input.Kind, input.Payload, input.Text),
+			Content:        content,
 			SenderType:     senderType,
 			SenderID:       senderID,
 			SenderName:     senderName,
@@ -501,8 +517,8 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 						cardCorrelation = c
 					}
 				}
-				content := userNoticeResolutionText(card, cardID, cardKind, status, strings.TrimSpace(input.Text))
-				if !deliverUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation, func() error {
+				content := userNoticeResolutionText(card, cardID, cardKind, status, decisionComment(input.Payload), nil, nil)
+				if !deliverUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation, "decision", func() error {
 					return persistUserNoticeFeedback(ag, originSession, cardID, cardKind, status, content, senderID, cardCorrelation)
 				}) {
 					log.WithFields(log.Fields{
@@ -625,7 +641,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 		}
 		originSession, originAgent := userNoticeOrigin(row)
 		comment := strings.TrimSpace(input.Comment)
-		content := userNoticeResolutionText(row, row.ID, row.Kind, status, comment)
+		content := userNoticeResolutionText(row, row.ID, row.Kind, status, comment, nil, nil)
 		resolutionJSON, _ := json.Marshal(map[string]any{
 			"status":         status,
 			"action":         action,
@@ -656,7 +672,7 @@ func structuredCallbacks(ag *agent.Agent) (appendFn func(string, web.SessionSele
 			//  2. 唤醒该会话（busy → 优先队列 / idle → 新 turn）。
 			// 只投递不落行的话，agent 醒来看到的是一条空消息（DeliverStructuredMessage
 			// 的空 content 契约），用户说了什么全丢。
-			if !deliverUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID, func() error {
+			if !deliverUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID, "decision", func() error {
 				return persistUserNoticeFeedback(ag, originSession, input.MessageID, row.Kind, status, content, senderID, row.CorrelationID)
 			}) {
 				log.WithFields(log.Fields{
@@ -804,6 +820,20 @@ func decisionRerouteTarget(
 	return originSession, true
 }
 
+// decisionComment 取出用户批复时写的补充意见。
+//
+// ⛔ 只读 payload 的 comment/comments（前端 `useStructuredMessages.decide` 把意见放这里），
+// **不读 input.Text**：
+//   - 旧实现读 input.Text ⇒ 消息流里的批复（意见在 payload.comments）**意见被静默丢掉**；
+//   - 而 SendMessage 工具把模型自己写的那句话（常常就是「准」）放在 text 里，读它会把
+//     「准」当成用户的补充意见拼进回执（历史实测的噪声来源）。
+func decisionComment(payload map[string]any) string {
+	return strings.TrimSpace(structuredFirstNonEmpty(
+		structuredPayloadString(payload, "comment"),
+		structuredPayloadString(payload, "comments"),
+	))
+}
+
 // decisionVerdictStatus 把前端批复的 verdict 映射成卡片处理状态（与 resolveNotice
 // 的词表一致：approved / rejected；modify 表示「要改」，不回退成 approved）。
 func decisionVerdictStatus(verdict string) string {
@@ -818,13 +848,20 @@ func decisionVerdictStatus(verdict string) string {
 	return "approved"
 }
 
-// userNoticeResolutionText 生成回流给发起 agent 的文本。
+// userNoticeResolutionText 生成回流给发起 agent 的**唯一**交互回执文本。
 //
 // ⛔ 必须内嵌**卡片原文**：用户在面板上「取消 / 忽略 / 回答」时，旧实现只回一句
 // 「用户处理了卡片 #N：已取消」。发起 agent 拿不到卡片内容，只能凭对话记忆去猜
 // 是哪张卡、问的是什么 —— 2026-11-15 用户实测：这是幻觉的高发点。所以回流文本
 // 固定带一段“卡片原文引用”，并要求模型以此为准。
-func userNoticeResolutionText(card *common.StructuredMessage, messageID int64, kind, status, comment string) string {
+//
+// 2026-11-25 用户定稿两件事：
+//  1. **取消只说「用户取消」** —— 不加任何行为指导（不要写「不要重复追问」这类
+//     多余的话）；取消/回答都必须带卡片上下文（原文 + 问题 + 选项）。
+//  2. 回答必须带**用户选了什么**（option 的 label，不是内部 id）。
+//
+// answers/specs 只在 kind=ask_user 的回答路径有值；其余路径传 nil。
+func userNoticeResolutionText(card *common.StructuredMessage, messageID int64, kind, status, comment string, answers []protocol.StructuredAnswer, specs []askQuestionSpec) string {
 	label := map[string]string{
 		"approved":  "已批准",
 		"rejected":  "已否决",
@@ -836,9 +873,21 @@ func userNoticeResolutionText(card *common.StructuredMessage, messageID int64, k
 		label = status
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "用户处理了卡片 #%d（kind=%s）：%s", messageID, kind, label)
+	switch status {
+	case "cancelled":
+		// 用户口径：只说「用户取消」，不加多余的话。
+		fmt.Fprintf(&b, "[系统] 用户取消了卡片 #%d（kind=%s，未作答）。", messageID, kind)
+	case "answered":
+		// 有具体选择时答案本身就是「用户选择」段，这里不重复「已回答」。
+		fmt.Fprintf(&b, "[系统] 用户回答了卡片 #%d（kind=%s）。", messageID, kind)
+	default:
+		fmt.Fprintf(&b, "[系统] 用户处理了卡片 #%d（kind=%s）：%s。", messageID, kind, label)
+	}
 	if comment != "" {
-		b.WriteString("。" + comment)
+		b.WriteString("\n用户补充：" + comment)
+	}
+	if selections := answerSelections(answers, specs); selections != "" {
+		b.WriteString("\n用户选择：" + selections)
 	}
 	if card == nil {
 		return b.String()
@@ -888,6 +937,48 @@ func userNoticeResolutionText(card *common.StructuredMessage, messageID int64, k
 		b.WriteString("\n问题：\n" + strings.Join(questions, "\n"))
 	}
 	return b.String()
+}
+
+// answerSelections 把结构化答案渲染成「问题 → 用户所选 label」的人读文本。
+//
+// 判据（2026-11-11/2026-11-25 用户实测）：option 一律翻译成 label；specs 里没有
+// 该 option 才退化成内部 id（老数据/非标准卡片），绝不把 `smoke:yes` 当代号写进
+// 历史。问题正文与选项同时给出 —— 模型必须能独立读懂「谁问的什么、用户选了哪个」。
+func answerSelections(answers []protocol.StructuredAnswer, specs []askQuestionSpec) string {
+	if len(answers) == 0 {
+		return ""
+	}
+	questions := make(map[string]askQuestionSpec, len(specs))
+	for _, sp := range specs {
+		questions[sp.ID] = sp
+	}
+	var parts []string
+	for _, a := range answers {
+		sp := questions[a.QuestionID]
+		var chosen []string
+		for _, id := range a.OptionIDs {
+			if lbl := sp.Options[id]; lbl != "" {
+				chosen = append(chosen, lbl)
+				continue
+			}
+			chosen = append(chosen, id)
+		}
+		piece := strings.Join(chosen, "、")
+		if a.Text != "" {
+			if piece != "" {
+				piece += "；"
+			}
+			piece += "自定义输入「" + a.Text + "」"
+		}
+		if piece == "" {
+			piece = "（未选择）"
+		}
+		if q := strings.TrimSpace(sp.Question); q != "" {
+			piece = q + " → " + piece
+		}
+		parts = append(parts, piece)
+	}
+	return strings.Join(parts, "；")
 }
 
 // noticeTruncate 按 rune 截断（CJK 内容不能按 byte 切）。
@@ -942,7 +1033,9 @@ func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 		return fmt.Errorf("session backend does not support structured messages")
 	}
 	kind := common.StructuredKindDecision
-	if status == "dismissed" || status == "answered" {
+	if status == "dismissed" || status == "answered" || status == "cancelled" {
+		// ask_user 的「回答 / 忽略 / 取消」都是提问闭环，落 answer 行；
+		// 只有 report 的准/驳/改才是 decision。取不到卡片的 status 也不影响这个映射。
 		kind = common.StructuredKindAnswer
 	}
 	correlationID := strings.TrimSpace(cardCorrelationID)
@@ -978,7 +1071,7 @@ func persistUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 //
 // 复用既有 kind=decision 的结构化回流通道（agent.DeliverStructuredMessage）：
 // 目标会话忙则进优先队列、空闲则起一轮 —— 不另造消息通道。
-func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, kind, status, content, senderID, cardCorrelationID string, persist func() error) bool {
+func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID int64, kind, status, content, senderID, cardCorrelationID, queueKind string, persist func() error) bool {
 	if ag == nil {
 		return false
 	}
@@ -990,6 +1083,14 @@ func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 	if correlationID == "" {
 		correlationID = fmt.Sprintf("notice-%d", messageID)
 	}
+	if queueKind == "" {
+		// 旧调用点未显式指定时按 status 推导（回答/忽略/取消 = answer，其余 = decision），
+		// 与 persistUserNoticeFeedback 的 kind 映射逐条一致。
+		queueKind = common.StructuredKindDecision
+		if status == "answered" || status == "dismissed" || status == "cancelled" {
+			queueKind = common.StructuredKindAnswer
+		}
+	}
 	// ⛔ 统一入口：由它按 busy/idle 决定「入队」还是「先落库再空注入」。
 	// 调用方不再自行判断忙闲（旧写法就是在这里落库、在 Deliver 里投递，
 	// 两个分支条件不同步 ⇒ busy 时同一批复被表示两遍）。
@@ -1000,7 +1101,7 @@ func deliverUserNoticeFeedback(ag *agent.Agent, originSession string, messageID 
 		SenderID:      senderID,
 		SenderName:    senderID,
 		Content:       content,
-		Kind:          "decision",
+		Kind:          queueKind,
 		CorrelationID: correlationID,
 		Priority:      agent.StructuredPriorityHigh,
 	}, persist)
@@ -1115,19 +1216,43 @@ func answersFromPayload(payload map[string]any) ([]protocol.StructuredAnswer, bo
 
 // applyStructuredAnswer 是 /api/answer 与 /api/message(kind=answer) 的共同闭环：
 // 校验答案形状 → CAS 置位目标 ask_user → 写 answer 行 → 投递 agent。
+//
+// 寻址（2026-11-25 用户报告的缺陷）：投递目标**不是** sel（用户会话），而是卡片
+// 信封里的 env.origin.session —— 子代理发的 ask_user 卡落在用户会话里，若按 sel
+// 投递，答复就进了主代理，发起的子代理永远收不到（与 decision 路径
+// decisionRerouteTarget 同一语义；origin==sel 时仍投 sel，那是御前自己的卡）。
 func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage.SessionStore, tenantID int64, ag *agent.Agent, activityIdx storage.ActivityStore, input protocol.StructuredAnswerInput) (*protocol.StructuredMessage, bool, error) {
+	// 提问行是回执正文的上下文来源（卡片原文/问题/选项）——精确按「回答钥匙」取，
+	// 不要再用「最近 200 条」窗口近似（超窗即静默丢上下文，实测写出 smoke:yes）。
+	question, qerr := svc.GetAskUserByCorrelationID(tenantID, input.CorrelationID)
+	if qerr != nil {
+		if !errors.Is(qerr, common.ErrStructuredNotFound) {
+			return nil, false, qerr
+		}
+		// 不存在时交给 AnswerAskUser 返回 NOT_FOUND（保持单一判定点）。
+		question = nil
+	}
 	// 校验答案形状（multi_select=false 时 option_ids ≤ 1 等）。
-	specs, err := validateAskUserAnswers(svc, tenantID, input)
+	specs, err := validateAskUserAnswers(question, input)
 	if err != nil {
 		return nil, false, err
 	}
+	status := "answered"
+	if input.Cancelled {
+		status = "cancelled"
+	}
+	var questionID int64
+	if question != nil {
+		questionID = question.ID
+	}
+	// 回执正文 = 唯一实现（带卡片原文 + 问题 + 用户所选 label）。
+	text := userNoticeResolutionText(question, questionID, common.StructuredKindAskUser, status, "", input.Answers, specs)
 	payload := map[string]any{
 		"answers":     input.Answers,
 		"cancelled":   input.Cancelled,
 		"answered_by": senderID,
 	}
 	raw, _ := json.Marshal(payload)
-	text := answerText(input, specs)
 	id, _, created, err := svc.AnswerAskUser(tenantID, sel.ChatID, input.CorrelationID,
 		text, string(raw), input.IdempotencyKey, senderID, senderID, input.Cancelled)
 	if err != nil {
@@ -1160,45 +1285,46 @@ func applyStructuredAnswer(senderID string, sel web.SessionSelector, svc storage
 	}
 	indexAnswer()
 	if created {
-		ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
-			ID:            fmt.Sprintf("answer:%d", id),
-			Channel:       sel.Channel,
-			ChatID:        sel.ChatID,
-			SenderID:      senderID,
-			SenderName:    senderID,
-			Content:       text,
-			Kind:          "answer",
-			CorrelationID: input.CorrelationID,
-			Priority:      agent.StructuredPriorityHigh,
-		})
+		if originSession, _ := userNoticeOrigin(question); originSession != "" &&
+			originSession != sessionaddr.Key(sel.Channel, sel.ChatID) {
+			// 子代理发的卡：回流到发起方会话（不是用户会话/主代理）。
+			if !deliverUserNoticeFeedback(ag, originSession, questionID, common.StructuredKindAskUser, status, text, senderID, input.CorrelationID, "answer", func() error {
+				return persistUserNoticeFeedback(ag, originSession, questionID, common.StructuredKindAskUser, status, text, senderID, input.CorrelationID)
+			}) {
+				log.WithFields(log.Fields{
+					"correlation_id": input.CorrelationID, "origin_session": originSession,
+				}).Warn("answer: failed to deliver feedback to the originating agent")
+			}
+		} else {
+			ag.DeliverStructuredMessage(&agent.StructuredQueueItem{
+				ID:            fmt.Sprintf("answer:%d", id),
+				Channel:       sel.Channel,
+				ChatID:        sel.ChatID,
+				SenderID:      senderID,
+				SenderName:    senderID,
+				Content:       text,
+				Kind:          "answer",
+				CorrelationID: input.CorrelationID,
+				Priority:      agent.StructuredPriorityHigh,
+			})
+		}
 	}
 	return toProtocolStructured(*stored), !created, nil
 }
 
 // validateAskUserAnswers 按 ask_user 信封校验回答，并返回问题规格。
 //
-// 顺带返回 specs 是为了让 answerText 能把 optionId 翻译成用户可见的 label，
-// 而不必再查一遍库（同一 correlation 的 ask_user 行刚刚已经读过了）。
-func validateAskUserAnswers(svc storage.SessionStore, tenantID int64, input protocol.StructuredAnswerInput) ([]askQuestionSpec, error) {
+// question 是**精确按回答钥匙取到的那一行**（GetAskUserByCorrelationID）；nil 表示
+// 行不存在 —— 校验跳过、交给 AnswerAskUser 返回 NOT_FOUND（单一判定点）。
+// specs 供回执把 optionId 翻译成用户可见 label（否则历史里会出现 smoke:yes）。
+func validateAskUserAnswers(question *common.StructuredMessage, input protocol.StructuredAnswerInput) ([]askQuestionSpec, error) {
 	if input.Cancelled {
 		return nil, nil
 	}
-	rows, _, _, err := svc.ListStructuredMessages(tenantID, "ask_user", 0, 200)
-	if err != nil {
-		return nil, err
-	}
-	var target *common.StructuredMessage
-	for i := range rows {
-		if rows[i].CorrelationID == input.CorrelationID {
-			target = &rows[i]
-			break
-		}
-	}
-	if target == nil {
-		// 不存在时交给 AnswerAskUser 返回 NOT_FOUND（保持单一判定点）。
+	if question == nil {
 		return nil, nil
 	}
-	questions := askQuestions(target.StructuredJSON)
+	questions := askQuestions(question.StructuredJSON)
 	byID := make(map[string]askQuestionSpec, len(questions))
 	for _, q := range questions {
 		byID[q.ID] = q
@@ -1272,52 +1398,4 @@ func askQuestions(structuredJSON string) []askQuestionSpec {
 		})
 	}
 	return out
-}
-
-// answerText 把结构化的答案渲染成**人话**，落进会话历史。
-//
-// 关键：option 用 label 而不是内部 id。旧实现拼 `questionId:optionId`，用户会在
-// 历史里看到 "smoke:yes" 这种看不懂的代号（2026-11-11 实测反馈）。specs 缺失或
-// 该 option 没有 label 时才退回 id（老数据兼容）。
-func answerText(input protocol.StructuredAnswerInput, specs []askQuestionSpec) string {
-	if input.Cancelled {
-		return "已取消"
-	}
-	options := make(map[string]map[string]string, len(specs))
-	questions := make(map[string]string, len(specs))
-	for _, sp := range specs {
-		options[sp.ID] = sp.Options
-		questions[sp.ID] = sp.Question
-	}
-
-	var parts []string
-	for _, a := range input.Answers {
-		var chosen []string
-		for _, id := range a.OptionIDs {
-			if lbl := options[a.QuestionID][id]; lbl != "" {
-				chosen = append(chosen, lbl)
-			} else {
-				chosen = append(chosen, id)
-			}
-		}
-		piece := strings.Join(chosen, "、")
-		if a.Text != "" {
-			if piece != "" {
-				piece += "　"
-			}
-			piece += a.Text
-		}
-		if piece == "" {
-			piece = "（未选择）"
-		}
-		// 多问题时把问题正文带上，否则 "、；、" 这种回答读不出在答什么
-		if len(input.Answers) > 1 && questions[a.QuestionID] != "" {
-			piece = questions[a.QuestionID] + " → " + piece
-		}
-		parts = append(parts, piece)
-	}
-	if len(parts) == 0 {
-		return "已回答"
-	}
-	return strings.Join(parts, "；")
 }

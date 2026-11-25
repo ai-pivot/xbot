@@ -5422,8 +5422,10 @@ func (a *Agent) deliverCronFiredToSubAgentSession(c *tools.CronFired) bool {
 		return false
 	}
 	interactiveKeyRaw := c.Key[len("agent:"):]
-	if _, live := a.interactiveSubAgents.Load(interactiveKeyRaw); !live {
-		// 会话已销毁/尚未恢复内存：交给通用路径 —— 那一轮 Run 由**主 Agent** 执行
+	// 唯一存活判定入口：内存命中 → 直接用；否则按注册表恢复（**有 DB 就复活**）。
+	// 绝不能只 Load 内存：进程重启后内存为空，cron 会静默退化成主 Agent 执行。
+	if _, ok := a.ensureInteractiveSession(context.Background(), interactiveKeyRaw, c.Sid); !ok {
+		// 会话已销毁/注册表无记录：交给通用路径 —— 那一轮 Run 由**主 Agent** 执行
 		// （buildMainRunConfig: AgentID="main"），事件落在 "agent:"+key 这个 tenant
 		// session 上，父会话看不到。one-shot 子代理是这里的常客：它的 Run 结束即
 		// destroyInteractiveSession，而 cron 到期往往在那之后。

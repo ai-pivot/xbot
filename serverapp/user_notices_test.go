@@ -22,6 +22,7 @@ import (
 	"xbot/channel/web"
 	"xbot/config"
 	"xbot/protocol"
+	"xbot/storage/common"
 	"xbot/storage/sqlite"
 	"xbot/tools"
 )
@@ -247,19 +248,19 @@ func TestUserNoticeResolve_FeedbackOnce(t *testing.T) {
 	if first.Origin != "web:web-4/court.shoufu:main" {
 		t.Fatalf("origin = %q, want the card's origin session", first.Origin)
 	}
-	got := drainInbound(bs)
-	if len(got) != 1 {
-		t.Fatalf("feedback count = %d, want exactly 1", len(got))
+	// 子代理会话不在内存 ⇒ 当无事发生：不投递（绝不回落主 Agent），但记录必须落下。
+	if got := drainInbound(bs); len(got) != 0 {
+		t.Fatalf("dead sub-agent receipt must not be delivered (%d 条) —— 那会由主 Agent 执行", len(got))
 	}
-	fb := got[0]
-	if fb.Channel != "agent" || fb.ChatID != "web:web-4/court.shoufu:main" {
-		t.Fatalf("feedback went to %s:%s, want agent:web:web-4/court.shoufu:main", fb.Channel, fb.ChatID)
+	rows := feedbackRows(t, ag, "web:web-4/court.shoufu:main")
+	if len(rows) != 1 {
+		t.Fatalf("feedback rows = %d, want exactly 1", len(rows))
 	}
-	if fb.Metadata["structured_kind"] != "decision" {
-		t.Fatalf("feedback metadata = %+v, want structured_kind=decision", fb.Metadata)
+	if rows[0].Kind != "decision" {
+		t.Fatalf("feedback row kind = %q, want decision", rows[0].Kind)
 	}
-	if fb.Metadata["structured_delivery"] != "true" {
-		t.Fatalf("feedback metadata = %+v, want structured_delivery=true", fb.Metadata)
+	if !strings.Contains(rows[0].Content, "同意，继续") {
+		t.Fatalf("feedback row lost the user's comment: %q", rows[0].Content)
 	}
 
 	// 收件箱收敛：unanswered 归零。
@@ -329,9 +330,8 @@ func TestUserNoticeResolve_AllActionsFeedbackOnce(t *testing.T) {
 		if res.Status != c.status || res.Duplicate {
 			t.Fatalf("%s: result = %+v, want status=%s not duplicate", c.action, res, c.status)
 		}
-		got := drainInbound(bs)
-		if len(got) != 1 {
-			t.Fatalf("%s: feedback count = %d, want 1", c.action, len(got))
+		if got := drainInbound(bs); len(got) != 0 {
+			t.Fatalf("%s: feedback must not be delivered to bus (子代理不在内存 ⇒ 当无事发生): %d", c.action, len(got))
 		}
 		// 回流行必须落在**发起方会话**里（agent 醒来从历史里读）；
 		// DeliverStructuredMessage 对空闲会话投的是空 content，所以内容靠这一行。
@@ -347,6 +347,32 @@ func TestUserNoticeResolve_AllActionsFeedbackOnce(t *testing.T) {
 	if len(texts) != len(cases) {
 		t.Fatalf("feedback rows = %d, want %d: %v", len(texts), len(cases), texts)
 	}
+}
+
+// feedbackRows 列出某个发起方会话里所有回流记录（decision/answer）。
+//
+// 2026-11-25 契约变更：**子代理会话不在内存且无法复活时不投递**（用户口径：
+// 「当无事发生」，绝不回落主 Agent 执行别人的会话回执）。此时回流的**唯一可读
+// 副本是落库的那一行**，所以断言必须读行，而不是数 bus.Inbound。
+func feedbackRows(t *testing.T, ag *agent.Agent, originSession string) []common.StructuredMessage {
+	t.Helper()
+	sess, err := ag.MultiSession().GetOrCreateSession("agent", originSession)
+	if err != nil {
+		t.Fatalf("origin session: %v", err)
+	}
+	svc, ok := sess.SessionService().(*sqlite.SessionService)
+	if !ok {
+		t.Fatal("unexpected session backend")
+	}
+	var out []common.StructuredMessage
+	for _, kind := range []string{"decision", "answer"} {
+		rows, _, _, err := svc.ListStructuredMessages(sess.TenantID(), kind, 0, 100)
+		if err != nil {
+			t.Fatalf("list %s: %v", kind, err)
+		}
+		out = append(out, rows...)
+	}
+	return out
 }
 
 // feedbackTexts 列出某个发起方会话里所有回流记录（decision/answer）的正文。
@@ -410,8 +436,11 @@ func TestUserNoticeResolve_Dismiss(t *testing.T) {
 	if n, _ := cb.StructuredCount(sel); n != 0 {
 		t.Fatalf("unanswered after dismiss = %d, want 0", n)
 	}
-	if got := drainInbound(bs); len(got) != 1 {
-		t.Fatalf("dismiss feedback count = %d, want 1", len(got))
+	if got := drainInbound(bs); len(got) != 0 {
+		t.Fatalf("dismiss feedback must not be delivered to bus (子代理不在内存 ⇒ 当无事发生): %d", len(got))
+	}
+	if rows := feedbackRows(t, ag, "web:web-4/court.shoufu:main"); len(rows) != 1 {
+		t.Fatalf("dismiss feedback rows = %d, want 1", len(rows))
 	}
 	if res2, err := cb.StructuredResolve("web-4", sel, resolveInput(cardID, "dismiss", "先不做")); err != nil || !res2.Duplicate {
 		t.Fatalf("second dismiss = %+v, %v (want duplicate)", res2, err)

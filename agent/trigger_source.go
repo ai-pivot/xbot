@@ -26,6 +26,10 @@ const (
 	// triggerSourceCron 表示这一轮 Run 由 cron 定时任务触发。
 	triggerSourceCron           = "cron"
 	triggerSourceBackgroundTask = "background_task"
+	// triggerSourceStructured 表示这一轮是**卡片交互回执**（用户在看板上准/驳/
+	// 回答/取消某张卡）被投进子代理会话。它是本会话自己的回执，既不是父 agent
+	// 转发，也不是后台任务 —— 注入文案必须说实话（见 deliveredMessageContent）。
+	triggerSourceStructured = "structured"
 )
 
 // isCronTriggeredTurn 判定本轮 Run 是否由 cron 触发（nil-safe：裸 RunConfig 不是 cron turn）。

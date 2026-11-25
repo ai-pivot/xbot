@@ -112,12 +112,11 @@ func TestUserNoticeReflow_CarriesCardCorrelationID(t *testing.T) {
 	if rows[0].CorrelationID != cardCorr {
 		t.Fatalf("回流存储行 correlation_id = %q, want %q（必须与卡片逐字相等）", rows[0].CorrelationID, cardCorr)
 	}
-	got := drainStructuredReflow(t, bs, "首次 approve")
-	if len(got) != 1 {
-		t.Fatalf("回流投递 = %d, want exactly 1", len(got))
-	}
-	if mdCorr := got[0].Metadata["correlation_id"]; mdCorr != cardCorr {
-		t.Fatalf("回流投递 metadata correlation_id = %q, want %q（投递层也必须对齐）", mdCorr, cardCorr)
+	// 2026-11-25 契约：子代理会话不在内存且无法复活 ⇒ 不投递（当无事发生，
+	// 绝不回落主 Agent 执行别人的回执）。上面的**落库行**就是唯一权威副本，
+	// 钥匙对齐由它保证。
+	if got := drainStructuredReflow(t, bs, "首次 approve"); len(got) != 0 {
+		t.Fatalf("回流投递 = %d, want 0（子代理不在内存：记录只落行、不投递）", len(got))
 	}
 
 	// ── b) 重复处理不产生第二条回流，键值不变 ───────────────────────────────
@@ -199,9 +198,8 @@ func TestUserNoticeResolve_ReflowCountExactlyOnce(t *testing.T) {
 	if first.Duplicate {
 		t.Fatalf("首次处理不得是 duplicate: %+v", first)
 	}
-	delivered := drainStructuredReflow(t, bs, "首次 approve")
-	if len(delivered) != 1 {
-		t.Fatalf("首次 approve 回流投递 = %d, want exactly 1", len(delivered))
+	if delivered := drainStructuredReflow(t, bs, "首次 approve"); len(delivered) != 0 {
+		t.Fatalf("首次 approve 回流投递 = %d, want 0（子代理不在内存：只落行）", len(delivered))
 	}
 	if rows := noticeDecisionRows(t, ag, originSession); len(rows) != 1 {
 		t.Fatalf("首次 approve 回流行 = %d, want exactly 1", len(rows))
