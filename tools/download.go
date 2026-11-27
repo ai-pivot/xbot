@@ -131,9 +131,14 @@ func (t *DownloadFileTool) downloadFromRef(ctx *ToolContext, ref, outputPath, di
 	if local, ok := existingLocalFile(ref); ok {
 		return t.copyLocalFile(ctx, local, outputPath, displayPath)
 	}
+	// An absolute http(s) URL is fetchable as-is (cloud signed URL, or a public
+	// URL from an older deployment whose local copy is gone).
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return t.downloadFromURL(ctx, ref, outputPath, displayPath)
+	}
 	if strings.Contains(ref, uploadRefPath) {
-		// An upload reference we could NOT resolve: the file is missing from local
-		// storage. Say that plainly instead of surfacing
+		// A RELATIVE upload reference we could NOT resolve: the file is missing
+		// from local storage. Say that plainly instead of surfacing
 		// `unsupported protocol scheme ""` from the HTTP client.
 		return nil, fmt.Errorf("upload reference %q is a web endpoint path (no host to fetch) and the file is not present in local storage — use the local path from the message content, or ask the user to resend the file", ref)
 	}
