@@ -49,3 +49,18 @@
 ## `go:embed embed_skills/*` 自动发现新技能
 
 - **`go:embed embed_skills/*` auto-discovers new skills.** Adding a directory under `tools/embed_skills/` requires zero code changes.
+
+## 附件引用：模型只能拿到「本地路径 / 绝对 URL」，绝不允许同源相对 URL
+
+- **P0 现场（2026-11-27 用户）**：Web 上传的图被当作**用户插话**注入成 **tool 消息**，而 `llm.parseMultimodalContent` **只处理 `role=user`**（`llm/openai.go` 的 `toOpenAIMessages`），tool 内容原样进上下文 ⇒ 模型看到裸 `![x](/api/files/download?key=uploads%2F4%2F…&inline=1)` 并照抄进工具参数：
+  - `view_image {url:"/api/files/download?…"}` → `Error: unsupported url scheme (want http/https)`
+  - `DownloadFile {url:"/api/files/download?…"}` → `Error: download request failed: Get "/api/files/download?…": unsupported protocol scheme ""`
+  这是必然失败：相对路径没有 host/端口，且 `/api/files/download` 还要 session cookie。
+- **契约（五处，改一处必查其余）**：
+  1. `channel/web/upload_ref.go` 的 `uploadModelRef`：**本地存储 ⇒ `<xbotHome>/uploads/<key>` 绝对路径**；云存储 ⇒ provider 签名 URL；签名失败退回本地 spill 路径（`handleCloudUpload` 会落一份本地副本）。⛔ 不再产生任何绑定地址/`public_url` 拼接（`serverBaseURL` 已删除）。
+  2. 图片 markdown `![name](/api/files/download?key=…&inline=1)` **保留**——它只服务浏览器渲染与 vision resolver，不改变模型拿到的东西。
+  3. `llm` 的 `imageRefText` / `imagePlaceholder`：拿到本地路径后**丢掉不可 fetch 的 `ref=`**（仅 http(s) 保留），caption 形如 `[image alt="x" local="/abs/path"]`。
+  4. tool 消息里的图片引用在**注入处**（`agent/engine_run.go` 的 `injectUserInterruptNotification`）与**历史载入处**（`agent/agent.go` `buildPrompt` 的 `localizeUploadRefsInToolMessages`）改写成 `[image alt=… local=…]` —— 存量 DB 里已经写死的相对引用也要在载入时洗掉。
+  5. 工具侧兜底：`tools.LocalUploadRefPath` 把 `/api/files/download?key=…`（相对或 `public_url` 绝对形式）映射成本机文件（拒绝 `..` 越界）；`view_image` 直接读盘、`DownloadFile` 直接复制（sandbox 用 `Sandbox.WriteFile`），且 `DownloadFile` 的 `url` 现在也接受**绝对路径**。
+- 守护：`tools/upload_ref_test.go`、`channel/web/upload_ref_test.go`、`llm/multimodal_local_path_test.go`、`agent/upload_ref_localize_test.go`。
+- **排查入口**：模型报 `unsupported protocol scheme ""` / `unsupported url scheme` 且参数是 `/api/files/download?…` ⇒ 先查这条链路是不是在某个 **tool 角色**的注入路径（插话、合成工具对、cron 通知、存量历史）上，而不是去查浏览器下载端点。

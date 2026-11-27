@@ -3042,8 +3042,33 @@ func (s *runState) injectCronFiredNotification(ctx context.Context, iteration in
 //
 // The content explicitly instructs the model to continue its current task —
 // the interject is additional context, not a direction change.
+// localizeUploadRefsInToolMessages rewrites upload image references stored in
+// tool-role messages into "[image alt=… local=…]" captions.
+//
+// Tool content is text-only for every provider, so the model cannot receive the
+// pixels of an image that was pasted into a tool result — the useful thing it can
+// have is the file path. A same-origin "/api/files/download?key=…" reference is
+// unusable there (no host/port, session cookie required), which is exactly what
+// the model copied and failed on twice (P0 user report 2026-11-27).
+func localizeUploadRefsInToolMessages(history []llm.ChatMessage) {
+	for i := range history {
+		if history[i].Role != "tool" {
+			continue
+		}
+		if localized := tools.LocalizeUploadImageRefs(history[i].Content); localized != history[i].Content {
+			history[i].Content = localized
+		}
+	}
+}
+
 func (s *runState) injectUserInterruptNotification(ctx context.Context, iteration int, n *tools.AsyncMessageNotification) error {
-	content := fmt.Sprintf("💬 [用户插话 — 无需停止当前任务]\n\n%s\n\n请继续当前任务；如果这条插话需要回应，在完成当前步骤后顺带回答即可。", n.Content)
+	// Tool-role content is NEVER multimodal-parsed (only "user" messages are), so
+	// an image reference inside an interject would reach the model raw. Localize
+	// upload references into "[image alt=… local=…]" — a path the model can hand
+	// to view_image/Read, instead of a web URL it cannot resolve
+	// (P0 user report 2026-11-27).
+	interject := tools.LocalizeUploadImageRefs(n.Content)
+	content := fmt.Sprintf("💬 [用户插话 — 无需停止当前任务]\n\n%s\n\n请继续当前任务；如果这条插话需要回应，在完成当前步骤后顺带回答即可。", interject)
 	toolID := fmt.Sprintf("user_interrupt_%d", time.Now().UnixNano())
 	log.Ctx(ctx).WithFields(log.Fields{
 		"raw_content_len":       len(n.Content),

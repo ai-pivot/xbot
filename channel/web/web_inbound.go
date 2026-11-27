@@ -379,14 +379,15 @@ func (wc *WebChannel) appendUploadRef(content, key, displayName string, fileSize
 		}
 		return content + fmt.Sprintf("\n\n![%s](%s)", displayName, ref)
 	}
-	// Non-image attachment: a directly fetchable reference for the model /
-	// DownloadFile tool. URL resolution is single-sourced in uploadDownloadRef
-	// (cloud OSS → signed URL; local static → server base URL + relative path,
-	// degrading to the stable relative URL) — it never fails and its internal
+	// Non-image attachment: the model-facing reference. URL resolution is
+	// single-sourced in uploadModelRef — cloud OSS → signed absolute URL (any
+	// consumer can fetch it); LOCAL storage → the absolute path on this machine
+	// (DownloadFile/Read consume paths directly; a same-origin relative URL is
+	// unconsumable — P0 user report 2026-11-27). It never fails and its internal
 	// failure mode must NEVER leak error text into user-visible content
 	// (P0 user report 2026-09-20: local storage appended
 	// "（获取下载链接失败）" to the message although the upload had succeeded).
-	ref := wc.uploadDownloadRef(key)
+	ref := wc.uploadModelRef(key)
 	return content + fmt.Sprintf("\n\n<file name=\"%s\" url=\"%s\" size=\"%d\" />", displayName, ref, fileSize)
 }
 

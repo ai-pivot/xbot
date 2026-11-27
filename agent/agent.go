@@ -4561,6 +4561,13 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.
 	history = llm.SanitizeMessages(history)
+	// Upload image references stored in TOOL messages (user interjection,
+	// synthetic pair) never pass through the multimodal layer, so a raw
+	// "/api/files/download?key=…" reference would reach the model with no host to
+	// resolve it. Rewrite them to local-path captions at load time too — content
+	// persisted before this contract existed is still in the DB
+	// (P0 user report 2026-11-27).
+	localizeUploadRefsInToolMessages(history)
 	if err := a.ensureWorkspace(ctx, workspaceRoot, sessKey); err != nil {
 		return nil, fmt.Errorf("create user workspace: %w", err)
 	}

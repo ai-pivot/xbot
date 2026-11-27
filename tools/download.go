@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"xbot/llm"
 	log "xbot/logger"
 )
@@ -37,23 +38,25 @@ func (t *DownloadFileTool) Name() string {
 
 func (t *DownloadFileTool) Description() string {
 	return `Download files/images sent by users in chat.
-Supports two sources:
-  1. Web/OSS files: use "url" parameter to download from a signed URL
-  2. Feishu files: use "message_id" and "file_key" parameters
+	Supports three sources:
+  1. Local files: pass "url" as an absolute path (locally stored uploads are referenced by path in message content — use it as-is)
+  2. Web/OSS files: use "url" with an http(s) signed URL
+  3. Feishu files: use "message_id" and "file_key" parameters
 Activate when: user sends a file in chat and you need to save it locally for processing, or user asks to download/save a file from the conversation.
 Parameters (JSON):
-  - url: string, the file URL to download (for web/OSS files, from "访问URL:" in message content)
+  - url: string, the file reference from message content — an absolute local path OR an http(s) URL (for Feishu files use message_id/file_key instead)
   - output_path: string, where to save the file (relative to working directory or absolute)
   - message_id: string, the Feishu message ID (for Feishu files only)
   - file_key: string, the file_key or image_key (for Feishu files only)
   - type: string, optional, "file" (default) or "image" (for Feishu files only)
+  Example (local): {"url": "/home/u/.xbot/uploads/uploads/4/photo.jpg", "output_path": "downloads/photo.jpg"}
 Example (web): {"url": "https://cdn.example.com/uploads/web-1/xxx.jpg?token=xxx", "output_path": "downloads/photo.jpg"}
 Example (feishu): {"message_id": "om_xxx", "file_key": "file_v3_xxx", "output_path": "downloads/report.pdf"}`
 }
 
 func (t *DownloadFileTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "url", Type: "string", Description: "The file URL to download (for web/OSS files)", Required: false},
+		{Name: "url", Type: "string", Description: "File reference from message content: an absolute local path or an http(s) URL", Required: false},
 		{Name: "output_path", Type: "string", Description: "Where to save the file (relative to working directory or absolute)", Required: true},
 		{Name: "message_id", Type: "string", Description: "The Feishu message ID (for Feishu files only)", Required: false},
 		{Name: "file_key", Type: "string", Description: "The file_key or image_key (for Feishu files only)", Required: false},
@@ -87,7 +90,7 @@ func (t *DownloadFileTool) Execute(ctx *ToolContext, input string) (*ToolResult,
 
 	// Auto-detect source: URL takes priority
 	if params.URL != "" {
-		return t.downloadFromURL(ctx, params.URL, outputPath, displayPath)
+		return t.downloadFromRef(ctx, params.URL, outputPath, displayPath)
 	}
 
 	// Feishu fallback
@@ -110,6 +113,81 @@ func (t *DownloadFileTool) Execute(ctx *ToolContext, input string) (*ToolResult,
 	}
 
 	return nil, fmt.Errorf("must provide url (for web/OSS files) or both message_id and file_key (for Feishu files)")
+}
+
+// downloadFromRef materializes one reference into outputPath.
+//
+// References come straight out of message content, so this is the single place
+// that decides HOW to obtain the bytes:
+//   - web upload reference (/api/files/download?key=…): the local storage
+//     backend holds the file on this machine → copy it (no HTTP: the reference
+//     is same-origin/relative and no host exists to connect to);
+//   - plain absolute path → copy it;
+//   - anything else (cloud signed URL, arbitrary http(s)) → download.
+func (t *DownloadFileTool) downloadFromRef(ctx *ToolContext, ref, outputPath, displayPath string) (*ToolResult, error) {
+	if local, ok := LocalUploadRefPath(ref); ok {
+		return t.copyLocalFile(ctx, local, outputPath, displayPath)
+	}
+	if local, ok := existingLocalFile(ref); ok {
+		return t.copyLocalFile(ctx, local, outputPath, displayPath)
+	}
+	if strings.Contains(ref, uploadRefPath) {
+		// An upload reference we could NOT resolve: the file is missing from local
+		// storage. Say that plainly instead of surfacing
+		// `unsupported protocol scheme ""` from the HTTP client.
+		return nil, fmt.Errorf("upload reference %q is a web endpoint path (no host to fetch) and the file is not present in local storage — use the local path from the message content, or ask the user to resend the file", ref)
+	}
+	return t.downloadFromURL(ctx, ref, outputPath, displayPath)
+}
+
+// copyLocalFile copies a file already present on this machine to outputPath
+// (sandbox-aware: the destination may be inside a remote runner).
+func (t *DownloadFileTool) copyLocalFile(ctx *ToolContext, src, outputPath, displayPath string) (*ToolResult, error) {
+	st, err := os.Stat(src)
+	if err != nil {
+		return nil, fmt.Errorf("read source file: %w", err)
+	}
+	if st.Size() > maxDownloadSize {
+		return nil, fmt.Errorf("source file exceeds maximum allowed size (100MB)")
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return nil, fmt.Errorf("read source file: %w", err)
+	}
+	if err := writeOutputFile(ctx, outputPath, data); err != nil {
+		return nil, err
+	}
+	log.WithFields(log.Fields{
+		"source":      src,
+		"output_path": outputPath,
+		"size":        len(data),
+		"mode":        "local-copy",
+	}).Info("File copied from local reference")
+	return NewResult(fmt.Sprintf("Copied: %s → %s (%d bytes)", src, displayPath, len(data))), nil
+}
+
+// writeOutputFile writes bytes to outputPath, through the sandbox when one is
+// active so the file lands where the model's subsequent commands run.
+func writeOutputFile(ctx *ToolContext, outputPath string, data []byte) error {
+	if shouldUseSandbox(ctx) && ctx.Sandbox != nil {
+		userID := ctx.OriginUserID
+		if userID == "" {
+			userID = ctx.SenderID
+		}
+		sandboxCtx, cancel := SandboxCtx()
+		defer cancel()
+		if err := ctx.Sandbox.WriteFile(sandboxCtx, outputPath, data, 0o644, userID); err != nil {
+			return fmt.Errorf("sandbox write: %w", err)
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+	return nil
 }
 
 // downloadFromURL downloads a file from a URL (used for web/OSS files).

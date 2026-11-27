@@ -116,6 +116,12 @@ func (t *ViewImageTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 	if params.Path != "" {
 		data, err = t.readLocal(ctx, params.Path)
 		srcLabel = params.Path
+	} else if local, ok := LocalUploadRefPath(params.URL); ok {
+		// Web upload reference (the canonical form in message content): the file
+		// lives on this machine, so read it straight from disk. Sending it over
+		// HTTP is impossible — it is a same-origin relative URL with no host.
+		data, err = t.readLocal(ctx, local)
+		srcLabel = local
 	} else {
 		data, err = t.fetchURL(ctx, params.URL)
 		srcLabel = params.URL
@@ -211,13 +217,13 @@ func (t *ViewImageTool) readLocal(ctx *ToolContext, path string) ([]byte, error)
 	return os.ReadFile(abs)
 }
 
-// fetchURL downloads the image over HTTP (http/https absolute URLs; the
-// /api/files/download?key= relative reference is rejected here — the model
-// should pass files it downloaded with the DownloadFile tool via path instead;
-// web uploads arrive as URLs the RESOLVER handles, not this tool).
+// fetchURL downloads the image over HTTP. Only absolute http(s) URLs reach this
+// path: web upload references are resolved locally by the caller
+// (tools.LocalUploadRefPath) — a same-origin "/api/files/download?key=…" URL has
+// no host to connect to.
 func (t *ViewImageTool) fetchURL(ctx *ToolContext, rawURL string) ([]byte, error) {
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		return nil, fmt.Errorf("unsupported url scheme (want http/https): %s", rawURL)
+		return nil, fmt.Errorf("unsupported url scheme (want http/https; for a local file pass path): %s", rawURL)
 	}
 	if _, err := url.Parse(rawURL); err != nil {
 		return nil, fmt.Errorf("parse url: %w", err)
