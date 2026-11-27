@@ -57,11 +57,14 @@ func LocalUploadRefPath(ref string) (string, bool) {
 	if key == "" {
 		return "", false
 	}
-	// Keys are slash-separated and always live under uploads/ (the local storage
-	// layout is <xbotHome>/uploads/<key>). Clean first so "../" can never escape:
-	// "uploads/../../etc/passwd" cleans to "../etc/passwd" and fails the prefix.
+	// Keys are slash-separated and namespaced by their writer, all under the
+	// local upload root (<xbotHome>/uploads/<key>):
+	//   uploads/<uid>/<file>  — files the user uploaded through the Web channel
+	//   agent/<uuid>/<file>   — files the agent published with share_file
+	// Clean first so "../" can never escape: "uploads/../../etc/passwd" cleans to
+	// "../etc/passwd" and fails the prefix check.
 	clean := path.Clean(key)
-	if !strings.HasPrefix(clean, "uploads/") || strings.Contains(clean, "..") {
+	if !strings.HasPrefix(clean, "uploads/") && !strings.HasPrefix(clean, "agent/") {
 		return "", false
 	}
 	file := filepath.Join(localUploadRoot(), filepath.FromSlash(clean))

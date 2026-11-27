@@ -64,6 +64,13 @@ func TestLocalUploadRefPath_ResolvesAndRejectsTraversal(t *testing.T) {
 		t.Fatalf("LocalUploadRefPath(%q) = (%q,%v), want (%q,true)", ref, got, ok, path)
 	}
 
+	// share_file publishes under the agent/ namespace of the SAME upload root —
+	// the model is handed that reference too, so it must resolve just as well.
+	agentPath, agentRef := seedLocalUpload(t, "agent/9f1c/chart.png", []byte("x"))
+	if got, ok := LocalUploadRefPath(agentRef); !ok || got != agentPath {
+		t.Fatalf("LocalUploadRefPath(%q) = (%q,%v), want (%q,true)", agentRef, got, ok, agentPath)
+	}
+
 	for _, bad := range []string{
 		"/api/files/download?key=uploads%2F..%2F..%2Fetc%2Fpasswd",
 		"/api/files/download?key=../etc/passwd",

@@ -99,10 +99,21 @@ func (t *ShareFileTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		md = fmt.Sprintf("[%s](%s)", displayName, url)
 	}
 
+	// The model must be handed something it can ACT on. `url` is the
+	// browser-facing reference (same-origin, rendered by the web UI) and is only
+	// good for embedding in the reply — for local storage the file also sits on
+	// disk, so the summary (which the model reads as the tool RESULT) names that
+	// path instead of a URL no tool can fetch (P0 user report 2026-11-27).
+	summary := fmt.Sprintf("Published %s → %s", displayName, url)
+	if local, ok := LocalUploadRefPath(url); ok {
+		summary = fmt.Sprintf("Published %s → local file: %s", displayName, local)
+	}
+
 	return &ToolResult{
-		Summary: fmt.Sprintf("Published %s → %s", displayName, url),
-		Detail:  fmt.Sprintf("File published successfully.\n\nURL: %s\n\nEmbed in your reply:\n%s", url, md),
-		Tips:    fmt.Sprintf("Use this markdown in your reply to show the file to the user:\n%s", md),
+		Summary: summary,
+		Detail: fmt.Sprintf("File published successfully.\n\nEmbed URL (for the user's browser): %s\n\n"+
+			"Embed in your reply:\n%s", url, md),
+		Tips: fmt.Sprintf("Use this markdown in your reply to show the file to the user:\n%s", md),
 	}, nil
 }
 

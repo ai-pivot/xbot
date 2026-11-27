@@ -61,6 +61,6 @@
   2. 图片 markdown `![name](/api/files/download?key=…&inline=1)` **保留**——它只服务浏览器渲染与 vision resolver，不改变模型拿到的东西。
   3. `llm` 的 `imageRefText` / `imagePlaceholder`：拿到本地路径后**丢掉不可 fetch 的 `ref=`**（仅 http(s) 保留），caption 形如 `[image alt="x" local="/abs/path"]`。
   4. tool 消息里的图片引用在**注入处**（`agent/engine_run.go` 的 `injectUserInterruptNotification`）与**历史载入处**（`agent/agent.go` `buildPrompt` 的 `localizeUploadRefsInToolMessages`）改写成 `[image alt=… local=…]` —— 存量 DB 里已经写死的相对引用也要在载入时洗掉。
-  5. 工具侧兜底：`tools.LocalUploadRefPath` 把 `/api/files/download?key=…`（相对或 `public_url` 绝对形式）映射成本机文件（拒绝 `..` 越界）；`view_image` 直接读盘、`DownloadFile` 直接复制（sandbox 用 `Sandbox.WriteFile`），且 `DownloadFile` 的 `url` 现在也接受**绝对路径**。
-- 守护：`tools/upload_ref_test.go`、`channel/web/upload_ref_test.go`、`llm/multimodal_local_path_test.go`、`agent/upload_ref_localize_test.go`。
+  5. 工具侧兜底：`tools.LocalUploadRefPath` 把 `/api/files/download?key=…`（相对或 `public_url` 绝对形式）映射成本机文件——key 前缀白名单是 `uploads/`（Web 上传）与 `agent/`（`share_file` 发布，同一 `<xbotHome>/uploads` 根），`..` 越界一律拒绝；`view_image` 直接读盘、`DownloadFile` 直接复制（sandbox 用 `Sandbox.WriteFile`），且 `DownloadFile` 的 `url` 现在也接受**绝对路径**。`share_file` 的 Summary（模型读的工具结果）给**本地路径**，Tips/Detail 里的 `[name](/api/files/download?key=…)` 保留——那份 markdown 是给用户在浏览器里看的。
+- 守护：`tools/upload_ref_test.go`、`tools/share_file_test.go`、`channel/web/upload_ref_test.go`、`llm/multimodal_local_path_test.go`、`agent/upload_ref_localize_test.go`。
 - **排查入口**：模型报 `unsupported protocol scheme ""` / `unsupported url scheme` 且参数是 `/api/files/download?…` ⇒ 先查这条链路是不是在某个 **tool 角色**的注入路径（插话、合成工具对、cron 通知、存量历史）上，而不是去查浏览器下载端点。
