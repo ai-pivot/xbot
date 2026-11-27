@@ -16,12 +16,20 @@ package web
 
 import (
 	"errors"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"xbot/protocol"
 )
+
+// localUploadPath is the absolute path the local storage backend keeps an upload
+// at — built with filepath so the assertions hold on Windows too (where Join uses
+// a backslash and a hard-coded "/" would make the test lie).
+func localUploadPath(home, key string) string {
+	return filepath.Join(home, "uploads", filepath.FromSlash(key))
+}
 
 // fileRefRe extracts the <file …> tag's name/url/size attributes.
 var fileRefRe = regexp.MustCompile(`<file name="([^"]*)" url="([^"]*)" size="(\d+)" />`)
@@ -54,7 +62,7 @@ func TestExpandUploadKeys_LocalStorageYieldsLocalPath(t *testing.T) {
 	out := expandOne(wc, "uploads/3/15.gz", "15.gz", 7)
 	ref := fileRefURL(t, out)
 
-	if want := home + "/uploads/uploads/3/15.gz"; ref != want {
+	if want := localUploadPath(home, "uploads/3/15.gz"); ref != want {
 		t.Fatalf("local storage must reference the local file: want %q, got %q", want, ref)
 	}
 	if strings.Contains(out, "/api/files/download") {
@@ -81,7 +89,7 @@ func TestExpandUploadKeys_LocalStorageNeverLeaksServerAddress(t *testing.T) {
 	}
 	for name, wc := range wcs {
 		ref := fileRefURL(t, expandOne(wc, "uploads/3/a.gz", "a.gz", 1))
-		if want := home + "/uploads/uploads/3/a.gz"; ref != want {
+		if want := localUploadPath(home, "uploads/3/a.gz"); ref != want {
 			t.Fatalf("%s: want local path %q, got %q", name, want, ref)
 		}
 		for _, banned := range []string{"127.0.0.1", "0.0.0.0", "10.0.0.", "[::1]", "xbot.example.com"} {
@@ -113,7 +121,7 @@ func TestExpandUploadKeys_CloudSignerFailureYieldsLocalPath(t *testing.T) {
 	if strings.Contains(out, "获取下载链接失败") {
 		t.Fatalf("internal failure text leaked: %q", out)
 	}
-	if want := home + "/uploads/uploads/3/b.gz"; fileRefURL(t, out) != want {
+	if want := localUploadPath(home, "uploads/3/b.gz"); fileRefURL(t, out) != want {
 		t.Fatalf("want local path %q, got %q", want, out)
 	}
 }
