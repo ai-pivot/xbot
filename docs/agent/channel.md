@@ -527,15 +527,20 @@ The context bar (top border of input box) replaces the default lipgloss border w
 而 `/api/files/download` 又要求会话 cookie ⇒ 既不是给人用的链接，也不是给工具用的链接。旧的 `upload_ref_test.go`
 甚至把这个行为写成了契约（三个 bind 都断言 `http://127.0.0.1:<port>`），所以修复必须**同时改测试**。
 
-**契约（唯一权威实现 = `channel/web/upload_ref.go`，业务代码禁止自己拼）**：
+**契约（唯一权威实现 = `channel/web/upload_ref.go` 的 `uploadModelRef`，业务代码禁止自己拼）**：
 
-1. 云存储（qiniu/s3）：用 provider 的签名绝对 URL（不变）。
-2. 本地静态：**仅当** `web.public_url` 是显式声明的绝对 http(s) 地址时，才用 `PublicURL + /api/files/download?key=…`；
-   `ws://`/`wss://` 等非 HTTP 形态跳过（该字段同时供 runner 连接命令使用）。
-3. 其它情况（含未声明 `web.public_url`）**一律**退化为同源相对引用 `/api/files/download?key=…`：
-   浏览器按当前 origin 解析（带会话 cookie 可下载），服务端 resolver（vision/附件路径）本地读盘解析。
-4. **⛔ 绑定地址（监听地址 / 配置 Host+Port）永远不作为引用来源** —— 它必然是 loopback / 通配 / 内网地址，
-   对消费者不可用，且会被固化进历史与产物。
+> ⚠️ 2026-11-27 定稿（取代下面 1–4 条的旧形态）：**模型侧的引用必须是「能直接用的东西」**。
+> `<file>` 标签 = **本地绝对路径**（本地存储）/ 签名 URL（云存储）；同源相对 `/api/files/download?key=…`
+> **禁止**再交给模型 —— 2026-11-27 P0：插话里的图被注入成 **tool 消息**（tool 角色不走 multimodal 解析），
+> 模型复制了那个相对 URL，`view_image` 报 `unsupported url scheme`、`DownloadFile` 报
+> `unsupported protocol scheme ""`。详见 `docs/agent/gotchas-tools.md`「附件引用」一节。
+
+1. 云存储（qiniu/s3）：provider 的签名绝对 URL（不变）；签名失败 ⇒ 退回本地 spill 路径（`handleCloudUpload` 会落一份）。
+2. 本地存储（默认）：**`<xbotHome>/uploads/<key>` 绝对路径**——`DownloadFile` 直接复制、`Read`/`Shell` 直接打开。
+3. 图片 markdown 里的 `/api/files/download?key=…&inline=1` **保留**：它只服务浏览器渲染 + vision resolver；
+   模型侧看到的是 `[image alt=… local=…]`（拿到本地路径后 `ref=` 被丢掉，仅 http(s) 保留）。
+4. **⛔ 绑定地址（监听地址 / 配置 Host+Port / `public_url`）永不进入引用** —— 本地存储现在根本不产生 URL，
+   隐患从结构上消失（`serverBaseURL` 已删除）。
 
 **部署侧**：想让链接**可复制、可外发**（粘贴到浏览器地址栏也能下载），必须在配置里显式声明
 `web.public_url`（如 `https://xbot.pivotlang.tech`）——改这个字段需要重启生效。

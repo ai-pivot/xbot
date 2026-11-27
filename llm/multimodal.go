@@ -91,11 +91,26 @@ func imageRefText(alt, ref string, mc *MultimodalConfig) string {
 	if mc.ImageResolver != nil {
 		if p, ok := mc.ImageResolver.(localPathProvider); ok {
 			if local, ok2 := p.LocalPath(ref); ok2 && local != "" {
+				// A same-origin relative reference (/api/files/download?key=…) is
+				// only meaningful INSIDE the browser; handed to a tool it fails
+				// ("unsupported url scheme" / `unsupported protocol scheme ""`).
+				// Once the local path is known the reference adds nothing the model
+				// can use, so it is dropped (P0 user report 2026-11-27).
+				if !isFetchableRef(ref) {
+					return fmt.Sprintf("[image alt=%q local=%q]", name, local)
+				}
 				return fmt.Sprintf("[image alt=%q local=%q ref=%q]", name, local, ref)
 			}
 		}
 	}
 	return fmt.Sprintf("[image alt=%q ref=%q]", name, ref)
+}
+
+// isFetchableRef reports whether a reference can be consumed as-is over the
+// network (absolute http(s)). Relative/same-origin references cannot: no tool
+// knows the server's host or port, and the endpoint needs a session cookie.
+func isFetchableRef(ref string) bool {
+	return strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://")
 }
 
 // MultimodalConfig carries the per-request vision settings for message
@@ -155,6 +170,11 @@ func imagePlaceholder(alt, reason, ref string, mc *MultimodalConfig) string {
 		if mc != nil && mc.ImageResolver != nil {
 			if p, ok := mc.ImageResolver.(localPathProvider); ok {
 				if local, ok2 := p.LocalPath(ref); ok2 && local != "" {
+					// Unfetchable (same-origin relative) references are dropped for
+					// the same reason as in imageRefText: they cannot be acted on.
+					if !isFetchableRef(ref) {
+						return "[图片: " + name + " — " + reason + "；本地路径: " + local + "]"
+					}
 					return "[图片: " + name + " — " + reason + "；本地路径: " + local + "；引用: " + ref + "]"
 				}
 			}
