@@ -136,7 +136,7 @@ func TestRunCompression_PrePostCompressAsync(t *testing.T) {
 		// Compression completed while PreCompress is STILL blocked → the hook
 		// left the synchronous path (green). Old sync implementation blocks
 		// inside PreCompress and the deadline below fires (red).
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("runCompression blocked on Pre/PostCompress — memory hooks must run async " +
 			"(2026-09-02 incident: Pre 2m51s + Post 8m32s on the synchronous path)")
 	}
@@ -150,12 +150,12 @@ func TestRunCompression_PrePostCompressAsync(t *testing.T) {
 	close(preRelease)
 	select {
 	case <-preStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("PreCompress never ran (background spawn missing)")
 	}
 	select {
 	case <-postStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("PostCompress never ran after compression (background spawn missing)")
 	}
 

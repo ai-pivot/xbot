@@ -35,7 +35,7 @@ func TestDeriveRunBaseContext_IgnoresCallerCancel(t *testing.T) {
 
 	// 反过来：Agent 生命周期结束时必须真的能取消，否则 unload/shutdown 失效。
 	agentCancel()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testAsyncWait)
 	for time.Now().Before(deadline) {
 		if base.Err() != nil {
 			return

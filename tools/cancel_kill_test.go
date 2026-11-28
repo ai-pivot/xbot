@@ -121,7 +121,7 @@ func TestExecCancelKillsEscapedProcessTreeWithin100ms(t *testing.T) {
 
 	select {
 	case <-returned:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatalf("exec did not return within 3s of cancel — pipe capture is wedged by the escaped grandchild (pid %d)", escapedPid)
 	}
 	execReturned := time.Since(cancelledAt)
@@ -168,7 +168,7 @@ func TestNoneSandboxExecCancelKillsGroupWithin100ms(t *testing.T) {
 
 	select {
 	case <-returned:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatalf("Exec did not return within 3s of cancel (pid %d)", pid)
 	}
 	execReturned := time.Since(cancelledAt)
@@ -219,7 +219,7 @@ func TestWaitForPipeCaptureIsBounded(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("waitForPipeCapture blocked on a pipe that never reaches EOF — it must force-close and bound the wait")
 	}
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {

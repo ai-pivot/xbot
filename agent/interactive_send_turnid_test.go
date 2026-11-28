@@ -302,7 +302,7 @@ func TestSendToInteractiveSession_InterruptDrainsPendingMessages(t *testing.T) {
 		if out == nil || out.Error == nil {
 			t.Fatalf("queued send #2 should fail with a delivery error after the interrupt, got %+v", out)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatalf("BUG REPRODUCED (A4): queued send #2 still blocked 5s after the interrupt — pendingMessages were not drained at the interrupt boundary")
 	}
 

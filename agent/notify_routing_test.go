@@ -40,7 +40,7 @@ func TestBgNotifyRoutedToParentInteractiveSession(t *testing.T) {
 		Sid:       "user-1",
 	})
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testAsyncWait)
 	for time.Now().Before(deadline) {
 		if len(a.pendingBgNotifications(originKey)) == 0 {
 			break
@@ -75,7 +75,7 @@ func TestBgNotifyFallsBackToOriginWhenParentGone(t *testing.T) {
 
 	// 兜底路径会立刻 drain 并注入 origin 会话，所以断言"消息真的到了 origin"，
 	// 而不是"留在 pending"（pending 会在 drain 时被取空）。
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testAsyncWait)
 	for time.Now().Before(deadline) {
 		select {
 		case msg := <-a.bus.Inbound:

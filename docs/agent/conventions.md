@@ -25,6 +25,36 @@
 - Run specific: `go test ./agent/ -run TestName -count=1`
 - Run all: `go test ./...`
 
+### 等异步：只用宽上限，绝不赌机器速度（2026-11-27 Windows CI 偶发红根治）
+
+问题现场（Windows runner，`TestAskUserInterruptReapsExpiredThroughProcessLoop`）：
+
+```
+14:53:52  Auto-cancelling stale pending AskUser (TTL expired)
+14:53:53  WAL state … sessions\web\68\chat-loop-stale-….db (open)
+14:54:07  Failed to append ask_answer pairing …      ← 14 秒才写完
+```
+
+测试用的是 **10 秒固定上限轮询**，于是「代码对不对」变成了「机器够不够快」——
+同一份代码在 Linux 上毫秒级通过、在 Windows 上必红（红不红只看当天负载）。
+
+契约：
+
+1. **上限统一用 `testAsyncWait`（2 分钟）**：各包 `zz_test_async_wait_test.go`
+   （agent 包是 `agent/test_async_wait_test.go`）。⛔ 不要改回个位数秒 —— 这个值
+   只回答「等多久判失败」，条件一成立就立即返回，放宽**不降低**判别力。
+   只覆盖「正向等待」（timeout 分支是 `t.Fatal`）；**负向观察窗口**（等「不该发生
+   的事」）保持短值，那才是真正的判据。
+2. **优先用事件而不是轮询**：等 channel/广播（如
+   `fakeResolvedSender.signal`、`ss.notifyCh`），别用 `sleep(20ms)` 反复读内存 ——
+   轮询把「goroutine 调度延迟」写进了断言。
+3. **预热昂贵的前置**：被等待的链路若含「首次打开会话库」，测试先
+   `mt.GetOrCreateSession(...)`；环境开销不该落在判据窗口里。
+4. **⛔ deadline 不得兼任「起点」**：若测试还要断言下界（如 TTL 必须 ≥900ms 才
+   回收），显式 `start := time.Now()`，绝不能 `deadline.Add(-3*time.Second)`
+   反推 —— 改上限会连带改错语义（2026-11-27 我改这一处时踩过，`TestInteractiveSessionTTL_Configurable`
+   当场红）。
+
 ## Interfaces
 
 - Define at point of use, not in separate `interfaces.go`

@@ -164,7 +164,7 @@ func TestExecKeepAlive_ContextCancel(t *testing.T) {
 		if output != "started\n" {
 			t.Errorf("expected 'started\\n', got %q", output)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Process group kill did not take effect within 5s")
 	}
 }

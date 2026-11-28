@@ -80,7 +80,7 @@ func TestAdoptRealtimeOutputSync(t *testing.T) {
 	exitCh <- 0
 	select {
 	case <-task.done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("task did not finish after exitCh fired")
 	}
 	if got := task.CurrentOutput(); !strings.Contains(got, "final") {
@@ -127,7 +127,7 @@ func TestAdoptRealtimeOutputSyncTailTruncate(t *testing.T) {
 	exitCh <- 0
 	select {
 	case <-task.done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("task did not finish after exitCh fired")
 	}
 	if got := task.CurrentOutput(); len(got) != maxBgOutputSize {

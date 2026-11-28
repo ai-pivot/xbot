@@ -102,7 +102,7 @@ func TestSendRacingDestroy_EndsWithExplicitDestroyedError(t *testing.T) {
 	// ② Run 已进入 LLM 调用 —— 此刻销毁会话（与生产 TTL 清理同一条路径）。
 	select {
 	case <-llmStub.entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Run never reached the LLM call")
 	}
 	a.destroyInteractiveSession(key)
@@ -224,7 +224,7 @@ func TestDestroyInteractiveSession_IsIdempotent(t *testing.T) {
 	// 等第一个销毁者进入 emit（它在 barrier 里等人），然后放行，避免空转。
 	select {
 	case <-ch.arrive:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("no destroyer ever emitted subagent_stopped")
 	}
 	close(ch.release)
@@ -269,13 +269,16 @@ func TestInteractiveSessionTTL_Configurable(t *testing.T) {
 	}
 
 	// 1s 之后 → 必须回收（TTL 真的生效，不是恒等 30m）。
-	deadline := time.Now().Add(3 * time.Second)
+	// 等待上限用 testAsyncWait（Windows CI 上含 DB 的链路慢），但**下界判据不变**：
+	// 必须在 900ms 之后才回收。起点显式记录，绝不能从 deadline 反推（deadline 是
+	// 等待上限，不是测试起点）。
+	start := time.Now()
+	deadline := start.Add(testAsyncWait)
 	for time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 		a.cleanupExpiredSessions()
 		if _, ok := a.interactiveSubAgents.Load(key); !ok {
-			elapsed := time.Since(deadline.Add(-3 * time.Second))
-			if elapsed < 900*time.Millisecond {
+			if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
 				t.Fatalf("session reclaimed after %s with TTL=1s — TTL is not honored", elapsed)
 			}
 			return

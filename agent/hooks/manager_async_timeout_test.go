@@ -39,7 +39,7 @@ func TestAsyncHookHasTimeoutCap(t *testing.T) {
 		if d := time.Until(deadline); d > maxAsyncHookTimeout+2*time.Second {
 			t.Fatalf("async hook deadline %v exceeds the cap %v", d, maxAsyncHookTimeout)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("async hook executor was never invoked")
 	}
 }

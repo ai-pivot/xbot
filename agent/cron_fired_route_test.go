@@ -78,7 +78,7 @@ func TestCronFired_RoutesToSubAgentSession(t *testing.T) {
 		if !strings.Contains(msg.Content, "check cluster health") {
 			t.Fatalf("cron notification content lost the job message: %q", msg.Content)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timed out: cron notification never reached bus.Inbound")
 	}
 }
@@ -121,7 +121,7 @@ func TestCronFired_LiveSubAgentSessionFailureFallsBack(t *testing.T) {
 		if !strings.Contains(msg.Content, msg0) {
 			t.Fatalf("fallback injection lost the cron message (event swallowed): %q", msg.Content)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("投递失败后事件被静默吞掉：5s 内 bus.Inbound 没有收到回落注入（SendToInteractiveSession 的失败在 OutboundMsg.Error 里，第二个返回值恒为 nil）")
 	}
 }
@@ -178,7 +178,7 @@ func TestCronFired_RoutesToNestedSubAgentSession(t *testing.T) {
 		if !strings.Contains(msg.Content, msg0) {
 			t.Fatalf("nested cron fallback lost the message: %q", msg.Content)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("nested: 投递失败后事件被静默吞掉（bus.Inbound 无回落注入）")
 	}
 }
@@ -578,7 +578,7 @@ func TestCronFired_DestroyedSubAgentSessionFallsBackToMainAgent(t *testing.T) {
 		if !strings.Contains(got.Content, msg) {
 			t.Fatalf("回落注入丢了 cron message：%q", got.Content)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("会话已销毁时事件被静默吞掉：bus.Inbound 5s 内没有收到回落注入")
 	}
 }

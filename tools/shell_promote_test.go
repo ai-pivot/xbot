@@ -101,7 +101,7 @@ func TestExecuteForeground_PromoteToBackground(t *testing.T) {
 		if !strings.Contains(res.Summary, taskID) {
 			t.Fatalf("result should embed task id %s, got: %s", taskID, res.Summary)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Execute did not return promptly after promote")
 	}
 
@@ -121,7 +121,7 @@ func TestExecuteForeground_PromoteToBackground(t *testing.T) {
 	}
 	select {
 	case <-waitCh:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("background task did not finish")
 	}
 	if task.Status != BgTaskDone {
@@ -194,7 +194,7 @@ func TestExecuteForeground_PromoteDoubleFire(t *testing.T) {
 		if res == nil || !strings.Contains(res.Summary, "PROMOTED to background") {
 			t.Fatalf("expected PROMOTED result, got: %+v", res)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Execute did not return after promote")
 	}
 }
@@ -233,7 +233,7 @@ func TestExecuteForeground_TimeoutAdoptsRunning(t *testing.T) {
 	}
 	select {
 	case <-waitCh:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("adopted task did not finish")
 	}
 	task, _ := mgr.Status(taskID)
@@ -306,7 +306,7 @@ func TestExecuteForeground_UserCancelKillsProcess(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Execute did not return after user cancel")
 	}
 	// No background task should have been created.
@@ -365,7 +365,7 @@ func TestAdoptRunningOutputPush(t *testing.T) {
 	waitCh, _ := mgr.WaitDone(task.ID)
 	select {
 	case <-waitCh:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("adopted task did not finish")
 	}
 	if task.Status != BgTaskDone {

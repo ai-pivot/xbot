@@ -26,7 +26,7 @@ func TestContinueInteractiveSessionUsesCanonicalFullKey(t *testing.T) {
 		done <- a.ContinueInteractiveSession(context.Background(), fullKey, "continue here", "web-user")
 	}()
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testAsyncWait)
 	var pending []pendingUserMsg
 	for time.Now().Before(deadline) {
 		pending = ia.drainPendingMessages()
@@ -62,7 +62,7 @@ func TestContinueInteractiveSessionReturnsQueuedDeliveryFailure(t *testing.T) {
 		done <- a.ContinueInteractiveSession(context.Background(), fullKey, "continue", "web-user")
 	}()
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testAsyncWait)
 	var pending []pendingUserMsg
 	for time.Now().Before(deadline) {
 		pending = ia.drainPendingMessages()

@@ -52,7 +52,7 @@ func TestSubAgentNotifyReachesRealParentSession(t *testing.T) {
 		if msg.Content == "" {
 			t.Fatal("delivered notification has empty content")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("notification never reached the parent session — " +
 			"sub-agent completion notices are being swallowed")
 	}
@@ -95,7 +95,7 @@ func TestDrainKeepsInteractiveSessionAddress(t *testing.T) {
 			t.Fatalf("delivered to %s:%s, want agent:web:web-4/court.shoufu:main",
 				msg.Channel, msg.ChatID)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("interactive session notification never delivered")
 	}
 }

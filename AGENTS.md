@@ -21,6 +21,7 @@
 - **⛔ 分支 / PR 纪律（用户明确要求，2026-09-24；违反会被严厉批评）：**
   - **开新分支、开 PR、合并 —— 必须先问用户**，没说就绝不动。一次任务**只开一个 PR**；修完一个 bug 后发现新问题（哪怕同会话、哪怕修好了）也**先停下来汇报**，等用户说"开 PR / 修掉它"再动 —— 2026-09-24 事故：用户只让排查"React #185 是什么"，agent 修完直接开了第二个 PR（#411），被用户严厉批评。
   - **Commit / Push 不用问**：只要不在 master，**已开分支上随便 commit、随便 push**（问"要不要 commit/push"是浪费用户时间）。需要请示的只有三件事：**开新分支、开 PR、合并**。
+- ⚠️ `docs/agent/conventions.md` — **测试里「等异步」只能用宽上限（`testAsyncWait`=2 分钟），不许赌机器速度**（2026-11-27 Windows CI 偶发红根治）：`TestAskUserInterruptReapsExpiredThroughProcessLoop` 用 10s 固定轮询等一条含「首次打开会话库 + WAL fsync」的链路，Windows runner 实测该链路 **14s**（14:53:52 触发收回 → 14:54:07 才写完 ask_answer）⇒ 慢机必红，红不红只看当天负载。契约：① 正向等待（timeout 分支 `t.Fatal`）上限一律 `testAsyncWait`（各包 `zz_test_async_wait_test.go`，agent 是 `agent/test_async_wait_test.go`），负向观察窗口保持短值；② 优先等**事件**（channel/广播）而不是 sleep 轮询内存；③ 被等待链路含「首次建库」时测试先 `GetOrCreateSession` 预热；④ **deadline 不得兼任起点** —— 下界判据（如 TTL ≥900ms）必须显式 `start := time.Now()`，从 deadline 反推会连带改错语义（我改这一处时当场把 `TestInteractiveSessionTTL_Configurable` 改红）。
 - Entry points: `cmd/xbot-cli/` (CLI), `cmd/runner/` (remote sandbox), `cmd/xbot/` (server)
 - Build: `go build ./...` | Test: `go test ./...` | Lint: `golangci-lint run ./...`
 - Config: `~/.xbot/config.json`, env var overrides

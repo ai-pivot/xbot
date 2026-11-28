@@ -50,7 +50,7 @@ func TestWebSendForwardsCommandReplyMetadata(t *testing.T) {
 		if msg.Metadata["command_reply"] != "true" {
 			t.Fatalf("命令回复必须透传 metadata.command_reply（前端唯一判别式）: metadata=%#v", msg.Metadata)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("命令回复没有投递到订阅的 SSE 客户端")
 	}
 }
@@ -84,7 +84,7 @@ func TestWebSendDoesNotMarkOrdinaryMessages(t *testing.T) {
 		if msg.Metadata["command_reply"] == "true" {
 			t.Fatalf("普通消息不得带 command_reply: %#v", msg.Metadata)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("普通消息没有投递到订阅的 SSE 客户端")
 	}
 }
