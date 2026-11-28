@@ -3723,7 +3723,7 @@ func TestPluginManager_AutoRetry(t *testing.T) {
 	// With 10ms interval and exponential backoff starting at 1s,
 	// we need a reasonable timeout. But the backoff is 1s for first retry.
 	// For testing, let's wait up to 10 seconds.
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(testAsyncWait)
 	for {
 		entry, _ = pm.GetPlugin("com.test.example")
 		entry.stateMu.Lock()
@@ -3771,8 +3771,14 @@ func TestPluginManager_AutoRetry_MaxRetries(t *testing.T) {
 	pm.SetRetryInterval(50 * time.Millisecond)
 	pm.SetAutoRetry(true, 2)
 
-	// Wait enough time for retries to complete (retryInitialDelay=1s exponential: 1s+2s=3s)
-	time.Sleep(5 * time.Second)
+	// 等重试真正耗尽：轮询条件而不是睡固定 5s（重试链是 1s+2s 的指数退避，慢机器
+	// 上 5s 余量就是在赌速度；条件一成立立即继续）。
+	// 断言的主体是「尝试次数」，所以轮询它本身（而不是睡固定 5s，也不是轮询
+	// retryCount —— 两轮重试与 attempts 之间还有一步）。条件成立立即继续。
+	waitDeadline := time.Now().Add(testAsyncWait)
+	for fp.getAttempts() < 3 && time.Now().Before(waitDeadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	entry, _ := pm.GetPlugin("com.test.example")
 	entry.stateMu.Lock()

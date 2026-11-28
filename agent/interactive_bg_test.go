@@ -334,8 +334,13 @@ func TestBgSend_NoParentDeadlineInheritance(t *testing.T) {
 	ia.cancelCurrent = runCancel
 	ia.running = true
 
-	// Wait for the parent's deadline to expire
-	time.Sleep(150 * time.Millisecond)
+	// 等父 context 的 deadline 过期：轮询条件而不是睡固定 150ms
+	// （慢机器上固定 sleep 就是赌速度）。
+	for waitUntil := time.Now().Add(testAsyncWait); time.Now().Before(waitUntil); time.Sleep(5 * time.Millisecond) {
+		if parentCtx.Err() != nil {
+			break
+		}
+	}
 
 	// Verify the parent context IS expired
 	if parentCtx.Err() == nil {

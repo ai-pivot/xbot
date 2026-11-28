@@ -60,7 +60,18 @@ func TestReadPumpDoesNotClearReplacedConn(t *testing.T) {
 	defer transport.Stop()
 
 	// Wait for first server connection.
-	time.Sleep(200 * time.Millisecond)
+	// 等首个连接建立：轮询而不是睡固定 200ms（连接是异步建立的，
+	// 固定 sleep 就是在赌机器速度，慢机器上会假红）。
+	waitUntil := time.Now().Add(testAsyncWait)
+	for time.Now().Before(waitUntil) {
+		connMu.Lock()
+		n := len(serverConns)
+		connMu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	connMu.Lock()
 	if len(serverConns) != 1 {
 		t.Fatalf("expected 1 server conn, got %d", len(serverConns))
@@ -144,7 +155,18 @@ func TestOldReadPumpReturnsWithoutInterference(t *testing.T) {
 	}
 	defer transport.Stop()
 
-	time.Sleep(200 * time.Millisecond)
+	// 等首个连接建立：轮询而不是睡固定 200ms（连接是异步建立的，
+	// 固定 sleep 就是在赌机器速度，慢机器上会假红）。
+	waitUntil := time.Now().Add(testAsyncWait)
+	for time.Now().Before(waitUntil) {
+		connMu.Lock()
+		n := len(serverConns)
+		connMu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	// Force a reconnect via connect() while the old readPump is still running.
 	// The old readPump should detect t.conn != conn and return without
