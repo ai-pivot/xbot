@@ -414,7 +414,7 @@ func TestWebSocketChat(t *testing.T) {
 		if persisted != 0 {
 			t.Fatalf("WS transport persisted %d history rows before Agent admission", persisted)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timeout waiting for inbound message")
 	}
 }
@@ -754,7 +754,7 @@ func TestWebSocketBrowserMessageCanTargetCLISessionForAdmin(t *testing.T) {
 		if msg.Channel != "cli" || msg.ChatID != "/repo" || msg.Content != "hello cli" {
 			t.Fatalf("unexpected inbound: %#v", msg)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timeout waiting for inbound message")
 	}
 }
@@ -963,7 +963,7 @@ func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 		if inbound.Channel != "cli" || inbound.ChatID != chatID || !strings.Contains(inbound.Content, "report.txt") {
 			t.Fatalf("remote CLI upload inbound = %#v", inbound)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("remote CLI upload was not handed to the Agent bus")
 	}
 }

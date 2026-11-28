@@ -49,7 +49,7 @@ func TestGenerateStream_FirstChunkTimeout(t *testing.T) {
 		if err == nil {
 			t.Fatal("挂死上游必须返回错误（首帧超时应掐断连接并冒泡错误）")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("GenerateStream 未在首帧超时内返回——修复前形态：上游挂死时请求永挂，Run 卡死无法收尾（2026-10-01 事故）")
 	}
 }

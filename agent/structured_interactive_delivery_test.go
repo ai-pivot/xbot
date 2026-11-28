@@ -128,7 +128,7 @@ func TestDeliverStructuredToInteractive_RunningSessionInlinesContent(t *testing.
 		t.Fatalf("running sub-agent receipt leaked into bus.Inbound (%d 条)", len(got))
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testAsyncWait)
 	for {
 		ia.mu.Lock()
 		n := len(ia.pendingMessages)

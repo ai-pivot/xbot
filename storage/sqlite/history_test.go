@@ -90,7 +90,7 @@ func waitHistoryOperation(t *testing.T, done <-chan error) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("history operation did not finish")
 		return nil
 	}

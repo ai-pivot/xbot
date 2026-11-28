@@ -64,7 +64,7 @@ func TestDrainAndProcessNotifications_Synchronous(t *testing.T) {
 	var notif tools.BgNotification
 	select {
 	case notif = <-mgr.NotifyCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timed out waiting for notification from NotifyCh")
 	}
 
@@ -120,7 +120,7 @@ func TestDrainAndProcessNotifications_CrossSessionIsolation(t *testing.T) {
 		select {
 		case n := <-mgr.NotifyCh:
 			notifs = append(notifs, n)
-		case <-time.After(5 * time.Second):
+		case <-time.After(testAsyncWait):
 			t.Fatal("timed out waiting for notifications")
 		}
 	}
@@ -133,7 +133,7 @@ func TestDrainAndProcessNotifications_CrossSessionIsolation(t *testing.T) {
 
 	// Should find chat-a's notification in bus.Inbound
 	found := false
-	timeout := time.After(2 * time.Second)
+	timeout := time.After(testAsyncWait)
 	for !found {
 		select {
 		case msg := <-a.bus.Inbound:
@@ -193,7 +193,7 @@ func TestBgNotifyLoop_AlwaysBuffers_NoIdlePath(t *testing.T) {
 	select {
 	case <-ss.notifyCh:
 		// Got signal — bgNotifyLoop buffered and signaled
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timed out waiting for notification signal — bgNotifyLoop didn't buffer")
 	}
 
@@ -283,7 +283,7 @@ func TestBgNotifyLoop_SignalsMultipleSessions(t *testing.T) {
 	select {
 	case <-ssA.notifyCh:
 		t.Log("chat-a received notification signal")
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("chat-a should have received notification signal")
 	}
 
@@ -305,7 +305,7 @@ func TestBgNotifyLoop_SignalsMultipleSessions(t *testing.T) {
 	select {
 	case <-ssB.notifyCh:
 		t.Log("chat-b received notification signal")
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("chat-b should have received notification signal")
 	}
 }
@@ -341,7 +341,7 @@ func TestDrainAndProcessNotifications_ConcurrentSafety(t *testing.T) {
 		select {
 		case n := <-mgr.NotifyCh:
 			notifs = append(notifs, n)
-		case <-time.After(5 * time.Second):
+		case <-time.After(testAsyncWait):
 			t.Fatalf("timed out waiting for notifications, got %d/10", len(notifs))
 		}
 	}
@@ -365,7 +365,7 @@ func TestDrainAndProcessNotifications_ConcurrentSafety(t *testing.T) {
 	// ⛔ 契约（2026-09-18 用户 P0）：10 条通知 ⇒ **恰好 1 条** user 消息（一个 turn）。
 	// 并发 drain 只有一个能拿到条目（另一个拿到 0）⇒ 不可能出现重复注入。
 	var msgs []bus.InboundMessage
-	timeout := time.After(2 * time.Second)
+	timeout := time.After(testAsyncWait)
 	for len(msgs) < 1 {
 		select {
 		case msg := <-a.bus.Inbound:
@@ -467,7 +467,7 @@ func TestDrainAndProcessNotifications_AfterResponseSent(t *testing.T) {
 	select {
 	case <-a.bus.Inbound:
 		t.Log("SUCCESS: notification processed after response sent")
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("notification was not processed after drain")
 	}
 
@@ -592,7 +592,7 @@ func TestDrainAndProcessNotifications_CronFired(t *testing.T) {
 		if !containsPrefix(msg.Content, "⏰") {
 			t.Errorf("Content should contain ⏰ prefix, got: %q", msg.Content)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("drainAndProcessNotifications should have injected CronFired into bus.Inbound")
 	}
 
@@ -637,7 +637,7 @@ func TestBgNotifyLoop_CronFired_BuffersAndSignals(t *testing.T) {
 	select {
 	case <-ss.notifyCh:
 		// Got signal — bgNotifyLoop buffered and signaled
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timed out waiting for notification signal — bgNotifyLoop didn't buffer CronFired")
 	}
 
@@ -695,7 +695,7 @@ func TestDrainAndProcessNotifications_MixedTypes(t *testing.T) {
 	var bgNotif tools.BgNotification
 	select {
 	case bgNotif = <-mgr.NotifyCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timed out waiting for bg task notification")
 	}
 
@@ -713,7 +713,7 @@ func TestDrainAndProcessNotifications_MixedTypes(t *testing.T) {
 	// 旧实现逐条注入 ⇒ N 条通知在 busy 期堆进**用户可见队列**（截图：Next turn 83
 	// + Turn 84–88），既不能立刻发出也拿不到"一次处理完"。
 	var msgs []bus.InboundMessage
-	timeout := time.After(2 * time.Second)
+	timeout := time.After(testAsyncWait)
 	for len(msgs) < 1 {
 		select {
 		case msg := <-a.bus.Inbound:
@@ -795,7 +795,7 @@ func TestBgNotifyLoop_CronFired_NoSession_ProcessesDirectly(t *testing.T) {
 		if !containsPrefix(msg.Content, "⏰") {
 			t.Errorf("Content should have ⏰ prefix for cron, got: %s", msg.Content)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timed out — CronFired was not processed directly when no session exists " +
 			"(bgNotifyLoop should drain immediately for sessions without chatWorker)")
 	}
@@ -839,7 +839,7 @@ func TestBgNotifyLoop_CronFired_NoSession_MultipleNotifications(t *testing.T) {
 	}
 
 	// All 3 should be processed and appear in bus.Inbound
-	timeout := time.After(5 * time.Second)
+	timeout := time.After(testAsyncWait)
 	count := 0
 	for count < 3 {
 		select {
@@ -887,7 +887,7 @@ func TestDrainAndProcessNotifications_LabelsSourceAndRange(t *testing.T) {
 	var bgNotif tools.BgNotification
 	select {
 	case bgNotif = <-mgr.NotifyCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timed out waiting for bg task notification")
 	}
 	// ② 子代理完成 ③ 定时任务
@@ -903,7 +903,7 @@ func TestDrainAndProcessNotifications_LabelsSourceAndRange(t *testing.T) {
 	var msg bus.InboundMessage
 	select {
 	case msg = <-a.bus.Inbound:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("expected the batched notification message in bus.Inbound")
 	}
 	// 恰好一条（N 合 1，绝不逐条）。

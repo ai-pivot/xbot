@@ -115,7 +115,7 @@ func TestCancelBlocksUntilTurnReallyStops(t *testing.T) {
 
 	select {
 	case <-runDone:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatalf("run-done did not close within 3s of /cancel (exec waiting at %v) — cancellation did not take effect", pid)
 	}
 	waited := time.Since(start)

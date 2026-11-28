@@ -153,7 +153,7 @@ func TestAgentChannelContextCancellation(t *testing.T) {
 	select {
 	case <-done:
 		// good
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Send never returned after Stop")
 	}
 }
@@ -317,7 +317,7 @@ func TestAgentChannelCircularWaitNoDeadlock(t *testing.T) {
 	select {
 	case <-done:
 		// Success — no deadlock
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("DEADLOCK DETECTED: circular SendMessage hung — the fix is not working")
 	}
 }
@@ -368,7 +368,7 @@ func TestAgentChannelBidirectionalSend(t *testing.T) {
 		if !strings.Contains(result, "A:B:from_A_hello") {
 			t.Errorf("unexpected result: %s", result)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Bidirectional send timed out — possible deadlock")
 	}
 }
@@ -423,7 +423,7 @@ func TestAgentChannelCallerCtxCancellation(t *testing.T) {
 		if !strings.Contains(err.Error(), "caller cancelled") {
 			t.Errorf("expected caller cancellation error, got: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Send did not return after caller context cancellation — Ctrl+C would not work")
 	}
 }
@@ -511,7 +511,7 @@ func TestAgentChannelDispatcherCtxPropagation(t *testing.T) {
 		if err == nil {
 			t.Error("expected error from cancelled SendMessageCtx")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("SendMessageCtx did not return after context cancellation")
 	}
 }

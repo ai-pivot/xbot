@@ -743,7 +743,7 @@ func TestSSEReplayHandoffSuppressesStaleFallback(t *testing.T) {
 	defer resp.Body.Close()
 	select {
 	case <-progressLookup:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("active progress lookup did not start")
 	}
 	wc.SendProgress("web-1", &protocol.ProgressEvent{Phase: "thinking"})
@@ -815,7 +815,7 @@ func TestWSReconnectSkipsResolvedRetainedAskUser(t *testing.T) {
 		if msg.ChatID != "web-1" || msg.AskUserResolvedReason != "cleared" {
 			t.Fatalf("reconcile event = %#v, want cleared for web-1", msg)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("reconnect without pending did not push ask_user_resolved")
 	}
 	select {
@@ -1137,7 +1137,7 @@ func TestWSWriteBoundaryDoesNotHoldPendingLockDuringNetworkWrite(t *testing.T) {
 	close(releaseWrite)
 	select {
 	case <-writeDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("network write did not finish")
 	}
 }
@@ -1256,7 +1256,7 @@ func TestSSEActiveProgressFallbackStopsAtIdleEvent(t *testing.T) {
 	close(releaseLookup)
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("active progress fallback did not finish")
 	}
 
@@ -1359,7 +1359,7 @@ func TestSSEProgressFallbackDoesNotHoldSequenceLockDuringCallback(t *testing.T) 
 	} {
 		select {
 		case <-done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testAsyncWait):
 			t.Fatalf("%s path deadlocked", name)
 		}
 	}
@@ -1490,7 +1490,7 @@ func TestSSEFallbackCheckAndPublishIsAtomicWithLiveEvent(t *testing.T) {
 	} {
 		select {
 		case <-done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testAsyncWait):
 			t.Fatalf("%s publish did not finish", name)
 		}
 	}
@@ -1572,7 +1572,7 @@ func TestSSECatchesUpAfterSendChannelOverflow(t *testing.T) {
 	defer resp.Body.Close()
 	select {
 	case <-progressLookup:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("active progress lookup did not start")
 	}
 
@@ -2137,7 +2137,7 @@ func TestWebChannelStopInterruptsBlockedSSEWrite(t *testing.T) {
 	}()
 	select {
 	case <-writer.writeStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("SSE write did not block")
 	}
 
@@ -2913,7 +2913,7 @@ func TestSSEPacketDropHTTPReconnect(t *testing.T) {
 	resp1 := openSSE(t, server.URL, cookie, chatID, "")
 	select {
 	case <-sseReady:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("SSE connection not ready")
 	}
 

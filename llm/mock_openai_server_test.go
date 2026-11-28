@@ -172,7 +172,7 @@ func TestProcessStream_CtxCancelUnblocksFullChannel(t *testing.T) {
 	select {
 	case <-done:
 		// processStream returned — no goroutine leak.
-	case <-time.After(10 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("processStream leaked: still blocked on a full eventChan 10s after ctx cancellation (bare chan send never unblocks)")
 	}
 

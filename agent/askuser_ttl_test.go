@@ -30,12 +30,23 @@ import (
 type fakeResolvedSender struct {
 	mu     sync.Mutex
 	events []protocol.AskUserResolvedEvent
+	// signal, when non-nil, receives one token per resolved event so a test can
+	// WAIT for the event instead of polling memory against a fixed deadline.
+	// A fixed deadline is a bet on machine speed — on Windows CI the reap chain
+	// (first session-DB open + WAL fsync) measured 14s (see testAsyncWait).
+	signal chan struct{}
 }
 
 func (f *fakeResolvedSender) SendAskUserResolved(ev protocol.AskUserResolvedEvent) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.events = append(f.events, ev)
+	f.mu.Unlock()
+	if f.signal != nil {
+		select {
+		case f.signal <- struct{}{}:
+		default:
+		}
+	}
 }
 func (f *fakeResolvedSender) snapshot() []protocol.AskUserResolvedEvent {
 	f.mu.Lock()
@@ -234,7 +245,17 @@ func TestChatProcessLoopCallsStaleAskUserReaper(t *testing.T) {
 // （调用都没了，当然不会取消）。两半合起来才同时钉住"别乱取消"与"该收的必须收"。
 func TestAskUserInterruptReapsExpiredThroughProcessLoop(t *testing.T) {
 	mt, _ := newAgentHistorySession(t)
+	// 预热会话库：收回链路要 AppendAskAnswer + 把结构化提问置 cancelled，都是
+	// DB 写。首次打开会话库在 Windows 上是十几秒（见 testAsyncWait 的现场日志），
+	// 那是环境开销，不该落进「多久内必须收回」的判据窗口。
+	if _, err := mt.GetOrCreateSession("web", "chat-loop-stale"); err != nil {
+		t.Fatalf("warm session db: %v", err)
+	}
 	a := &Agent{bus: bus.NewMessageBus(), multiSession: mt}
+	// 事件驱动：收回链路最后一步是广播 ask_user_resolved。等事件而不是轮询内存，
+	// 断言就与机器速度解耦（等不到才说明 call-site 真的丢了）。
+	resolved := &fakeResolvedSender{signal: make(chan struct{}, 4)}
+	wireResolvedSender(a, resolved)
 
 	chatKey := "web:chat-loop-stale"
 	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
@@ -253,8 +274,10 @@ func TestAskUserInterruptReapsExpiredThroughProcessLoop(t *testing.T) {
 		close(msgCh)
 		select {
 		case <-done:
-		case <-time.After(3 * time.Second):
-			t.Log("chatProcessLoop 未在 3s 内退出（不影响本断言）")
+		case <-time.After(testCleanupWait):
+			// 这只是收尾日志，不是判据：投递进来的消息会走 processMessage，
+			// 在本测试里没有可用 LLM，loop 可能要很久才回到 range 退出。
+			t.Log("chatProcessLoop 未在收尾窗口内退出（不影响本断言）")
 		}
 	}()
 
@@ -263,14 +286,17 @@ func TestAskUserInterruptReapsExpiredThroughProcessLoop(t *testing.T) {
 		Metadata: map[string]string{"turn_id": "1"},
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	timeout := time.After(testAsyncWait)
+	for {
 		if a.GetPendingAskUser("web", "chat-loop-stale") == nil {
 			return // 已按 TTL 收回
 		}
-		time.Sleep(20 * time.Millisecond)
+		select {
+		case <-resolved.signal:
+		case <-timeout:
+			t.Fatal("超时提问在 loop 起点没有被收回：call-site 丢了，或者 TTL 判据没生效（pending 会永远挂住）")
+		}
 	}
-	t.Fatal("超时提问在 loop 起点没有被收回：call-site 丢了，或者 TTL 判据没生效（pending 会永远挂住）")
 }
 
 // TestAskUserTTLExpiryExposesCancelReason 锁住「取消原因可查」：

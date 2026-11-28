@@ -22,6 +22,11 @@ import (
 // （5198f54c 家族）上编译并跑红：那时任何新 turn 都会无条件收回提问 ⇒ 必红。
 func TestAskUserInterruptThroughProcessLoop(t *testing.T) {
 	mt, _ := newAgentHistorySession(t)
+	// 预热会话库：loop 里的 processMessage 会打开/写会话库，Windows 上首次打开
+	// 是十几秒级（见 testAsyncWait），不能让它挤占「多久内走完 keepRunning」的窗口。
+	if _, err := mt.GetOrCreateSession("web", "chat-interrupt"); err != nil {
+		t.Fatalf("warm session db: %v", err)
+	}
 	a := &Agent{bus: bus.NewMessageBus(), multiSession: mt}
 
 	chatKey := "web:chat-interrupt"
@@ -56,11 +61,16 @@ func TestAskUserInterruptThroughProcessLoop(t *testing.T) {
 
 	// 给 loop 时间把 turn 起起来并执行到 keepRunning 里的提问处理（不依赖 LLM：
 	// 即使 processMessage 因未配置模型而报错，那一步也已经执行过）。
-	deadline := time.Now().Add(5 * time.Second)
+	// 上限用 testAsyncWait：Windows CI 上这段链路含 SQLite 打开/写入，个位数秒
+	// 的 deadline 就是在赌机器速度（见 testAsyncWait 的现场日志）。
+	deadline := time.Now().Add(testAsyncWait)
 	for time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 		if ss.busy.Load() {
-			time.Sleep(150 * time.Millisecond) // busy 已置位 ⇒ 已进入 keepRunning
+			// busy 已置位 ⇒ 已进入 keepRunning；autoResolveStalePendingAskUser 是
+			// Store(true) 之后的紧邻语句，纯内存判定。这里给足余量只为消除
+			// 「goroutine 被调度推迟」这一变量，不改变断言语义。
+			time.Sleep(2 * time.Second)
 			break
 		}
 	}

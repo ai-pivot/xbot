@@ -311,7 +311,7 @@ func TestScriptPlugin_TriggerCh_NoBlock(t *testing.T) {
 	select {
 	case <-done:
 		// success — no block
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("OnWorkDirChanged blocked — triggerCh overflow")
 	}
 }

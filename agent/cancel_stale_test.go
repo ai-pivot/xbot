@@ -62,13 +62,13 @@ func TestChatProcessLoop_SelfHealsStaleCancelState(t *testing.T) {
 	close(msgCh)
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("chatProcessLoop 未在 msgCh close 后退出")
 	}
 
 	select {
 	case <-gotClose:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("残留 cancelListener 未收到 close 通知——reqCancel 链断（listener 将永等）")
 	}
 	if _, found := a.chatCancelCh.Load(chatKey); found {

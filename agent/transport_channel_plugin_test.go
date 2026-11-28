@@ -278,7 +278,7 @@ func TestChannelPluginTransport_HandlePluginResponse(t *testing.T) {
 		if err != nil {
 			t.Errorf("Call failed: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Call timed out")
 	}
 }
@@ -425,7 +425,7 @@ func TestChannelPluginTransport_ReadLoopExitsOnContext(t *testing.T) {
 	select {
 	case <-done:
 		// Success — readLoop exited.
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("readLoop did not exit after context cancellation")
 	}
 }

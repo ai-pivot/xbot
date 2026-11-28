@@ -41,7 +41,7 @@ func TestBackgroundTaskCompletionRoutesToOwningSubAgent(t *testing.T) {
 		return 0, nil
 	})
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testAsyncWait)
 	for time.Now().Before(deadline) {
 		child.mu.Lock()
 		childPending := len(child.pendingMessages)

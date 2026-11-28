@@ -67,7 +67,7 @@ func TestWebSendForwardsTurnIDOnCancelAck(t *testing.T) {
 		} else if got != float64(wantTurn) {
 			t.Fatalf("线上 JSON turn_id = %v, want %d", got, wantTurn)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("cancel ack 没有投递到订阅的 SSE 客户端")
 	}
 }

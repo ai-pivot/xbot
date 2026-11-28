@@ -530,7 +530,7 @@ func TestSweepIdleSessionDBsLockOrder(t *testing.T) {
 	select {
 	case <-acquired:
 		// sessionDBMu 空闲 —— sweep 没有在持它等 m.mu。
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("sweepIdleSessionDBs holds sessionDBMu while waiting for m.mu — AB-BA deadlock with GetOrCreateSession (m.mu → sessionDBMu)")
 	}
 
@@ -538,7 +538,7 @@ func TestSweepIdleSessionDBsLockOrder(t *testing.T) {
 	mt.mu.Unlock()
 	select {
 	case <-sweepDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("sweepIdleSessionDBs did not complete after m.mu was released")
 	}
 	// defer 已 Unlock —— 手动再 Lock 保持 defer 对称（defer 会再 Unlock 一次会

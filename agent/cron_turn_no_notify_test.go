@@ -244,7 +244,7 @@ func bgTaskNotifForTest(t *testing.T, mgr *tools.BackgroundTaskManager, chatKey 
 	select {
 	case n := <-mgr.NotifyCh:
 		return n
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("timed out waiting for bg task notification")
 	}
 	return nil
@@ -260,7 +260,7 @@ func drainBatchNotify(t *testing.T, notifs []tools.BgNotification, chatKey strin
 	select {
 	case msg := <-a.bus.Inbound:
 		return msg
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("drainAndProcessNotifications injected nothing into bus.Inbound")
 	}
 	return bus.InboundMessage{}
@@ -301,7 +301,7 @@ func TestDrainMixedBatchDoesNotMarkTriggerSource(t *testing.T) {
 	var msg bus.InboundMessage
 	select {
 	case msg = <-a.bus.Inbound:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("drainAndProcessNotifications injected nothing into bus.Inbound")
 	}
 	if !strings.Contains(msg.Content, "🔔 合并通知") {

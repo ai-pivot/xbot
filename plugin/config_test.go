@@ -29,7 +29,7 @@ func TestPluginConfigStore_SubscribeNotifies(t *testing.T) {
 		if cfg["a"] != "1" {
 			t.Fatalf("expected a=1 after Update, got %v", cfg)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Update did not notify subscriber (deadlock?)")
 	}
 
@@ -56,7 +56,7 @@ func TestPluginConfigStore_SubscribeNotifies(t *testing.T) {
 		default:
 			t.Fatalf("unexpected type %T for b", v)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("Save did not notify subscriber (deadlock?)")
 	}
 }
@@ -74,7 +74,7 @@ func TestPluginConfigStore_UnsubscribeStopsNotify(t *testing.T) {
 	}
 	select {
 	case <-called:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testAsyncWait):
 		t.Fatal("expected first notification")
 	}
 
